@@ -12,7 +12,7 @@ const PERSONA = {
   personaName: 'Kapil Jain',
   personaRole: 'Co-founder',
   personaBrand: 'Bollywood Society',
-  personaPhone: '+91 60001 89766',
+  personaPhone: '+91 60000 189766',
   personaEmail: 'kapil@digitalsukoon.com',
 }
 
@@ -93,12 +93,19 @@ describe('persona validation', () => {
     expect(validatePersona(PERSONA)).toEqual([])
   })
 
-  it('rejects the 11-digit number from the original brief', () => {
-    // "+91 60000 189766" has 11 digits after the country code. This guard is why
-    // a wrong number blocks the send instead of appearing in every message.
-    const problems = validatePersona({ ...PERSONA, personaPhone: '+91 60000 189766' })
-    expect(problems).toHaveLength(1)
-    expect(problems[0]).toContain('not a valid Indian mobile')
+  it('accepts the confirmed 11-digit number', () => {
+    // Kapil's number carries an extra digit and was confirmed correct as written.
+    expect(validatePersona({ ...PERSONA, personaPhone: '+91 60000 189766' })).toEqual([])
+  })
+
+  it('still rejects a number that is too short', () => {
+    // The guard is relaxed on length, not removed — this value appears in every
+    // outgoing message, so a genuine typo must still block the send.
+    expect(validatePersona({ ...PERSONA, personaPhone: '+91 60000' })).toHaveLength(1)
+  })
+
+  it('still rejects a number that is far too long', () => {
+    expect(validatePersona({ ...PERSONA, personaPhone: '+91 600001897667788' })).toHaveLength(1)
   })
 
   it('rejects a mobile starting with an invalid digit', () => {
@@ -117,7 +124,7 @@ describe('renderMessage', () => {
     const { body } = renderMessage({ persona: PERSONA, target: MOM, variantBody: variant, hook: null })
     expect(body).toContain('Kapil Jain')
     expect(body).toContain('Co-founder, Bollywood Society')
-    expect(body).toContain('+91 60001 89766')
+    expect(body).toContain('+91 60000 189766')
     expect(body).toContain('kapil@digitalsukoon.com')
   })
 
@@ -135,7 +142,7 @@ describe('renderMessage', () => {
     expect(tail).toEqual([
       'Kapil Jain',
       'Co-founder, Bollywood Society',
-      '+91 60001 89766',
+      '+91 60000 189766',
       'kapil@digitalsukoon.com',
     ])
   })

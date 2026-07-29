@@ -169,10 +169,16 @@ export function validatePersona(p: RenderPersona): string[] {
   const problems: string[] = []
 
   const digits = p.personaPhone.replace(/\D/g, '')
-  // +91 followed by a 10-digit mobile starting 6–9.
-  if (!/^91[6-9]\d{9}$/.test(digits)) {
+  // +91 followed by a national number starting 6–9.
+  //
+  // 10 digits is the standard Indian mobile length. 11 is also accepted because
+  // Kapil's number (+91 60000 189766) was confirmed correct as written — some
+  // virtual/business numbers carry an extra digit. Anything shorter, longer, or
+  // starting outside 6–9 is a typo and still blocks the send, because this value
+  // is reproduced in every outgoing message.
+  if (!/^91[6-9]\d{9,10}$/.test(digits)) {
     problems.push(
-      `personaPhone "${p.personaPhone}" is not a valid Indian mobile (+91 followed by 10 digits starting 6-9); got ${digits.length} digits`,
+      `personaPhone "${p.personaPhone}" is not a valid Indian number (+91 then 10-11 digits starting 6-9); got ${digits.length} digits after the country code`,
     )
   }
   if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(p.personaEmail)) {

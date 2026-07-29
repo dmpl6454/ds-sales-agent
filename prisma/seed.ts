@@ -26,10 +26,8 @@ const PERSONA = {
   personaName: 'Kapil Jain',
   personaRole: 'Co-founder',
   personaBrand: 'Bollywood Society',
-  // NEEDS-CONFIRMATION: the brief gave "+91 60000 189766" — 11 digits, where
-  // Indian mobiles are 10. Best guess written here; validatePersona() rejects it
-  // until corrected, which blocks sending rather than sending it wrong.
-  personaPhone: '+91 60001 89766',
+  // Confirmed correct as written (2026-07-29), including the 11th digit.
+  personaPhone: '+91 60000 189766',
   personaEmail: 'kapil@digitalsukoon.com',
 }
 
@@ -37,36 +35,40 @@ const SENDERS = [
   {
     handle: 'maraboutmarketing',
     displayName: 'Mar About Marketing',
-    // NEEDS-CONFIRMATION: one character-class away from madovermarketing_mom,
-    // which can trip Meta's impersonation detection and reads oddly when
-    // pitching that exact target.
-    note: 'confirm handle spelling',
   },
   {
-    handle: 'bollywood_society',
+    handle: 'bollywoodsociety',
     displayName: 'Bollywood Society',
-    note: 'NEEDS-CONFIRMATION: real @handle unknown — placeholder',
   },
   {
-    handle: 'bollywood_chronicle',
+    handle: 'bollywoodchronicle',
     displayName: 'Bollywood Chronicle',
-    note: 'NEEDS-CONFIRMATION: real @handle unknown — placeholder',
   },
 ] as const
+
+/**
+ * Placeholder handles seeded before the real ones were known. Renamed in place
+ * rather than re-inserted, so any history already attached to them is kept and
+ * no duplicate sender rows appear.
+ */
+const HANDLE_RENAMES: Record<string, string> = {
+  bollywood_society: 'bollywoodsociety',
+  bollywood_chronicle: 'bollywoodchronicle',
+}
 
 const TARGETS = [
   {
     handle: 'madovermarketing_mom',
     displayName: 'Mad Over Marketing (M.O.M)',
-    // NEEDS-CONFIRMATION. null renders "Hi Mad Over Marketing (M.O.M) team,"
-    // which is safe. Never guess a real person's first name.
-    contactFirstName: null,
+    // Greeting is the channel/brand name, not a personal name — so the message
+    // opens "Hi Mad Over Marketing," rather than guessing at a person.
+    contactFirstName: 'Mad Over Marketing',
     detectorKey: 'mom',
   },
   {
     handle: 'viralbhayani',
     displayName: 'Viral Bhayani',
-    contactFirstName: null,
+    contactFirstName: 'Viral Bhayani',
     detectorKey: 'passthrough',
   },
 ] as const
@@ -74,12 +76,27 @@ const TARGETS = [
 /** The routing matrix from the brief. sender handle -> target handles. */
 const ROUTING: Record<string, string[]> = {
   maraboutmarketing: ['madovermarketing_mom'],
-  bollywood_society: ['madovermarketing_mom', 'viralbhayani'],
-  bollywood_chronicle: ['viralbhayani'],
+  bollywoodsociety: ['madovermarketing_mom', 'viralbhayani'],
+  bollywoodchronicle: ['viralbhayani'],
 }
 
 async function main() {
   console.log('\nSeeding DS AI Sales Agent (Phase 1)\n')
+
+  // Rename before upserting, so a placeholder row is updated rather than left
+  // orphaned beside a new one.
+  for (const [from, to] of Object.entries(HANDLE_RENAMES)) {
+    const legacy = await prisma.senderAccount.findUnique({ where: { handle: from } })
+    if (!legacy) continue
+    const collision = await prisma.senderAccount.findUnique({ where: { handle: to } })
+    if (collision) {
+      await prisma.senderAccount.delete({ where: { id: legacy.id } })
+      console.log(`  renamed  @${from} → @${to} (target already existed; dropped placeholder)`)
+    } else {
+      await prisma.senderAccount.update({ where: { id: legacy.id }, data: { handle: to } })
+      console.log(`  renamed  @${from} → @${to}`)
+    }
+  }
 
   for (const s of SENDERS) {
     await prisma.senderAccount.upsert({
@@ -100,7 +117,7 @@ async function main() {
   for (const t of TARGETS) {
     await prisma.targetAccount.upsert({
       where: { handle: t.handle },
-      update: { displayName: t.displayName, detectorKey: t.detectorKey },
+      update: { displayName: t.displayName, detectorKey: t.detectorKey, contactFirstName: t.contactFirstName },
       create: {
         handle: t.handle,
         displayName: t.displayName,
@@ -150,19 +167,14 @@ async function main() {
   console.log(`\n  ${SENDERS.length} senders · ${TARGETS.length} targets · ${pairCount} routing pairs\n`)
 
   console.log('─'.repeat(74))
-  console.log('  ⚠  NEEDS CONFIRMATION BEFORE THE FIRST REAL SEND')
+  console.log('  CONFIRMED 2026-07-29')
   console.log('─'.repeat(74))
-  console.log(`  1. Kapil's phone. Brief gave "+91 60000 189766" (11 digits; Indian`)
-  console.log(`     mobiles are 10). Seeded as "${PERSONA.personaPhone}" — a guess.`)
-  console.log('     The planner REFUSES to send until this validates.')
-  console.log('  2. Real @handles for Bollywood Society and Bollywood Chronicle')
-  console.log('     (seeded as bollywood_society / bollywood_chronicle placeholders).')
-  console.log('  3. Confirm @maraboutmarketing is spelled correctly.')
-  console.log('  4. contactFirstName for both targets — currently null, so messages')
-  console.log('     address the publication rather than guessing a person.')
+  console.log(`  phone     ${PERSONA.personaPhone}  (11 digits, confirmed correct as written)`)
+  console.log('  senders   @maraboutmarketing, @bollywoodsociety, @bollywoodchronicle')
+  console.log('  greeting  channel/brand name — "Hi Mad Over Marketing," / "Hi Viral Bhayani,"')
   console.log('─'.repeat(74))
-  console.log('\n  Fix these in the dashboard (/senders, /targets) or Prisma Studio.')
-  console.log('  DRY_RUN=1 is the default — nothing sends until you turn it off.\n')
+  console.log('\n  Edit any of this in the dashboard (/senders, /targets) or Prisma Studio.')
+  console.log('  Sessions are still required before autopilot: pnpm session:add --sender=<handle>\n')
 }
 
 main()
