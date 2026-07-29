@@ -1,0 +1,55 @@
+# ── SECRETS & SESSIONS ────────────────────────────────────────────────────────
+# Instagram login sessions captured by `pnpm session:add`. These are live
+# credentials in cookie form — leaking one is equivalent to leaking a password.
+# NEVER commit. The directory is kept (via .gitkeep), the contents never are.
+sessions/*
+!sessions/.gitkeep
+*.storageState.json
+
+.env
+.env.local
+.env.*.local
+!.env.example
+
+# ── DATABASE ──────────────────────────────────────────────────────────────────
+# Contains real prospect data, message bodies and send history.
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+prisma/dev.db*
+
+# ── GENERATED ─────────────────────────────────────────────────────────────────
+src/generated/
+.next/
+out/
+build/
+dist/
+next-env.d.ts
+
+# ── DEPS & TOOLING ────────────────────────────────────────────────────────────
+node_modules/
+.pnpm-store/
+*.tsbuildinfo
+.vitest/
+coverage/
+
+# Playwright
+.playwright-mcp/
+playwright-report/
+test-results/
+browser-profiles/
+
+# ── LOGS & SCRATCH ────────────────────────────────────────────────────────────
+logs/
+*.log
+npm-debug.log*
+pnpm-debug.log*
+raw-payloads/
+
+# ── OS / EDITOR ───────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/*
+!.vscode/extensions.json

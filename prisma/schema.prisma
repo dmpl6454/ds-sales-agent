@@ -1,0 +1,266 @@
+// DS AI Sales Agent — Phase 1 schema
+// SQLite for Phase 1 (zero services, single file). Postgres later = change provider + adapter only.
+//
+// SQLite constraints that shape this schema:
+//   - no native array type  -> handle/brand/signal lists are JSON strings ("[]")
+//   - no native enum type   -> status/verdict are String with the allowed set documented inline
+// Helpers in src/lib/json.ts wrap the JSON columns so callers never touch raw strings.
+
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+// Prisma 7: connection config lives in prisma.config.ts (CLI/migrate) and is passed
+// to PrismaClient as a driver adapter at runtime. `url` is no longer valid here.
+datasource db {
+  provider = "sqlite"
+}
+
+/// An Instagram account WE own and send from. Credentials are never stored here —
+/// only a path to a Playwright storageState file captured by `pnpm session:add`.
+model SenderAccount {
+  id          String @id @default(cuid())
+  handle      String @unique
+  displayName String
+
+  // Persona block — reproduced verbatim in every message. Never varied.
+  //
+  // Role and brand are stored separately, not as one pre-joined title, because
+  // the two places they appear need different grammar:
+  //   intro     "I'm Kapil Jain, Co-founder of Bollywood Society."
+  //   signature "Co-founder, Bollywood Society"
+  // A single "Co-founder, Bollywood Society" field produces "I'm Kapil Jain,
+  // Co-founder, Bollywood Society." in the opening line, which reads badly.
+  personaName  String
+  personaRole  String
+  personaBrand String
+  personaPhone String
+  personaEmail String
+
+  /// false = queue for human confirmation; true = full autopilot for this sender.
+  autoSendEnabled Boolean @default(false)
+  /// Safety ceiling on DMs/day for this account. Well above expected use.
+  dailyCap        Int     @default(5)
+  /// ACTIVE | PAUSED | CHALLENGED  (CHALLENGED is set automatically on any IG checkpoint)
+  status          String  @default("ACTIVE")
+
+  /// Relative path to the Playwright storageState JSON. Contents are gitignored.
+  sessionPath    String?
+  sessionSavedAt DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  variants MessageVariant[]
+  pairs    OutreachPair[]
+
+  @@index([status])
+}
+
+/// An account we send TO. Phase 1: the two publisher channels.
+/// Phase 1.5 flips `kind` to BRAND for sponsors discovered in campaigns.
+model TargetAccount {
+  id          String  @id @default(cuid())
+  handle      String  @unique
+  displayName String
+  /// First name used in the greeting. One per recipient — never a shared placeholder.
+  contactFirstName String?
+
+  /// CHANNEL | BRAND
+  kind      String  @default("CHANNEL")
+  /// Which ChannelDetector handles this target: "mom" | "passthrough"
+  detectorKey String @default("passthrough")
+  /// Hard stop: never contact again, regardless of pairs.
+  optedOut  Boolean @default(false)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  campaigns DetectedCampaign[]
+  pairs     OutreachPair[]
+
+  @@index([kind])
+}
+
+/// The routing matrix, stored as data. Phase 1 seeds exactly 4 rows.
+/// Adding a target in Phase 1.5 is an INSERT, not a code change.
+model OutreachPair {
+  id       String @id @default(cuid())
+  senderId String
+  targetId String
+
+  /// Minimum days between sends for THIS pair. Governor also caps 1/target/day globally.
+  cooldownDays Int     @default(7)
+  enabled      Boolean @default(true)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  sender   SenderAccount @relation(fields: [senderId], references: [id], onDelete: Cascade)
+  target   TargetAccount @relation(fields: [targetId], references: [id], onDelete: Cascade)
+  attempts OutreachAttempt[]
+
+  @@unique([senderId, targetId])
+  @@index([enabled])
+}
+
+/// One post observed on a target's feed, with its classification.
+/// `shortcode` is the natural idempotency key: four scrapes/day see each post ~4x,
+/// so upsert-on-shortcode makes re-detection free and crash-safe.
+model DetectedCampaign {
+  id        String @id @default(cuid())
+  targetId  String
+  shortcode String @unique
+  permalink String
+
+  postedAt   DateTime
+  detectedAt DateTime @default(now())
+
+  caption      String
+  likeCount    Int?
+  commentCount Int?
+  /// "clips" (reel) | "carousel_container" | "feed" | null
+  mediaType    String?
+
+  /// JSON string[] — brands extracted from hashtags/@mentions
+  brands  String @default("[]")
+  /// JSON string[] — which detection rules fired, for auditability
+  signals String @default("[]")
+
+  confidence Int    @default(0)
+  /// CAMPAIGN | REVIEW | ORGANIC | UNCLASSIFIED
+  verdict    String
+
+  /// Human answer from the REVIEW queue. Feeds precision reporting.
+  humanLabel   Boolean?
+  labelledBy   String?
+  labelledAt   DateTime?
+
+  /// Raw parsed payload, kept so a parser break can be diffed against a known-good day.
+  rawPayload String?
+
+  target   TargetAccount     @relation(fields: [targetId], references: [id], onDelete: Cascade)
+  attempts OutreachAttempt[]
+
+  @@index([targetId, postedAt])
+  @@index([verdict])
+  @@index([detectedAt])
+}
+
+/// One message: queued, then sent (or not). The audit trail.
+model OutreachAttempt {
+  id         String  @id @default(cuid())
+  pairId     String
+  /// Campaign used as the personalisation hook. Nullable — outreach is never blocked on detection.
+  campaignId String?
+  variantId  String
+
+  /// 1-based counter of how many times this pair has been contacted.
+  touchNumber Int
+
+  hookLine     String?
+  /// Exact bytes queued. Never regenerated — this is what was (or will be) sent.
+  renderedBody String
+
+  /// QUEUED | READY | SENT | SKIPPED | FAILED | REPLIED
+  status   String   @default("QUEUED")
+  queuedAt DateTime @default(now())
+  /// "time contacted at" — the dashboard's primary column.
+  sentAt   DateTime?
+  /// Human's name, or "auto" when sent by PlaywrightSender.
+  sentBy   String?
+  threadUrl String?
+  error     String?
+
+  /// Set when a reply is observed. Halts every sender to this target.
+  repliedAt DateTime?
+
+  pair     OutreachPair      @relation(fields: [pairId], references: [id], onDelete: Cascade)
+  campaign DetectedCampaign? @relation(fields: [campaignId], references: [id], onDelete: SetNull)
+  variant  MessageVariant    @relation(fields: [variantId], references: [id])
+
+  @@index([pairId, sentAt])
+  @@index([status])
+  @@index([sentAt])
+}
+
+/// Hand-written message bodies, rotated least-recently-used.
+/// Identical bodies across senders is both a spam signal and visibly bad when one
+/// recipient receives two, so every send picks the stalest variant.
+model MessageVariant {
+  id       String @id @default(cuid())
+  senderId String
+  label    String
+  body     String
+
+  timesUsed  Int       @default(0)
+  lastUsedAt DateTime?
+  enabled    Boolean   @default(true)
+
+  createdAt DateTime @default(now())
+
+  sender   SenderAccount     @relation(fields: [senderId], references: [id], onDelete: Cascade)
+  attempts OutreachAttempt[]
+
+  @@index([senderId, lastUsedAt])
+}
+
+/// One execution of the 4x/day pipeline. Powers /runs and the health checks.
+model ScrapeRun {
+  id   String @id @default(cuid())
+  /// "11:00" | "15:00" | "17:00" | "20:00" | "manual" | "catchup"
+  slot String
+
+  startedAt  DateTime  @default(now())
+  finishedAt DateTime?
+
+  postsSeen  Int @default(0)
+  newPosts   Int @default(0)
+  detected   Int @default(0)
+  queued     Int @default(0)
+  sent       Int @default(0)
+
+  /// OK | PARTIAL | FAILED
+  status String  @default("OK")
+  error  String?
+  /// JSON — per-channel counts, for spotting one channel silently failing.
+  detail String  @default("{}")
+
+  @@index([startedAt])
+  @@index([status])
+}
+
+/// Human labels on REVIEW-queue items. Drives the weekly precision report so
+/// rule weights are tuned from evidence rather than intuition.
+model RuleFeedback {
+  id              String   @id @default(cuid())
+  campaignId      String
+  wasActuallyPaid Boolean
+  labelledBy      String
+  labelledAt      DateTime @default(now())
+  note            String?
+
+  @@index([campaignId])
+}
+
+/// Append-only record of every state change a human or the worker made.
+model AuditLog {
+  id     String @id @default(cuid())
+  actor  String
+  action String
+  entity String
+  detail String?
+  at     DateTime @default(now())
+
+  @@index([at])
+  @@index([entity])
+}
+
+/// Single-row key/value store for runtime-editable settings (cooldown, slots, caps).
+/// Kept as a table so /settings can change behaviour without a redeploy.
+model Setting {
+  key       String   @id
+  value     String
+  updatedAt DateTime @updatedAt
+}
