@@ -34,11 +34,11 @@ const PERSONA = {
 
 const SENDERS = [
   {
-    handle: 'maraboutmarketing',
-    displayName: 'Mar About Marketing',
+    handle: 'madaboutmarketingg',
+    displayName: 'Mad About Marketing',
   },
   {
-    handle: 'bollywoodsociety',
+    handle: 'bollywoodsocietyy',
     displayName: 'Bollywood Society',
   },
   {
@@ -48,13 +48,22 @@ const SENDERS = [
 ] as const
 
 /**
- * Placeholder handles seeded before the real ones were known. Renamed in place
- * rather than re-inserted, so any history already attached to them is kept and
- * no duplicate sender rows appear.
+ * Handles seeded before the real ones were confirmed. Renamed in place rather than
+ * re-inserted, so history already attached to them is kept and no duplicate sender
+ * rows appear.
+ *
+ * The handle must be byte-exact: it is the Chrome profile directory name, and the
+ * send path refuses to type anything if the profile's logged-in username does not
+ * match. Both of the 2026-07-30 corrections were a doubled final letter
+ * (`bollywoodsociety` → `bollywoodsocietyy`, `maraboutmarketing` →
+ * `madaboutmarketingg`), which is exactly the kind of thing that reads as correct.
+ * Confirmed against the accounts' own saved logins.
  */
 const HANDLE_RENAMES: Record<string, string> = {
-  bollywood_society: 'bollywoodsociety',
+  bollywood_society: 'bollywoodsocietyy',
   bollywood_chronicle: 'bollywoodchronicle',
+  bollywoodsociety: 'bollywoodsocietyy',
+  maraboutmarketing: 'madaboutmarketingg',
 }
 
 const TARGETS = [
@@ -72,14 +81,37 @@ const TARGETS = [
     contactFirstName: 'Viral Bhayani',
     detectorKey: 'passthrough',
   },
+  /**
+   * A burner Tabish controls, used to prove the send path end to end before it
+   * touches a real prospect. This is the throwaway-account rehearsal the research
+   * recommended, and it is the difference between "the first live send is the test"
+   * and "the first live send is a delivery".
+   *
+   * `passthrough` because it publishes no campaigns — outreach is never blocked on
+   * detection, so a target with nothing to hook onto still gets a message.
+   */
+  {
+    handle: 'priyanshu123321123',
+    displayName: 'Burner (test target)',
+    contactFirstName: 'Priyanshu',
+    detectorKey: 'passthrough',
+  },
 ] as const
 
-/** The routing matrix from the brief. sender handle -> target handles. */
+/**
+ * The routing matrix from the brief, plus the burner.
+ *
+ * Every sender routes to the burner so each account's Chrome profile can be proven
+ * separately — a login that works for one account says nothing about the other two.
+ */
 const ROUTING: Record<string, string[]> = {
-  maraboutmarketing: ['madovermarketing_mom'],
-  bollywoodsociety: ['madovermarketing_mom', 'viralbhayani'],
-  bollywoodchronicle: ['viralbhayani'],
+  madaboutmarketingg: ['madovermarketing_mom', 'priyanshu123321123'],
+  bollywoodsocietyy: ['madovermarketing_mom', 'viralbhayani', 'priyanshu123321123'],
+  bollywoodchronicle: ['viralbhayani', 'priyanshu123321123'],
 }
+
+/** Pairs whose target is the burner. Used by `pnpm burner` to isolate the test. */
+export const BURNER_TARGET = 'priyanshu123321123'
 
 async function main() {
   console.log('\nSeeding DS AI Sales Agent (Phase 1)\n')
@@ -185,7 +217,7 @@ async function main() {
   console.log('  CONFIRMED 2026-07-29')
   console.log('─'.repeat(74))
   console.log(`  phone     ${PERSONA.personaPhone}  (11 digits, confirmed correct as written)`)
-  console.log('  senders   @maraboutmarketing, @bollywoodsociety, @bollywoodchronicle')
+  console.log('  senders   @madaboutmarketingg, @bollywoodsocietyy, @bollywoodchronicle')
   console.log('  greeting  channel/brand name — "Hi Mad Over Marketing," / "Hi Viral Bhayani,"')
   console.log('─'.repeat(74))
   console.log('\n  Edit any of this in the dashboard (/senders, /targets) or Prisma Studio.')

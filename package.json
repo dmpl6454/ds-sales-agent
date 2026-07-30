@@ -30,7 +30,8 @@
     "send": "tsx src/scripts/send.ts",
     "queued": "tsx src/scripts/queued.ts",
     "audit": "tsx src/scripts/audit.ts",
-    "login": "tsx src/scripts/login.ts"
+    "login": "tsx src/scripts/login.ts",
+    "burner": "tsx src/scripts/burner.ts"
   },
   "dependencies": {
     "@prisma/adapter-better-sqlite3": "^7.9.1",

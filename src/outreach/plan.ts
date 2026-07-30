@@ -216,11 +216,23 @@ async function createAndDispatch(args: {
 }): Promise<Omit<PlanOutcome, 'pairKey' | 'eligible'>> {
   const { pair, touchNumber, hookMaxAgeHours, autopilotEnabled } = args
 
-  // Freshest campaign this pair has NOT written about yet. Picking an unused one is
-  // what stops a follow-up quoting the same campaign as the first message.
+  /**
+   * Freshest campaign this pair has NOT written about yet. Picking an unused one is
+   * what stops a follow-up quoting the same campaign as the first message.
+   *
+   * SKIPPED and FAILED are excluded deliberately. "Used" must mean *the recipient
+   * has seen it* — a draft that was discarded or never delivered referenced nothing.
+   * Counting those burned a campaign every time a draft was regenerated, so four
+   * discards would exhaust the pool and the pair would fall through to
+   * `no-new-material` with four perfectly good unused campaigns sitting there.
+   */
   const alreadyUsed = (
     await prisma.outreachAttempt.findMany({
-      where: { pairId: pair.id, campaignId: { not: null } },
+      where: {
+        pairId: pair.id,
+        campaignId: { not: null },
+        status: { in: ['SENT', 'REPLIED', 'SENDING', 'READY', 'QUEUED'] },
+      },
       select: { campaignId: true },
     })
   )

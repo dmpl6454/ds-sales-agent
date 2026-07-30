@@ -42,9 +42,35 @@ export interface BespokeSeed {
   body: string
 }
 
+/**
+ * The burner rehearsal message.
+ *
+ * Deliberately obvious as a test. It has to exercise the same machinery as a real
+ * send — multi-line body, punctuation, an em dash, roughly the same length, the same
+ * greeting and signature assembly — because the point is to prove the paste, the
+ * composer read-back, and the thread confirmation all work on realistic input. But
+ * it must never read as a genuine pitch: if it somehow reached the wrong account,
+ * being unmistakably a test is what keeps that harmless.
+ *
+ * One draft per sender, so each account's own Chrome profile gets proven separately.
+ */
+const BURNER_BODY = `This is a delivery test from our outreach system — nothing to action.
+
+I am checking that a multi-line message arrives intact: that the line breaks survive, that punctuation and dashes come through unmangled — and that the whole body lands as one message rather than several.
+
+If you are reading this and it looks like one clean message, the test passed.`
+
+const BURNER_DRAFTS: BespokeSeed[] = ['bollywoodsocietyy', 'madaboutmarketingg', 'bollywoodchronicle'].map((sender) => ({
+  sender,
+  target: 'priyanshu123321123',
+  note: `Rehearsal on the burner from @${sender}. Proves this account's Chrome profile can actually deliver, before it is pointed at a real prospect.`,
+  body: BURNER_BODY,
+}))
+
 export const BESPOKE_DRAFTS: BespokeSeed[] = [
+  ...BURNER_DRAFTS,
   {
-    sender: 'bollywoodsociety',
+    sender: 'bollywoodsocietyy',
     target: 'madovermarketing_mom',
     note: 'Leads on their editorial eye, then makes the distribution offer. Cites the Black & White Non-Alc piece and their Royal Canin work specifically.',
     body: `Your Black & White Non-Alc piece was the one that made me want to write. Building the idea around cricket's own rhythm rather than around the product is a harder brief than it looks, and the Royal Canin work at PetFed had the same instinct — put the explanation where the audience already is.
@@ -56,7 +82,7 @@ The reason I am writing to you rather than pitching a campaign is that you sit o
 I would rather show you the page list and the numbers than describe them. Twenty minutes, whenever suits.`,
   },
   {
-    sender: 'maraboutmarketing',
+    sender: 'madaboutmarketingg',
     target: 'madovermarketing_mom',
     note: 'Different angle entirely — opens on the Tilara/Leela craft, frames the ask as capacity rather than partnership. Deliberately shares no sentence structure with the Bollywood Society draft, since MOM may receive both.',
     body: `I have been following how you handle branded work — the Tilara film and The Leela Coorg piece both read like editorial first and disclosure second, which is rare and probably why they perform.
@@ -68,7 +94,7 @@ Worth saying plainly that this is not a request to feature us. It is an offer to
 If that is interesting, I would value twenty minutes to walk through what we own and what it costs.`,
   },
   {
-    sender: 'bollywoodsociety',
+    sender: 'bollywoodsocietyy',
     target: 'viralbhayani',
     note: 'Peer-to-peer between two paparazzi networks. Acknowledges his scale honestly and proposes complementary distribution rather than pitching him as a client.',
     body: `We are in the same business, which is why I think this is worth a conversation rather than a pitch.
