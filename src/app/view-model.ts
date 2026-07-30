@@ -345,7 +345,7 @@ export async function buildCeoView(): Promise<CeoView> {
     let state: AccountCard['state']
     let note: string
 
-    const hasProfile = profileStatus(s.handle).initialised
+    const hasProfile = profileStatus(s.handle).hasSession
 
     if (s.status === 'CHALLENGED') {
       state = 'broken'
@@ -381,10 +381,10 @@ export async function buildCeoView(): Promise<CeoView> {
     on: settings.autopilotEnabled,
     allowedByEnv: env.AUTOPILOT_ENABLED,
     readyHandles: senders
-      .filter((s) => s.autoSendEnabled && s.status === 'ACTIVE' && profileStatus(s.handle).initialised)
+      .filter((s) => s.autoSendEnabled && s.status === 'ACTIVE' && profileStatus(s.handle).hasSession)
       .map((s) => s.handle),
     needLoginHandles: senders
-      .filter((s) => s.autoSendEnabled && !profileStatus(s.handle).initialised)
+      .filter((s) => s.autoSendEnabled && !profileStatus(s.handle).hasSession)
       .map((s) => s.handle),
   }
 
@@ -398,7 +398,7 @@ export async function buildCeoView(): Promise<CeoView> {
     // Filesystem check only — it says a hand login happened, not that the session
     // is still valid. Whether the session works is answered by the send itself,
     // which verifies the logged-in account before it types anything.
-    canSendAutomatically: profileStatus(a.pair.sender.handle).initialised && a.pair.sender.status === 'ACTIVE',
+    canSendAutomatically: profileStatus(a.pair.sender.handle).hasSession && a.pair.sender.status === 'ACTIVE',
     inFlight: a.status === 'SENDING',
   }))
 

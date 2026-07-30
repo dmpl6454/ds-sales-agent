@@ -316,9 +316,9 @@ async function createAndDispatch(args: {
    */
   const profile = profileStatus(pair.sender.handle)
   const autoReady =
-    autopilotEnabled && pair.sender.autoSendEnabled && pair.sender.status === 'ACTIVE' && profile.initialised
+    autopilotEnabled && pair.sender.autoSendEnabled && pair.sender.status === 'ACTIVE' && profile.hasSession
 
-  if (autopilotEnabled && pair.sender.autoSendEnabled && !profile.initialised) {
+  if (autopilotEnabled && pair.sender.autoSendEnabled && !profile.hasSession) {
     log.warn('autopilot on but no Chrome profile — preparing for manual send instead', {
       sender: pair.sender.handle,
       fix: `pnpm ig:login ${pair.sender.handle}`,

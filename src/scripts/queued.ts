@@ -35,7 +35,7 @@ async function main() {
     if (bespoke && a.pair.bespokeNote) console.log(`WHY     ${a.pair.bespokeNote}`)
     console.log(`HOOK    ${a.campaign ? a.campaign.permalink : '(no specific campaign — outreach is never blocked on detection)'}`)
     console.log(
-      `SEND    ${profile.initialised ? 'automatic — Chrome profile ready' : `needs a one-time login first:  pnpm ig:login ${a.pair.sender.handle}`}`,
+      `SEND    ${profile.hasSession ? 'automatic — Chrome profile ready' : `needs a one-time login first:  pnpm ig:login ${a.pair.sender.handle}`}`,
     )
     if (a.error) console.log(`LAST    ${a.error}`)
     console.log('─'.repeat(72))

@@ -78,7 +78,7 @@ export async function sendNow(attemptId: string): Promise<SendNowResult> {
   // Guard 2 — a profile that was never logged into by hand cannot send, and must
   // not be "fixed" by importing a session from somewhere else.
   const profile = profileStatus(sender.handle)
-  if (!profile.initialised) {
+  if (!profile.hasSession) {
     return {
       ok: false,
       message: `@${sender.handle} has no Chrome profile yet. Run once in a terminal:  pnpm ig:login ${sender.handle}`,
@@ -210,7 +210,7 @@ export async function setAutopilot(on: boolean): Promise<{ ok: boolean; message:
 export async function setAccountAutopilot(handle: string, on: boolean): Promise<{ ok: boolean; message: string }> {
   const sender = await prisma.senderAccount.findUniqueOrThrow({ where: { handle } })
 
-  if (on && !profileStatus(handle).initialised) {
+  if (on && !profileStatus(handle).hasSession) {
     return { ok: false, message: `@${handle} needs its one-time login first:  pnpm ig:login ${handle}` }
   }
   if (on && sender.status !== 'ACTIVE') {

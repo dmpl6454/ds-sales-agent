@@ -86,7 +86,7 @@ async function main() {
     console.log(
       `  ${p.enabled ? '●' : '○'} @${p.sender.handle.padEnd(20)} → @${p.target.handle.padEnd(22)}` +
         `${p.enabled ? '' : ' (disabled)'}${isBurner ? '  [burner]' : ''}` +
-        `${p.enabled && !profile.initialised ? `  needs: pnpm ig:login ${p.sender.handle}` : ''}`,
+        `${p.enabled && !profile.hasSession ? `  needs: pnpm ig:login ${p.sender.handle}` : ''}`,
     )
   }
   console.log()
