@@ -1,21 +1,35 @@
 /**
- * The safety gate: decides whether a given sender→target pair may be contacted.
+ * The safety gate: decides whether a given sender→target pair may be contacted now.
  *
- * The channels post dozens of commercial posts a day between them. Detections
- * supply the *material* for a message; this function decides whether one is
- * permitted at all — and the answer is usually no, by design.
+ * Detections supply the *material* for a message; this decides whether sending one
+ * is permitted. Multiple messages to the same target ARE allowed — a channel that
+ * ran four paid campaigns this week gives four genuinely different reasons to
+ * write. What is not allowed is repeating yourself.
  *
- * Two rules do most of the work, and both come from Instagram's actual behaviour
- * rather than from a number someone picked:
+ * The rules, and where each comes from:
  *
- *   ONE SHOT PER TARGET — Instagram allows exactly one message request to a
- *   non-follower, text-only, and drops further ones until they accept. Repeated
- *   contact with a non-responder is also the specific behaviour Meta's written
- *   spam policy names as lowering the enforcement threshold.
+ *   NEW MATERIAL REQUIRED — every follow-up must reference a campaign not used
+ *   before for this pair. This is the load-bearing safety rule, and it is the one
+ *   with a primary source: Meta's written spam policy states that repetitive
+ *   content *lowers the frequency threshold at which restrictions are applied*.
+ *   Fresh material is what makes a second message a new message rather than a
+ *   repeat, so this permits volume and protects the account at the same time.
  *
- *   LIFETIME CEILING — a hard cap on messages ever sent, checked before anything
- *   else, so "prove it works with one message" is enforced here rather than by
- *   someone remembering to switch something off.
+ *   UNANSWERED TOUCH CAP — Instagram allows one *pending* message request to a
+ *   non-follower until it is accepted; further requests are not delivered. So a
+ *   follow-up before engagement may silently go nowhere. We allow a small number,
+ *   spaced, then stop until they engage. (Corrected 2026-07-30: an earlier version
+ *   read this as "one message per target, ever", which was wrong — the constraint
+ *   is one message *pending*, and it lifts the moment they accept.)
+ *
+ *   COOLDOWN — minimum spacing between touches for a pair.
+ *
+ *   DAILY CAPS — per target and per sender. Practitioner figures put aged, healthy
+ *   business accounts at 25-35 cold DMs/day; we operate at 1-2, so these are
+ *   guard-rails with enormous headroom rather than binding limits.
+ *
+ *   LIFETIME CEILING — checked first, so "prove it with one message" is enforced
+ *   here rather than by someone remembering to switch something off.
  *
  * Deliberately pure — no DB, no clock, no env. Every input is passed in, so every
  * rule (including the awkward boundaries) is unit-testable.
@@ -26,6 +40,14 @@ export interface GovernorInput {
 
   pair: {
     enabled: boolean
+    /** Minimum days between touches for this pair. */
+    cooldownDays: number
+    /**
+     * How many unanswered messages we will send before stopping until the target
+     * engages. Instagram will not deliver a second pending request to a
+     * non-follower, so beyond a couple these are likely wasted rather than risky.
+     */
+    maxUnansweredTouches: number
   }
   sender: {
     status: string // ACTIVE | PAUSED | CHALLENGED
@@ -46,6 +68,12 @@ export interface GovernorInput {
 
   /** Any reply from this target, to ANY of our senders. Halts everything. */
   targetRepliedAt: Date | null
+  /**
+   * Detected campaigns for this target that have NOT yet been used as the hook for
+   * this pair. Zero means we have nothing new to say — and saying the same thing
+   * again is the single behaviour Meta's policy penalises most.
+   */
+  unusedCampaignCount: number
   /** Sends to this target today (IST), across all senders. */
   targetSentTodayCount: number
   /** Sends by this sender today (IST), across all targets. */
@@ -87,7 +115,9 @@ export const SKIP_REASONS = {
   SENDER_NOT_ACTIVE: 'sender-not-active',
   TARGET_REPLIED: 'target-replied',
   PENDING_ATTEMPT: 'pending-attempt-exists',
-  ALREADY_CONTACTED: 'already-contacted-one-shot',
+  COOLDOWN_ACTIVE: 'cooldown-active',
+  NO_NEW_MATERIAL: 'no-new-material-to-reference',
+  UNANSWERED_LIMIT: 'unanswered-touch-limit',
   TARGET_DAILY_CAP: 'target-daily-cap',
   SENDER_DAILY_CAP: 'sender-daily-cap',
 } as const
@@ -141,24 +171,41 @@ export function evaluatePair(input: GovernorInput): GovernorDecision {
     return { eligible: false, reason: SKIP_REASONS.PENDING_ATTEMPT }
   }
 
-  // ONE SHOT, EVER.
-  //
-  // Instagram permits exactly one message request to someone who does not follow
-  // you, and it is text-only; until they accept, a second request cannot be
-  // delivered. A cooldown-and-repeat cadence was therefore modelling a capability
-  // the platform does not offer — it would have shown touch counts and countdowns
-  // that meant nothing while the platform silently dropped the messages.
-  //
-  // Meta's written spam policy also makes repeated contact with someone who has
-  // not responded the specific behaviour that lowers the enforcement threshold. So
-  // this is both the platform's hard constraint and the safer rule.
-  if (input.lastSentAt !== null || input.touchesSoFar > 0) {
+  // Stop after a few unanswered touches. Instagram does not deliver a second
+  // pending request to a non-follower, so past a couple these are wasted; and
+  // continuing to contact someone who has never responded is what Meta's policy
+  // describes as repeated unwanted contact.
+  if (input.touchesSoFar >= input.pair.maxUnansweredTouches) {
     return {
       eligible: false,
-      reason: SKIP_REASONS.ALREADY_CONTACTED,
-      detail: input.lastSentAt
-        ? `contacted ${Math.floor((input.now.getTime() - input.lastSentAt.getTime()) / MS_PER_DAY)}d ago — one message per target, ever`
-        : 'already contacted — one message per target, ever',
+      reason: SKIP_REASONS.UNANSWERED_LIMIT,
+      detail: `${input.touchesSoFar} message(s) sent with no reply (limit ${input.pair.maxUnansweredTouches}) — waiting for them to engage`,
+    }
+  }
+
+  // Spacing between touches.
+  if (input.lastSentAt !== null) {
+    const elapsedMs = input.now.getTime() - input.lastSentAt.getTime()
+    const requiredMs = input.pair.cooldownDays * MS_PER_DAY
+    if (elapsedMs < requiredMs) {
+      const daysLeft = Math.ceil((requiredMs - elapsedMs) / MS_PER_DAY)
+      return {
+        eligible: false,
+        reason: SKIP_REASONS.COOLDOWN_ACTIVE,
+        detail: `${daysLeft}d of ${input.pair.cooldownDays}d spacing remaining`,
+      }
+    }
+  }
+
+  // THE important rule. A follow-up must have something new to say — a campaign we
+  // have not written about before for this pair. Without this, a second message is
+  // a repeat, and repetition is precisely what lowers the enforcement threshold.
+  // With it, four paid campaigns legitimately support four different messages.
+  if (input.touchesSoFar > 0 && input.unusedCampaignCount === 0) {
+    return {
+      eligible: false,
+      reason: SKIP_REASONS.NO_NEW_MATERIAL,
+      detail: 'nothing new to reference since the last message — waiting for a fresh campaign',
     }
   }
 

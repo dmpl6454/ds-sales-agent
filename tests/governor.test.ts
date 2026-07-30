@@ -14,7 +14,7 @@ const NOW = new Date('2026-07-29T09:30:00.000Z')
 function base(overrides: Partial<GovernorInput> = {}): GovernorInput {
   return {
     now: NOW,
-    pair: { enabled: true },
+    pair: { enabled: true, cooldownDays: 5, maxUnansweredTouches: 3 },
     sender: { status: 'ACTIVE', dailyCap: 5 },
     target: { optedOut: false },
     lastSentAt: null,
@@ -24,6 +24,7 @@ function base(overrides: Partial<GovernorInput> = {}): GovernorInput {
     senderSentTodayCount: 0,
     maxPerTargetPerDay: 1,
     hasPendingAttempt: false,
+    unusedCampaignCount: 2,
     totalSentEver: 0,
     maxTotalSends: null,
     ...overrides,
@@ -38,15 +39,17 @@ describe('the happy path', () => {
   })
 
 
-  it('is a one-shot system — a contacted pair never becomes eligible again', () => {
-    const d = evaluatePair(base({ touchesSoFar: 1, lastSentAt: new Date(NOW.getTime() - 400 * DAY) }))
-    expect(d.eligible).toBe(false)
+  it('re-opens a pair after spacing when there is fresh material', () => {
+    const d = evaluatePair(
+      base({ touchesSoFar: 1, lastSentAt: new Date(NOW.getTime() - 20 * DAY), unusedCampaignCount: 3 }),
+    )
+    expect(d.eligible).toBe(true)
   })
 })
 
 describe('absolute stops', () => {
   it('skips a disabled pair', () => {
-    const d = evaluatePair(base({ pair: { enabled: false } }))
+    const d = evaluatePair(base({ pair: { enabled: false, cooldownDays: 5, maxUnansweredTouches: 3 } }))
     expect(d).toMatchObject({ eligible: false, reason: SKIP_REASONS.PAIR_DISABLED })
   })
 
@@ -85,36 +88,96 @@ describe('a reply halts every sender to that target', () => {
   })
 })
 
-describe('one shot per target, ever', () => {
+describe('multiple touches, but only with something new to say', () => {
   /**
-   * Instagram permits exactly one message request to a non-follower and drops
-   * further ones until they accept, so a cooldown-and-repeat model was describing
-   * a capability the platform does not offer. Repeated contact with a non-responder
-   * is also what Meta's written spam policy names as lowering the threshold.
+   * Corrected 2026-07-30. An earlier version locked a pair permanently after one
+   * message, on the mistaken reading that Instagram allows "one message per target,
+   * ever". The real constraint is one message *pending* to a non-follower, which
+   * lifts when they accept — so a channel that ran four paid campaigns supports
+   * four genuinely different messages.
+   *
+   * What actually protects the account is that each follow-up must reference a
+   * campaign not used before: Meta's written policy penalises repetition, not
+   * volume, and fresh material is what makes a second message a new one.
    */
   it('allows the first contact', () => {
     expect(evaluatePair(base({ lastSentAt: null, touchesSoFar: 0 })).eligible).toBe(true)
   })
 
-  it('refuses a second contact one day later', () => {
-    const d = evaluatePair(base({ lastSentAt: new Date(NOW.getTime() - DAY), touchesSoFar: 1 }))
-    expect(d).toMatchObject({ eligible: false, reason: SKIP_REASONS.ALREADY_CONTACTED })
+  it('allows a follow-up once spacing has elapsed AND there is new material', () => {
+    const d = evaluatePair(
+      base({ lastSentAt: new Date(NOW.getTime() - 6 * DAY), touchesSoFar: 1, unusedCampaignCount: 1 }),
+    )
+    expect(d.eligible).toBe(true)
+    expect(d.eligible && d.touchNumber).toBe(2)
   })
 
-  it('refuses a second contact a YEAR later — there is no waiting it out', () => {
-    const d = evaluatePair(base({ lastSentAt: new Date(NOW.getTime() - 365 * DAY), touchesSoFar: 1 }))
-    expect(d).toMatchObject({ eligible: false, reason: SKIP_REASONS.ALREADY_CONTACTED })
+  it('refuses a follow-up with NOTHING new to say — the repetition rule', () => {
+    const d = evaluatePair(
+      base({ lastSentAt: new Date(NOW.getTime() - 30 * DAY), touchesSoFar: 1, unusedCampaignCount: 0 }),
+    )
+    expect(d).toMatchObject({ eligible: false, reason: SKIP_REASONS.NO_NEW_MATERIAL })
   })
 
-  it('refuses when touchesSoFar says contacted even with no recorded sentAt', () => {
-    // Belt and braces: either signal alone is enough to block.
-    const d = evaluatePair(base({ lastSentAt: null, touchesSoFar: 1 }))
-    expect(d).toMatchObject({ eligible: false, reason: SKIP_REASONS.ALREADY_CONTACTED })
+  it('does not apply the new-material rule to the FIRST message', () => {
+    // A first approach is legitimate even on a quiet week.
+    expect(evaluatePair(base({ touchesSoFar: 0, unusedCampaignCount: 0 })).eligible).toBe(true)
   })
 
-  it('explains itself in the detail, for the dashboard', () => {
-    const d = evaluatePair(base({ lastSentAt: new Date(NOW.getTime() - 3 * DAY), touchesSoFar: 1 }))
-    expect(!d.eligible && d.detail).toContain('one message per target, ever')
+  it('respects spacing even when new material exists', () => {
+    const d = evaluatePair(
+      base({ lastSentAt: new Date(NOW.getTime() - DAY), touchesSoFar: 1, unusedCampaignCount: 5 }),
+    )
+    expect(d).toMatchObject({ eligible: false, reason: SKIP_REASONS.COOLDOWN_ACTIVE })
+  })
+
+  it('allows exactly at the spacing boundary', () => {
+    expect(
+      evaluatePair(base({ lastSentAt: new Date(NOW.getTime() - 5 * DAY), touchesSoFar: 1, unusedCampaignCount: 1 }))
+        .eligible,
+    ).toBe(true)
+  })
+
+  it('stops after the unanswered-touch limit, even with new material', () => {
+    // Instagram will not deliver a further pending request, and continuing to
+    // contact someone who never responded is what the policy penalises.
+    const d = evaluatePair(
+      base({ lastSentAt: new Date(NOW.getTime() - 90 * DAY), touchesSoFar: 3, unusedCampaignCount: 9 }),
+    )
+    expect(d).toMatchObject({ eligible: false, reason: SKIP_REASONS.UNANSWERED_LIMIT })
+  })
+
+  it('honours a per-pair spacing override', () => {
+    const twoDaysAgo = new Date(NOW.getTime() - 2 * DAY)
+    const loose = base({
+      pair: { enabled: true, cooldownDays: 1, maxUnansweredTouches: 3 },
+      lastSentAt: twoDaysAgo,
+      touchesSoFar: 1,
+      unusedCampaignCount: 1,
+    })
+    const tight = base({
+      pair: { enabled: true, cooldownDays: 10, maxUnansweredTouches: 3 },
+      lastSentAt: twoDaysAgo,
+      touchesSoFar: 1,
+      unusedCampaignCount: 1,
+    })
+    expect(evaluatePair(loose).eligible).toBe(true)
+    expect(evaluatePair(tight).eligible).toBe(false)
+  })
+
+  it('supports four messages for a channel that ran four campaigns', () => {
+    // The scenario the one-shot rule got wrong.
+    for (const touch of [1, 2, 3]) {
+      const d = evaluatePair(
+        base({
+          lastSentAt: new Date(NOW.getTime() - 10 * DAY),
+          touchesSoFar: touch - 1,
+          unusedCampaignCount: 5 - touch,
+          pair: { enabled: true, cooldownDays: 5, maxUnansweredTouches: 4 },
+        }),
+      )
+      expect(d.eligible, `touch ${touch}`).toBe(true)
+    }
   })
 })
 
@@ -215,8 +278,4 @@ describe('the Phase 1 routing matrix, simulated over a week', () => {
     expect(second.eligible).toBe(false)
   })
 
-  it('does NOT re-open a pair after time passes — one shot is permanent', () => {
-    const d = evaluatePair(base({ lastSentAt: new Date(NOW.getTime() - 7 * DAY), touchesSoFar: 1 }))
-    expect(d.eligible).toBe(false)
-  })
 })

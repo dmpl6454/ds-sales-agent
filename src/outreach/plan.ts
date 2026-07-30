@@ -73,7 +73,18 @@ export async function runOutreach(): Promise<PlanSummary> {
   for (const pair of pairs) {
     const pairKey = `${pair.sender.handle}→${pair.target.handle}`
 
-    const [lastSent, touches, replied, targetToday, senderToday, pending] = await Promise.all([
+    // Campaigns for this target that this pair has NOT already written about. This
+    // is what makes a follow-up a genuinely new message rather than a repeat.
+    const usedCampaignIds = (
+      await prisma.outreachAttempt.findMany({
+        where: { pairId: pair.id, campaignId: { not: null } },
+        select: { campaignId: true },
+      })
+    )
+      .map((a) => a.campaignId)
+      .filter((id): id is string => id !== null)
+
+    const [lastSent, touches, replied, targetToday, senderToday, pending, unusedCampaignCount] = await Promise.all([
       prisma.outreachAttempt.findFirst({
         where: { pairId: pair.id, status: 'SENT' },
         orderBy: { sentAt: 'desc' },
@@ -92,11 +103,23 @@ export async function runOutreach(): Promise<PlanSummary> {
         where: { pair: { senderId: pair.senderId }, status: 'SENT', sentAt: { gte: dayStart } },
       }),
       prisma.outreachAttempt.count({ where: { pairId: pair.id, status: { in: ['QUEUED', 'READY'] } } }),
+      prisma.detectedCampaign.count({
+        where: {
+          targetId: pair.targetId,
+          verdict: 'CAMPAIGN',
+          postedAt: { gte: hoursAgo(settings.hookMaxAgeHours) },
+          id: { notIn: usedCampaignIds },
+        },
+      }),
     ])
 
     const decision: GovernorDecision = evaluatePair({
       now,
-      pair: { enabled: pair.enabled },
+      pair: {
+        enabled: pair.enabled,
+        cooldownDays: pair.cooldownDays,
+        maxUnansweredTouches: pair.maxUnansweredTouches,
+      },
       sender: { status: pair.sender.status, dailyCap: pair.sender.dailyCap },
       target: { optedOut: pair.target.optedOut },
       lastSentAt: lastSent?.sentAt ?? null,
@@ -106,6 +129,7 @@ export async function runOutreach(): Promise<PlanSummary> {
       senderSentTodayCount: senderToday + (sentBySenderToday.get(pair.senderId) ?? 0),
       maxPerTargetPerDay: settings.maxPerTargetPerDay,
       hasPendingAttempt: pending > 0,
+      unusedCampaignCount,
       totalSentEver,
       maxTotalSends: env.MAX_TOTAL_SENDS,
     })
@@ -187,13 +211,23 @@ async function createAndDispatch(args: {
 }): Promise<Omit<PlanOutcome, 'pairKey' | 'eligible'>> {
   const { pair, touchNumber, hookMaxAgeHours } = args
 
-  // Freshest usable hook. Ordered by postedAt then gridIndex because
-  // og:description gives day precision only — see detection/types.ts.
+  // Freshest campaign this pair has NOT written about yet. Picking an unused one is
+  // what stops a follow-up quoting the same campaign as the first message.
+  const alreadyUsed = (
+    await prisma.outreachAttempt.findMany({
+      where: { pairId: pair.id, campaignId: { not: null } },
+      select: { campaignId: true },
+    })
+  )
+    .map((a) => a.campaignId)
+    .filter((id): id is string => id !== null)
+
   const hook = await prisma.detectedCampaign.findFirst({
     where: {
       targetId: pair.targetId,
       verdict: 'CAMPAIGN',
       postedAt: { gte: hoursAgo(hookMaxAgeHours) },
+      id: { notIn: alreadyUsed },
     },
     orderBy: [{ postedAt: 'desc' }, { detectedAt: 'desc' }],
   })
@@ -207,10 +241,10 @@ async function createAndDispatch(args: {
     throw new Error(`sender @${pair.sender.handle} has no enabled message variants — run: pnpm db:seed`)
   }
 
-  // A message written for this specific recipient beats a rotated variant every
-  // time — see prisma/bespoke.ts for why that is a safety property, not a nicety.
-  // The variant is still recorded so rotation stats stay meaningful if we fall back.
-  const usingBespoke = Boolean(pair.bespokeBody && pair.bespokeBody.trim().length > 0)
+  // The bespoke draft is the FIRST message only. A follow-up must say something
+  // new, so it uses a fresh variant plus the new campaign as its hook — reusing the
+  // bespoke body would be the exact repetition this is meant to avoid.
+  const usingBespoke = touchNumber === 1 && Boolean(pair.bespokeBody && pair.bespokeBody.trim().length > 0)
   const { body, hookLine } = renderMessage({
     persona: pair.sender,
     target: pair.target,

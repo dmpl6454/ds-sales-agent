@@ -90,12 +90,17 @@ model OutreachPair {
   senderId String
   targetId String
 
-  /// Retained for history; the governor no longer uses it. Instagram permits one
-  /// message request per non-follower, so there is no second send to cool down for.
-  cooldownDays Int     @default(7)
+  /// Minimum days between touches for this pair.
+  cooldownDays Int     @default(5)
+  /// How many unanswered messages before we stop until the target engages.
+  /// Instagram will not deliver a second PENDING request to a non-follower, so
+  /// beyond a couple these are likely wasted rather than dangerous.
+  maxUnansweredTouches Int @default(3)
   enabled      Boolean @default(true)
 
-  /// A message written from scratch for THIS specific recipient.
+  /// A message written from scratch for THIS specific recipient — the FIRST touch.
+  /// Follow-ups use a variant plus a campaign not referenced before, so that each
+  /// message genuinely says something new.
   ///
   /// Preferred over the rotating variants whenever present. Meta's written spam
   /// policy states that repetitive content lowers the frequency threshold at which
