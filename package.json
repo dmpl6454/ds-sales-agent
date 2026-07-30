@@ -29,9 +29,9 @@
     "agent": "tsx src/scripts/control.ts",
     "send": "tsx src/scripts/send.ts",
     "queued": "tsx src/scripts/queued.ts",
-    "audit": "tsx src/scripts/audit.ts",
-    "login": "tsx src/scripts/login.ts",
-    "burner": "tsx src/scripts/burner.ts"
+    "burner": "tsx src/scripts/burner.ts",
+    "ig:login": "tsx src/scripts/login.ts",
+    "ig:audit": "tsx src/scripts/audit.ts"
   },
   "dependencies": {
     "@prisma/adapter-better-sqlite3": "^7.9.1",

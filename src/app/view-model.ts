@@ -357,7 +357,7 @@ export async function buildCeoView(): Promise<CeoView> {
       // The most common outstanding step now, so it gets said plainly with the
       // exact command rather than a vague "not set up".
       state = 'setup'
-      note = `one-time login needed — pnpm login ${s.handle}`
+      note = `one-time login needed — pnpm ig:login ${s.handle}`
     } else if (s.status === 'PAUSED') {
       state = 'setup'
       note = 'paused'

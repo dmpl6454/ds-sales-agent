@@ -82,7 +82,7 @@ export function AutopilotPanel({ state, accounts }: { state: AutopilotState; acc
             ⚠ {state.needLoginHandles.map((h) => '@' + h).join(', ')} {state.needLoginHandles.length === 1 ? 'is' : 'are'}{' '}
             armed but {state.needLoginHandles.length === 1 ? 'has' : 'have'} no browser profile, so{' '}
             {state.needLoginHandles.length === 1 ? 'it' : 'they'} will keep waiting for you. Run{' '}
-            <code>pnpm login {state.needLoginHandles[0]}</code> once.
+            <code>pnpm ig:login {state.needLoginHandles[0]}</code> once.
           </p>
         ) : null}
 
@@ -139,7 +139,7 @@ function ArmRow({ account }: { account: AccountCard }) {
             ? account.autopilot
               ? 'Stop this account sending by itself'
               : 'Let this account send by itself'
-            : `Needs its one-time login first: pnpm login ${account.handle}`
+            : `Needs its one-time login first: pnpm ig:login ${account.handle}`
         }
       >
         {busy ? '…' : account.autopilot ? 'Armed' : 'Arm'}

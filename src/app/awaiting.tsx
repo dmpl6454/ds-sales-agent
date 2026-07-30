@@ -34,7 +34,7 @@ export function AwaitingList({ items }: { items: AwaitingCard[] }) {
           Automated sending needs a one-time login by hand — in a terminal, run{' '}
           {[...new Set(needLogin.map((i) => i.senderHandle))].map((h, idx, arr) => (
             <span key={h}>
-              <code>pnpm login {h}</code>
+              <code>pnpm ig:login {h}</code>
               {idx < arr.length - 1 ? ' and ' : ''}
             </span>
           ))}
@@ -109,7 +109,7 @@ function AwaitingItem({ item }: { item: AwaitingCard }) {
           title={
             item.canSendAutomatically
               ? `Opens @${item.senderHandle}'s own Chrome profile and sends this to @${item.targetHandle}. Takes about 40 seconds; a browser window will appear.`
-              : `Run \`pnpm login ${item.senderHandle}\` once first.`
+              : `Run \`pnpm ig:login ${item.senderHandle}\` once first.`
           }
         >
           {item.inFlight

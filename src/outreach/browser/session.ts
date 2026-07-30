@@ -46,7 +46,7 @@ export class CheckpointError extends Error {
 
 export class NotLoggedInError extends Error {
   constructor(readonly handle: string) {
-    super(`Chrome profile for @${handle} is not logged in. Run: pnpm login ${handle}`)
+    super(`Chrome profile for @${handle} is not logged in. Run: pnpm ig:login ${handle}`)
     this.name = 'NotLoggedInError'
   }
 }

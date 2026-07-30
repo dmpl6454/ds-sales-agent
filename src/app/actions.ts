@@ -81,7 +81,7 @@ export async function sendNow(attemptId: string): Promise<SendNowResult> {
   if (!profile.initialised) {
     return {
       ok: false,
-      message: `@${sender.handle} has no Chrome profile yet. Run once in a terminal:  pnpm login ${sender.handle}`,
+      message: `@${sender.handle} has no Chrome profile yet. Run once in a terminal:  pnpm ig:login ${sender.handle}`,
     }
   }
 
@@ -211,7 +211,7 @@ export async function setAccountAutopilot(handle: string, on: boolean): Promise<
   const sender = await prisma.senderAccount.findUniqueOrThrow({ where: { handle } })
 
   if (on && !profileStatus(handle).initialised) {
-    return { ok: false, message: `@${handle} needs its one-time login first:  pnpm login ${handle}` }
+    return { ok: false, message: `@${handle} needs its one-time login first:  pnpm ig:login ${handle}` }
   }
   if (on && sender.status !== 'ACTIVE') {
     return { ok: false, message: `@${handle} is ${sender.status} — clear that before arming it` }

@@ -5,7 +5,7 @@ import { profileStatus } from '@/outreach/browser/profile'
 import { launchProfile, loggedInAs } from '@/outreach/browser/session'
 
 /**
- *   pnpm login <handle>
+ *   pnpm ig:login <handle>
  *
  * The one-time, by-hand login for a sending account. Run once per account, ever.
  *
@@ -29,7 +29,7 @@ async function main() {
 
   if (!handle) {
     const senders = await prisma.senderAccount.findMany({ orderBy: { handle: 'asc' } })
-    console.log(`\n  Usage:  pnpm login <handle>\n`)
+    console.log(`\n  Usage:  pnpm ig:login <handle>\n`)
     console.log(`  Your sending accounts:\n`)
     for (const s of senders) {
       const st = profileStatus(s.handle)
@@ -42,7 +42,7 @@ async function main() {
 
   const sender = await prisma.senderAccount.findUnique({ where: { handle } })
   if (!sender) {
-    console.log(`\n  @${handle} is not one of your sending accounts. Run \`pnpm login\` to list them.\n`)
+    console.log(`\n  @${handle} is not one of your sending accounts. Run \`pnpm ig:login\` to list them.\n`)
     await prisma.$disconnect()
     return
   }

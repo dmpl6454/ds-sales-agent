@@ -18,14 +18,14 @@ import { assertSafeHandle } from '@/lib/urls'
  * enforcement lands, silently, because every device signal is new.
  *
  * So the design is: you log in ONCE, BY HAND, into the directory below
- * (`pnpm login <handle>`). Automation then reuses that same directory forever.
+ * (`pnpm ig:login <handle>`). Automation then reuses that same directory forever.
  * Same profile, same device identifiers, same residential IP, same login event.
  * From Instagram's side nothing changed — because nothing did.
  *
  * Consequences that are load-bearing, do not "optimise" them away:
  *
  *   - NEVER import a cookie or storageState into one of these. If a profile is not
- *     logged in, the fix is `pnpm login <handle>`, never a transplant.
+ *     logged in, the fix is `pnpm ig:login <handle>`, never a transplant.
  *   - One directory per account, never shared. Two accounts in one profile means
  *     switching, which is a different (noisier) pattern than a dedicated browser.
  *   - Lives outside the repo, under the user's home. It contains a live session;
