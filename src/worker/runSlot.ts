@@ -18,9 +18,13 @@ import { runOutreach } from '@/outreach/plan'
  * never be able to silence the thing it monitors — the run is marked PARTIAL so it
  * surfaces, and the rest keeps working.
  *
- * There is no reply-detection stage. It required a logged-in browser session, and
- * with one-shot-per-target there is no follow-up to suppress — a reply is a
- * business event to record, not a safety control. It is marked on the dashboard.
+ * There is no automated reply-detection stage: reading the inbox requires a
+ * logged-in session, which is exactly the exposure detection is built to avoid.
+ *
+ * A reply IS load-bearing, though — the governor halts every sender to a target
+ * that has answered, so an unrecorded reply means the agent keeps preparing cold
+ * follow-ups to a live conversation. So it is marked by hand on the dashboard, and
+ * that is currently the weakest link in the loop.
  */
 
 export interface SlotResult {

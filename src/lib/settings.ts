@@ -54,9 +54,19 @@ export async function getSettings(): Promise<RuntimeSettings> {
     defaultCooldownDays: num(SETTING_KEYS.defaultCooldownDays, d.defaultCooldownDays),
     maxPerTargetPerDay: num(SETTING_KEYS.maxPerTargetPerDay, d.maxPerTargetPerDay),
     hookMaxAgeHours: num(SETTING_KEYS.hookMaxAgeHours, d.hookMaxAgeHours),
-    // Env AUTOPILOT_ENABLED=false is a hard floor: the DB cannot switch on
-    // autopilot that the deployment has not opted into.
-    autopilotEnabled: d.autopilotEnabled && bool(SETTING_KEYS.autopilotEnabled, d.autopilotEnabled),
+    /**
+     * Two different questions, deliberately not conflated:
+     *
+     *   AUTOPILOT_ENABLED (env)  — MAY this deployment send unattended?  Hard floor.
+     *   the DB row               — IS it switched on right now?           Defaults OFF.
+     *
+     * The fallback here is a literal `false`, not `d.autopilotEnabled`. It used to be
+     * the latter, and the consequence was found the moment the toggle appeared on
+     * screen: flipping AUTOPILOT_ENABLED=true to *permit* autopilot also silently
+     * *armed* it, and the dashboard read "Autopilot is ON" with nobody having
+     * chosen that. Granting permission must never be the same act as switching on.
+     */
+    autopilotEnabled: d.autopilotEnabled && bool(SETTING_KEYS.autopilotEnabled, false),
   }
 }
 

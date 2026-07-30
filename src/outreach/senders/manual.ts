@@ -5,12 +5,12 @@ import { log } from '@/lib/logger'
  * The default sender: prepares everything, delivers nothing.
  *
  * The attempt is marked READY and appears in the dashboard tray with the exact
- * body and a deep link that opens the thread. A human taps send.
+ * body and a link to the recipient's profile. A human sends it.
  *
- * This is the validation gate, not a permanent mode — it exists to prove that a
- * message renders correctly and lands with the right person before any account
- * starts doing it unattended. At Phase 1 volume (peak 2 DMs/day) it costs about a
- * minute a week.
+ * This is the validation gate, not the destination — it exists to prove a message
+ * renders correctly and lands with the right person before any account does it
+ * unattended. Automating the send is the goal (CLAUDE.md decision 1); the
+ * requirements for that phase are recorded there.
  */
 export const manualAssistSender: OutreachSender = {
   name: 'manual-assist',
@@ -23,9 +23,4 @@ export const manualAssistSender: OutreachSender = {
     })
     return { status: 'READY' }
   },
-}
-
-/** Opens the DM thread with a handle. Works on desktop web and mobile app. */
-export function threadDeepLink(targetHandle: string): string {
-  return `https://ig.me/m/${targetHandle}`
 }

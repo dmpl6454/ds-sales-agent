@@ -6,6 +6,8 @@ import { hoursAgo, istDayStart } from '@/lib/time'
 import { evaluatePair, type GovernorDecision } from './governor'
 import { renderMessage, validatePersona } from './render'
 import { manualAssistSender } from './senders/manual'
+import { browserSender } from './senders/browser'
+import { profileStatus } from '@/outreach/browser/profile'
 import type { SendOutcome } from './senders/types'
 
 /**
@@ -53,7 +55,7 @@ export async function runOutreach(): Promise<PlanSummary> {
   // rather than "one message was delivered while three more sat queued".
   // Incremented locally below so the ceiling also holds within a single slot.
   let totalSentEver = await prisma.outreachAttempt.count({
-    where: { status: { in: ['SENT', 'REPLIED', 'READY', 'QUEUED'] } },
+    where: { status: { in: ['SENT', 'REPLIED', 'SENDING', 'READY', 'QUEUED'] } },
   })
   if (env.MAX_TOTAL_SENDS !== null && totalSentEver >= env.MAX_TOTAL_SENDS) {
     log.warn('lifetime send ceiling reached — sending nothing', {
@@ -102,7 +104,8 @@ export async function runOutreach(): Promise<PlanSummary> {
       prisma.outreachAttempt.count({
         where: { pair: { senderId: pair.senderId }, status: 'SENT', sentAt: { gte: dayStart } },
       }),
-      prisma.outreachAttempt.count({ where: { pairId: pair.id, status: { in: ['QUEUED', 'READY'] } } }),
+      // SENDING included: a browser mid-send is the most pending an attempt gets.
+      prisma.outreachAttempt.count({ where: { pairId: pair.id, status: { in: ['QUEUED', 'READY', 'SENDING'] } } }),
       prisma.detectedCampaign.count({
         where: {
           targetId: pair.targetId,
@@ -161,6 +164,7 @@ export async function runOutreach(): Promise<PlanSummary> {
         pair,
         touchNumber: decision.touchNumber,
         hookMaxAgeHours: settings.hookMaxAgeHours,
+        autopilotEnabled: settings.autopilotEnabled,
       })
       outcomes.push({ pairKey, eligible: true, ...result })
 
@@ -208,8 +212,9 @@ async function createAndDispatch(args: {
   }
   touchNumber: number
   hookMaxAgeHours: number
+  autopilotEnabled: boolean
 }): Promise<Omit<PlanOutcome, 'pairKey' | 'eligible'>> {
-  const { pair, touchNumber, hookMaxAgeHours } = args
+  const { pair, touchNumber, hookMaxAgeHours, autopilotEnabled } = args
 
   // Freshest campaign this pair has NOT written about yet. Picking an unused one is
   // what stops a follow-up quoting the same campaign as the first message.
@@ -281,11 +286,41 @@ async function createAndDispatch(args: {
     return { attemptId: attempt.id, status: 'SKIPPED', hookLine }
   }
 
-  // There is only one sender now. The browser-driving path was removed after
-  // research established that cookie-replay into a fresh profile is the highest-risk
-  // option available, and that automating the click saves ~90 seconds a day while
-  // putting the accounts on the table. The agent prepares; a human clicks.
-  const outcome: SendOutcome = await manualAssistSender.send({
+  /**
+   * Autopilot needs FOUR independent yeses. Any one of them absent means the
+   * message is prepared and waits for a person instead — never that it is dropped.
+   *
+   *   1. AUTOPILOT_ENABLED in .env — the deployment has opted in (hard floor; the
+   *      database cannot switch on something the environment forbids)
+   *   2. the Autopilot toggle on the dashboard
+   *   3. this sender's own autoSendEnabled — graduating accounts one at a time is
+   *      the point, so a new account cannot be swept along by a global switch
+   *   4. a Chrome profile that has actually been logged into by hand
+   *
+   * Four switches rather than one is deliberate. The failure this guards against is
+   * not a wrong decision, it is an *unnoticed* one — a config change or a seed
+   * rerun quietly putting three revenue-generating accounts into unattended
+   * sending. Every switch is set by a separate deliberate act.
+   */
+  const profile = profileStatus(pair.sender.handle)
+  const autoReady =
+    autopilotEnabled && pair.sender.autoSendEnabled && pair.sender.status === 'ACTIVE' && profile.initialised
+
+  if (autopilotEnabled && pair.sender.autoSendEnabled && !profile.initialised) {
+    log.warn('autopilot on but no Chrome profile — preparing for manual send instead', {
+      sender: pair.sender.handle,
+      fix: `pnpm login ${pair.sender.handle}`,
+    })
+  }
+
+  const sender = autoReady ? browserSender : manualAssistSender
+  log.step(autoReady ? 'sending automatically' : 'preparing for a human', {
+    sender: pair.sender.handle,
+    target: pair.target.handle,
+    via: sender.name,
+  })
+
+  const outcome: SendOutcome = await sender.send({
     attemptId: attempt.id,
     senderHandle: pair.sender.handle,
     sessionPath: pair.sender.sessionPath,

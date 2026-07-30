@@ -29,7 +29,8 @@
     "agent": "tsx src/scripts/control.ts",
     "send": "tsx src/scripts/send.ts",
     "queued": "tsx src/scripts/queued.ts",
-    "audit": "tsx src/scripts/audit.ts"
+    "audit": "tsx src/scripts/audit.ts",
+    "login": "tsx src/scripts/login.ts"
   },
   "dependencies": {
     "@prisma/adapter-better-sqlite3": "^7.9.1",
@@ -38,6 +39,7 @@
     "dotenv": "^17.4.2",
     "next": "^16.2.12",
     "node-cron": "^4.6.0",
+    "patchright": "^1.61.1",
     "playwright": "^1.62.0",
     "react": "^19.2.8",
     "react-dom": "^19.2.8",

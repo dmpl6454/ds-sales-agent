@@ -1,6 +1,8 @@
 import { buildCeoView } from './view-model'
 import { SyncButton } from './sync-button'
 import { AwaitingList } from './awaiting'
+import { AutopilotPanel } from './autopilot'
+import { dmInboxUrl } from '@/lib/urls'
 
 export const dynamic = 'force-dynamic'
 
@@ -51,7 +53,7 @@ export default async function Dashboard() {
             <a
               key={i}
               className="reply"
-              href={`https://ig.me/m/${r.targetHandle}`}
+              href={dmInboxUrl()}
               target="_blank"
               rel="noreferrer"
             >
@@ -61,7 +63,7 @@ export default async function Dashboard() {
               </div>
               {r.preview ? <p className="preview">“{r.preview}”</p> : null}
               <div className="reply-foot">
-                to {r.senderName} · open the conversation →
+                to {r.senderName} · open the Instagram inbox →
               </div>
             </a>
           ))}
@@ -150,20 +152,7 @@ export default async function Dashboard() {
         </div>
       </section>
 
-      <section>
-        <h2>Our accounts</h2>
-        <div className="accounts">
-          {v.accounts.map((a) => (
-            <div key={a.handle} className="account">
-              <span className={`dot ${a.state}`} aria-hidden />
-              <span className="acc-name">{a.name}</span>
-              <span className="acc-handle">@{a.handle}</span>
-              <span className="acc-note">{a.note}</span>
-              <span className="acc-count">{a.sentThisWeek} sent this week</span>
-            </div>
-          ))}
-        </div>
-      </section>
+      <AutopilotPanel state={v.autopilot} accounts={v.accounts} />
 
       <footer className="foot">{v.nowLabel} IST</footer>
     </>

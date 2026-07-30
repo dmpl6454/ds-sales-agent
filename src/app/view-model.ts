@@ -4,6 +4,8 @@ import { readStringArray } from '@/lib/json'
 import { istDayStart, istDateKey, daysAgo, istStamp } from '@/lib/time'
 import { validatePersona, prettifyBrand } from '@/outreach/render'
 import { FOLLOWER_SNAPSHOT } from '@/lib/constants'
+import { profileStatus } from '@/outreach/browser/profile'
+import { getSettings } from '@/lib/settings'
 
 /**
  * Everything the CEO page shows, assembled in one place.
@@ -31,10 +33,27 @@ export interface CeoView {
   channels: ChannelCard[]
   accounts: AccountCard[]
 
-  /** Messages written and waiting for a human to send. */
+  /** Messages written and ready to send. */
   awaiting: AwaitingCard[]
   /** Things a human must do. Empty when there is nothing to do. */
   todos: string[]
+
+  autopilot: AutopilotState
+}
+
+export interface AutopilotState {
+  /** The dashboard toggle. Sending happens by itself when this and an armed account line up. */
+  on: boolean
+  /**
+   * AUTOPILOT_ENABLED in .env. A hard floor — with this false the toggle cannot be
+   * switched on at all, so a compromised or misclicked dashboard cannot start
+   * unattended sending on a deployment that never opted in.
+   */
+  allowedByEnv: boolean
+  /** Accounts that are armed AND have a logged-in Chrome profile. */
+  readyHandles: string[]
+  /** Armed, but no hand login yet — the toggle will not help these. */
+  needLoginHandles: string[]
 }
 
 export interface ReplyCard {
@@ -81,6 +100,8 @@ export interface AccountCard {
   handle: string
   name: string
   autopilot: boolean
+  /** A hand login has happened, so this account CAN send unattended. */
+  canSendAutomatically: boolean
   sentThisWeek: number
   /**
    * ready  — logged in, healthy, armed: will send by itself
@@ -99,12 +120,18 @@ export interface AwaitingCard {
   targetName: string
   targetHandle: string
   senderName: string
+  senderHandle: string
   body: string
+  /** A hand login has happened for this sender, so automated sending can work. */
+  canSendAutomatically: boolean
+  /** True while a browser is mid-send. Blocks the button so one click means one send. */
+  inFlight: boolean
 }
 
 export async function buildCeoView(): Promise<CeoView> {
   const dayStart = istDayStart()
   const weekStart = daysAgo(7)
+  const settings = await getSettings()
 
   const [senders, targets, lastRun, weekSent, weekReplies, recentSends, recentReplies, awaitingRaw] =
     await Promise.all([
@@ -129,7 +156,9 @@ export async function buildCeoView(): Promise<CeoView> {
         orderBy: { repliedAt: 'desc' },
       }),
       prisma.outreachAttempt.findMany({
-        where: { status: { in: ['READY', 'QUEUED'] } },
+        // SENDING is included so a send interrupted by a crash stays visible rather
+        // than vanishing from the tray with no way to reach it.
+        where: { status: { in: ['READY', 'QUEUED', 'SENDING'] } },
         include: { pair: { include: { sender: true, target: true } } },
         orderBy: { queuedAt: 'asc' },
       }),
@@ -316,21 +345,47 @@ export async function buildCeoView(): Promise<CeoView> {
     let state: AccountCard['state']
     let note: string
 
+    const hasProfile = profileStatus(s.handle).initialised
+
     if (s.status === 'CHALLENGED') {
       state = 'broken'
       note = 'locked by Instagram — needs you'
     } else if (problems.length > 0) {
       state = 'broken'
       note = 'contact details invalid'
+    } else if (!hasProfile) {
+      // The most common outstanding step now, so it gets said plainly with the
+      // exact command rather than a vague "not set up".
+      state = 'setup'
+      note = `one-time login needed — pnpm login ${s.handle}`
     } else if (s.status === 'PAUSED') {
       state = 'setup'
       note = 'paused'
     } else {
       state = 'ready'
-      note = sentThisWeek > 0 ? 'in use' : 'ready'
+      note = s.autoSendEnabled ? (sentThisWeek > 0 ? 'sending by itself' : 'armed — will send by itself') : 'ready'
     }
 
-    accounts.push({ handle: s.handle, name: s.displayName, autopilot: s.autoSendEnabled, sentThisWeek, state, note })
+    accounts.push({
+      handle: s.handle,
+      name: s.displayName,
+      autopilot: s.autoSendEnabled,
+      canSendAutomatically: hasProfile,
+      sentThisWeek,
+      state,
+      note,
+    })
+  }
+
+  const autopilot: AutopilotState = {
+    on: settings.autopilotEnabled,
+    allowedByEnv: env.AUTOPILOT_ENABLED,
+    readyHandles: senders
+      .filter((s) => s.autoSendEnabled && s.status === 'ACTIVE' && profileStatus(s.handle).initialised)
+      .map((s) => s.handle),
+    needLoginHandles: senders
+      .filter((s) => s.autoSendEnabled && !profileStatus(s.handle).initialised)
+      .map((s) => s.handle),
   }
 
   const awaiting: AwaitingCard[] = awaitingRaw.map((a) => ({
@@ -338,7 +393,13 @@ export async function buildCeoView(): Promise<CeoView> {
     targetName: a.pair.target.displayName,
     targetHandle: a.pair.target.handle,
     senderName: a.pair.sender.displayName,
+    senderHandle: a.pair.sender.handle,
     body: a.renderedBody,
+    // Filesystem check only — it says a hand login happened, not that the session
+    // is still valid. Whether the session works is answered by the send itself,
+    // which verifies the logged-in account before it types anything.
+    canSendAutomatically: profileStatus(a.pair.sender.handle).initialised && a.pair.sender.status === 'ACTIVE',
+    inFlight: a.status === 'SENDING',
   }))
 
   const lastCheckLabel = lastRun
@@ -358,6 +419,7 @@ export async function buildCeoView(): Promise<CeoView> {
     accounts,
     awaiting,
     todos,
+    autopilot,
   }
 }
 

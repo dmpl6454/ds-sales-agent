@@ -9,8 +9,13 @@ export type Verdict = (typeof VERDICTS)[number]
 
 export const ATTEMPT_STATUSES = [
   'QUEUED', // created by the planner, not yet surfaced
-  'READY', // waiting for a human tap (manual mode)
-  'SENT', // delivered
+  'READY', // written and waiting to be sent
+  // A lock, not a phase. Set for the ~40 seconds the browser is driving, so a
+  // second click (or the worker racing the dashboard) cannot send the same message
+  // twice. Anything counting messages in flight MUST include it — the whole point
+  // is that a SENDING row might already be delivered.
+  'SENDING',
+  'SENT', // delivered and confirmed present in the thread
   'SKIPPED', // superseded or cancelled before sending
   'FAILED', // send attempted and failed
   'REPLIED', // target replied — halts all senders to this target

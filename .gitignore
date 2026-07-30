@@ -62,3 +62,8 @@ Thumbs.db
 .idea/
 .vscode/*
 !.vscode/extensions.json
+
+# Chrome profiles live in ~/.ds-sales-agent, never in the repo — but guard against
+# anyone relocating them here. A profile contains a live Instagram session, and a
+# session that appears on new hardware is the exact signal we avoid.
+chrome-profiles/

@@ -3,6 +3,8 @@ import { promisify } from 'node:util'
 import { prisma } from '@/lib/db'
 import { env } from '@/lib/env'
 import { log } from '@/lib/logger'
+import { profileUrl } from '@/lib/urls'
+import { copyToClipboard } from '@/lib/clipboard'
 
 /**
  * `execFile`, not `exec` — no shell is involved, so nothing in the URL can be
@@ -10,14 +12,6 @@ import { log } from '@/lib/logger'
  * (or scanner) mistaking it for the shell-invoking `exec`.
  */
 const openUrl = promisify(execFile)
-
-/** Instagram handles are [A-Za-z0-9._]. Defence in depth: the value comes from our
- *  own DB, but a URL handed to the OS should never be unvalidated. */
-function assertSafeHandle(handle: string): void {
-  if (!/^[A-Za-z0-9._]{1,30}$/.test(handle)) {
-    throw new Error(`refusing to open a URL for a malformed handle: ${JSON.stringify(handle)}`)
-  }
-}
 
 /**
  * The send step: everything automated except the click.
@@ -42,12 +36,15 @@ function assertSafeHandle(handle: string): void {
  *   exactly what automation cannot fake, and exactly what this flow preserves for
  *   free.
  *
- *   At one or two messages a day, automating the click saves about ninety seconds
- *   and puts three revenue-generating accounts on the table. This is that trade,
- *   declined.
+ * None of that is an argument against automating — it is the list of constraints
+ * the automated version has to satisfy. See CLAUDE.md decision 1: a dedicated
+ * Chrome profile logged in by hand, Patchright rather than stock Playwright, the
+ * home residential IP, real input APIs, proven on a throwaway account first.
+ * Manual is the gate that proves the pipeline before any of that is worth building.
  *
  * It opens the PROFILE rather than deep-linking the thread deliberately: the
- * navigation path profile → Message → type is the one a person takes.
+ * navigation path profile → Message → type is the one a person takes. (The
+ * `ig.me/m/<handle>` deep link is also simply dead on desktop — HTTP 400.)
  */
 
 async function main() {
@@ -77,8 +74,7 @@ async function main() {
 
   const a = attempts[0]!
   const { sender, target } = a.pair
-  assertSafeHandle(target.handle)
-  const profileUrl = `https://www.instagram.com/${target.handle}/`
+  const url = profileUrl(target.handle)
 
   console.log(`
 ${'═'.repeat(76)}
@@ -108,26 +104,37 @@ ${'─'.repeat(76)}
   }
 
   console.log(`  ${copied ? '✓ Copied to your clipboard' : '✗ Clipboard failed — copy the text above by hand'}`)
+  const browserLabel = env.SEND_BROWSER ?? 'your default browser'
   console.log(`
-  NEXT, in your own browser (the one already logged in):
+  NEXT, in ${browserLabel} — the one you are logged into @${sender.handle} in:
 
-    1. Opening  ${profileUrl}
+    1. Opening  ${url}
     2. Click  Message
     3. Paste  (⌘V)  and read it once
     4. Send
 
   Open the profile, not the DM inbox — that navigation path is the one a
   person takes, and it is most of why this approach is safe.
-`)
+${
+  env.SEND_BROWSER
+    ? ''
+    : `
+  If that opens a browser where you are not logged in, set SEND_BROWSER in .env
+  (e.g. SEND_BROWSER="Google Chrome") — the agent holds no Instagram session of
+  its own, so a login wall means the wrong browser, not a lost session.
+`
+}`)
 
   if (!auto) {
     await prompt(`  Press Enter to open the profile (Ctrl+C to abort)… `)
   }
 
   try {
-    await openUrl('open', [profileUrl])
+    // `open -a <app>` targets a named browser; bare `open` uses the macOS default
+    // https handler, which may not be the browser holding the Instagram session.
+    await openUrl('open', env.SEND_BROWSER ? ['-a', env.SEND_BROWSER, url] : [url])
   } catch {
-    console.log(`  Could not open the browser. Go to: ${profileUrl}`)
+    console.log(`  Could not open ${browserLabel}. Go to: ${url}`)
   }
 
   console.log()
@@ -158,8 +165,10 @@ ${'─'.repeat(76)}
     console.log(`
   ✓ Recorded.
 
-    @${target.handle} will not be contacted again — one message per target, ever.
     Lifetime total: ${total}${env.MAX_TOTAL_SENDS !== null ? ` of ${env.MAX_TOTAL_SENDS}` : ''}.
+    @${target.handle} can be written to again once two things are true: the pair's
+    spacing window has passed, and a campaign we have not already referenced
+    appears. A follow-up with nothing new to say is what the guard blocks.
 ${
   env.MAX_TOTAL_SENDS !== null && total >= env.MAX_TOTAL_SENDS
     ? `\n    Ceiling reached — nothing further will be prepared until you raise\n    MAX_TOTAL_SENDS in .env.\n`
@@ -178,18 +187,6 @@ ${
   }
 
   await prisma.$disconnect()
-}
-
-async function copyToClipboard(text: string): Promise<void> {
-  // pbcopy takes stdin, which execFile does not expose directly.
-  const { spawn } = await import('node:child_process')
-  await new Promise<void>((resolve, reject) => {
-    const p = spawn('pbcopy')
-    p.on('error', reject)
-    p.on('close', (code) => (code === 0 ? resolve() : reject(new Error(`pbcopy exited ${code}`))))
-    p.stdin.write(text)
-    p.stdin.end()
-  })
 }
 
 function prompt(question: string): Promise<string> {

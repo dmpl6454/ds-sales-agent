@@ -1,29 +1,47 @@
 'use client'
 
 import { useState, useTransition } from 'react'
-import { markSent, skipAttempt } from './actions'
+import { markSent, skipAttempt, sendNow, type SendNowResult } from './actions'
 import type { AwaitingCard } from './view-model'
+import { profileUrl } from '@/lib/urls'
 
 /**
- * Messages the agent has written, ready for a human to send.
+ * Messages the agent has written, with a button that sends them.
  *
- * This is the permanent design, not a transitional state. Research on 2026-07-30
- * established that automating the click saves about ninety seconds a day and
- * destroys the device-identity continuity that keeps these accounts safe — so the
- * agent does everything up to the click, and stops.
+ * "Send now" drives the sending account's own logged-in Chrome profile: feed →
+ * target's profile → Message → paste → verify → Enter → confirm it appeared in the
+ * thread. A Chrome window is visible for the ~40 seconds it takes, on purpose.
  *
- * `pnpm send` is the same flow from the terminal, with the message copied to the
- * clipboard and the recipient's profile opened for you.
+ * The manual path is kept, not as the default but because it is the fallback that
+ * makes failure safe: if the browser send fails halfway, or you finish it on your
+ * phone, the record has to be able to catch up or the agent prepares a duplicate.
  */
 export function AwaitingList({ items }: { items: AwaitingCard[] }) {
+  const needLogin = items.filter((i) => !i.canSendAutomatically)
+
   return (
     <section>
       <h2>
-        Waiting for you to send
+        Ready to send
         <span className="h2-note">
-          {items.length} message{items.length === 1 ? '' : 's'} — written and checked; you press send
+          {items.length} message{items.length === 1 ? '' : 's'} — written from scratch, safety-checked
         </span>
       </h2>
+
+      {needLogin.length > 0 ? (
+        <p className="cardnote" style={{ borderTop: 'none', marginBottom: 12 }}>
+          {needLogin.length === 1 ? 'One account has' : `${needLogin.length} accounts have`} no browser profile yet.
+          Automated sending needs a one-time login by hand — in a terminal, run{' '}
+          {[...new Set(needLogin.map((i) => i.senderHandle))].map((h, idx, arr) => (
+            <span key={h}>
+              <code>pnpm login {h}</code>
+              {idx < arr.length - 1 ? ' and ' : ''}
+            </span>
+          ))}
+          . Nothing stores your password — you type it into Chrome's own form.
+        </p>
+      ) : null}
+
       <div className="cards">
         {items.map((a) => (
           <AwaitingItem key={a.id} item={a} />
@@ -37,6 +55,8 @@ function AwaitingItem({ item }: { item: AwaitingCard }) {
   const [pending, start] = useTransition()
   const [copied, setCopied] = useState(false)
   const [open, setOpen] = useState(false)
+  const [result, setResult] = useState<SendNowResult | null>(null)
+  const [sending, setSending] = useState(false)
 
   const copy = async () => {
     try {
@@ -47,6 +67,25 @@ function AwaitingItem({ item }: { item: AwaitingCard }) {
       setCopied(false)
     }
   }
+
+  /**
+   * Not wrapped in useTransition: this takes ~40 seconds and needs its own
+   * explicit in-progress state, so the button can be disabled for the whole
+   * duration rather than for a React tick.
+   */
+  const send = async () => {
+    setSending(true)
+    setResult(null)
+    try {
+      setResult(await sendNow(item.id))
+    } catch (err) {
+      setResult({ ok: false, message: err instanceof Error ? err.message : String(err) })
+    } finally {
+      setSending(false)
+    }
+  }
+
+  const busy = sending || pending || item.inFlight
 
   return (
     <div className="card">
@@ -63,22 +102,53 @@ function AwaitingItem({ item }: { item: AwaitingCard }) {
       {open ? <pre className="msg">{item.body}</pre> : null}
 
       <div className="row">
-        <button onClick={copy}>{copied ? 'Copied' : 'Copy'}</button>
-        <a className="btn" href={`https://ig.me/m/${item.targetHandle}`} target="_blank" rel="noreferrer">
-          Open Instagram
-        </a>
         <button
           className="primary"
-          disabled={pending}
-          onClick={() => start(() => markSent(item.id))}
-          title="Only after you have actually sent it — this starts the waiting period before the next message"
+          disabled={busy || !item.canSendAutomatically}
+          onClick={send}
+          title={
+            item.canSendAutomatically
+              ? `Opens @${item.senderHandle}'s own Chrome profile and sends this to @${item.targetHandle}. Takes about 40 seconds; a browser window will appear.`
+              : `Run \`pnpm login ${item.senderHandle}\` once first.`
+          }
         >
-          {pending ? 'Saving…' : 'I sent it'}
+          {item.inFlight
+            ? 'Sending…'
+            : sending
+              ? 'Sending — watch the browser…'
+              : `Send from @${item.senderHandle}`}
         </button>
-        <button disabled={pending} onClick={() => start(() => skipAttempt(item.id, 'skipped'))}>
-          Skip
+        <button disabled={busy} onClick={() => start(() => skipAttempt(item.id, 'skipped'))}>
+          Discard
         </button>
       </div>
+
+      {result ? (
+        <p
+          className="cardnote"
+          style={{ color: result.ok ? 'var(--good)' : result.challenged ? 'var(--bad)' : 'var(--warn)' }}
+        >
+          {result.ok ? '✓ ' : result.challenged ? '■ ' : '⚠ '}
+          {result.message}
+        </p>
+      ) : null}
+
+      <details className="cardnote">
+        <summary style={{ cursor: 'pointer', color: 'var(--muted)' }}>Send it by hand instead</summary>
+        <div className="row" style={{ marginTop: 10 }}>
+          <button onClick={copy}>{copied ? 'Copied' : 'Copy message'}</button>
+          <a className="btn" href={profileUrl(item.targetHandle)} target="_blank" rel="noreferrer">
+            Open @{item.targetHandle}
+          </a>
+          <button
+            disabled={busy}
+            onClick={() => start(() => markSent(item.id))}
+            title="Records that you sent it yourself. Press only after actually sending — spacing, caps and follow-ups are all derived from this."
+          >
+            I sent it myself
+          </button>
+        </div>
+      </details>
     </div>
   )
 }

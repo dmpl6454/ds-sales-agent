@@ -65,7 +65,21 @@ const schema = z.object({
   AUTOPILOT_ENABLED: boolish(false),
 
   OPERATOR_NAME: z.string().optional().transform((v) => v ?? 'operator'),
-  HEADLESS: boolish(true),
+
+  /**
+   * Which browser `pnpm send` opens, e.g. "Google Chrome" / "Brave Browser" /
+   * "Safari". Empty = the macOS default handler for https.
+   *
+   * This exists because the default is not necessarily the browser you are logged
+   * into Instagram in, and the failure mode is confusing: you get a login wall and
+   * assume the agent lost your session. It never had one — the agent holds no
+   * credentials at all. Name the browser here and the ambiguity goes away.
+   */
+  SEND_BROWSER: z
+    .string()
+    .optional()
+    .transform((v) => (v && v.trim() !== '' ? v.trim() : null))
+    .pipe(z.string().regex(/^[A-Za-z0-9 .()-]{1,40}$/, 'SEND_BROWSER must be an app name').nullable()),
 })
 
 const parsed = schema.safeParse(process.env)
