@@ -18,6 +18,8 @@ export type Health = 'healthy' | 'attention' | 'broken'
 
 export interface CeoView {
   health: Health
+  /** Last check, phrased so it cannot be mistaken for the 7-day totals below. */
+  lastCheckLabel: string
   /** One plain sentence. Never a stack trace, never a status code. */
   headline: string
   nextSlotLabel: string
@@ -59,9 +61,20 @@ export interface ChannelCard {
   handle: string
   followers: string
   campaignsThisWeek: number
+  postsThisWeek: number
   postsLogged: number
   lastContactedLabel: string
   halted: boolean
+  /**
+   * True when this channel's posts are deliberately NOT classified.
+   *
+   * This matters more than it looks. @viralbhayani never discloses paid posts, so
+   * our verdict count for them is 0 — and showing a bare "0 paid campaigns" would
+   * tell a reader they do no paid work, which is the opposite of the truth
+   * (roughly half their output is commercial). The card says "not classified"
+   * instead of a number that would actively mislead.
+   */
+  unclassified: boolean
 }
 
 export interface AccountCard {
@@ -268,10 +281,11 @@ export async function buildCeoView(): Promise<CeoView> {
   // ── Channels ──────────────────────────────────────────────────────────────
   const channels: ChannelCard[] = []
   for (const t of targets) {
-    const [campaignsThisWeek, postsLogged, lastSent, halted] = await Promise.all([
+    const [campaignsThisWeek, postsThisWeek, postsLogged, lastSent, halted] = await Promise.all([
       prisma.detectedCampaign.count({
         where: { targetId: t.id, verdict: 'CAMPAIGN', detectedAt: { gte: weekStart } },
       }),
+      prisma.detectedCampaign.count({ where: { targetId: t.id, detectedAt: { gte: weekStart } } }),
       prisma.detectedCampaign.count({ where: { targetId: t.id } }),
       prisma.outreachAttempt.findFirst({
         where: { pair: { targetId: t.id }, status: { in: ['SENT', 'REPLIED'] } },
@@ -284,9 +298,11 @@ export async function buildCeoView(): Promise<CeoView> {
       handle: t.handle,
       followers: FOLLOWER_SNAPSHOT[t.handle] ?? '—',
       campaignsThisWeek,
+      postsThisWeek,
       postsLogged,
       lastContactedLabel: lastSent?.sentAt ? relative(lastSent.sentAt) : 'not yet',
       halted: halted > 0 || t.optedOut,
+      unclassified: t.detectorKey === 'passthrough',
     })
   }
 
@@ -325,9 +341,14 @@ export async function buildCeoView(): Promise<CeoView> {
     body: a.renderedBody,
   }))
 
+  const lastCheckLabel = lastRun
+    ? `Last check read ${lastRun.postsSeen} posts · ${lastRun.newPosts} new`
+    : 'No check has run yet'
+
   return {
     health,
     headline,
+    lastCheckLabel,
     nextSlotLabel: nextSlotLabel(),
     nowLabel: istStamp(),
     replies,

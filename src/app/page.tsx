@@ -27,6 +27,8 @@ export default async function Dashboard() {
           <span className="headline">{v.headline}</span>
         </div>
         <div className="status-meta">
+          <span>{v.lastCheckLabel}</span>
+          <span className="dim">·</span>
           <span>{v.nextSlotLabel}</span>
           <SyncButton />
         </div>
@@ -118,18 +120,30 @@ export default async function Dashboard() {
               </div>
               <dl>
                 <div>
-                  <dt>Paid campaigns this week</dt>
-                  <dd>{c.campaignsThisWeek}</dd>
+                  <dt>Posts read this week</dt>
+                  <dd>{c.postsThisWeek}</dd>
                 </div>
                 <div>
-                  <dt>Posts reviewed</dt>
-                  <dd>{c.postsLogged}</dd>
+                  <dt>Paid campaigns found</dt>
+                  <dd>
+                    {c.unclassified ? (
+                      <span className="dim">not classified</span>
+                    ) : (
+                      c.campaignsThisWeek
+                    )}
+                  </dd>
                 </div>
                 <div>
                   <dt>Last contacted</dt>
                   <dd>{c.lastContactedLabel}</dd>
                 </div>
               </dl>
+              {c.unclassified ? (
+                <p className="cardnote">
+                  This channel never labels its paid posts, so we record every post but do not guess which are
+                  paid. Showing a zero here would read as “they do no paid work”, which is untrue.
+                </p>
+              ) : null}
               {c.halted ? <div className="halt">On hold — they replied</div> : null}
             </div>
           ))}

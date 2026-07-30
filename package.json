@@ -28,7 +28,8 @@
     "preview": "tsx src/scripts/preview.ts",
     "agent": "tsx src/scripts/control.ts",
     "send": "tsx src/scripts/send.ts",
-    "queued": "tsx src/scripts/queued.ts"
+    "queued": "tsx src/scripts/queued.ts",
+    "audit": "tsx src/scripts/audit.ts"
   },
   "dependencies": {
     "@prisma/adapter-better-sqlite3": "^7.9.1",

@@ -238,3 +238,12 @@ pre.msg {
 }
 
 .foot { margin-top: 44px; color: var(--dim); font-size: 12px; text-align: center; }
+
+.cardnote {
+  margin: 12px 0 0;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--muted);
+  border-top: 1px solid var(--border);
+  padding-top: 10px;
+}
