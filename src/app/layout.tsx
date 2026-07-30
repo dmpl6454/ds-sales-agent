@@ -1,18 +1,20 @@
 import type { Metadata } from 'next'
 import './globals.css'
-import { Nav } from './nav'
 
 export const metadata: Metadata = {
-  title: 'DS Sales Agent',
-  description: 'Instagram paid-campaign watch and partnership outreach — Phase 1',
+  title: 'Instagram Outreach',
+  description: 'Paid-campaign watch and partnership outreach',
 }
 
+/**
+ * No navigation, because there is only one page. Anything an engineer needs that
+ * is not here lives in `pnpm db:studio`.
+ */
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="en">
       <body>
-        <Nav />
-        <div className="wrap">{children}</div>
+        <main>{children}</main>
       </body>
     </html>
   )

@@ -27,7 +27,8 @@
     "postinstall": "prisma generate",
     "reclassify": "tsx src/scripts/reclassify.ts",
     "inspect": "tsx src/scripts/inspect.ts",
-    "preview": "tsx src/scripts/preview.ts"
+    "preview": "tsx src/scripts/preview.ts",
+    "agent": "tsx src/scripts/control.ts"
   },
   "dependencies": {
     "@prisma/adapter-better-sqlite3": "^7.9.1",

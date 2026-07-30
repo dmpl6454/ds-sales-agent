@@ -19,6 +19,21 @@ pnpm worker          # the 11:00 / 15:00 / 17:00 / 20:00 IST watch
 
 `DRY_RUN=1` is the default. The pipeline runs end to end and sends nothing.
 
+## The loop
+
+```
+Every slot — 11:00 / 15:00 / 17:00 / 20:00 IST, daily:
+
+  1. READ    both channels     → detect paid campaigns
+  2. LISTEN  our DM threads    → did a target reply? halt every sender to them
+  3. DECIDE  cadence governor  → who is eligible right now
+  4. SEND    logged-in browser → deliver, then confirm by reading it back
+```
+
+Reply detection runs *before* planning, so a reply halts a target in the same run
+it is discovered rather than one slot later — otherwise we could answer someone's
+reply with another templated pitch.
+
 ---
 
 ## What it does
@@ -26,7 +41,7 @@ pnpm worker          # the 11:00 / 15:00 / 17:00 / 20:00 IST watch
 | | |
 |---|---|
 | **Watches** | `@madovermarketing_mom`, `@viralbhayani` |
-| **Sends from** | `@maraboutmarketing`, `@bollywood_society`, `@bollywood_chronicle` |
+| **Sends from** | `@maraboutmarketing`, `@bollywoodsociety`, `@bollywoodchronicle` |
 | **Schedule** | 11:00 / 15:00 / 17:00 / 20:00 IST, daily, plus catch-up on boot |
 | **Detects** | ~12–18 paid campaigns/day across both channels |
 | **Sends** | ~0.6 DMs/day average, peak 2 — set by cooldown, not by detection count |
@@ -38,9 +53,9 @@ Stored as `OutreachPair` rows, never hardcoded. Adding a target is an INSERT.
 | From | → | To |
 |---|---|---|
 | `@maraboutmarketing` | → | `@madovermarketing_mom` |
-| `@bollywood_society` | → | `@madovermarketing_mom` |
-| `@bollywood_society` | → | `@viralbhayani` |
-| `@bollywood_chronicle` | → | `@viralbhayani` |
+| `@bollywoodsociety` | → | `@madovermarketing_mom` |
+| `@bollywoodsociety` | → | `@viralbhayani` |
+| `@bollywoodchronicle` | → | `@viralbhayani` |
 
 ---
 
@@ -48,13 +63,14 @@ Stored as `OutreachPair` rows, never hardcoded. Adding a target is an INSERT.
 
 ```
    ┌─ Next.js 16 ──────────┐   ┌─ worker ──────────────────────────────┐
-   │  Dashboard (RSC)      │   │  node-cron  11/15/17/20 Asia/Kolkata   │
-   │  Server actions       │   │    ↓                                  │
-   │  Prisma Studio        │   │  1 discover  Playwright, LOGGED OUT   │
+   │  One page (CEO view)  │   │  node-cron  11/15/17/20 Asia/Kolkata   │
+   │  Prisma Studio        │   │    ↓                                  │
+   │  pnpm agent (CLI)     │   │  1 discover  Playwright, LOGGED OUT   │
    └───────────┬───────────┘   │  2 enrich    plain HTTP GET /p/{code} │
                │               │  3 classify  per-channel detector     │
-        SQLite (one file) ◄────┤  4 plan      cadence governor         │
-                               │  5 send      manual tray | autopilot  │
+        SQLite (one file) ◄────┤  4 replies   read threads, auto-halt  │
+                               │  5 plan      cadence governor         │
+                               │  6 send      logged-in browser        │
                                └───────────────────────────────────────┘
 ```
 
@@ -130,7 +146,7 @@ Correspondingly: **0 posts parsed** is an alarm; **30 parsed / 0 paid** is a qui
 **No password is ever typed into, stored by, or committed with this project.**
 
 ```bash
-pnpm session:add --sender=bollywood_society
+pnpm session:add --sender=bollywoodsociety
 ```
 
 Opens a real Chromium window. You log in yourself — 2FA and checkpoints just work,
@@ -141,16 +157,25 @@ because a human is driving a real browser. Playwright saves the resulting cookie
 pnpm session:check    # verify sessions are alive and the DM composer is reachable
 ```
 
-> ⚠️ `PlaywrightSender`'s DM selectors were written against documented structure — the DM
-> UI is unreachable logged out, so they are **unverified**. Run `pnpm session:check`
-> against a throwaway account before enabling autopilot on an account that matters.
+> ⚠️ The DM selectors were written against documented structure — the DM UI is unreachable
+> logged out, so they have **never met a live page**. Every locator therefore goes through
+> `findFirst()`, which tries named candidates in order and records what each matched, and
+> any failure writes a full diagnostic to `diagnostics/` (screenshot, HTML, every button
+> and editable on the page) so a selector can be fixed in one pass rather than several.
+>
+> Validate with `pnpm session:check`, and make the first real send go
+> `@bollywoodsociety → @bollywoodchronicle` — you own both ends, so it proves the whole
+> chain without touching a prospect.
 
 ### Graduating to autopilot
 
 Two keys, both required:
 
 1. `AUTOPILOT_ENABLED=true` in `.env` (deployment opt-in — a hard floor the DB cannot override)
-2. Per-sender toggle on `/senders/<handle>`
+2. `pnpm agent autopilot on <handle>` per account
+
+`pnpm agent status` shows exactly what is blocking each account. It refuses to arm an
+account that cannot actually send, so the flag never reads "on" while every attempt fails.
 
 Manual and autopilot share one `OutreachSender` interface, so this is a boolean, not a rewrite.
 
@@ -163,13 +188,16 @@ Manual and autopilot share one `OutreachSender` interface, so this is a boolean,
 | `pnpm dev` | Dashboard on :3000 |
 | `pnpm worker` | The scheduled watch |
 | `pnpm run:slot` | Run one slot now and exit |
+| `pnpm agent status` | What is blocking each account from sending |
+| `pnpm agent autopilot on\|off <handle>` | Let an account send by itself |
+| `pnpm agent pause\|resume <handle>` | Stop/resume an account (resume clears a lock) |
+| `pnpm session:add --sender=X` | Capture a login session |
+| `pnpm session:check` | Verify sessions and that the DM composer is reachable |
 | `pnpm preview` | Print the exact message each pair would send |
 | `pnpm inspect` | Detected campaigns and extracted brands |
 | `pnpm reclassify [--apply]` | Re-run detectors over stored captions, no re-fetching |
-| `pnpm session:add --sender=X` | Capture a login session |
-| `pnpm session:check` | Verify sessions |
-| `pnpm test` | 110 tests |
-| `pnpm db:studio` | Prisma Studio |
+| `pnpm test` | 129 tests |
+| `pnpm db:studio` | Full raw data — everything the dashboard deliberately omits |
 
 ---
 
@@ -190,32 +218,32 @@ src/
   outreach/
     governor.ts          pure eligibility function
     render.ts            message assembly, persona validation
+    matching.ts          "is this text ours?" — used by send-confirm and reply-detect
     plan.ts              DB-driven planner
-    senders/             manual.ts | playwright.ts
+    replies.ts           reads threads, auto-halts on a reply
+    senders/             manual.ts | playwright.ts | browser.ts | diagnose.ts
   worker/                node-cron + catch-up
-  app/                   dashboard
-tests/                   110 tests, fixtures captured from live posts
+  app/                   one page (CEO view)
+tests/                   129 tests, fixtures captured from live posts
 docs/specs/              design & implementation plan
 ```
 
 ---
 
-## Before the first real send
+## Before autopilot
 
-The seed prints these, and `validatePersona()` **blocks sending** while the phone is
-malformed — a wrong number cannot reach a recipient, it can only stop the send.
+Sender handles, Kapil's number and the greeting style are all confirmed. What remains is
+mechanical:
 
-1. **Kapil's phone.** The brief gave `+91 60000 189766` — 11 digits, where Indian mobiles
-   are 10. Seeded as `+91 60001 89766`, a guess.
-2. **Real @handles** for Bollywood Society and Bollywood Chronicle (placeholders seeded).
-3. **Confirm `@maraboutmarketing`** — it is one character-class from
-   `@madovermarketing_mom`, which can trip Meta's impersonation detection.
-4. **Greeting first names** for both targets. Currently null, so messages address the
-   publication rather than guessing a person.
+1. **Log in once per account** — `pnpm session:add --sender=<handle>`. Nothing can be sent
+   until this exists, and it cannot be automated: a real browser opens and you log in, so
+   no password ever passes through this code.
+2. **Validate the send path** — `pnpm session:check`, then a proof send
+   `@bollywoodsociety → @bollywoodchronicle`.
+3. **Arm the accounts** — `pnpm agent autopilot on <handle>`, one at a time.
 
-Fix on `/senders/<handle>` and `/targets/<handle>`, or in Prisma Studio.
-
----
+`pnpm agent status` tells you which of these is outstanding at any moment, and the
+dashboard's "Needs you" list says the same thing in plain English.
 
 ## Known limits
 

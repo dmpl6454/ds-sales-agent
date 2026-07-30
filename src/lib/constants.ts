@@ -46,3 +46,13 @@ export const TARGET_HANDLES = {
   mom: 'madovermarketing_mom',
   viralbhayani: 'viralbhayani',
 } as const
+
+/**
+ * Follower counts, for display only. A point-in-time snapshot (2026-07-29) rather
+ * than a live figure — it exists so the dashboard can show scale at a glance, and
+ * fetching it every render would be an Instagram request bought for nothing.
+ */
+export const FOLLOWER_SNAPSHOT: Record<string, string> = {
+  madovermarketing_mom: '1.5M',
+  viralbhayani: '15.6M',
+}

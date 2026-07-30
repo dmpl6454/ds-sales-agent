@@ -1,229 +1,157 @@
-import Link from 'next/link'
-import { prisma } from '@/lib/db'
-import { env } from '@/lib/env'
-import { getSettings } from '@/lib/settings'
-import { istDayStart, istStamp, daysAgo, istDateKey } from '@/lib/time'
-import { validatePersona } from '@/outreach/render'
-import { Stat, StatusPill, VerdictPill, Ago, Empty } from './ui'
+import { buildCeoView } from './view-model'
 import { SyncButton } from './sync-button'
-import { ReadyTray } from './ready-tray'
+import { AwaitingList } from './awaiting'
 
 export const dynamic = 'force-dynamic'
 
-/** Next scheduled slot in IST, derived from env.SLOTS. */
-function nextSlot(): { slot: string; inMinutes: number } {
-  const now = new Date()
-  const dayStart = istDayStart(now)
-  const mins = Math.floor((now.getTime() - dayStart.getTime()) / 60_000)
-  const parsed = env.SLOTS.map((s) => {
-    const [hh, mm] = s.split(':').map(Number)
-    return { slot: s, minutes: hh! * 60 + mm! }
-  }).sort((a, b) => a.minutes - b.minutes)
-
-  const upcoming = parsed.find((p) => p.minutes > mins)
-  if (upcoming) return { slot: upcoming.slot, inMinutes: upcoming.minutes - mins }
-  // Wrapped to tomorrow.
-  const first = parsed[0]!
-  return { slot: first.slot, inMinutes: 1440 - mins + first.minutes }
-}
-
-export default async function Overview() {
-  const settings = await getSettings()
-  const dayStart = istDayStart()
-  const next = nextSlot()
-
-  const [lastRun, senders, todayCampaigns, sentToday, readyAttempts, reviewCount, weekRuns, totalCampaigns] =
-    await Promise.all([
-      prisma.scrapeRun.findFirst({ orderBy: { startedAt: 'desc' } }),
-      prisma.senderAccount.findMany({ orderBy: { handle: 'asc' } }),
-      prisma.detectedCampaign.count({ where: { verdict: 'CAMPAIGN', detectedAt: { gte: dayStart } } }),
-      prisma.outreachAttempt.count({ where: { status: 'SENT', sentAt: { gte: dayStart } } }),
-      prisma.outreachAttempt.findMany({
-        where: { status: { in: ['READY', 'QUEUED'] } },
-        include: { pair: { include: { sender: true, target: true } }, campaign: true, variant: true },
-        orderBy: { queuedAt: 'asc' },
-      }),
-      prisma.detectedCampaign.count({ where: { verdict: 'REVIEW', humanLabel: null } }),
-      prisma.scrapeRun.findMany({ where: { startedAt: { gte: daysAgo(7) } }, orderBy: { startedAt: 'asc' } }),
-      prisma.detectedCampaign.count({ where: { verdict: 'CAMPAIGN' } }),
-    ])
-
-  const personaProblems = senders.flatMap((s) => validatePersona(s).map((p) => ({ handle: s.handle, problem: p })))
-  const challenged = senders.filter((s) => s.status === 'CHALLENGED')
-
-  // Detections per day over the last 7 days, for the sparkline.
-  const perDay = new Map<string, number>()
-  for (const r of weekRuns) {
-    const key = istDateKey(r.startedAt)
-    perDay.set(key, (perDay.get(key) ?? 0) + r.detected)
-  }
-  const days = Array.from({ length: 7 }, (_, i) => istDateKey(daysAgo(6 - i)))
-  const sparkValues = days.map((d) => perDay.get(d) ?? 0)
-  const sparkMax = Math.max(1, ...sparkValues)
+/**
+ * The whole dashboard. One page.
+ *
+ * Ordering is deliberate and reads top to bottom as: is it working → did anyone
+ * answer → how much happened → what happened → who is involved.
+ *
+ * Replies sit above the metrics because a reply is the only event in this system
+ * that represents revenue. Everything that used to be on screen and a CEO would
+ * not ask about — confidence scores, signal arrays, variant labels, grid indices,
+ * detector keys, parse diagnostics — is gone from the UI and still fully
+ * available through `pnpm db:studio`.
+ */
+export default async function Dashboard() {
+  const v = await buildCeoView()
 
   return (
     <>
-      <h1>Overview</h1>
-      <p className="sub">
-        {istStamp()} IST · next slot <b>{next.slot}</b> in{' '}
-        {next.inMinutes >= 60 ? `${Math.floor(next.inMinutes / 60)}h ${next.inMinutes % 60}m` : `${next.inMinutes}m`}
-      </p>
-
-      {env.DRY_RUN ? (
-        <div className="banner warn">
-          <b>DRY_RUN is on.</b> The pipeline runs fully — detects, classifies, plans outreach — but nothing is
-          queued for sending and nothing is delivered. Use <code>pnpm preview</code> to read exactly what would go
-          out. Set <code>DRY_RUN=0</code> in <code>.env</code> when you are ready.
+      <header className={`status status-${v.health}`}>
+        <div className="status-main">
+          <span className="dot" aria-hidden />
+          <span className="headline">{v.headline}</span>
         </div>
-      ) : null}
+        <div className="status-meta">
+          <span>{v.nextSlotLabel}</span>
+          <SyncButton />
+        </div>
+      </header>
 
-      {personaProblems.length > 0 ? (
-        <div className="banner bad">
-          <b>Sending is blocked until the persona is valid.</b> These appear in every outgoing message, so the
-          planner refuses to send rather than send them wrong:
+      {v.todos.length > 0 ? (
+        <section className="todos">
+          <h2>Needs you</h2>
           <ul>
-            {personaProblems.map((p, i) => (
-              <li key={i}>
-                <code>@{p.handle}</code> — {p.problem}
-              </li>
+            {v.todos.map((t, i) => (
+              <li key={i}>{t}</li>
             ))}
           </ul>
-        </div>
+        </section>
       ) : null}
 
-      {challenged.length > 0 ? (
-        <div className="banner bad">
-          <b>Instagram challenged {challenged.length} sender(s).</b> They are paused and will not be retried
-          automatically — log in by hand, clear the checkpoint, then re-activate on{' '}
-          <Link href="/senders">Senders</Link>: {challenged.map((s) => `@${s.handle}`).join(', ')}
-        </div>
-      ) : null}
-
-      {lastRun?.status === 'PARTIAL' || lastRun?.status === 'FAILED' ? (
-        <div className="banner warn">
-          <b>Last run finished {lastRun.status}.</b> <span className="muted">{lastRun.error}</span>{' '}
-          <Link href="/runs">See runs →</Link>
-        </div>
-      ) : null}
-
-      <div className="grid c4">
-        <Stat label="Campaigns today" value={todayCampaigns} note={`${totalCampaigns} all time`} />
-        <Stat label="Sent today" value={sentToday} note={`cap ${settings.maxPerTargetPerDay}/target/day`} />
-        <Stat label="Awaiting your tap" value={readyAttempts.length} note={env.DRY_RUN ? 'dry-run: none queued' : 'ready to send'} />
-        <Stat label="Review queue" value={reviewCount} note="uncertain classifications" />
-      </div>
-
-      <h2>Ready to send</h2>
-      <ReadyTray attempts={readyAttempts.map((a) => ({
-        id: a.id,
-        senderHandle: a.pair.sender.handle,
-        senderDisplay: a.pair.sender.displayName,
-        targetHandle: a.pair.target.handle,
-        targetDisplay: a.pair.target.displayName,
-        touchNumber: a.touchNumber,
-        variantLabel: a.variant.label,
-        hookLine: a.hookLine,
-        body: a.renderedBody,
-        campaignPermalink: a.campaign?.permalink ?? null,
-        queuedAt: a.queuedAt.toISOString(),
-      }))} />
-
-      <h2>Detections, last 7 days</h2>
-      <div className="card">
-        <div className="spark">
-          {sparkValues.map((v, i) => (
-            <div key={i} style={{ height: `${Math.round((v / sparkMax) * 100)}%` }} title={`${days[i]}: ${v}`} />
+      {v.replies.length > 0 ? (
+        <section className="replies">
+          {v.replies.map((r, i) => (
+            <a
+              key={i}
+              className="reply"
+              href={`https://ig.me/m/${r.targetHandle}`}
+              target="_blank"
+              rel="noreferrer"
+            >
+              <div className="reply-top">
+                <strong>{r.targetName} replied</strong>
+                <span className="when">{r.whenLabel}</span>
+              </div>
+              {r.preview ? <p className="preview">“{r.preview}”</p> : null}
+              <div className="reply-foot">
+                to {r.senderName} · open the conversation →
+              </div>
+            </a>
           ))}
-        </div>
-        <div className="dim" style={{ display: 'flex', justifyContent: 'space-between', marginTop: 6, fontSize: 11 }}>
-          <span>{days[0]}</span>
-          <span>{days[6]} (today)</span>
-        </div>
-      </div>
+        </section>
+      ) : null}
 
-      <h2>Routing matrix</h2>
-      <div className="card pad0 scroll">
-        <PairTable />
-      </div>
+      <section className="metrics">
+        <div className="metric">
+          <div className="n">{v.week.detected}</div>
+          <div className="l">paid campaigns spotted</div>
+        </div>
+        <div className="metric">
+          <div className="n">{v.week.sent}</div>
+          <div className="l">messages sent</div>
+        </div>
+        <div className="metric">
+          <div className="n">{v.week.replies}</div>
+          <div className="l">replies</div>
+        </div>
+        <div className="metric-note">last 7 days</div>
+      </section>
 
-      <h2>Last run</h2>
-      <div className="card">
-        {lastRun ? (
-          <div className="btnrow" style={{ justifyContent: 'space-between' }}>
-            <div>
-              <StatusPill status={lastRun.status} /> <b>{lastRun.slot}</b>{' '}
-              <span className="muted">
-                · {lastRun.postsSeen} seen · {lastRun.newPosts} new · {lastRun.detected} campaigns ·{' '}
-                {lastRun.sent} sent
-              </span>{' '}
-              <Ago at={lastRun.startedAt} />
-            </div>
-            <SyncButton />
-          </div>
+      {v.awaiting.length > 0 ? <AwaitingList items={v.awaiting} /> : null}
+
+      <section>
+        <h2>What happened</h2>
+        {v.activity.length === 0 ? (
+          <p className="none">Nothing sent yet.</p>
         ) : (
-          <div className="btnrow" style={{ justifyContent: 'space-between' }}>
-            <span className="dim">No runs yet.</span>
-            <SyncButton />
+          <div className="feed">
+            {v.activity.map((day) => (
+              <div key={day.dayLabel} className="feed-day">
+                <div className="feed-daylabel">{day.dayLabel}</div>
+                {day.events.map((e, i) => (
+                  <div key={i} className={`feed-row ${e.kind}`}>
+                    <span className="feed-time">{e.timeLabel}</span>
+                    <span className="feed-text">{e.sentence}</span>
+                  </div>
+                ))}
+              </div>
+            ))}
           </div>
         )}
-      </div>
+      </section>
+
+      <section>
+        <h2>Channels we watch</h2>
+        <div className="cards">
+          {v.channels.map((c) => (
+            <div key={c.handle} className="card">
+              <div className="card-top">
+                <a href={`https://instagram.com/${c.handle}`} target="_blank" rel="noreferrer">
+                  {c.name}
+                </a>
+                <span className="followers">{c.followers}</span>
+              </div>
+              <dl>
+                <div>
+                  <dt>Paid campaigns this week</dt>
+                  <dd>{c.campaignsThisWeek}</dd>
+                </div>
+                <div>
+                  <dt>Posts reviewed</dt>
+                  <dd>{c.postsLogged}</dd>
+                </div>
+                <div>
+                  <dt>Last contacted</dt>
+                  <dd>{c.lastContactedLabel}</dd>
+                </div>
+              </dl>
+              {c.halted ? <div className="halt">On hold — they replied</div> : null}
+            </div>
+          ))}
+        </div>
+      </section>
+
+      <section>
+        <h2>Our accounts</h2>
+        <div className="accounts">
+          {v.accounts.map((a) => (
+            <div key={a.handle} className="account">
+              <span className={`dot ${a.state}`} aria-hidden />
+              <span className="acc-name">{a.name}</span>
+              <span className="acc-handle">@{a.handle}</span>
+              <span className="acc-note">{a.note}</span>
+              <span className="acc-count">{a.sentThisWeek} sent this week</span>
+            </div>
+          ))}
+        </div>
+      </section>
+
+      <footer className="foot">{v.nowLabel} IST</footer>
     </>
-  )
-}
-
-async function PairTable() {
-  const pairs = await prisma.outreachPair.findMany({
-    include: {
-      sender: true,
-      target: true,
-      attempts: { where: { status: 'SENT' }, orderBy: { sentAt: 'desc' }, take: 1 },
-    },
-    orderBy: [{ target: { handle: 'asc' } }, { sender: { handle: 'asc' } }],
-  })
-
-  if (pairs.length === 0) return <Empty>No routing pairs. Run `pnpm db:seed`.</Empty>
-
-  return (
-    <table>
-      <thead>
-        <tr>
-          <th>From</th>
-          <th>To</th>
-          <th>Cooldown</th>
-          <th>Last sent</th>
-          <th>Touches</th>
-          <th>State</th>
-        </tr>
-      </thead>
-      <tbody>
-        {pairs.map((p) => {
-          const last = p.attempts[0]
-          return (
-            <tr key={p.id}>
-              <td className="nowrap">
-                <Link href={`/senders/${p.sender.handle}`}>@{p.sender.handle}</Link>
-              </td>
-              <td className="nowrap">
-                <Link href={`/targets/${p.target.handle}`}>@{p.target.handle}</Link>
-              </td>
-              <td className="num">{p.cooldownDays}d</td>
-              <td>
-                <Ago at={last?.sentAt} />
-              </td>
-              <td className="num">{last?.touchNumber ?? 0}</td>
-              <td>
-                {p.target.optedOut ? (
-                  <span className="pill bad">OPTED OUT</span>
-                ) : p.enabled ? (
-                  <span className="pill good">enabled</span>
-                ) : (
-                  <span className="pill">disabled</span>
-                )}
-              </td>
-            </tr>
-          )
-        })}
-      </tbody>
-    </table>
   )
 }

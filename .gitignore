@@ -40,6 +40,15 @@ playwright-report/
 test-results/
 browser-profiles/
 
+# Selector diagnostics — contains screenshots and full HTML of a LOGGED-IN
+# account. Useful locally, never committed.
+diagnostics/
+
+# Ad-hoc screenshots. Same reasoning: they can capture a logged-in session.
+*.png
+*.jpg
+!docs/**/*.png
+
 # ── LOGS & SCRATCH ────────────────────────────────────────────────────────────
 logs/
 *.log

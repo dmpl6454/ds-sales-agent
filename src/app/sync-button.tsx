@@ -4,33 +4,38 @@ import { useState, useTransition } from 'react'
 import { syncNow } from './actions'
 
 /**
- * Manual slot trigger. A run takes ~15s (two profile renders plus enrichment),
- * so the pending state is not cosmetic — without it the button looks broken.
+ * "Check now" — runs a slot immediately instead of waiting for the schedule.
+ *
+ * A run takes ~15s, so the pending state is not cosmetic; without it the button
+ * looks broken. Phrased as checking rather than syncing, because that is what a
+ * non-engineer is asking it to do.
  */
 export function SyncButton() {
   const [pending, start] = useTransition()
   const [result, setResult] = useState<string | null>(null)
 
   return (
-    <div className="btnrow">
-      {result ? <span className="muted mono">{result}</span> : null}
+    <span className="sync">
+      {result ? <span className="sync-result">{result}</span> : null}
       <button
-        className="primary"
         disabled={pending}
         onClick={() =>
           start(async () => {
             setResult(null)
             try {
               const r = await syncNow()
-              setResult(`${r.status} · ${r.postsSeen} seen · ${r.detected} campaigns`)
+              const bits = [`${r.detected} campaign${r.detected === 1 ? '' : 's'} found`]
+              if (r.repliesFound > 0) bits.push(`${r.repliesFound} reply`)
+              if (r.sent > 0) bits.push(`${r.sent} sent`)
+              setResult(bits.join(' · '))
             } catch (e) {
-              setResult(`failed: ${e instanceof Error ? e.message : String(e)}`)
+              setResult(`could not check: ${e instanceof Error ? e.message : String(e)}`)
             }
           })
         }
       >
-        {pending ? 'Syncing…' : 'Sync now'}
+        {pending ? 'Checking…' : 'Check now'}
       </button>
-    </div>
+    </span>
   )
 }
