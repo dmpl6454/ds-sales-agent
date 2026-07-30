@@ -1,32 +1,33 @@
 import { prisma } from '@/lib/db'
 import { log } from '@/lib/logger'
 import { writeStringArray } from '@/lib/json'
-import { discoverProfile, DiscoverError } from './discover'
-import { enrichAll } from './enrich'
+import { fetchFeed, FeedFetchError, type FeedPost } from './feed'
 import { getDetector } from './detectors'
-import type { EnrichedPost } from './types'
+import { hoursAgo } from '@/lib/time'
 
 /**
- * The detection half of one slot: for each active target, read the grid, enrich
- * the posts we have not seen, classify them, and store the result.
+ * Detection: read each watched channel's recent posts and classify them.
  *
- * Idempotency comes free from `DetectedCampaign.shortcode @unique`: four scrapes
- * a day means each post is seen ~4x, so we filter known shortcodes before
- * spending HTTP requests and upsert the rest. Re-running a slot is safe.
+ * One anonymous HTTP request per page, no browser, no credentials. See feed.ts
+ * for why that matters — anything that attaches a session here would turn an
+ * IP-level risk into an account-ban risk.
+ *
+ * Idempotency comes free from `DetectedCampaign.shortcode @unique`: four checks a
+ * day means each post is seen repeatedly, so known shortcodes are filtered before
+ * any work and the rest are upserted. Re-running a slot is safe.
  */
 
 export interface ChannelOutcome {
   handle: string
-  discovered: number
+  fetched: number
   alreadyKnown: number
-  enriched: number
+  stored: number
   campaigns: number
   unclassified: number
   organic: number
-  enrichFailures: number
-  /** Set when the channel failed outright — the run is PARTIAL, not OK. */
+  officiallyPaid: number
+  pagesFetched: number
   error?: string
-  /** True when discovery returned nothing, i.e. the parser broke. Always alarms. */
   parseFailure?: boolean
 }
 
@@ -39,6 +40,9 @@ export interface DetectionSummary {
   hadError: boolean
 }
 
+/** How far back to look. Generous enough to survive a missed slot. */
+const LOOKBACK_HOURS = 36
+
 export async function runDetection(): Promise<DetectionSummary> {
   const targets = await prisma.targetAccount.findMany({
     where: { kind: 'CHANNEL' },
@@ -46,80 +50,85 @@ export async function runDetection(): Promise<DetectionSummary> {
   })
 
   const channels: ChannelOutcome[] = []
+  const sinceUnix = Math.floor(hoursAgo(LOOKBACK_HOURS).getTime() / 1000)
 
   for (const target of targets) {
     const outcome: ChannelOutcome = {
       handle: target.handle,
-      discovered: 0,
+      fetched: 0,
       alreadyKnown: 0,
-      enriched: 0,
+      stored: 0,
       campaigns: 0,
       unclassified: 0,
       organic: 0,
-      enrichFailures: 0,
+      officiallyPaid: 0,
+      pagesFetched: 0,
     }
 
     try {
-      const discovered = await discoverProfile(target.handle)
-      outcome.discovered = discovered.length
+      const { posts, pagesFetched } = await fetchFeed(target.handle, { maxPosts: 48, sinceUnix })
+      outcome.fetched = posts.length
+      outcome.pagesFetched = pagesFetched
 
-      // Skip shortcodes already stored — this is where the 4x/day overlap is paid for.
+      if (posts.length === 0) {
+        // The endpoint returned 200 with nothing. Either the account is empty or
+        // the response shape changed — both warrant a shout, because "0 posts" is
+        // indistinguishable from "quiet day" downstream.
+        outcome.parseFailure = true
+        log.alarm('feed returned zero posts — shape change or blocked', { handle: target.handle })
+        channels.push(outcome)
+        continue
+      }
+
       const known = await prisma.detectedCampaign.findMany({
-        where: { shortcode: { in: discovered.map((d) => d.shortcode) } },
+        where: { shortcode: { in: posts.map((p) => p.shortcode) } },
         select: { shortcode: true },
       })
       const knownSet = new Set(known.map((k) => k.shortcode))
       outcome.alreadyKnown = knownSet.size
 
-      const fresh = discovered.filter((d) => !knownSet.has(d.shortcode))
-      if (fresh.length === 0) {
-        log.step('no new posts', { handle: target.handle, grid: discovered.length })
-        channels.push(outcome)
-        continue
-      }
-
-      const { posts, failures } = await enrichAll(fresh)
-      outcome.enriched = posts.length
-      outcome.enrichFailures = failures.length
-
-      // Every post in the grid failed to parse while discovery succeeded: the
-      // og:description shape has changed. Loud, because the alternative is a
-      // system that quietly reports "0 campaigns" forever.
-      if (posts.length === 0 && failures.length > 0) {
-        outcome.parseFailure = true
-        log.alarm('every post failed to enrich — og:description shape has changed', {
-          handle: target.handle,
-          attempted: failures.length,
-          firstReason: failures[0]?.reason,
-        })
-      }
-
+      const fresh = posts.filter((p) => !knownSet.has(p.shortcode))
       const detector = getDetector(target.detectorKey)
 
-      for (const post of posts) {
+      for (const post of fresh) {
         const cls = detector.classify(post)
-        if (cls.verdict === 'CAMPAIGN') outcome.campaigns += 1
-        else if (cls.verdict === 'UNCLASSIFIED') outcome.unclassified += 1
+
+        // Instagram's own Paid Partnership label overrides any heuristic. Neither
+        // Phase 1 target uses it today, but when one does this becomes the truth.
+        const officiallyPaid = post.isPaidPartnership
+        if (officiallyPaid) outcome.officiallyPaid += 1
+
+        const verdict = officiallyPaid ? 'CAMPAIGN' : cls.verdict
+        const confidence = officiallyPaid ? 100 : cls.confidence
+        const signals = officiallyPaid ? [...cls.signals, 'official:is_paid_partnership'] : cls.signals
+        const brands = dedupe([
+          ...post.sponsorHandles.map((h) => `@${h}`),
+          ...post.collabHandles.map((h) => `@${h}`),
+          ...cls.brands,
+        ])
+
+        if (verdict === 'CAMPAIGN') outcome.campaigns += 1
+        else if (verdict === 'UNCLASSIFIED') outcome.unclassified += 1
         else outcome.organic += 1
 
-        await persistCampaign(target.id, post, cls.verdict, cls.confidence, cls.signals, cls.brands)
+        await persist(target.id, post, verdict, confidence, signals, brands)
+        outcome.stored += 1
       }
 
       log.info('channel done', {
         handle: target.handle,
         detector: detector.key,
-        new: posts.length,
+        fetched: posts.length,
+        new: outcome.stored,
         campaigns: outcome.campaigns,
-        unclassified: outcome.unclassified,
+        officiallyPaid: outcome.officiallyPaid,
       })
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err)
       outcome.error = message
-      if (err instanceof DiscoverError && err.isParseFailure) {
+      if (err instanceof FeedFetchError && err.isParseFailure) {
         outcome.parseFailure = true
-        log.alarm('discovery yielded no posts — grid selector or page shape changed', {
-          handle: target.handle,
-        })
+        log.alarm('feed shape changed — detection is blind until fixed', { handle: target.handle, message })
       } else {
         log.error('channel failed', { handle: target.handle, error: message })
       }
@@ -130,17 +139,29 @@ export async function runDetection(): Promise<DetectionSummary> {
 
   return {
     channels,
-    postsSeen: channels.reduce((n, c) => n + c.discovered, 0),
-    newPosts: channels.reduce((n, c) => n + c.enriched, 0),
+    postsSeen: channels.reduce((n, c) => n + c.fetched, 0),
+    newPosts: channels.reduce((n, c) => n + c.stored, 0),
     detected: channels.reduce((n, c) => n + c.campaigns, 0),
     hadParseFailure: channels.some((c) => c.parseFailure === true),
     hadError: channels.some((c) => c.error !== undefined),
   }
 }
 
-async function persistCampaign(
+function dedupe(values: string[]): string[] {
+  const seen = new Set<string>()
+  const out: string[] = []
+  for (const v of values) {
+    const k = v.toLowerCase().replace(/^[@#]/, '')
+    if (!k || seen.has(k)) continue
+    seen.add(k)
+    out.push(v)
+  }
+  return out.slice(0, 6)
+}
+
+async function persist(
   targetId: string,
-  post: EnrichedPost,
+  post: FeedPost,
   verdict: string,
   confidence: number,
   signals: string[],
@@ -153,16 +174,21 @@ async function persistCampaign(
     caption: post.caption,
     likeCount: post.likeCount,
     commentCount: post.commentCount,
+    mediaType: post.mediaType,
     brands: writeStringArray(brands),
     signals: writeStringArray(signals),
     confidence,
     verdict,
-    rawPayload: JSON.stringify({ gridIndex: post.gridIndex, ownerHandle: post.ownerHandle }),
+    rawPayload: JSON.stringify({
+      isPaidPartnership: post.isPaidPartnership,
+      sponsorHandles: post.sponsorHandles,
+      collabHandles: post.collabHandles,
+    }),
   }
 
   await prisma.detectedCampaign.upsert({
     where: { shortcode: post.shortcode },
-    // Re-observing a post refreshes engagement counts but never overwrites a
+    // Re-observing refreshes engagement and classification, but never overwrites a
     // human's REVIEW-queue label.
     update: {
       likeCount: data.likeCount,

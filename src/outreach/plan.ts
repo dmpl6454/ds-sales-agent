@@ -6,7 +6,6 @@ import { hoursAgo, istDayStart } from '@/lib/time'
 import { evaluatePair, type GovernorDecision } from './governor'
 import { renderMessage, validatePersona } from './render'
 import { manualAssistSender } from './senders/manual'
-import { playwrightSender } from './senders/playwright'
 import type { SendOutcome } from './senders/types'
 
 /**
@@ -49,6 +48,21 @@ export async function runOutreach(): Promise<PlanSummary> {
     orderBy: [{ target: { handle: 'asc' } }, { sender: { handle: 'asc' } }],
   })
 
+  // Lifetime in-flight count: delivered, replied, OR prepared and waiting. Counting
+  // the waiting ones is what makes MAX_TOTAL_SENDS=1 mean "one message exists",
+  // rather than "one message was delivered while three more sat queued".
+  // Incremented locally below so the ceiling also holds within a single slot.
+  let totalSentEver = await prisma.outreachAttempt.count({
+    where: { status: { in: ['SENT', 'REPLIED', 'READY', 'QUEUED'] } },
+  })
+  if (env.MAX_TOTAL_SENDS !== null && totalSentEver >= env.MAX_TOTAL_SENDS) {
+    log.warn('lifetime send ceiling reached — sending nothing', {
+      sent: totalSentEver,
+      ceiling: env.MAX_TOTAL_SENDS,
+      raiseWith: 'MAX_TOTAL_SENDS in .env',
+    })
+  }
+
   const outcomes: PlanOutcome[] = []
 
   // Counters accumulate WITHIN this run as well as from the DB, so two pairs
@@ -82,7 +96,7 @@ export async function runOutreach(): Promise<PlanSummary> {
 
     const decision: GovernorDecision = evaluatePair({
       now,
-      pair: { enabled: pair.enabled, cooldownDays: pair.cooldownDays },
+      pair: { enabled: pair.enabled },
       sender: { status: pair.sender.status, dailyCap: pair.sender.dailyCap },
       target: { optedOut: pair.target.optedOut },
       lastSentAt: lastSent?.sentAt ?? null,
@@ -92,6 +106,8 @@ export async function runOutreach(): Promise<PlanSummary> {
       senderSentTodayCount: senderToday + (sentBySenderToday.get(pair.senderId) ?? 0),
       maxPerTargetPerDay: settings.maxPerTargetPerDay,
       hasPendingAttempt: pending > 0,
+      totalSentEver,
+      maxTotalSends: env.MAX_TOTAL_SENDS,
     })
 
     if (!decision.eligible) {
@@ -121,10 +137,14 @@ export async function runOutreach(): Promise<PlanSummary> {
         pair,
         touchNumber: decision.touchNumber,
         hookMaxAgeHours: settings.hookMaxAgeHours,
-        autopilotEnabled: settings.autopilotEnabled,
       })
       outcomes.push({ pairKey, eligible: true, ...result })
 
+      // Any attempt that now exists counts against the ceiling, whether it was
+      // delivered or is waiting for a human.
+      if (result.status === 'SENT' || result.status === 'READY' || result.status === 'QUEUED') {
+        totalSentEver += 1
+      }
       if (result.status === 'SENT') {
         sentToTargetToday.set(pair.targetId, (sentToTargetToday.get(pair.targetId) ?? 0) + 1)
         sentBySenderToday.set(pair.senderId, (sentBySenderToday.get(pair.senderId) ?? 0) + 1)
@@ -164,9 +184,8 @@ async function createAndDispatch(args: {
   }
   touchNumber: number
   hookMaxAgeHours: number
-  autopilotEnabled: boolean
 }): Promise<Omit<PlanOutcome, 'pairKey' | 'eligible'>> {
-  const { pair, touchNumber, hookMaxAgeHours, autopilotEnabled } = args
+  const { pair, touchNumber, hookMaxAgeHours } = args
 
   // Freshest usable hook. Ordered by postedAt then gridIndex because
   // og:description gives day precision only — see detection/types.ts.
@@ -188,11 +207,17 @@ async function createAndDispatch(args: {
     throw new Error(`sender @${pair.sender.handle} has no enabled message variants — run: pnpm db:seed`)
   }
 
+  // A message written for this specific recipient beats a rotated variant every
+  // time — see prisma/bespoke.ts for why that is a safety property, not a nicety.
+  // The variant is still recorded so rotation stats stay meaningful if we fall back.
+  const usingBespoke = Boolean(pair.bespokeBody && pair.bespokeBody.trim().length > 0)
   const { body, hookLine } = renderMessage({
     persona: pair.sender,
     target: pair.target,
-    variantBody: variant.body,
-    hook,
+    variantBody: usingBespoke ? pair.bespokeBody! : variant.body,
+    // A bespoke draft already references the recipient's actual work, so bolting a
+    // generated hook line on top would read as two openings stapled together.
+    hook: usingBespoke ? null : hook,
   })
 
   const attempt = await prisma.outreachAttempt.create({
@@ -222,10 +247,11 @@ async function createAndDispatch(args: {
     return { attemptId: attempt.id, status: 'SKIPPED', hookLine }
   }
 
-  const useAutopilot = autopilotEnabled && pair.sender.autoSendEnabled
-  const sender = useAutopilot ? playwrightSender : manualAssistSender
-
-  const outcome: SendOutcome = await sender.send({
+  // There is only one sender now. The browser-driving path was removed after
+  // research established that cookie-replay into a fresh profile is the highest-risk
+  // option available, and that automating the click saves ~90 seconds a day while
+  // putting the accounts on the table. The agent prepares; a human clicks.
+  const outcome: SendOutcome = await manualAssistSender.send({
     attemptId: attempt.id,
     senderHandle: pair.sender.handle,
     sessionPath: pair.sender.sessionPath,

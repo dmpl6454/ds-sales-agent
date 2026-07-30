@@ -13,8 +13,6 @@
     "worker": "tsx src/worker/index.ts",
     "worker:dev": "tsx watch src/worker/index.ts",
     "run:slot": "tsx src/worker/runOnce.ts",
-    "session:add": "tsx src/scripts/sessionAdd.ts",
-    "session:check": "tsx src/scripts/sessionCheck.ts",
     "db:generate": "prisma generate",
     "db:migrate": "prisma migrate dev",
     "db:push": "prisma db push",
@@ -28,7 +26,9 @@
     "reclassify": "tsx src/scripts/reclassify.ts",
     "inspect": "tsx src/scripts/inspect.ts",
     "preview": "tsx src/scripts/preview.ts",
-    "agent": "tsx src/scripts/control.ts"
+    "agent": "tsx src/scripts/control.ts",
+    "send": "tsx src/scripts/send.ts",
+    "queued": "tsx src/scripts/queued.ts"
   },
   "dependencies": {
     "@prisma/adapter-better-sqlite3": "^7.9.1",

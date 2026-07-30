@@ -90,9 +90,20 @@ model OutreachPair {
   senderId String
   targetId String
 
-  /// Minimum days between sends for THIS pair. Governor also caps 1/target/day globally.
+  /// Retained for history; the governor no longer uses it. Instagram permits one
+  /// message request per non-follower, so there is no second send to cool down for.
   cooldownDays Int     @default(7)
   enabled      Boolean @default(true)
+
+  /// A message written from scratch for THIS specific recipient.
+  ///
+  /// Preferred over the rotating variants whenever present. Meta's written spam
+  /// policy states that repetitive content lowers the frequency threshold at which
+  /// restrictions apply — so at one or two messages a day, genuine per-recipient
+  /// writing is the single highest-leverage safety control available, and a shared
+  /// skeleton with substituted fields does not qualify as variation.
+  bespokeBody  String?
+  bespokeNote  String?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt

@@ -5,14 +5,15 @@ import { markSent, skipAttempt } from './actions'
 import type { AwaitingCard } from './view-model'
 
 /**
- * Messages the agent has written but cannot send itself yet.
+ * Messages the agent has written, ready for a human to send.
  *
- * This block only appears before automatic sending is switched on. Once accounts
- * are logged in and autopilot is enabled, nothing is ever waiting and this
- * disappears entirely — which is the intended end state.
+ * This is the permanent design, not a transitional state. Research on 2026-07-30
+ * established that automating the click saves about ninety seconds a day and
+ * destroys the device-identity continuity that keeps these accounts safe — so the
+ * agent does everything up to the click, and stops.
  *
- * It exists so the system is usable during that transition rather than sitting
- * inert, and so the messages can be read before trusting anything to send them.
+ * `pnpm send` is the same flow from the terminal, with the message copied to the
+ * clipboard and the recipient's profile opened for you.
  */
 export function AwaitingList({ items }: { items: AwaitingCard[] }) {
   return (
@@ -20,7 +21,7 @@ export function AwaitingList({ items }: { items: AwaitingCard[] }) {
       <h2>
         Waiting for you to send
         <span className="h2-note">
-          {items.length} message{items.length === 1 ? '' : 's'} — automatic sending is not on yet
+          {items.length} message{items.length === 1 ? '' : 's'} — written and checked; you press send
         </span>
       </h2>
       <div className="cards">

@@ -29,7 +29,7 @@ export interface CeoView {
   channels: ChannelCard[]
   accounts: AccountCard[]
 
-  /** Only non-empty before autopilot is switched on. */
+  /** Messages written and waiting for a human to send. */
   awaiting: AwaitingCard[]
   /** Things a human must do. Empty when there is nothing to do. */
   todos: string[]
@@ -130,8 +130,10 @@ export async function buildCeoView(): Promise<CeoView> {
   const challenged = senders.filter((s) => s.status === 'CHALLENGED')
   const paused = senders.filter((s) => s.status === 'PAUSED')
   const personaBroken = senders.filter((s) => validatePersona(s).length > 0)
-  const noSession = senders.filter((s) => !s.sessionPath)
   const staleRun = !lastRun || Date.now() - lastRun.startedAt.getTime() > 26 * 3_600_000
+
+  const totalSent = await prisma.outreachAttempt.count({ where: { status: { in: ['SENT', 'REPLIED'] } } })
+  const ceilingReached = env.MAX_TOTAL_SENDS !== null && totalSent >= env.MAX_TOTAL_SENDS
 
   /**
    * Blockers are collected independently rather than in an if/else chain, so
@@ -140,8 +142,8 @@ export async function buildCeoView(): Promise<CeoView> {
    * reader could clear the one item shown, expect sending to start, and find it
    * still blocked by something never surfaced.
    *
-   * The headline still shows only the most severe item — that is a summary. The
-   * list underneath is the truth.
+   * The headline shows only the most severe item — that is a summary. The list
+   * underneath is the truth.
    */
   const blockers: { severity: Health; headline: string; todo?: string }[] = []
 
@@ -150,13 +152,13 @@ export async function buildCeoView(): Promise<CeoView> {
     blockers.push({
       severity: 'broken',
       headline: `Instagram locked ${names}. Log in to that account, clear the prompt, then switch it back on.`,
-      todo: `Clear the Instagram security prompt on ${names}, then run: pnpm agent resume ${challenged[0]!.handle}`,
+      todo: `Clear the Instagram security prompt on ${names}, then: pnpm agent resume ${challenged[0]!.handle}`,
     })
   }
   for (const s of personaBroken) {
     blockers.push({
       severity: 'broken',
-      headline: 'Sending is paused: contact details on one of the accounts are invalid.',
+      headline: 'Nothing can be prepared: contact details on one of the accounts are invalid.',
       todo: `Fix contact details on @${s.handle}: ${validatePersona(s)[0]}`,
     })
   }
@@ -169,38 +171,26 @@ export async function buildCeoView(): Promise<CeoView> {
       todo: 'Start the agent: pnpm worker',
     })
   }
+  if (awaitingRaw.length > 0) {
+    blockers.push({
+      severity: 'attention',
+      headline: `${awaitingRaw.length} message${awaitingRaw.length === 1 ? '' : 's'} written and waiting for you to send.`,
+      todo: `Send the next one: pnpm send`,
+    })
+  }
   if (env.DRY_RUN) {
     blockers.push({
       severity: 'attention',
-      headline: 'Practice mode: the agent is watching and deciding, but not sending anything.',
-      todo: 'Turn off practice mode when ready to send for real (DRY_RUN=0 in .env)',
+      headline: 'Practice mode: watching and deciding, but writing nothing to send.',
+      todo: 'Turn off practice mode when ready (DRY_RUN=0 in .env)',
     })
   }
-  for (const s of noSession) {
+  if (ceilingReached) {
     blockers.push({
       severity: 'attention',
-      headline:
-        noSession.length === senders.length
-          ? 'Watching channels, but no account is logged in yet — nothing can be sent.'
-          : `${noSession.length} account(s) still need a one-time login before they can send.`,
-      todo: `Log in to @${s.handle} once: pnpm session:add --sender=${s.handle}`,
+      headline: `Send limit reached — ${totalSent} of ${env.MAX_TOTAL_SENDS} messages used. Watching, but preparing nothing new.`,
+      todo: `Raise the send limit when ready (MAX_TOTAL_SENDS in .env)`,
     })
-  }
-  if (!env.AUTOPILOT_ENABLED) {
-    blockers.push({
-      severity: 'attention',
-      headline: 'Running, but sending still needs a person to press send.',
-      todo: 'Turn on automatic sending (AUTOPILOT_ENABLED=true in .env)',
-    })
-  } else {
-    const notArmed = senders.filter((s) => !s.autoSendEnabled)
-    for (const s of notArmed) {
-      blockers.push({
-        severity: 'attention',
-        headline: 'Running, but sending still needs a person to press send.',
-        todo: `Let @${s.handle} send by itself: pnpm agent autopilot on ${s.handle}`,
-      })
-    }
   }
   if (paused.length > 0) {
     blockers.push({
@@ -218,7 +208,7 @@ export async function buildCeoView(): Promise<CeoView> {
 
   const worst = blockers.find((b) => b.severity === 'broken') ?? blockers[0]
   const health: Health = worst?.severity ?? 'healthy'
-  const headline = worst?.headline ?? 'Running normally, sending by itself.'
+  const headline = worst?.headline ?? 'Watching normally. Nothing to send right now.'
   const todos: string[] = blockers.map((b) => b.todo).filter((t): t is string => Boolean(t))
 
   // ── Replies ───────────────────────────────────────────────────────────────
@@ -319,15 +309,9 @@ export async function buildCeoView(): Promise<CeoView> {
     } else if (s.status === 'PAUSED') {
       state = 'setup'
       note = 'paused'
-    } else if (!s.sessionPath) {
-      state = 'setup'
-      note = 'not logged in yet'
-    } else if (!s.autoSendEnabled || !env.AUTOPILOT_ENABLED || env.DRY_RUN) {
-      state = 'setup'
-      note = 'sends need approval'
     } else {
       state = 'ready'
-      note = 'sending automatically'
+      note = sentThisWeek > 0 ? 'in use' : 'ready'
     }
 
     accounts.push({ handle: s.handle, name: s.displayName, autopilot: s.autoSendEnabled, sentThisWeek, state, note })

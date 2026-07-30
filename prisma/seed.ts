@@ -1,6 +1,7 @@
 import { PrismaBetterSqlite3 } from '@prisma/adapter-better-sqlite3'
 import { PrismaClient } from '../src/generated/prisma/client'
 import { MESSAGE_VARIANTS } from './variants'
+import { BESPOKE_DRAFTS } from './bespoke'
 
 /**
  * Idempotent seed. Safe to re-run: upserts by natural key and never deletes
@@ -144,6 +145,20 @@ async function main() {
     }
   }
 
+  // Bespoke first messages, one written from scratch per recipient. Preferred over
+  // the rotating variants — Meta's spam policy makes uniqueness the top safety
+  // control at this volume, and a shared skeleton does not count as variation.
+  for (const d of BESPOKE_DRAFTS) {
+    const sender = await prisma.senderAccount.findUnique({ where: { handle: d.sender } })
+    const target = await prisma.targetAccount.findUnique({ where: { handle: d.target } })
+    if (!sender || !target) continue
+    await prisma.outreachPair.update({
+      where: { senderId_targetId: { senderId: sender.id, targetId: target.id } },
+      data: { bespokeBody: d.body, bespokeNote: d.note },
+    })
+    console.log(`  bespoke  @${d.sender} → @${d.target}`)
+  }
+
   // Variants are per-sender so reply rates can be compared per account later.
   let variantCount = 0
   for (const s of SENDERS) {
@@ -174,7 +189,7 @@ async function main() {
   console.log('  greeting  channel/brand name — "Hi Mad Over Marketing," / "Hi Viral Bhayani,"')
   console.log('─'.repeat(74))
   console.log('\n  Edit any of this in the dashboard (/senders, /targets) or Prisma Studio.')
-  console.log('  Sessions are still required before autopilot: pnpm session:add --sender=<handle>\n')
+  console.log('  Bespoke first messages are seeded per recipient. Review with: pnpm queued\n')
 }
 
 main()

@@ -14,7 +14,7 @@ const NOW = new Date('2026-07-29T09:30:00.000Z')
 function base(overrides: Partial<GovernorInput> = {}): GovernorInput {
   return {
     now: NOW,
-    pair: { enabled: true, cooldownDays: 7 },
+    pair: { enabled: true },
     sender: { status: 'ACTIVE', dailyCap: 5 },
     target: { optedOut: false },
     lastSentAt: null,
@@ -24,6 +24,8 @@ function base(overrides: Partial<GovernorInput> = {}): GovernorInput {
     senderSentTodayCount: 0,
     maxPerTargetPerDay: 1,
     hasPendingAttempt: false,
+    totalSentEver: 0,
+    maxTotalSends: null,
     ...overrides,
   }
 }
@@ -35,23 +37,16 @@ describe('the happy path', () => {
     expect(d.eligible && d.touchNumber).toBe(1)
   })
 
-  it('increments touchNumber from prior contacts', () => {
-    const d = evaluatePair(base({ touchesSoFar: 4, lastSentAt: new Date(NOW.getTime() - 30 * DAY) }))
-    expect(d.eligible && d.touchNumber).toBe(5)
-  })
 
-  it('never exhausts — a pair contacted 50 times stays eligible after cooldown', () => {
-    // This system is a standing watch, not a finite sequence. There is
-    // deliberately no maximum touch count.
-    const d = evaluatePair(base({ touchesSoFar: 50, lastSentAt: new Date(NOW.getTime() - 8 * DAY) }))
-    expect(d.eligible).toBe(true)
-    expect(d.eligible && d.touchNumber).toBe(51)
+  it('is a one-shot system — a contacted pair never becomes eligible again', () => {
+    const d = evaluatePair(base({ touchesSoFar: 1, lastSentAt: new Date(NOW.getTime() - 400 * DAY) }))
+    expect(d.eligible).toBe(false)
   })
 })
 
 describe('absolute stops', () => {
   it('skips a disabled pair', () => {
-    const d = evaluatePair(base({ pair: { enabled: false, cooldownDays: 7 } }))
+    const d = evaluatePair(base({ pair: { enabled: false } }))
     expect(d).toMatchObject({ eligible: false, reason: SKIP_REASONS.PAIR_DISABLED })
   })
 
@@ -66,7 +61,7 @@ describe('absolute stops', () => {
   })
 
   it('opt-out outranks everything, including a fresh eligible pair', () => {
-    const d = evaluatePair(base({ target: { optedOut: true }, pair: { enabled: true, cooldownDays: 0 } }))
+    const d = evaluatePair(base({ target: { optedOut: true } }))
     expect(d).toMatchObject({ eligible: false, reason: SKIP_REASONS.TARGET_OPTED_OUT })
   })
 })
@@ -90,35 +85,36 @@ describe('a reply halts every sender to that target', () => {
   })
 })
 
-describe('cooldown', () => {
-  it('blocks one hour before the cooldown expires', () => {
-    const d = evaluatePair(base({ lastSentAt: new Date(NOW.getTime() - (7 * DAY - 3_600_000)) }))
-    expect(d).toMatchObject({ eligible: false, reason: SKIP_REASONS.COOLDOWN_ACTIVE })
+describe('one shot per target, ever', () => {
+  /**
+   * Instagram permits exactly one message request to a non-follower and drops
+   * further ones until they accept, so a cooldown-and-repeat model was describing
+   * a capability the platform does not offer. Repeated contact with a non-responder
+   * is also what Meta's written spam policy names as lowering the threshold.
+   */
+  it('allows the first contact', () => {
+    expect(evaluatePair(base({ lastSentAt: null, touchesSoFar: 0 })).eligible).toBe(true)
   })
 
-  it('allows exactly at the boundary', () => {
-    expect(evaluatePair(base({ lastSentAt: new Date(NOW.getTime() - 7 * DAY) })).eligible).toBe(true)
+  it('refuses a second contact one day later', () => {
+    const d = evaluatePair(base({ lastSentAt: new Date(NOW.getTime() - DAY), touchesSoFar: 1 }))
+    expect(d).toMatchObject({ eligible: false, reason: SKIP_REASONS.ALREADY_CONTACTED })
   })
 
-  it('allows one second past the boundary', () => {
-    expect(evaluatePair(base({ lastSentAt: new Date(NOW.getTime() - (7 * DAY + 1000)) })).eligible).toBe(true)
+  it('refuses a second contact a YEAR later — there is no waiting it out', () => {
+    const d = evaluatePair(base({ lastSentAt: new Date(NOW.getTime() - 365 * DAY), touchesSoFar: 1 }))
+    expect(d).toMatchObject({ eligible: false, reason: SKIP_REASONS.ALREADY_CONTACTED })
   })
 
-  it('reports how long is left, for the dashboard', () => {
-    const d = evaluatePair(base({ lastSentAt: new Date(NOW.getTime() - 2 * DAY) }))
-    expect(d.eligible).toBe(false)
-    expect(!d.eligible && d.detail).toContain('5d remaining')
+  it('refuses when touchesSoFar says contacted even with no recorded sentAt', () => {
+    // Belt and braces: either signal alone is enough to block.
+    const d = evaluatePair(base({ lastSentAt: null, touchesSoFar: 1 }))
+    expect(d).toMatchObject({ eligible: false, reason: SKIP_REASONS.ALREADY_CONTACTED })
   })
 
-  it('honours a per-pair cooldown override', () => {
-    const threeDaysAgo = new Date(NOW.getTime() - 3 * DAY)
-    expect(evaluatePair(base({ pair: { enabled: true, cooldownDays: 3 }, lastSentAt: threeDaysAgo })).eligible).toBe(true)
-    expect(evaluatePair(base({ pair: { enabled: true, cooldownDays: 7 }, lastSentAt: threeDaysAgo })).eligible).toBe(false)
-  })
-
-  it('a cooldown of 0 means every slot is eligible', () => {
-    const d = evaluatePair(base({ pair: { enabled: true, cooldownDays: 0 }, lastSentAt: new Date(NOW.getTime() - 60_000) }))
-    expect(d.eligible).toBe(true)
+  it('explains itself in the detail, for the dashboard', () => {
+    const d = evaluatePair(base({ lastSentAt: new Date(NOW.getTime() - 3 * DAY), touchesSoFar: 1 }))
+    expect(!d.eligible && d.detail).toContain('one message per target, ever')
   })
 })
 
@@ -148,6 +144,54 @@ describe('daily caps', () => {
   })
 })
 
+describe('the lifetime send ceiling', () => {
+  /**
+   * The guard that must hold even if every other rule has a bug. "Send exactly one
+   * message to prove it works" is enforced here rather than by an operator
+   * remembering to turn something off.
+   */
+  it('blocks everything once the ceiling is reached', () => {
+    const d = evaluatePair(base({ totalSentEver: 1, maxTotalSends: 1 }))
+    expect(d).toMatchObject({ eligible: false, reason: SKIP_REASONS.LIFETIME_CAP })
+  })
+
+  it('allows the very first send when the ceiling is 1', () => {
+    expect(evaluatePair(base({ totalSentEver: 0, maxTotalSends: 1 })).eligible).toBe(true)
+  })
+
+  it('outranks every other rule, including a perfectly eligible pair', () => {
+    const d = evaluatePair(
+      base({ totalSentEver: 5, maxTotalSends: 1 }),
+    )
+    expect(d).toMatchObject({ eligible: false, reason: SKIP_REASONS.LIFETIME_CAP })
+  })
+
+  it('is reported before target opt-out, because it is the more absolute stop', () => {
+    const d = evaluatePair(base({ totalSentEver: 1, maxTotalSends: 1, target: { optedOut: true } }))
+    expect(d).toMatchObject({ eligible: false, reason: SKIP_REASONS.LIFETIME_CAP })
+  })
+
+  it('counts prepared-but-unsent messages too', () => {
+    // With four routing pairs and a ceiling of 1, counting only delivered messages
+    // would let all four be drafted before the ceiling bound.
+    const d = evaluatePair(base({ totalSentEver: 1, maxTotalSends: 1, lastSentAt: null, touchesSoFar: 0 }))
+    expect(d).toMatchObject({ eligible: false, reason: SKIP_REASONS.LIFETIME_CAP })
+  })
+
+  it('says how to raise it', () => {
+    const d = evaluatePair(base({ totalSentEver: 1, maxTotalSends: 1 }))
+    expect(!d.eligible && d.detail).toContain('MAX_TOTAL_SENDS')
+  })
+
+  it('null means no ceiling', () => {
+    expect(evaluatePair(base({ totalSentEver: 9999, maxTotalSends: null })).eligible).toBe(true)
+  })
+
+  it('a ceiling of 0 blocks the very first send', () => {
+    expect(evaluatePair(base({ totalSentEver: 0, maxTotalSends: 0 })).eligible).toBe(false)
+  })
+})
+
 describe('pending attempts', () => {
   it('does not stack a second message while one is unsent', () => {
     // In manual mode, an un-tapped attempt from yesterday must not become a
@@ -171,10 +215,8 @@ describe('the Phase 1 routing matrix, simulated over a week', () => {
     expect(second.eligible).toBe(false)
   })
 
-  it('re-opens the pair after the cooldown rather than retiring it', () => {
-    const lastSent = new Date(NOW.getTime() - 7 * DAY)
-    const d = evaluatePair(base({ lastSentAt: lastSent, touchesSoFar: 12, targetSentTodayCount: 0 }))
-    expect(d.eligible).toBe(true)
-    expect(d.eligible && d.touchNumber).toBe(13)
+  it('does NOT re-open a pair after time passes — one shot is permanent', () => {
+    const d = evaluatePair(base({ lastSentAt: new Date(NOW.getTime() - 7 * DAY), touchesSoFar: 1 }))
+    expect(d.eligible).toBe(false)
   })
 })

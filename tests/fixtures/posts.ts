@@ -116,3 +116,37 @@ export const VIRALBHAYANI_POSTS: PostFixture[] = [
 ]
 
 export const ALL_POSTS = [...MOM_POSTS, ...VIRALBHAYANI_POSTS]
+
+
+// ── adapters ─────────────────────────────────────────────────────────────────
+//
+// Detection now reads Instagram's JSON feed rather than parsing og:description,
+// so the detectors take a structured post. These fixtures keep the original
+// captured og strings (they are the provenance) and derive the caption from them,
+// so the test data still traces back to something real that was observed.
+
+import type { EnrichedPost } from '@/detection/types'
+
+/** Pull the caption back out of a captured og:description string. */
+export function captionOf(og: string): string {
+  const m = /:\s*"([\s\S]*)"\.?\s*$/.exec(og.trim())
+  return (m?.[1] ?? '')
+    .replace(/&quot;/g, '"')
+    .replace(/&#x([0-9a-fA-F]+);/g, (_, h: string) => String.fromCodePoint(parseInt(h, 16)))
+    .replace(/&#(\d+);/g, (_, d: string) => String.fromCodePoint(Number(d)))
+    .replace(/&amp;/g, '&')
+}
+
+/** Build the structured post a detector receives. */
+export function asPost(f: PostFixture, gridIndex = 0): EnrichedPost {
+  return {
+    shortcode: f.shortcode,
+    permalink: `https://www.instagram.com/p/${f.shortcode}/`,
+    ownerHandle: MOM_POSTS.includes(f) ? 'madovermarketing_mom' : 'viralbhayani',
+    caption: captionOf(f.og),
+    likeCount: 0,
+    commentCount: 0,
+    postedAt: new Date('2026-07-29T12:00:00Z'),
+    gridIndex,
+  }
+}

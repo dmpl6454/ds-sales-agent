@@ -24,7 +24,6 @@ async function main() {
   console.log(`  posts seen  ${result.postsSeen}`)
   console.log(`  new posts   ${result.newPosts}`)
   console.log(`  campaigns   ${result.detected}`)
-  console.log(`  replies     ${result.repliesFound}`)
   console.log(`  queued      ${result.queued}`)
   console.log(`  sent        ${result.sent}`)
   console.log('─────────────────────────────────────────\n')

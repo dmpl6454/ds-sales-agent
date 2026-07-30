@@ -40,6 +40,22 @@ const schema = z.object({
   TZ: z.string().optional().transform((v) => v ?? 'Asia/Kolkata'),
   CATCHUP_WINDOW_MINUTES: intish(240, 0, 1440),
 
+  /**
+   * Hard lifetime ceiling on messages ever sent. Empty string = no ceiling.
+   * Defaults to 1: a fresh deployment can send exactly one message, which must
+   * be raised deliberately. The safest default is the one that cannot surprise
+   * you.
+   */
+  MAX_TOTAL_SENDS: z
+    .string()
+    .optional()
+    .transform((v) => {
+      if (v === undefined || v.trim() === '') return 1
+      if (v.trim().toLowerCase() === 'unlimited') return null
+      const n = Number(v)
+      return Number.isFinite(n) && n >= 0 ? Math.floor(n) : 1
+    }),
+
   DEFAULT_COOLDOWN_DAYS: intish(7, 0, 365),
   MAX_PER_TARGET_PER_DAY: intish(1, 1, 10),
   HOOK_MAX_AGE_HOURS: intish(72, 1, 720),

@@ -1,5 +1,4 @@
 import { describe, it, expect } from 'vitest'
-import { parseOgDescription } from '@/detection/enrich'
 import {
   momDetector,
   extractBrands,
@@ -9,9 +8,9 @@ import {
 } from '@/detection/detectors/mom'
 import { passthroughDetector } from '@/detection/detectors/passthrough'
 import { getDetector } from '@/detection/detectors'
-import { MOM_POSTS, VIRALBHAYANI_POSTS, type PostFixture } from './fixtures/posts'
+import { MOM_POSTS, VIRALBHAYANI_POSTS, asPost, type PostFixture } from './fixtures/posts'
 
-const enrich = (f: PostFixture, i = 0) => parseOgDescription(f.shortcode, f.og, i)
+const enrich = (f: PostFixture, i = 0) => asPost(f, i)
 
 describe('momDetector — precision on real posts', () => {
   const paid = MOM_POSTS.filter((p) => p.truth === 'PAID')

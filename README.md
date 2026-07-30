@@ -24,15 +24,31 @@ pnpm worker          # the 11:00 / 15:00 / 17:00 / 20:00 IST watch
 ```
 Every slot — 11:00 / 15:00 / 17:00 / 20:00 IST, daily:
 
-  1. READ    both channels     → detect paid campaigns
-  2. LISTEN  our DM threads    → did a target reply? halt every sender to them
-  3. DECIDE  cadence governor  → who is eligible right now
-  4. SEND    logged-in browser → deliver, then confirm by reading it back
+  1. READ     both channels   → detect paid campaigns (anonymous, no login)
+  2. DECIDE   safety gate     → is any pair permitted a message at all
+  3. PREPARE  bespoke draft   → written for that recipient, queued
+
+Then, when you are ready:
+  pnpm send   → copies it to your clipboard, opens their profile in YOUR browser
 ```
 
-Reply detection runs *before* planning, so a reply halts a target in the same run
-it is discovered rather than one slot later — otherwise we could answer someone's
-reply with another templated pitch.
+**The final click is deliberately human.** Research on 2026-07-30 (18 agents, 10 of
+12 load-bearing claims refuted on verification) established that automating it
+saves ~90 seconds/day and destroys the device-identity continuity that keeps these
+accounts safe. Cookie-replay into an automation profile creates no login event and
+presents new device identifiers; `sessionid` is a bearer token with no channel
+binding, so it *works* right up until enforcement arrives silently. Attaching to a
+real Chrome does not help — `navigator.webdriver` is true in every Playwright
+configuration, and `Runtime.enable` is emitted identically whether you launch or
+attach.
+
+Two platform facts shape everything else:
+
+- **One message request per non-follower, text-only.** Follow-up sequences are
+  impossible by construction, so this is one shot per target, ever.
+- **Repetition lowers the enforcement threshold** (Meta's written policy). Each
+  message is therefore written from scratch for that recipient — templates and
+  spintax do not count as variation.
 
 ---
 
