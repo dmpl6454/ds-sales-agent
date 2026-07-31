@@ -6,6 +6,7 @@ import { env } from '@/lib/env'
 import { runSlot } from '@/worker/runSlot'
 import { browserSender } from '@/outreach/senders/browser'
 import { profileStatus } from '@/outreach/browser/profile'
+import { recheckBeforeSend } from '@/outreach/gate'
 import { setSetting, SETTING_KEYS } from '@/lib/settings'
 import { startConnect, pollConnect, cancelConnect, type ConnectState } from '@/outreach/browser/connect'
 import { handleExists } from '@/detection/exists'
@@ -59,10 +60,14 @@ export interface SendNowResult {
  *
  * Guards, in the order they bite:
  *
- *   1. The attempt must still be awaiting send. A double click cannot double send.
- *   2. The Chrome profile must exist and be logged in as exactly this sender.
- *   3. The composer must contain our message before Enter is pressed.
- *   4. The message must appear in the thread before it is recorded as SENT.
+ *   1. `recheckBeforeSend` — the SAME gate autopilot runs: still waiting, account
+ *      ACTIVE and connected, route on, channel not retired, THEY HAVE NOT REPLIED,
+ *      and neither daily cap spent. The only difference from the unattended path is
+ *      that a human being present substitutes for the auto-send switch.
+ *   2. An atomic claim to SENDING, so two clicks cannot become two messages.
+ *   3. The Chrome profile must be logged in as exactly this sender.
+ *   4. The composer must contain our message before Enter is pressed.
+ *   5. The message must appear in the thread before it is recorded as SENT.
  *
  * A checkpoint marks the sender CHALLENGED and halts it. That state is cleared by a
  * human who has looked at the account, never automatically.
@@ -74,32 +79,51 @@ export async function sendNow(attemptId: string): Promise<SendNowResult> {
   })
   const { sender, target } = attempt.pair
 
-  // Guard 1 — idempotency. Two clicks, or a click racing the worker, must not
-  // produce two messages to a real prospect.
-  if (attempt.status !== 'READY' && attempt.status !== 'QUEUED') {
-    return { ok: false, message: `already ${attempt.status.toLowerCase()} — nothing sent` }
-  }
-  if (sender.status !== 'ACTIVE') {
-    return { ok: false, message: `@${sender.handle} is ${sender.status} — sending is halted for this account` }
+  /**
+   * Guard 1 — the SAME re-check autopilot runs.
+   *
+   * This used to be three inline guards, and it silently lacked five that
+   * `deliverWaiting` enforced: the route being switched off, the channel retired,
+   * *they replied*, and both daily caps. A human clicking Send is not a reason to skip
+   * any of those — it is only a reason not to require the account's unattended-sending
+   * switch, which is the single difference `unattended: false` expresses.
+   */
+  const gate = await recheckBeforeSend(attempt, { unattended: false })
+  if (!gate.ok) {
+    const fix =
+      gate.reason === 'no-session'
+        ? ` Press Connect on its row, and log in in the Chrome window that opens.`
+        : ''
+    return { ok: false, message: `@${sender.handle}: ${gate.detail ?? gate.reason}.${fix}` }
   }
 
-  // Guard 2 — a profile that was never logged into by hand cannot send, and must
-  // not be "fixed" by importing a session from somewhere else.
-  const profile = profileStatus(sender.handle)
-  if (!profile.hasSession) {
-    return {
-      ok: false,
-      message: `@${sender.handle} is not connected yet. Press Connect on its row, and log in in the Chrome window that opens.`,
-    }
+  /**
+   * Guard 2 — claim it ATOMICALLY.
+   *
+   * This was a check-then-act: read the status, then write SENDING as a separate
+   * statement, under a comment asserting "a double click cannot double send". Two
+   * clicks, two operators, or a click racing a slot's `deliverWaiting` all passed the
+   * read before either wrote. `deliverWaiting` got this right with a conditional
+   * updateMany; the button did not. Condition and write in one statement.
+   */
+  const claimed = await prisma.outreachAttempt.updateMany({
+    where: { id: attemptId, status: { in: ['READY', 'QUEUED'] } },
+    data: { status: 'SENDING' },
+  })
+  if (claimed.count === 0) {
+    const now = await prisma.outreachAttempt.findUnique({
+      where: { id: attemptId },
+      select: { status: true },
+    })
+    return { ok: false, message: `already ${(now?.status ?? 'gone').toLowerCase()} — nothing sent` }
   }
 
-  await prisma.outreachAttempt.update({ where: { id: attemptId }, data: { status: 'SENDING' } })
   await audit('attempt.send.start', `OutreachAttempt:${attemptId}`, `@${sender.handle} → @${target.handle}`)
 
   const outcome = await browserSender.send({
     attemptId,
     senderHandle: sender.handle,
-    sessionPath: profile.dir,
+    sessionPath: profileStatus(sender.handle).dir,
     targetHandle: target.handle,
     body: attempt.renderedBody,
   })
