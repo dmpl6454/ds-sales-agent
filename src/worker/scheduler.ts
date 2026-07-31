@@ -68,14 +68,45 @@ export async function readHeartbeat(): Promise<{ beat: SchedulerHeartbeat; fresh
 export async function startScheduler(host: SchedulerHeartbeat['host']): Promise<boolean> {
   if (started) return true
 
+  /**
+   * Is another scheduler REALLY running?
+   *
+   * A fresh heartbeat is not enough, and trusting it alone broke hands-free
+   * completely. Restarting the dashboard writes a heartbeat, and a `kill -9` gives
+   * the old process no chance to clear it — so a restart inside the 3-minute
+   * staleness window found its own corpse's heartbeat, declared "another scheduler
+   * is already running", and declined. The dashboard then sat there with autopilot
+   * ON and nothing scheduled, forever, because the refusal never retried.
+   *
+   * The pid is right there in the record, so ask the operating system instead of
+   * inferring liveness from a timestamp. `process.kill(pid, 0)` sends no signal; it
+   * throws only if no such process exists. Local-only by nature, which is exactly
+   * the case this guard is for — two processes on one machine.
+   */
   const existing = await readHeartbeat()
-  if (existing?.fresh && existing.beat.pid !== process.pid) {
-    log.warn('another scheduler is already running — not starting a second', {
-      otherPid: existing.beat.pid,
-      otherHost: existing.beat.host,
-      lastBeat: existing.beat.at,
-    })
-    return false
+  if (existing && existing.beat.pid !== process.pid) {
+    const otherAlive = (() => {
+      try {
+        process.kill(existing.beat.pid, 0)
+        return true
+      } catch {
+        return false
+      }
+    })()
+
+    if (existing.fresh && otherAlive) {
+      log.warn('another scheduler is already running — not starting a second', {
+        otherPid: existing.beat.pid,
+        otherHost: existing.beat.host,
+        lastBeat: existing.beat.at,
+      })
+      return false
+    }
+    if (existing.fresh && !otherAlive) {
+      log.step('taking over from a scheduler that died without clearing its heartbeat', {
+        deadPid: existing.beat.pid,
+      })
+    }
   }
 
   started = true

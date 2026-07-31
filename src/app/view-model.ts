@@ -76,6 +76,8 @@ export interface AutopilotState {
    * without the page mentioning it.
    */
   scheduler: SchedulerState
+  /** "Next check at 15:00" — answers "when will this actually send?" on screen. */
+  nextSlotLabel: string
   /** Accounts that are armed AND have a logged-in Chrome profile. */
   readyHandles: string[]
   /** Armed, but no hand login yet — the toggle will not help these. */
@@ -434,6 +436,7 @@ export async function buildCeoView(): Promise<CeoView> {
       host: hb?.beat.host ?? null,
       lastBeatLabel: hb ? relative(new Date(hb.beat.at)) : null,
     },
+    nextSlotLabel: nextSlotLabel(),
     readyHandles: senders
       .filter((s) => s.autoSendEnabled && s.status === 'ACTIVE' && profileStatus(s.handle).hasSession)
       .map((s) => s.handle),

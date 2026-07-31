@@ -51,7 +51,7 @@ export function AutopilotPanel({ state, accounts }: { state: AutopilotState; acc
             <div className="autopilot-sub">
               {state.on
                 ? covered > 0
-                  ? `At 11:00, 15:00, 17:00 and 20:00 IST, ${state.readyHandles.map((h) => '@' + h).join(', ')} will send permitted messages with nobody present.`
+                  ? `${state.nextSlotLabel}, ${state.readyHandles.map((h) => '@' + h).join(', ')} will send anything waiting — and anything new — with nobody present. Slots are 11:00, 15:00, 17:00 and 20:00 IST.`
                   : 'Under Your accounts, connect an account and switch its Auto-send on — until then this does nothing.'
                 : 'Every message is written and safety-checked, then waits for a click.'}
             </div>

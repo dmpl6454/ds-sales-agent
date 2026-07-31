@@ -5,6 +5,7 @@ import { writeRecord } from '@/lib/json'
 import { istStamp } from '@/lib/time'
 import { runDetection } from '@/detection/pipeline'
 import { runOutreach } from '@/outreach/plan'
+import { deliverWaiting } from '@/outreach/deliver'
 
 /**
  * One complete slot:
@@ -74,11 +75,33 @@ export async function runSlot(slot: string): Promise<SlotResult> {
     log.alarm('detection stage threw — continuing to outreach anyway', { error: message })
   }
 
-  // ── 2. Decide and prepare ─────────────────────────────────────────────────
+  // ── 2. Deliver what is already waiting ────────────────────────────────────
+  //
+  // Before planning, not after. Delivering is the point of a slot; drafting is
+  // preparation for the next one. This step exists because without it autopilot
+  // could only ever send a message it had just created — a draft prepared while
+  // autopilot was off stayed waiting forever, since the governor correctly refuses
+  // to stack a second unsent message on the same pair.
+  try {
+    const d = await deliverWaiting()
+    sent += d.sent
+    detail.delivered = d.outcomes
+    if (d.failed > 0) {
+      status = status === 'OK' ? 'PARTIAL' : status
+      errors.push(`${d.failed} delivery failure(s)`)
+    }
+  } catch (err) {
+    status = 'PARTIAL'
+    const message = err instanceof Error ? err.message : String(err)
+    errors.push(`delivery: ${message}`)
+    log.alarm('delivery stage threw — waiting messages remain waiting', { error: message })
+  }
+
+  // ── 3. Decide and prepare ─────────────────────────────────────────────────
   try {
     const o = await runOutreach()
     queued = o.queued
-    sent = o.sent
+    sent += o.sent
     detail.outreach = o.outcomes
     if (o.failed > 0) {
       status = status === 'OK' ? 'PARTIAL' : status
