@@ -95,6 +95,29 @@ export class TwoFactorRequiredError extends Error {
   }
 }
 
+/**
+ * A session cookie exists but the identity lookup could not be made — a network blip, a
+ * timeout, Instagram returning something unparseable.
+ *
+ * Distinct from NotLoggedInError because `loggedInAs` used to swallow every error into
+ * `null`, which `assertLoggedInAs` turned into "not logged in, run pnpm ig:login". That
+ * told the operator to re-login on a transient failure, and re-logging-in is the action
+ * that carries real risk in this design. "I could not ask" is a third answer.
+ */
+export class IdentityCheckFailedError extends Error {
+  constructor(
+    readonly handle: string,
+    /** Named `detail` rather than `cause`, which collides with Error.cause. */
+    readonly detail: string,
+  ) {
+    super(
+      `could not confirm which account @${handle} is logged in as (${detail}) — not sending, ` +
+        `and NOT a reason to log in again`,
+    )
+    this.name = 'IdentityCheckFailedError'
+  }
+}
+
 export class WrongAccountError extends Error {
   constructor(
     readonly expected: string,
@@ -221,7 +244,18 @@ export async function sessionUserId(page: Page): Promise<string | null> {
   return raw && /^\d{1,25}$/.test(raw) ? raw : null
 }
 
-export async function loggedInAs(page: Page): Promise<string | null> {
+export type IdentityResult =
+  | { kind: 'logged-in'; username: string }
+  | { kind: 'logged-out' }
+  | { kind: 'unknown'; detail: string }
+
+/**
+ * Who is this profile logged in as — with "I could not tell" as a distinct answer.
+ */
+export async function identify(page: Page): Promise<IdentityResult> {
+  const userId = await sessionUserId(page)
+  if (!userId) return { kind: 'logged-out' }
+
   try {
     /**
      * Two steps, because there is no single endpoint that answers "who am I" on
@@ -244,9 +278,6 @@ export async function loggedInAs(page: Page): Promise<string | null> {
      * session exists at all; the lookup establishes whose it is. Both matter —
      * sending from the wrong account is its own failure.
      */
-    const userId = await sessionUserId(page)
-    if (!userId) return null
-
     const res = await page.request.get(`https://www.instagram.com/api/v1/users/${userId}/info/`, {
       headers: { 'x-ig-app-id': '936619743392459' },
     })
@@ -254,13 +285,24 @@ export async function loggedInAs(page: Page): Promise<string | null> {
     // Content type, not just status: logged out, Instagram serves the login page
     // with HTTP 200 and HTML rather than a 4xx.
     const contentType = res.headers()['content-type'] ?? ''
-    if (!res.ok() || !contentType.includes('json')) return null
+    if (!res.ok() || !contentType.includes('json')) return { kind: 'logged-out' }
 
     const body = (await res.json()) as { user?: { username?: string } }
-    return body.user?.username?.toLowerCase() ?? null
-  } catch {
-    return null
+    const username = body.user?.username?.toLowerCase()
+    return username ? { kind: 'logged-in', username } : { kind: 'logged-out' }
+  } catch (err) {
+    return { kind: 'unknown', detail: err instanceof Error ? err.message : String(err) }
   }
+}
+
+/**
+ * Backwards-compatible wrapper: `null` means "not confirmed as anyone". `connect.ts`
+ * uses this, where the three-way distinction is not needed — an unknown there just keeps
+ * the poll waiting, which is correct.
+ */
+export async function loggedInAs(page: Page): Promise<string | null> {
+  const r = await identify(page)
+  return r.kind === 'logged-in' ? r.username : null
 }
 
 /**
@@ -272,7 +314,10 @@ export async function loggedInAs(page: Page): Promise<string | null> {
  * happily type a pitch into a login form if nothing checked.
  */
 export async function assertLoggedInAs(page: Page, expected: string): Promise<void> {
-  const actual = await loggedInAs(page)
-  if (actual === null) throw new NotLoggedInError(expected)
-  if (actual !== expected.toLowerCase()) throw new WrongAccountError(expected, actual)
+  const r = await identify(page)
+  // Three outcomes, three errors. Collapsing "could not ask" into "not logged in" sent
+  // the operator to re-login for a network blip.
+  if (r.kind === 'unknown') throw new IdentityCheckFailedError(expected, r.detail)
+  if (r.kind === 'logged-out') throw new NotLoggedInError(expected)
+  if (r.username !== expected.toLowerCase()) throw new WrongAccountError(expected, r.username)
 }

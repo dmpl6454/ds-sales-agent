@@ -274,30 +274,42 @@ function AccountRow({ account }: { account: AccountCard }) {
 
 function RouteChip({ senderHandle, route }: { senderHandle: string; route: AccountCard['routes'][number] }) {
   const [busy, setBusy] = useState(false)
+  const [msg, setMsg] = useState<string | null>(null)
+  /**
+   * The result used to be discarded, so a refusal - a retired channel, a route that no
+   * longer exists - showed the operator nothing and the chip simply reverted. A control
+   * that silently does nothing reads as broken, and the next move is to press it again.
+   * Only refusals are surfaced; a success is visible in the chip itself.
+   */
   const flip = async () => {
     setBusy(true)
+    setMsg(null)
     try {
-      await setPairEnabled(senderHandle, route.targetHandle, !route.enabled)
+      const r = await setPairEnabled(senderHandle, route.targetHandle, !route.enabled)
+      if (!r.ok) setMsg(r.message)
     } finally {
       setBusy(false)
     }
   }
   return (
-    <button
-      className={`chip ${route.enabled ? 'on' : ''}`}
-      onClick={flip}
-      disabled={busy || route.targetRetired}
-      title={
-        route.targetRetired
-          ? `@${route.targetHandle} is retired and will never be contacted again`
-          : route.enabled
-            ? `Stop messaging @${route.targetHandle} from @${senderHandle}`
-            : `Let @${senderHandle} message @${route.targetHandle}`
-      }
-    >
-      {route.enabled ? '● ' : '○ '}
-      @{route.targetHandle}
-    </button>
+    <>
+      <button
+        className={`chip ${route.enabled ? 'on' : ''}`}
+        onClick={flip}
+        disabled={busy || route.targetRetired}
+        title={
+          route.targetRetired
+            ? `@${route.targetHandle} is retired and will never be contacted again`
+            : route.enabled
+              ? `Stop messaging @${route.targetHandle} from @${senderHandle}`
+              : `Let @${senderHandle} message @${route.targetHandle}`
+        }
+      >
+        {route.enabled ? '● ' : '○ '}
+        @{route.targetHandle}
+      </button>
+      {msg ? <span className="acc-note">{msg}</span> : null}
+    </>
   )
 }
 

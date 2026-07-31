@@ -4,6 +4,7 @@ import { log } from '@/lib/logger'
 import { sendDm } from '@/outreach/browser/sendDm'
 import {
   CheckpointError,
+  IdentityCheckFailedError,
   NotLoggedInError,
   TwoFactorRequiredError,
   WrongAccountError,
@@ -77,6 +78,11 @@ export const browserSender: OutreachSender = {
         return { status: 'FAILED', error: err.message }
       }
       if (err instanceof WrongAccountError) {
+        return { status: 'FAILED', error: err.message }
+      }
+      // Could not reach Instagram to confirm identity. Not a checkpoint, not an expiry -
+      // just try again next slot.
+      if (err instanceof IdentityCheckFailedError) {
         return { status: 'FAILED', error: err.message }
       }
       return { status: 'FAILED', error: err instanceof Error ? err.message : String(err) }

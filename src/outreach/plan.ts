@@ -421,11 +421,18 @@ async function applyOutcome(
     return
   }
 
-  // FAILED. A challenge pauses the sender so nothing else touches it until a
-  // human has looked. Retrying into a challenge is how accounts get banned.
+  /**
+   * FAILED — but keep the draft READY so a human can retry or send it by hand, which is
+   * what `deliverWaiting` and `sendNow` both already do. Setting FAILED here abandoned a
+   * perfectly good body with no Send button, and left the pair to redraft from scratch
+   * next slot. Same event, three different outcomes across three paths.
+   *
+   * A challenge additionally pauses the sender so nothing else touches it until a human
+   * has looked. Retrying into a challenge is how accounts get banned.
+   */
   await prisma.outreachAttempt.update({
     where: { id: attemptId },
-    data: { status: 'FAILED', error: outcome.error },
+    data: { status: 'READY', error: outcome.error },
   })
   if (outcome.challenged) {
     await prisma.senderAccount.update({ where: { id: senderId }, data: { status: 'CHALLENGED' } })

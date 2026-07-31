@@ -464,9 +464,16 @@ export async function addSender(handleRaw: string, displayNameRaw: string): Prom
   if (await prisma.senderAccount.findUnique({ where: { handle } })) {
     return { ok: false, message: `@${handle} is already one of your accounts.` }
   }
-  if (await prisma.targetAccount.findUnique({ where: { handle } })) {
-    return { ok: false, message: `@${handle} is already a channel you watch — it cannot also send.` }
-  }
+  /**
+   * Being both a sender and a target is allowed — messaging one account you own from
+   * another is the safest end-to-end rehearsal available, which is exactly why
+   * `addTarget` permits it. This used to refuse it, so the same combined state was
+   * reachable by adding the target second and forbidden by adding the sender second.
+   *
+   * The invariant that actually matters is narrower and is enforced below: a sender must
+   * never message ITSELF, so that pair is simply not created.
+   */
+  const alsoATarget = await prisma.targetAccount.findUnique({ where: { handle } })
 
   const exists = await handleExists(handle)
   if (exists === 'missing') return { ok: false, message: `@${handle} does not exist on Instagram.` }
@@ -495,23 +502,31 @@ export async function addSender(handleRaw: string, displayNameRaw: string): Prom
     data: MESSAGE_VARIANTS.map((v) => ({ senderId: sender.id, label: v.label, body: v.body })),
   })
 
-  // Same rule as addTarget: never a pair from an account to itself.
+  // Same rule as addTarget: never a pair from an account to itself. One statement, so a
+  // failure part-way cannot leave a sender wired to only some channels.
   const targets = await prisma.targetAccount.findMany()
-  for (const t of targets) {
-    if (t.handle === handle) continue
-    await prisma.outreachPair.create({
-      data: { senderId: sender.id, targetId: t.id, cooldownDays: env.DEFAULT_COOLDOWN_DAYS, enabled: false },
-    })
-  }
+  await prisma.outreachPair.createMany({
+    data: targets
+      .filter((t) => t.handle !== handle)
+      .map((t) => ({
+        senderId: sender.id,
+        targetId: t.id,
+        cooldownDays: env.DEFAULT_COOLDOWN_DAYS,
+        enabled: false,
+      })),
+  })
 
   await audit('sender.added', `SenderAccount:${handle}`, `${targets.length} pairs created, all disabled`)
   revalidatePath('/')
   return {
     ok: true,
     message:
-      exists === 'unknown'
+      (exists === 'unknown'
         ? `Added @${handle}. Could not reach Instagram to confirm it exists — check the spelling. Connect it next.`
-        : `Added @${handle}. Connect it next, then enable the channels you want it to message.`,
+        : `Added @${handle}. Connect it next, then enable the channels you want it to message.`) +
+      (alsoATarget
+        ? ` Note @${handle} is also a channel you watch; no route from it to itself was created.`
+        : ''),
   }
 }
 
@@ -607,12 +622,16 @@ export async function addTarget(
    * send path would not survive it, so that pair is simply not created.
    */
   const senders = await prisma.senderAccount.findMany()
-  for (const s of senders) {
-    if (s.handle === handle) continue
-    await prisma.outreachPair.create({
-      data: { senderId: s.id, targetId: target.id, cooldownDays: env.DEFAULT_COOLDOWN_DAYS, enabled: false },
-    })
-  }
+  await prisma.outreachPair.createMany({
+    data: senders
+      .filter((s) => s.handle !== handle)
+      .map((s) => ({
+        senderId: s.id,
+        targetId: target.id,
+        cooldownDays: env.DEFAULT_COOLDOWN_DAYS,
+        enabled: false,
+      })),
+  })
 
   await audit('target.added', `TargetAccount:${handle}`, `${senders.length} pairs created, all disabled`)
   revalidatePath('/')
