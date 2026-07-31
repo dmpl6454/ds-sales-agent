@@ -2,9 +2,9 @@ import { prisma } from '@/lib/db'
 import { env } from '@/lib/env'
 import { log } from '@/lib/logger'
 import { getSettings } from '@/lib/settings'
-import { istDayStart } from '@/lib/time'
 import { browserSender } from './senders/browser'
 import { profileStatus } from './browser/profile'
+import { recheckBeforeSend } from './gate'
 
 /**
  * Deliver messages that are ALREADY waiting.
@@ -60,7 +60,6 @@ export async function deliverWaiting(): Promise<DeliverResult> {
   })
   if (waiting.length === 0) return out
 
-  const dayStart = istDayStart()
 
   for (const attempt of waiting) {
     const { sender, target } = attempt.pair
@@ -72,53 +71,17 @@ export async function deliverWaiting(): Promise<DeliverResult> {
       log.step('waiting message held back', { pair: pairKey, reason })
     }
 
-    if (!sender.autoSendEnabled) {
-      hold('auto-send is off for this account')
-      continue
-    }
-    if (sender.status !== 'ACTIVE') {
-      hold(`account is ${sender.status}`)
-      continue
-    }
-    if (!attempt.pair.enabled) {
-      hold('this route is switched off')
-      continue
-    }
-    if (target.optedOut) {
-      hold('channel is retired')
-      continue
-    }
-    if (!profileStatus(sender.handle).hasSession) {
-      hold('account is not connected')
-      continue
-    }
-
-    // A reply anywhere on this target halts every sender to it — a live conversation
-    // must never receive a queued cold pitch.
-    const replied = await prisma.outreachAttempt.findFirst({
-      where: { pair: { targetId: target.id }, repliedAt: { not: null } },
-      select: { id: true },
-    })
-    if (replied) {
-      hold('they replied — outreach to this channel is halted')
-      continue
-    }
-
-    // Caps are per day and this attempt may have been drafted days ago.
-    const [targetToday, senderToday] = await Promise.all([
-      prisma.outreachAttempt.count({
-        where: { pair: { targetId: target.id }, status: 'SENT', sentAt: { gte: dayStart } },
-      }),
-      prisma.outreachAttempt.count({
-        where: { pair: { senderId: sender.id }, status: 'SENT', sentAt: { gte: dayStart } },
-      }),
-    ])
-    if (targetToday >= settings.maxPerTargetPerDay) {
-      hold(`channel already received ${targetToday} today`)
-      continue
-    }
-    if (senderToday >= sender.dailyCap) {
-      hold(`account already sent ${senderToday} today`)
+    /**
+     * The SAME gate the dashboard's Send button runs — one definition, two callers.
+     *
+     * This was fifty lines of inline checks here and three of them in `sendNow`, and
+     * the two drifted: the button ended up missing the route switch, the retired
+     * channel, *they replied*, and both daily caps. Duplicating a safety rule is how
+     * that happens, so the rules now live in `gate.ts` and both paths call them.
+     */
+    const gate = await recheckBeforeSend(attempt, { unattended: true })
+    if (!gate.ok) {
+      hold(gate.detail ?? gate.reason)
       continue
     }
 
