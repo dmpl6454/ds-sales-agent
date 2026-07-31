@@ -31,7 +31,9 @@
     "queued": "tsx src/scripts/queued.ts",
     "burner": "tsx src/scripts/burner.ts",
     "ig:login": "tsx src/scripts/login.ts",
-    "ig:audit": "tsx src/scripts/audit.ts"
+    "ig:audit": "tsx src/scripts/audit.ts",
+    "ig:reply": "tsx src/scripts/reply.ts",
+    "ig:thread": "tsx src/scripts/thread.ts"
   },
   "dependencies": {
     "@prisma/adapter-better-sqlite3": "^7.9.1",

@@ -19,7 +19,14 @@ async function main() {
 
   console.log('\n═══ METRICS (last 7 days) ═══')
   console.log(`  paid campaigns spotted : ${await prisma.detectedCampaign.count({ where: { verdict: 'CAMPAIGN', detectedAt: { gte: weekStart } } })}`)
-  console.log(`  messages sent          : ${await prisma.outreachAttempt.count({ where: { status: 'SENT', sentAt: { gte: weekStart } } })}`)
+  // REPLIED REPLACES SENT rather than adding to it, so counting only 'SENT' makes a
+  // delivered message vanish from this total the moment someone answers it — the best
+  // outcome silently reducing the number. The dashboard already counts both
+  // (view-model.ts), so this drifted the instant replies became recordable at all:
+  // until 2026-07-31 nothing could write REPLIED, so the two agreed by accident.
+  console.log(
+    `  messages sent          : ${await prisma.outreachAttempt.count({ where: { status: { in: ['SENT', 'REPLIED'] }, sentAt: { gte: weekStart } } })}`,
+  )
   console.log(`  replies                : ${await prisma.outreachAttempt.count({ where: { repliedAt: { gte: weekStart } } })}`)
 
   console.log('\n═══ PER CHANNEL ═══')
