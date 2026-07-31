@@ -38,10 +38,125 @@ export interface SlotResult {
   sent: number
 }
 
+/** Setting key holding `{"pid":123,"slot":"11:00","at":"..."}` while a slot runs. */
+const SLOT_LOCK_KEY = 'slotRunning'
+/** A slot that has not finished in this long is presumed dead, not running. */
+const SLOT_LOCK_STALE_MS = 30 * 60_000
+
+/**
+ * Is another slot genuinely running?
+ *
+ * cron tasks pass `noOverlap`, but that is per-task and does not cover `syncNow` (the
+ * dashboard's Sync now button), a second `pnpm run:slot`, or a click landing during a
+ * cron slot. Two concurrent `runOutreach` calls both read `hasPendingAttempt: false` for
+ * the same pair, both create an attempt, and both dispatch — two DMs to one prospect
+ * seconds apart, which is the worst spam signal available.
+ *
+ * Freshness alone is not liveness: a `kill -9` leaves the record behind, which is exactly
+ * the bug that once stopped the scheduler starting at all. So ask the OS, the same way
+ * `startScheduler` does.
+ */
+async function acquireSlotLock(slot: string): Promise<boolean> {
+  const value = JSON.stringify({ pid: process.pid, slot, at: new Date().toISOString() })
+
+  /**
+   * `create` on the primary key is the atomic test-and-set: it succeeds only if no row
+   * exists, and throws otherwise. There is no window between the test and the set.
+   *
+   * The first version of this used `findUnique` then `upsert`, which is a check-then-act
+   * — the identical flaw this commit fixes in `sendNow`. Two `pnpm run:slot` processes
+   * started together both read "no lock" before either wrote, both proceeded, and two
+   * ScrapeRuns appeared. Caught by running it rather than by reading it.
+   */
+  try {
+    await prisma.setting.create({ data: { key: SLOT_LOCK_KEY, value } })
+    return true
+  } catch {
+    // A row exists. Whether it represents a live slot is a separate question.
+  }
+
+  const row = await prisma.setting.findUnique({ where: { key: SLOT_LOCK_KEY } })
+  if (!row) {
+    // Vanished between the create and the read — the holder just finished. Try once more.
+    try {
+      await prisma.setting.create({ data: { key: SLOT_LOCK_KEY, value } })
+      return true
+    } catch {
+      return false
+    }
+  }
+
+  let held: { pid: number; slot: string; at: string } | null = null
+  try {
+    held = JSON.parse(row.value) as { pid: number; slot: string; at: string }
+  } catch {
+    held = null // unparseable: treat as dead rather than deadlocking forever
+  }
+
+  const alive =
+    held !== null &&
+    (() => {
+      try {
+        process.kill(held!.pid, 0)
+        return true
+      } catch {
+        return false
+      }
+    })()
+  const ageMs = held ? Date.now() - new Date(held.at).getTime() : Infinity
+
+  if (held && alive && held.pid !== process.pid && ageMs < SLOT_LOCK_STALE_MS) {
+    log.warn('another slot is already running — declining to start a second', {
+      otherPid: held.pid,
+      otherSlot: held.slot,
+      ageSeconds: Math.round(ageMs / 1000),
+    })
+    return false
+  }
+
+  /**
+   * The holder is dead, stale, or us. Take over — but conditionally on the row still
+   * holding exactly the value we just read, so two processes both finding the same
+   * corpse cannot both claim it.
+   */
+  const claimed = await prisma.setting.updateMany({
+    where: { key: SLOT_LOCK_KEY, value: row.value },
+    data: { value },
+  })
+  if (claimed.count === 0) {
+    log.warn('another slot took over the lock first — declining', { previousPid: held?.pid })
+    return false
+  }
+  if (held) {
+    log.step('taking over a slot lock left by a process that is gone', {
+      deadPid: held.pid,
+      ageSeconds: Math.round(ageMs / 1000),
+    })
+  }
+  return true
+}
+
+async function releaseSlotLock(): Promise<void> {
+  await prisma.setting.deleteMany({ where: { key: SLOT_LOCK_KEY } }).catch(() => undefined)
+}
+
 export async function runSlot(slot: string): Promise<SlotResult> {
   const started = Date.now()
   log.info(`▶ slot ${slot} starting`, { at: istStamp(), dryRun: env.DRY_RUN })
 
+  if (!(await acquireSlotLock(slot))) {
+    return { runId: '', status: 'FAILED', postsSeen: 0, newPosts: 0, detected: 0, queued: 0, sent: 0 }
+  }
+
+  try {
+    return await runSlotLocked(slot, started)
+  } finally {
+    await releaseSlotLock()
+  }
+}
+
+/** The slot itself. Only ever called with the lock held. */
+async function runSlotLocked(slot: string, started: number): Promise<SlotResult> {
   const run = await prisma.scrapeRun.create({ data: { slot } })
 
   let status: SlotResult['status'] = 'OK'

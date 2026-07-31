@@ -2,7 +2,7 @@ import { prisma } from '@/lib/db'
 import { env } from '@/lib/env'
 import { log } from '@/lib/logger'
 import { getSettings } from '@/lib/settings'
-import { hoursAgo, istDayStart } from '@/lib/time'
+import { hoursAgo, istDayStart, randomInt } from '@/lib/time'
 import { evaluatePair, type GovernorDecision } from './governor'
 import { renderMessage, validatePersona } from './render'
 import { manualAssistSender } from './senders/manual'
@@ -71,6 +71,8 @@ export async function runOutreach(): Promise<PlanSummary> {
   // sharing a target in the same slot cannot both slip past the daily cap.
   const sentToTargetToday = new Map<string, number>()
   const sentBySenderToday = new Map<string, number>()
+  /** Sends completed in THIS run, so consecutive ones can be spaced. */
+  let sentThisRun = 0
 
   for (const pair of pairs) {
     const pairKey = `${pair.sender.handle}→${pair.target.handle}`
@@ -175,6 +177,14 @@ export async function runOutreach(): Promise<PlanSummary> {
     }
 
     try {
+      // Space consecutive sends. Same reasoning as deliverWaiting: SEND_JITTER_* was
+      // validated config nothing read, and the clipboard is process-global.
+      if (sentThisRun > 0) {
+        const waitSeconds = randomInt(env.SEND_JITTER_MIN_SECONDS, env.SEND_JITTER_MAX_SECONDS)
+        log.step('spacing before the next send', { seconds: waitSeconds })
+        await new Promise((r) => setTimeout(r, waitSeconds * 1000))
+      }
+
       const result = await createAndDispatch({
         pair,
         touchNumber: decision.touchNumber,
@@ -189,6 +199,7 @@ export async function runOutreach(): Promise<PlanSummary> {
         totalSentEver += 1
       }
       if (result.status === 'SENT') {
+        sentThisRun += 1
         sentToTargetToday.set(pair.targetId, (sentToTargetToday.get(pair.targetId) ?? 0) + 1)
         sentBySenderToday.set(pair.senderId, (sentBySenderToday.get(pair.senderId) ?? 0) + 1)
       }

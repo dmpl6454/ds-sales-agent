@@ -159,3 +159,28 @@ export async function cancelConnect(handle: string): Promise<void> {
 export function isConnecting(handle: string): boolean {
   return sessions.has(handle)
 }
+
+/**
+ * Close abandoned Connect windows.
+ *
+ * `MAX_AGE_MS` was only enforced when `pollConnect` was called, so closing the dashboard
+ * tab with a window open left Chrome running indefinitely, holding the lock on that
+ * account's profile directory. Every later send for it then failed to launch until
+ * somebody noticed. A timeout that only fires while someone is watching is not a timeout.
+ */
+const SWEEP_INTERVAL_MS = 60_000
+
+const sweeper = setInterval(() => {
+  void (async () => {
+    for (const [handle, s] of [...sessions]) {
+      if (Date.now() - s.startedAt > MAX_AGE_MS) {
+        log.warn('closing an abandoned connect window', {
+          handle,
+          ageMinutes: Math.round((Date.now() - s.startedAt) / 60_000),
+        })
+        await cancelConnect(handle)
+      }
+    }
+  })()
+}, SWEEP_INTERVAL_MS)
+sweeper.unref?.()

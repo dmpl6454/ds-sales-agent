@@ -2,6 +2,7 @@ import { prisma } from '@/lib/db'
 import { env } from '@/lib/env'
 import { log } from '@/lib/logger'
 import { getSettings } from '@/lib/settings'
+import { randomInt } from '@/lib/time'
 import { browserSender } from './senders/browser'
 import { profileStatus } from './browser/profile'
 import { recheckBeforeSend } from './gate'
@@ -94,6 +95,25 @@ export async function deliverWaiting(): Promise<DeliverResult> {
     if (claimed.count === 0) {
       hold('already being sent')
       continue
+    }
+
+    /**
+     * Space consecutive sends.
+     *
+     * SEND_JITTER_MIN/MAX_SECONDS were parsed, range-validated, cross-checked
+     * (min <= max) and documented in .env as "Human-like delay bounds between
+     * consecutive DMs" — and read by nothing. There was no delay between consecutive
+     * sends at all. At 1-2/day that is academic; the danger is config asserting a
+     * control that does not exist, and raising volume is exactly when someone would
+     * rely on it.
+     *
+     * It also serialises the clipboard, which is process-global: two overlapping sends
+     * could otherwise interleave copy and paste and put message A into thread B.
+     */
+    if (out.sent > 0) {
+      const waitSeconds = randomInt(env.SEND_JITTER_MIN_SECONDS, env.SEND_JITTER_MAX_SECONDS)
+      log.step('spacing before the next send', { seconds: waitSeconds })
+      await new Promise((r) => setTimeout(r, waitSeconds * 1000))
     }
 
     log.step('delivering a waiting message', { pair: pairKey, chars: attempt.renderedBody.length })
