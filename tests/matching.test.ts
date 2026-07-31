@@ -70,6 +70,36 @@ describe('distinctiveSlice', () => {
     expect(distinctiveSlice('')).toBeNull()
     expect(distinctiveSlice('ok')).toBeNull()
   })
+
+  /**
+   * The gap that let both send guards become tautologies.
+   *
+   * The "falls back gracefully" test above uses a SINGLE-line body, so the fallback
+   * returns the whole string and the bug is invisible. A short MULTI-line body - which
+   * is exactly what the dashboard's edit box produces - fell back to the greeting: the
+   * one thing this function's own docblock says to avoid, because it also renders in
+   * the thread header.
+   */
+  it('never returns the greeting, even when it is the longest line', () => {
+    const edited = 'Hi Bollywood Chronicle,\n\nThis is a test message.'
+    const needle = distinctiveSlice(edited)
+    expect(needle).not.toBeNull()
+    expect(needle).not.toContain('Hi Bollywood Chronicle')
+    expect(needle).toBe('This is a test message.')
+  })
+
+  it('never returns the greeting for a three-line body either', () => {
+    const needle = distinctiveSlice('Hi Priyanshu,\n\nShort note about the campaign here.\n\nThanks')
+    expect(needle).not.toContain('Hi Priyanshu')
+  })
+
+  it('returns null rather than the greeting when no body line is usable', () => {
+    expect(distinctiveSlice('Hi Bollywood Chronicle,\n\nok')).toBeNull()
+  })
+
+  it('still returns the whole thing for a single-line body', () => {
+    expect(distinctiveSlice('Hi there, following up on this.')).toBe('Hi there, following up on this.')
+  })
 })
 
 describe('messageMatchesOurs', () => {
@@ -86,6 +116,28 @@ describe('messageMatchesOurs', () => {
   it('survives surrounding chrome in the message row', () => {
     const withChrome = `Kapil Jain 14:22 ${realMessage.replace(/\s+/g, ' ')} Seen`
     expect(messageMatchesOurs(withChrome, realMessage)).toBe(true)
+  })
+
+  /**
+   * With the needle taken from the greeting, a page holding only thread chrome
+   * satisfied the post-send check - so the guard could not fail - and a paste that
+   * lost everything after the greeting satisfied the composer read-back.
+   */
+  it('does NOT report a short edited message as delivered from thread chrome alone', () => {
+    const body = 'Hi Bollywood Chronicle,\n\nThis is a test message.'
+    const chromeOnly = 'Bollywood Chronicle  bollywoodchronicle  Active now  Hi Bollywood Chronicle,  Message'
+    expect(messageMatchesOurs(chromeOnly, body)).toBe(false)
+  })
+
+  it('does NOT accept a paste that lost everything after the greeting', () => {
+    const body = 'Hi Bollywood Chronicle,\n\nThis is a test message.'
+    expect(messageMatchesOurs('Hi Bollywood Chronicle,', body)).toBe(false)
+  })
+
+  it('still matches when the real short body IS present', () => {
+    const body = 'Hi Bollywood Chronicle,\n\nThis is a test message.'
+    const delivered = 'Bollywood Chronicle  Hi Bollywood Chronicle, This is a test message.  Message'
+    expect(messageMatchesOurs(delivered, body)).toBe(true)
   })
 
   it('is case-insensitive', () => {

@@ -11,6 +11,7 @@ import { setSetting, SETTING_KEYS } from '@/lib/settings'
 import { startConnect, pollConnect, cancelConnect, type ConnectState } from '@/outreach/browser/connect'
 import { handleExists } from '@/detection/exists'
 import { assertSafeHandle } from '@/lib/urls'
+import { distinctiveSlice } from '@/outreach/matching'
 import { MESSAGE_VARIANTS } from '../../prisma/variants'
 
 /**
@@ -261,6 +262,34 @@ export async function editAttemptBody(attemptId: string, body: string): Promise<
   if (next.length > MAX_BODY_CHARS) {
     return { ok: false, message: `That is ${next.length} characters; the limit is ${MAX_BODY_CHARS}.` }
   }
+  /**
+   * Refuse a body the send guards cannot verify.
+   *
+   * `distinctiveSlice` returns null when no body line is distinctive enough to look
+   * for on the page. Saving such a body is not harmless: the composer read-back would
+   * then refuse the send with "composer content does not match the drafted message",
+   * which is true but points at entirely the wrong thing — the operator would go
+   * hunting for a paste bug. Fail at the point of the mistake, with an explanation.
+   */
+  const bodyLines = next.split('\n').filter((l) => l.trim().length > 0)
+  if (bodyLines.length < 2 || distinctiveSlice(next) === null) {
+    /**
+     * Two conditions, one message, because they are the same mistake.
+     *
+     * A single-line body defeats the interior-line rule: with nothing to strip,
+     * `distinctiveSlice` has to use the only line there is, and if that line is the
+     * greeting the needle is the target's name — which renders in the thread header
+     * regardless of whether anything was delivered. `renderMessage` never produces a
+     * one-line body, so this is only reachable by editing, which is exactly why it is
+     * checked here.
+     */
+    return {
+      ok: false,
+      message:
+        'That message is too short to verify on screen before sending. It needs a greeting line and at least one sentence of 20 characters or more below it.',
+    }
+  }
+
   if (next === attempt.renderedBody.trim()) return { ok: true, message: 'No changes.' }
 
   await prisma.outreachAttempt.update({ where: { id: attemptId }, data: { renderedBody: next } })
