@@ -1,7 +1,7 @@
 'use client'
 
 import { useState, useTransition } from 'react'
-import { markSent, skipAttempt, sendNow, type SendNowResult } from './actions'
+import { markSent, skipAttempt, sendNow, editAttemptBody, type SendNowResult } from './actions'
 import type { AwaitingCard } from './view-model'
 import { profileUrl } from '@/lib/urls'
 
@@ -57,6 +57,23 @@ function AwaitingItem({ item }: { item: AwaitingCard }) {
   const [open, setOpen] = useState(false)
   const [result, setResult] = useState<SendNowResult | null>(null)
   const [sending, setSending] = useState(false)
+  const [editing, setEditing] = useState(false)
+  const [draft, setDraft] = useState(item.body)
+  const [editMsg, setEditMsg] = useState<{ ok: boolean; text: string } | null>(null)
+
+  /**
+   * Saving writes the body the send path will use verbatim — the composer read-back
+   * compares against exactly this text, so an edit is covered by the existing guard
+   * without it needing to know editing exists.
+   */
+  const save = async () => {
+    setEditMsg(null)
+    start(async () => {
+      const r = await editAttemptBody(item.id, draft)
+      setEditMsg({ ok: r.ok, text: r.message })
+      if (r.ok) setEditing(false)
+    })
+  }
 
   const copy = async () => {
     try {
@@ -85,7 +102,7 @@ function AwaitingItem({ item }: { item: AwaitingCard }) {
     }
   }
 
-  const busy = sending || pending || item.inFlight
+  const busy = sending || pending || item.inFlight || editing
 
   return (
     <div className="card">
@@ -96,10 +113,53 @@ function AwaitingItem({ item }: { item: AwaitingCard }) {
         <span className="followers">as {item.senderName}</span>
       </div>
 
-      <button className="link-btn" onClick={() => setOpen((v) => !v)}>
-        {open ? 'Hide message' : 'Read message'}
-      </button>
-      {open ? <pre className="msg">{item.body}</pre> : null}
+      <div className="row" style={{ marginTop: 0, gap: 14 }}>
+        <button className="link-btn" onClick={() => setOpen((v) => !v)}>
+          {open ? 'Hide message' : 'Read message'}
+        </button>
+        {!editing ? (
+          <button
+            className="link-btn"
+            onClick={() => {
+              setDraft(item.body)
+              setEditing(true)
+              setOpen(false)
+              setEditMsg(null)
+            }}
+          >
+            Edit message
+          </button>
+        ) : null}
+      </div>
+
+      {open && !editing ? <pre className="msg">{item.body}</pre> : null}
+
+      {editing ? (
+        <div>
+          <textarea
+            className="msg-edit"
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            spellCheck
+            rows={16}
+          />
+          <div className="row">
+            <button className="primary" onClick={save} disabled={busy || draft.trim().length === 0}>
+              {busy ? 'Saving…' : 'Save'}
+            </button>
+            <button onClick={() => setEditing(false)} disabled={busy}>
+              Cancel
+            </button>
+            <span className="acc-note">{draft.trim().length} characters</span>
+          </div>
+          {editMsg ? (
+            <p className="cardnote" style={{ color: editMsg.ok ? 'var(--good)' : 'var(--warn)' }}>
+              {editMsg.ok ? '✓ ' : '⚠ '}
+              {editMsg.text}
+            </p>
+          ) : null}
+        </div>
+      ) : null}
 
       <div className="row">
         <button

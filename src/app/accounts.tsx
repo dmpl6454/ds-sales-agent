@@ -24,7 +24,11 @@ import type { ConnectState } from '@/outreach/browser/connect'
  *
  * Each account shows exactly what is stopping it, because "not working" with no
  * reason is the failure mode that wastes the most time: not connected, connected but
- * not armed, armed but no channels enabled, or flagged by Instagram.
+ * auto-send off, auto-send on but no channels enabled, or flagged by Instagram.
+ *
+ * The per-account switch used to be labelled "Arm". That is soldier-speak for a
+ * dashboard a CEO reads, and it did not say what it does. It is now
+ * "Auto-send: on/off" — this account may send without anyone present.
  */
 export function AccountsPanel({ accounts }: { accounts: AccountCard[] }) {
   const [adding, setAdding] = useState(false)
@@ -134,9 +138,9 @@ function AccountRow({ account }: { account: AccountCard }) {
           {connected
             ? account.autopilot
               ? enabledRoutes.length > 0
-                ? `armed · messages ${enabledRoutes.length} channel${enabledRoutes.length === 1 ? '' : 's'}`
-                : 'armed, but no channels turned on below'
-              : 'connected · not armed'
+                ? `sends by itself · ${enabledRoutes.length} channel${enabledRoutes.length === 1 ? '' : 's'}`
+                : 'auto-send on, but no channels turned on below'
+              : 'connected · you press send'
             : account.note}
         </span>
         <span className="acc-actions">
@@ -152,9 +156,16 @@ function AccountRow({ account }: { account: AccountCard }) {
           <button
             onClick={arm}
             disabled={busy || !connected}
-            title={connected ? '' : 'Connect this account first'}
+            className={account.autopilot ? 'chip on' : ''}
+            title={
+              connected
+                ? account.autopilot
+                  ? `@${account.handle} currently sends by itself at slot times. Click to stop that.`
+                  : `Let @${account.handle} send by itself at slot times, with nobody watching.`
+                : 'Connect this account first'
+            }
           >
-            {account.autopilot ? 'Disarm' : 'Arm'}
+            {account.autopilot ? 'Auto-send: ON' : 'Auto-send: off'}
           </button>
           <button onClick={() => setConfirmRemove((v) => !v)} disabled={busy}>
             Remove

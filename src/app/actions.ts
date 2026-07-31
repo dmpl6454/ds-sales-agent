@@ -180,6 +180,57 @@ export async function markSent(attemptId: string) {
   revalidatePath('/')
 }
 
+/** Longest body we will hand to the composer. Well above any real pitch. */
+const MAX_BODY_CHARS = 4000
+
+/**
+ * Edit a drafted message before it goes.
+ *
+ * Allowed because the agent writing every message from scratch is a safety control,
+ * not a claim that it writes them perfectly — and a human who spots a wrong detail
+ * should be able to fix it rather than discard and hope the next draft is better.
+ *
+ * Only while the message is still waiting. Once it is SENDING a browser is already
+ * typing it, and once SENT the recipient has it; editing the record afterwards would
+ * make the audit trail describe a message nobody received.
+ *
+ * The stored body is the single source of truth downstream: the composer read-back
+ * compares against exactly this text, so an edit is carried through the send guard
+ * automatically rather than needing to be taught about.
+ */
+export async function editAttemptBody(attemptId: string, body: string): Promise<MutationResult> {
+  const attempt = await prisma.outreachAttempt.findUniqueOrThrow({
+    where: { id: attemptId },
+    include: { pair: { include: { sender: true, target: true } } },
+  })
+
+  if (attempt.status !== 'READY' && attempt.status !== 'QUEUED') {
+    return {
+      ok: false,
+      message:
+        attempt.status === 'SENDING'
+          ? 'That message is being sent right now — too late to edit.'
+          : `That message is already ${attempt.status.toLowerCase()} and cannot be changed.`,
+    }
+  }
+
+  const next = body.replace(/\r\n/g, '\n').trim()
+  if (next.length === 0) return { ok: false, message: 'A message cannot be empty. Discard it instead.' }
+  if (next.length > MAX_BODY_CHARS) {
+    return { ok: false, message: `That is ${next.length} characters; the limit is ${MAX_BODY_CHARS}.` }
+  }
+  if (next === attempt.renderedBody.trim()) return { ok: true, message: 'No changes.' }
+
+  await prisma.outreachAttempt.update({ where: { id: attemptId }, data: { renderedBody: next } })
+  await audit(
+    'attempt.edited',
+    `OutreachAttempt:${attemptId}`,
+    `@${attempt.pair.sender.handle} → @${attempt.pair.target.handle}, ${attempt.renderedBody.length} → ${next.length} chars`,
+  )
+  revalidatePath('/')
+  return { ok: true, message: `Saved. ${next.length} characters.` }
+}
+
 /**
  * The autopilot toggle.
  *
@@ -335,8 +386,10 @@ export async function addSender(handleRaw: string, displayNameRaw: string): Prom
     data: MESSAGE_VARIANTS.map((v) => ({ senderId: sender.id, label: v.label, body: v.body })),
   })
 
+  // Same rule as addTarget: never a pair from an account to itself.
   const targets = await prisma.targetAccount.findMany()
   for (const t of targets) {
+    if (t.handle === handle) continue
     await prisma.outreachPair.create({
       data: { senderId: sender.id, targetId: t.id, cooldownDays: env.DEFAULT_COOLDOWN_DAYS, enabled: false },
     })
@@ -427,9 +480,6 @@ export async function addTarget(
   if (await prisma.targetAccount.findUnique({ where: { handle } })) {
     return { ok: false, message: `@${handle} is already a channel you watch.` }
   }
-  if (await prisma.senderAccount.findUnique({ where: { handle } })) {
-    return { ok: false, message: `@${handle} is one of your own sending accounts — it cannot also be a target.` }
-  }
 
   const exists = await handleExists(handle)
   if (exists === 'missing') return { ok: false, message: `@${handle} does not exist on Instagram.` }
@@ -438,8 +488,18 @@ export async function addTarget(
     data: { handle, displayName, contactFirstName: greeting, kind: 'CHANNEL', detectorKey: 'passthrough' },
   })
 
+  /**
+   * An account can be both a sender and a target. That is not a mistake — messaging
+   * one account you own from another is the safest possible end-to-end test, and it
+   * was previously refused outright.
+   *
+   * The invariant that actually matters is narrower: a sender must never message
+   * ITSELF. Instagram's own "message yourself" thread is a different surface and the
+   * send path would not survive it, so that pair is simply not created.
+   */
   const senders = await prisma.senderAccount.findMany()
   for (const s of senders) {
+    if (s.handle === handle) continue
     await prisma.outreachPair.create({
       data: { senderId: s.id, targetId: target.id, cooldownDays: env.DEFAULT_COOLDOWN_DAYS, enabled: false },
     })
@@ -497,6 +557,9 @@ export async function setPairEnabled(senderHandle: string, targetHandle: string,
   const target = await prisma.targetAccount.findUnique({ where: { handle: targetHandle } })
   if (!sender || !target) return { ok: false, message: 'That route no longer exists.' }
 
+  if (senderHandle === targetHandle) {
+    return { ok: false, message: 'An account cannot message itself.' }
+  }
   if (on && target.optedOut) {
     return { ok: false, message: `@${targetHandle} is marked never-contact. Re-add it first.` }
   }

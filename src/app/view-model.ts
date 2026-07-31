@@ -7,6 +7,7 @@ import { FOLLOWER_SNAPSHOT } from '@/lib/constants'
 import { profileStatus } from '@/outreach/browser/profile'
 import { isConnecting } from '@/outreach/browser/connect'
 import { getSettings } from '@/lib/settings'
+import { readHeartbeat } from '@/worker/scheduler'
 
 /**
  * Everything the CEO page shows, assembled in one place.
@@ -50,6 +51,14 @@ export interface RouteToggle {
   targetRetired: boolean
 }
 
+export interface SchedulerState {
+  /** A scheduler process has beaten within the last few minutes. */
+  running: boolean
+  /** 'dashboard' (embedded) or 'worker' (separate process). */
+  host: string | null
+  lastBeatLabel: string | null
+}
+
 export interface AutopilotState {
   /** The dashboard toggle. Sending happens by itself when this and an armed account line up. */
   on: boolean
@@ -59,6 +68,14 @@ export interface AutopilotState {
    * unattended sending on a deployment that never opted in.
    */
   allowedByEnv: boolean
+  /**
+   * Is anything actually going to fire at the slot times?
+   *
+   * Kept beside the toggle deliberately. "Autopilot is ON" with no scheduler running
+   * is a claim the system cannot honour, and that combination existed for a whole day
+   * without the page mentioning it.
+   */
+  scheduler: SchedulerState
   /** Accounts that are armed AND have a logged-in Chrome profile. */
   readyHandles: string[]
   /** Armed, but no hand login yet — the toggle will not help these. */
@@ -408,9 +425,15 @@ export async function buildCeoView(): Promise<CeoView> {
     })
   }
 
+  const hb = await readHeartbeat()
   const autopilot: AutopilotState = {
     on: settings.autopilotEnabled,
     allowedByEnv: env.AUTOPILOT_ENABLED,
+    scheduler: {
+      running: hb?.fresh ?? false,
+      host: hb?.beat.host ?? null,
+      lastBeatLabel: hb ? relative(new Date(hb.beat.at)) : null,
+    },
     readyHandles: senders
       .filter((s) => s.autoSendEnabled && s.status === 'ACTIVE' && profileStatus(s.handle).hasSession)
       .map((s) => s.handle),

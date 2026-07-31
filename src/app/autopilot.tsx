@@ -52,7 +52,7 @@ export function AutopilotPanel({ state, accounts }: { state: AutopilotState; acc
               {state.on
                 ? covered > 0
                   ? `At 11:00, 15:00, 17:00 and 20:00 IST, ${state.readyHandles.map((h) => '@' + h).join(', ')} will send permitted messages with nobody present.`
-                  : 'Arm an account below, and give it a one-time login, before this does anything.'
+                  : 'Under Your accounts, connect an account and switch its Auto-send on — until then this does nothing.'
                 : 'Every message is written and safety-checked, then waits for a click.'}
             </div>
           </div>
@@ -69,6 +69,31 @@ export function AutopilotPanel({ state, accounts }: { state: AutopilotState; acc
             {busy ? 'Saving…' : state.on ? 'Turn autopilot off' : 'Turn autopilot on'}
           </button>
         </div>
+
+        {/*
+          The scheduler is what turns the toggle into behaviour. Autopilot ON with
+          nothing scheduled is a promise the system cannot keep, and that exact state
+          existed unmentioned for a day — the page said messages go out at 11:00
+          while no process existed to send one.
+        */}
+        <p
+          className="cardnote"
+          style={{ color: state.scheduler.running ? 'var(--muted)' : 'var(--bad)' }}
+        >
+          {state.scheduler.running ? (
+            <>
+              ● Watch is running{state.scheduler.host === 'dashboard' ? ' (inside this dashboard)' : ' (separate worker)'} —
+              last heartbeat {state.scheduler.lastBeatLabel}. Slots will fire on their own.
+            </>
+          ) : (
+            <>
+              ■ <strong>Nothing is scheduled.</strong> No watch process has checked in
+              {state.scheduler.lastBeatLabel ? ` since ${state.scheduler.lastBeatLabel}` : ' ever'}, so no slot will
+              fire and no message will be sent by itself — whatever this toggle says. Restart the dashboard, or run{' '}
+              <code>pnpm worker</code>.
+            </>
+          )}
+        </p>
 
         {!state.allowedByEnv ? (
           <p className="cardnote">

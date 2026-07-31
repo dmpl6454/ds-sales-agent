@@ -1,6 +1,7 @@
 import { copyFileSync, existsSync, mkdirSync, readdirSync, rmSync } from 'node:fs'
 import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
+import Database from 'better-sqlite3'
 import { assertSafeHandle } from '@/lib/urls'
 
 /**
@@ -147,9 +148,20 @@ function hasSessionCookie(profileDir: string): boolean {
   const copy = join(tmpdir(), `ds-cookiecheck-${process.pid}-${Date.now()}.db`)
   try {
     copyFileSync(db, copy)
-    // Required lazily: this module is imported by the dashboard's server components,
-    // and better-sqlite3 is a native module that should not load unless needed.
-    const Database = require('better-sqlite3') as typeof import('better-sqlite3')
+    /**
+     * Statically imported, NOT `require`d.
+     *
+     * This was a lazy `require('better-sqlite3')`, to avoid loading a native module
+     * until needed. `require` does not exist in an ESM context, so it threw in every
+     * script run through tsx — `pnpm queued`, `pnpm burner`, and critically the
+     * worker. The throw landed in the catch below and returned false, so the
+     * fail-closed design turned into "no account is ever connected".
+     *
+     * That is why it went unnoticed: the dashboard bundles its server code and
+     * `require` worked there, so the Send button was fine while autopilot could
+     * never fire. An environment-dependent silent failure on the gate that decides
+     * whether unattended sending happens at all.
+     */
     const conn = new Database(copy, { readonly: true, fileMustExist: true })
     try {
       const row = conn

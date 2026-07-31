@@ -35,7 +35,9 @@ export interface SendDmParams {
 }
 
 export type SendDmResult =
-  | { ok: true; threadUrl: string }
+  /** `threadUrl` is absent when the conversation opened over the profile and never
+   *  exposed its own `/direct/t/<id>` URL. Delivery is still confirmed. */
+  | { ok: true; threadUrl?: string }
   | { ok: false; reason: string; checkpoint?: boolean }
 
 /** Human-ish pause. Ranges are wide on purpose; a fixed delay is its own signal. */
@@ -161,16 +163,54 @@ export async function sendDm(params: SendDmParams): Promise<SendDmResult> {
     await jitter(1500, 2600)
     assertNoCheckpoint(page)
 
-    // 8. Confirm it actually landed in the thread rather than trusting the keypress.
+    /**
+     * 8. Confirm it actually left, in two parts.
+     *
+     * The first check used to be the only one, and it could not fail. It read the
+     * whole page for our text — but our text is sitting in the composer at that
+     * moment whether Enter worked or not, so a failed send would have read as a
+     * success. The one assertion the entire system rests on was a tautology, and it
+     * passed the first live send only because that send genuinely worked.
+     *
+     * The composer clearing is what actually distinguishes the two: Instagram empties
+     * it on send and leaves it untouched on failure. So:
+     *
+     *   composer still holds our text  → Enter did nothing. NOT sent.
+     *   composer cleared, text on page → it moved from composer to thread. Sent.
+     *   composer cleared, text absent  → it left the box but never appeared. Unknown,
+     *                                    so report unsent and let a human look.
+     */
+    const stillStaged = ((await composer.textContent().catch(() => '')) ?? '').trim()
+    if (stillStaged.length > 0 && messageMatchesOurs(stillStaged, body)) {
+      return {
+        ok: false,
+        reason: 'pressed send but the message is still sitting in the composer — nothing was delivered',
+      }
+    }
+
     const threadText = (await page.locator('body').textContent()) ?? ''
     if (!messageMatchesOurs(threadText, body)) {
       return {
         ok: false,
-        reason: 'pressed send but the message did not appear in the thread — treat as unsent and check by hand',
+        reason: 'the composer cleared but the message never appeared in the thread — treat as unsent and check by hand',
       }
     }
 
-    const threadUrl = page.url()
+    /**
+     * Clicking Message can leave the URL on the profile while the conversation opens
+     * over it; the real `/direct/t/<id>` appears a beat later. The first live send
+     * recorded the profile URL as its "thread URL", which is useless for going back
+     * to the conversation. Wait briefly for the real one, and record nothing rather
+     * than something misleading if it never arrives.
+     */
+    let threadUrl: string | undefined
+    for (let i = 0; i < 10; i++) {
+      if (page.url().includes('/direct/t/')) {
+        threadUrl = page.url()
+        break
+      }
+      await jitter(400, 700)
+    }
     log.info('dm delivered', { senderHandle, targetHandle, threadUrl })
     // A moment before closing; slamming the window shut on send is not what a
     // person does, and the context needs to flush its profile writes anyway.

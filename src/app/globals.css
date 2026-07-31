@@ -298,6 +298,15 @@ pre.msg {
 }
 .retired-row + .retired-row { border-top: 1px solid var(--border); }
 
+.msg-edit {
+  width: 100%; margin-top: 10px; padding: 13px;
+  background: var(--bg); border: 1px solid var(--accent); border-radius: 9px;
+  color: var(--text); resize: vertical;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12.5px; line-height: 1.6;
+}
+.msg-edit:focus { outline: none; box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 22%, transparent); }
+
 /* ── autopilot ── */
 .autopilot { padding: 18px 20px; }
 .autopilot.live { border-color: color-mix(in srgb, var(--good) 45%, var(--border)); }

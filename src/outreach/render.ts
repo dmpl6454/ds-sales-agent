@@ -136,9 +136,21 @@ export function renderMessage(args: {
   const brands = hook ? readStringArray(hook.brands).map((b) => prettifyBrand(b)) : []
   const firstBrand = brands[0] ?? null
 
+  /**
+   * `{{channel}}` is what the recipient is called INSIDE the message, so it must use
+   * the same name as the greeting — not `displayName`, which is our internal label
+   * and can carry anything the operator typed. Adding a target called "Bollywood
+   * Chronicle (test target)" produced the line "...I'd like to discuss with Bollywood
+   * Chronicle (test target): an annual collaboration", which is how an internal note
+   * ends up in a stranger's inbox.
+   *
+   * `displayName` stays the fallback for the case where no greeting name was given.
+   */
+  const channelName = target.contactFirstName?.trim() || target.displayName
+
   const body = variantBody
     .replace(/\{\{\s*brand\s*\}\}/g, firstBrand ?? 'your brand partners')
-    .replace(/\{\{\s*channel\s*\}\}/g, target.displayName)
+    .replace(/\{\{\s*channel\s*\}\}/g, channelName)
     .trim()
 
   const parts = [

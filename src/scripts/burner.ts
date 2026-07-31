@@ -23,6 +23,21 @@ import { profileStatus } from '@/outreach/browser/profile'
 
 const BURNER = 'priyanshu123321123'
 
+/**
+ * Targets that are safe to message during a rehearsal: the burner, plus any target
+ * that is also one of our own sending accounts.
+ *
+ * The second case is the point — messaging one account you own from another is the
+ * closest possible rehearsal of the real thing, with a recipient who cannot be
+ * annoyed and cannot report you. Treating those as "real prospects" and disabling
+ * them would rule out the best test available.
+ */
+async function safeTargetIds(): Promise<Set<string>> {
+  const senders = new Set((await prisma.senderAccount.findMany({ select: { handle: true } })).map((s) => s.handle))
+  const targets = await prisma.targetAccount.findMany({ select: { id: true, handle: true } })
+  return new Set(targets.filter((t) => t.handle === BURNER || senders.has(t.handle)).map((t) => t.id))
+}
+
 async function main() {
   const cmd = (process.argv[2] ?? 'status').toLowerCase()
 
@@ -36,13 +51,10 @@ async function main() {
   if (cmd === 'on' || cmd === 'off') {
     const burnerOnly = cmd === 'on'
 
+    const safe = await safeTargetIds()
     const realPairs = await prisma.outreachPair.updateMany({
-      where: { targetId: { not: burner.id } },
+      where: { targetId: { notIn: [...safe] } },
       data: { enabled: !burnerOnly },
-    })
-    await prisma.outreachPair.updateMany({
-      where: { targetId: burner.id },
-      data: { enabled: true },
     })
 
     let discarded = 0
@@ -50,7 +62,7 @@ async function main() {
       const res = await prisma.outreachAttempt.updateMany({
         where: {
           status: { in: ['READY', 'QUEUED'] },
-          pair: { targetId: { not: burner.id } },
+          pair: { targetId: { notIn: [...safe] } },
         },
         data: { status: 'SKIPPED', error: 'discarded for burner rehearsal' },
       })
@@ -68,7 +80,7 @@ async function main() {
 
     console.log(
       burnerOnly
-        ? `\n  REHEARSAL MODE ON\n\n  ${realPairs.count} real routing pairs disabled. ${discarded} prepared draft${discarded === 1 ? '' : 's'} discarded.\n  The only account that can now be messaged is @${BURNER}.\n\n  Next:  pnpm run:slot   then send it from the dashboard\n  After: pnpm burner off\n`
+        ? `\n  REHEARSAL MODE ON\n\n  ${realPairs.count} real routing pairs disabled. ${discarded} prepared draft${discarded === 1 ? '' : 's'} discarded.\n  The only accounts that can now be messaged are ones we own.\n\n  Next:  pnpm run:slot   then send it from the dashboard\n  After: pnpm burner off\n`
         : `\n  REHEARSAL MODE OFF\n\n  ${realPairs.count} real routing pairs re-enabled.\n  Run \`pnpm run:slot\` to prepare real messages again.\n`,
     )
   }
@@ -77,15 +89,16 @@ async function main() {
     include: { sender: true, target: true },
     orderBy: [{ target: { handle: 'asc' } }, { sender: { handle: 'asc' } }],
   })
-  const anyRealEnabled = pairs.some((p) => p.enabled && p.target.handle !== BURNER)
+  const safeIds = await safeTargetIds()
+  const anyRealEnabled = pairs.some((p) => p.enabled && !safeIds.has(p.targetId))
 
-  console.log(`  ${anyRealEnabled ? 'LIVE — real prospects are reachable' : `REHEARSAL — only @${BURNER} is reachable`}\n`)
+  console.log(`  ${anyRealEnabled ? 'LIVE — real prospects are reachable' : 'REHEARSAL — only accounts we own are reachable'}\n`)
   for (const p of pairs) {
-    const isBurner = p.target.handle === BURNER
+    const isSafe = safeIds.has(p.targetId)
     const profile = profileStatus(p.sender.handle)
     console.log(
       `  ${p.enabled ? '●' : '○'} @${p.sender.handle.padEnd(20)} → @${p.target.handle.padEnd(22)}` +
-        `${p.enabled ? '' : ' (disabled)'}${isBurner ? '  [burner]' : ''}` +
+        `${p.enabled ? '' : ' (disabled)'}${isSafe ? '  [safe test target]' : ''}` +
         `${p.enabled && !profile.hasSession ? `  needs: pnpm ig:login ${p.sender.handle}` : ''}`,
     )
   }
