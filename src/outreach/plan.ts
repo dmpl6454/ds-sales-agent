@@ -79,7 +79,22 @@ export async function runOutreach(): Promise<PlanSummary> {
     // is what makes a follow-up a genuinely new message rather than a repeat.
     const usedCampaignIds = (
       await prisma.outreachAttempt.findMany({
-        where: { pairId: pair.id, campaignId: { not: null } },
+        where: {
+          pairId: pair.id,
+          campaignId: { not: null },
+          /**
+           * MUST match `createAndDispatch`'s definition of "used" below — the recipient
+           * has to have actually seen it. A SKIPPED or FAILED draft referenced nothing.
+           *
+           * The filter existed there and not here, so the two disagreed: every discarded
+           * draft burned a campaign for the NO_NEW_MATERIAL gate while the hook lookup
+           * still considered it available. `pnpm burner on` mass-SKIPs drafts by design,
+           * so rehearsal mode silently consumed the pool - measured at 2 of 4 already
+           * gone on one pair - until the gate reported no-new-material with fresh
+           * campaigns sitting right there. Permanent, silent, self-inflicted.
+           */
+          status: { in: ['SENT', 'REPLIED', 'SENDING', 'READY', 'QUEUED'] },
+        },
         select: { campaignId: true },
       })
     )
@@ -340,7 +355,7 @@ async function createAndDispatch(args: {
     body,
   })
 
-  await applyOutcome(attempt.id, variant.id, pair.senderId, outcome)
+  await applyOutcome(attempt.id, variant.id, pair.senderId, pair.sender.handle, outcome)
   return { attemptId: attempt.id, status: outcome.status, hookLine }
 }
 
@@ -348,17 +363,43 @@ async function applyOutcome(
   attemptId: string,
   variantId: string,
   senderId: string,
+  senderHandle: string,
   outcome: SendOutcome,
 ): Promise<void> {
   if (outcome.status === 'SENT') {
     await prisma.$transaction([
       prisma.outreachAttempt.update({
         where: { id: attemptId },
-        data: { status: 'SENT', sentAt: new Date(), sentBy: 'auto', threadUrl: outcome.threadUrl },
+        data: {
+          status: 'SENT',
+          sentAt: new Date(),
+          /**
+           * Was the bare string 'auto', which loses which account sent it and is a
+           * glance away from the dashboard's 'auto:<handle>'. The three paths now
+           * read: `autopilot:<handle>` for both unattended ones (this and
+           * deliverWaiting) and `operator:<handle>` when a human clicked Send.
+           */
+          sentBy: `autopilot:${senderHandle}`,
+          threadUrl: outcome.threadUrl,
+        },
       }),
       prisma.messageVariant.update({
         where: { id: variantId },
         data: { timesUsed: { increment: 1 }, lastUsedAt: new Date() },
+      }),
+      /**
+       * The planner is the autopilot path, and it wrote no audit row at all — so the
+       * one send that happens with nobody present was the one with no audit trail,
+       * while actions.ts states "every state change writes an AuditLog row". The
+       * 14:00 cron-fired send to a real recipient had no entry.
+       */
+      prisma.auditLog.create({
+        data: {
+          actor: 'autopilot',
+          action: 'attempt.sent.autopilot',
+          entity: `OutreachAttempt:${attemptId}`,
+          detail: `planner dispatch from @${senderHandle} — ${outcome.threadUrl ?? 'delivered'}`,
+        },
       }),
     ])
     return

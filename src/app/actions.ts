@@ -135,7 +135,7 @@ export async function sendNow(attemptId: string): Promise<SendNowResult> {
         data: {
           status: 'SENT',
           sentAt: new Date(),
-          sentBy: `auto:${sender.handle}`,
+          sentBy: `operator:${sender.handle}`,
           threadUrl: outcome.threadUrl ?? null,
           error: null,
         },

@@ -91,7 +91,10 @@ model OutreachPair {
   targetId String
 
   /// Minimum days between touches for this pair.
-  cooldownDays Int     @default(5)
+  /// 7, matching DEFAULT_COOLDOWN_DAYS. These were 5 and 7 respectively; the documented
+  /// value held only because addSender/addTarget pass it explicitly, so any other insert
+  /// path silently got 5 days of spacing while every document said 7.
+  cooldownDays Int     @default(7)
   /// How many unanswered messages before we stop until the target engages.
   /// Instagram will not deliver a second PENDING request to a non-follower, so
   /// beyond a couple these are likely wasted rather than dangerous.
