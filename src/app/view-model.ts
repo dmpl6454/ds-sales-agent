@@ -5,6 +5,7 @@ import { istDayStart, istDateKey, daysAgo, istStamp } from '@/lib/time'
 import { validatePersona, prettifyBrand } from '@/outreach/render'
 import { FOLLOWER_SNAPSHOT } from '@/lib/constants'
 import { profileStatus } from '@/outreach/browser/profile'
+import { isConnecting } from '@/outreach/browser/connect'
 import { getSettings } from '@/lib/settings'
 
 /**
@@ -39,6 +40,14 @@ export interface CeoView {
   todos: string[]
 
   autopilot: AutopilotState
+}
+
+export interface RouteToggle {
+  targetHandle: string
+  targetName: string
+  enabled: boolean
+  /** Target is marked never-contact; the route cannot be turned on. */
+  targetRetired: boolean
 }
 
 export interface AutopilotState {
@@ -94,6 +103,10 @@ export interface ChannelCard {
    * instead of a number that would actively mislead.
    */
   unclassified: boolean
+  /** Retired: kept for its history, never contacted again. */
+  retired: boolean
+  /** Has this channel ever been sent a message? Governs delete vs retire. */
+  everContacted: boolean
 }
 
 export interface AccountCard {
@@ -102,6 +115,10 @@ export interface AccountCard {
   autopilot: boolean
   /** A hand login has happened, so this account CAN send unattended. */
   canSendAutomatically: boolean
+  /** A Chrome window is open right now waiting for this account to be logged in. */
+  connecting: boolean
+  /** Which channels this account is allowed to message. */
+  routes: RouteToggle[]
   sentThisWeek: number
   /**
    * ready  — logged in, healthy, armed: will send by itself
@@ -135,7 +152,10 @@ export async function buildCeoView(): Promise<CeoView> {
 
   const [senders, targets, lastRun, weekSent, weekReplies, recentSends, recentReplies, awaitingRaw] =
     await Promise.all([
-      prisma.senderAccount.findMany({ orderBy: { handle: 'asc' } }),
+      prisma.senderAccount.findMany({
+        orderBy: { handle: 'asc' },
+        include: { pairs: { include: { target: true } } },
+      }),
       prisma.targetAccount.findMany({
         where: { kind: 'CHANNEL' },
         include: { pairs: { include: { sender: true } } },
@@ -332,6 +352,8 @@ export async function buildCeoView(): Promise<CeoView> {
       lastContactedLabel: lastSent?.sentAt ? relative(lastSent.sentAt) : 'not yet',
       halted: halted > 0 || t.optedOut,
       unclassified: t.detectorKey === 'passthrough',
+      retired: t.optedOut,
+      everContacted: lastSent !== null,
     })
   }
 
@@ -371,6 +393,15 @@ export async function buildCeoView(): Promise<CeoView> {
       name: s.displayName,
       autopilot: s.autoSendEnabled,
       canSendAutomatically: hasProfile,
+      connecting: isConnecting(s.handle),
+      routes: s.pairs
+        .map((p) => ({
+          targetHandle: p.target.handle,
+          targetName: p.target.displayName,
+          enabled: p.enabled,
+          targetRetired: p.target.optedOut,
+        }))
+        .sort((a, b) => a.targetHandle.localeCompare(b.targetHandle)),
       sentThisWeek,
       state,
       note,

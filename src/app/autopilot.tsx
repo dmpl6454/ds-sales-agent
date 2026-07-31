@@ -1,7 +1,7 @@
 'use client'
 
 import { useState } from 'react'
-import { setAutopilot, setAccountAutopilot } from './actions'
+import { setAutopilot } from './actions'
 import type { AutopilotState, AccountCard } from './view-model'
 
 /**
@@ -29,6 +29,7 @@ export function AutopilotPanel({ state, accounts }: { state: AutopilotState; acc
   }
 
   const covered = state.readyHandles.length
+  const unarmed = accounts.filter((a) => a.canSendAutomatically && !a.autopilot)
 
   return (
     <section>
@@ -80,22 +81,23 @@ export function AutopilotPanel({ state, accounts }: { state: AutopilotState; acc
         {state.needLoginHandles.length > 0 ? (
           <p className="cardnote" style={{ color: 'var(--warn)' }}>
             ⚠ {state.needLoginHandles.map((h) => '@' + h).join(', ')} {state.needLoginHandles.length === 1 ? 'is' : 'are'}{' '}
-            armed but {state.needLoginHandles.length === 1 ? 'has' : 'have'} no browser profile, so{' '}
-            {state.needLoginHandles.length === 1 ? 'it' : 'they'} will keep waiting for you. Run{' '}
-            <code>pnpm ig:login {state.needLoginHandles[0]}</code> once.
+            armed but not connected, so {state.needLoginHandles.length === 1 ? 'it' : 'they'} will keep waiting for
+            you. Press <strong>Connect</strong> on {state.needLoginHandles.length === 1 ? 'it' : 'them'} under Your
+            accounts.
           </p>
         ) : null}
 
-        <div className="arm-list">
-          {accounts.map((a) => (
-            <ArmRow key={a.handle} account={a} />
-          ))}
-        </div>
+        {unarmed.length > 0 ? (
+          <p className="cardnote">
+            Connected but not armed: {unarmed.map((a) => '@' + a.handle).join(', ')}. Arming is per account, under Your
+            accounts — accounts graduate one at a time on purpose.
+          </p>
+        ) : null}
 
         <p className="cardnote">
-          An account only sends unattended when four things are true: autopilot on, that account armed, a one-time
-          login done by hand, and the account not flagged by Instagram. If any is missing the message is still
-          written — it just waits for you instead of being dropped.
+          An account only sends unattended when four things are true: autopilot on, that account armed, a login done by
+          hand, and the account not flagged by Instagram. If any is missing the message is still written — it just
+          waits for you instead of being dropped.
         </p>
       </div>
 
@@ -106,44 +108,5 @@ export function AutopilotPanel({ state, accounts }: { state: AutopilotState; acc
         </p>
       ) : null}
     </section>
-  )
-}
-
-function ArmRow({ account }: { account: AccountCard }) {
-  const [busy, setBusy] = useState(false)
-  const [err, setErr] = useState<string | null>(null)
-
-  const flip = async () => {
-    setBusy(true)
-    setErr(null)
-    try {
-      const r = await setAccountAutopilot(account.handle, !account.autopilot)
-      if (!r.ok) setErr(r.message)
-    } finally {
-      setBusy(false)
-    }
-  }
-
-  return (
-    <div className="arm-row">
-      <span className={`dot ${account.state}`} aria-hidden />
-      <span className="acc-name">{account.name}</span>
-      <span className="acc-handle">@{account.handle}</span>
-      <span className="acc-note">{err ?? account.note}</span>
-      <button
-        className="arm-btn"
-        disabled={busy || !account.canSendAutomatically}
-        onClick={flip}
-        title={
-          account.canSendAutomatically
-            ? account.autopilot
-              ? 'Stop this account sending by itself'
-              : 'Let this account send by itself'
-            : `Needs its one-time login first: pnpm ig:login ${account.handle}`
-        }
-      >
-        {busy ? '…' : account.autopilot ? 'Armed' : 'Arm'}
-      </button>
-    </div>
   )
 }

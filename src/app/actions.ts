@@ -7,16 +7,24 @@ import { runSlot } from '@/worker/runSlot'
 import { browserSender } from '@/outreach/senders/browser'
 import { profileStatus } from '@/outreach/browser/profile'
 import { setSetting, SETTING_KEYS } from '@/lib/settings'
+import { startConnect, pollConnect, cancelConnect, type ConnectState } from '@/outreach/browser/connect'
+import { handleExists } from '@/detection/exists'
+import { assertSafeHandle } from '@/lib/urls'
+import { MESSAGE_VARIANTS } from '../../prisma/variants'
 
 /**
- * The only three actions the dashboard needs.
+ * Everything the dashboard can do.
  *
- * Everything else that used to live here — editing personas, toggling autopilot,
- * tuning cooldowns, labelling classifications — moved to `pnpm agent` and
- * `pnpm db:studio`. Those are operator tasks, and putting controls that can break
- * outreach on the page a CEO reads is how they get pressed by accident.
+ * Connecting accounts and managing channels moved here from the terminal
+ * deliberately: `pnpm ig:login` is a developer flow, and the person who runs this
+ * day to day should never need a shell. The safety properties are unchanged — the
+ * password is still typed into Chrome's own form, and nothing here reads it.
  *
- * Every state change still writes an AuditLog row.
+ * Deeper operator surgery (personas, cooldowns, reclassification) stays in
+ * `pnpm agent` and `pnpm db:studio`. Controls that can quietly break outreach do
+ * not belong on the page a CEO reads.
+ *
+ * Every state change writes an AuditLog row.
  */
 
 async function audit(action: string, entity: string, detail?: string) {
@@ -221,6 +229,285 @@ export async function setAccountAutopilot(handle: string, on: boolean): Promise<
   await audit('sender.autopilot.set', `SenderAccount:${handle}`, on ? 'ARMED' : 'DISARMED')
   revalidatePath('/')
   return { ok: true, message: on ? `@${handle} will send by itself.` : `@${handle} will wait for you.` }
+}
+
+// ── Connecting an account ───────────────────────────────────────────────────
+
+/**
+ * Open the Chrome window so the operator can log this account in.
+ *
+ * This is the dashboard equivalent of `pnpm ig:login`, and it is deliberately the
+ * same underlying flow: the account's own persistent profile, a real Chrome window,
+ * a human typing the password into Instagram's own form. What is NOT happening here
+ * is worth stating because it is the whole safety argument — no credential is read
+ * by this process, and no session is imported from anywhere.
+ */
+export async function connectAccount(handle: string): Promise<ConnectState> {
+  const sender = await prisma.senderAccount.findUnique({ where: { handle } })
+  if (!sender) return { state: 'error', message: `@${handle} is not one of your accounts` }
+  await audit('sender.connect.start', `SenderAccount:${handle}`)
+  return startConnect(handle)
+}
+
+/** Polled by the page every few seconds while the Chrome window is open. */
+export async function checkConnect(handle: string): Promise<ConnectState> {
+  const result = await pollConnect(handle)
+  if (result.state === 'connected') {
+    const st = profileStatus(handle)
+    await prisma.senderAccount.update({
+      where: { handle },
+      // status back to ACTIVE: a fresh hand login is exactly what clears a
+      // CHALLENGED account, and it is the only thing that should.
+      data: { sessionPath: st.dir, sessionSavedAt: new Date(), status: 'ACTIVE' },
+    })
+    await audit('sender.login', `SenderAccount:${handle}`, `connected via dashboard into ${st.dir}`)
+    revalidatePath('/')
+  }
+  return result
+}
+
+export async function abortConnect(handle: string): Promise<{ ok: true }> {
+  await cancelConnect(handle)
+  await audit('sender.connect.cancel', `SenderAccount:${handle}`)
+  revalidatePath('/')
+  return { ok: true }
+}
+
+// ── Managing sending accounts ───────────────────────────────────────────────
+
+export interface MutationResult {
+  ok: boolean
+  message: string
+}
+
+/**
+ * Add a sending account.
+ *
+ * Three things have to happen together or the account is broken in a way that only
+ * shows up at send time:
+ *   - the persona, because rendering refuses to build a message without one
+ *   - the follow-up variants, because the planner throws if a sender has none
+ *   - a routing pair to every channel, because a sender with no pairs is inert
+ *
+ * New pairs start DISABLED. Adding an account should never, by itself, cause a
+ * message to be sent — arming is a separate, deliberate act.
+ */
+export async function addSender(handleRaw: string, displayNameRaw: string): Promise<MutationResult> {
+  const handle = handleRaw.trim().replace(/^@/, '').toLowerCase()
+  const displayName = displayNameRaw.trim() || handle
+
+  try {
+    assertSafeHandle(handle)
+  } catch {
+    return { ok: false, message: 'That is not a valid Instagram handle (letters, numbers, dots, underscores).' }
+  }
+  if (await prisma.senderAccount.findUnique({ where: { handle } })) {
+    return { ok: false, message: `@${handle} is already one of your accounts.` }
+  }
+  if (await prisma.targetAccount.findUnique({ where: { handle } })) {
+    return { ok: false, message: `@${handle} is already a channel you watch — it cannot also send.` }
+  }
+
+  const exists = await handleExists(handle)
+  if (exists === 'missing') return { ok: false, message: `@${handle} does not exist on Instagram.` }
+
+  // Persona is constant across senders per the brief. Copied from an existing
+  // account so a new one cannot drift from the others.
+  const template = await prisma.senderAccount.findFirst({ orderBy: { createdAt: 'asc' } })
+  if (!template) return { ok: false, message: 'No existing account to copy the persona from. Run pnpm db:seed.' }
+
+  const sender = await prisma.senderAccount.create({
+    data: {
+      handle,
+      displayName,
+      personaName: template.personaName,
+      personaRole: template.personaRole,
+      personaBrand: template.personaBrand,
+      personaPhone: template.personaPhone,
+      personaEmail: template.personaEmail,
+      autoSendEnabled: false,
+      dailyCap: template.dailyCap,
+      status: 'ACTIVE',
+    },
+  })
+
+  await prisma.messageVariant.createMany({
+    data: MESSAGE_VARIANTS.map((v) => ({ senderId: sender.id, label: v.label, body: v.body })),
+  })
+
+  const targets = await prisma.targetAccount.findMany()
+  for (const t of targets) {
+    await prisma.outreachPair.create({
+      data: { senderId: sender.id, targetId: t.id, cooldownDays: env.DEFAULT_COOLDOWN_DAYS, enabled: false },
+    })
+  }
+
+  await audit('sender.added', `SenderAccount:${handle}`, `${targets.length} pairs created, all disabled`)
+  revalidatePath('/')
+  return {
+    ok: true,
+    message:
+      exists === 'unknown'
+        ? `Added @${handle}. Could not reach Instagram to confirm it exists — check the spelling. Connect it next.`
+        : `Added @${handle}. Connect it next, then enable the channels you want it to message.`,
+  }
+}
+
+/**
+ * Remove a sending account.
+ *
+ * History is never deleted. Attempts record what was actually sent to real people,
+ * and that record is what spacing, the unanswered-touch cap and the new-material
+ * rule are computed from — deleting it would let the system re-contact someone it
+ * has already written to. So an account with send history is retired (disabled,
+ * disarmed, PAUSED) rather than destroyed; only a never-used account is deleted
+ * outright.
+ *
+ * The Chrome profile is deliberately left on disk. Deleting it would throw away the
+ * device identity built up by the hand login, which is unrecoverable and would make
+ * a future re-add look like new hardware to Instagram.
+ */
+export async function removeSender(handle: string): Promise<MutationResult> {
+  const sender = await prisma.senderAccount.findUnique({
+    where: { handle },
+    include: { pairs: { include: { attempts: { where: { status: { in: ['SENT', 'REPLIED'] } } } } } },
+  })
+  if (!sender) return { ok: false, message: `@${handle} not found.` }
+
+  await cancelConnect(handle)
+  const sentCount = sender.pairs.reduce((n, p) => n + p.attempts.length, 0)
+
+  if (sentCount === 0) {
+    await prisma.senderAccount.delete({ where: { handle } })
+    await audit('sender.deleted', `SenderAccount:${handle}`, 'no send history')
+    revalidatePath('/')
+    return { ok: true, message: `Removed @${handle}. Its Chrome profile is left on disk in case you re-add it.` }
+  }
+
+  await prisma.$transaction([
+    prisma.senderAccount.update({ where: { handle }, data: { autoSendEnabled: false, status: 'PAUSED' } }),
+    prisma.outreachPair.updateMany({ where: { senderId: sender.id }, data: { enabled: false } }),
+  ])
+  await audit('sender.retired', `SenderAccount:${handle}`, `${sentCount} sent messages kept`)
+  revalidatePath('/')
+  return {
+    ok: true,
+    message: `@${handle} has sent ${sentCount} message${sentCount === 1 ? '' : 's'}, so it is retired rather than deleted — that history is what stops anyone being contacted twice.`,
+  }
+}
+
+// ── Managing channels ───────────────────────────────────────────────────────
+
+/**
+ * Add a channel to watch.
+ *
+ * `passthrough` is the only honest default detector: `mom` is a hand-written rule
+ * set for one specific publisher's `#Collaboration` convention, and applying it to
+ * an arbitrary channel would silently mislabel posts. Passthrough records every post
+ * and classifies nothing, which is what we can actually stand behind.
+ *
+ * Pairs start DISABLED, for the same reason as a new sender: adding something must
+ * never be the same act as starting to message it.
+ */
+export async function addTarget(
+  handleRaw: string,
+  displayNameRaw: string,
+  greetingRaw: string,
+): Promise<MutationResult> {
+  const handle = handleRaw.trim().replace(/^@/, '').toLowerCase()
+  const displayName = displayNameRaw.trim() || handle
+  // The greeting is what the recipient literally reads first ("Hi <this>,").
+  const greeting = greetingRaw.trim() || displayName
+
+  try {
+    assertSafeHandle(handle)
+  } catch {
+    return { ok: false, message: 'That is not a valid Instagram handle (letters, numbers, dots, underscores).' }
+  }
+  if (await prisma.targetAccount.findUnique({ where: { handle } })) {
+    return { ok: false, message: `@${handle} is already a channel you watch.` }
+  }
+  if (await prisma.senderAccount.findUnique({ where: { handle } })) {
+    return { ok: false, message: `@${handle} is one of your own sending accounts — it cannot also be a target.` }
+  }
+
+  const exists = await handleExists(handle)
+  if (exists === 'missing') return { ok: false, message: `@${handle} does not exist on Instagram.` }
+
+  const target = await prisma.targetAccount.create({
+    data: { handle, displayName, contactFirstName: greeting, kind: 'CHANNEL', detectorKey: 'passthrough' },
+  })
+
+  const senders = await prisma.senderAccount.findMany()
+  for (const s of senders) {
+    await prisma.outreachPair.create({
+      data: { senderId: s.id, targetId: target.id, cooldownDays: env.DEFAULT_COOLDOWN_DAYS, enabled: false },
+    })
+  }
+
+  await audit('target.added', `TargetAccount:${handle}`, `${senders.length} pairs created, all disabled`)
+  revalidatePath('/')
+  return {
+    ok: true,
+    message:
+      exists === 'unknown'
+        ? `Added @${handle}, but Instagram could not be reached to confirm it exists — check the spelling.`
+        : `Watching @${handle}. Turn on the accounts you want to message it from.`,
+  }
+}
+
+/**
+ * Stop watching a channel.
+ *
+ * Same rule as senders: a channel we have written to is retired, not deleted.
+ * `optedOut` is a hard stop the governor checks independently of pairs, so it holds
+ * even if a pair is re-enabled later by accident.
+ */
+export async function removeTarget(handle: string): Promise<MutationResult> {
+  const target = await prisma.targetAccount.findUnique({
+    where: { handle },
+    include: { pairs: { include: { attempts: { where: { status: { in: ['SENT', 'REPLIED'] } } } } } },
+  })
+  if (!target) return { ok: false, message: `@${handle} not found.` }
+
+  const sentCount = target.pairs.reduce((n, p) => n + p.attempts.length, 0)
+
+  if (sentCount === 0) {
+    await prisma.targetAccount.delete({ where: { handle } })
+    await audit('target.deleted', `TargetAccount:${handle}`, 'never contacted')
+    revalidatePath('/')
+    return { ok: true, message: `Stopped watching @${handle} and removed it.` }
+  }
+
+  await prisma.$transaction([
+    prisma.targetAccount.update({ where: { handle }, data: { optedOut: true } }),
+    prisma.outreachPair.updateMany({ where: { targetId: target.id }, data: { enabled: false } }),
+  ])
+  await audit('target.retired', `TargetAccount:${handle}`, `${sentCount} sent messages kept`)
+  revalidatePath('/')
+  return {
+    ok: true,
+    message: `Stopped messaging @${handle}. ${sentCount} sent message${sentCount === 1 ? '' : 's'} kept, so it can never be contacted again by accident.`,
+  }
+}
+
+/** Turn a single sender→channel route on or off. */
+export async function setPairEnabled(senderHandle: string, targetHandle: string, on: boolean): Promise<MutationResult> {
+  const sender = await prisma.senderAccount.findUnique({ where: { handle: senderHandle } })
+  const target = await prisma.targetAccount.findUnique({ where: { handle: targetHandle } })
+  if (!sender || !target) return { ok: false, message: 'That route no longer exists.' }
+
+  if (on && target.optedOut) {
+    return { ok: false, message: `@${targetHandle} is marked never-contact. Re-add it first.` }
+  }
+
+  await prisma.outreachPair.update({
+    where: { senderId_targetId: { senderId: sender.id, targetId: target.id } },
+    data: { enabled: on },
+  })
+  await audit('pair.enabled', `${senderHandle}→${targetHandle}`, on ? 'on' : 'off')
+  revalidatePath('/')
+  return { ok: true, message: on ? `@${senderHandle} will message @${targetHandle}.` : `Route turned off.` }
 }
 
 /** Discard a queued message without sending. Does not start the cooldown. */

@@ -2,6 +2,8 @@ import { buildCeoView } from './view-model'
 import { SyncButton } from './sync-button'
 import { AwaitingList } from './awaiting'
 import { AutopilotPanel } from './autopilot'
+import { AccountsPanel } from './accounts'
+import { ChannelsPanel } from './channels'
 import { dmInboxUrl } from '@/lib/urls'
 
 export const dynamic = 'force-dynamic'
@@ -109,48 +111,9 @@ export default async function Dashboard() {
         )}
       </section>
 
-      <section>
-        <h2>Channels we watch</h2>
-        <div className="cards">
-          {v.channels.map((c) => (
-            <div key={c.handle} className="card">
-              <div className="card-top">
-                <a href={`https://instagram.com/${c.handle}`} target="_blank" rel="noreferrer">
-                  {c.name}
-                </a>
-                <span className="followers">{c.followers}</span>
-              </div>
-              <dl>
-                <div>
-                  <dt>Posts read this week</dt>
-                  <dd>{c.postsThisWeek}</dd>
-                </div>
-                <div>
-                  <dt>Paid campaigns found</dt>
-                  <dd>
-                    {c.unclassified ? (
-                      <span className="dim">not classified</span>
-                    ) : (
-                      c.campaignsThisWeek
-                    )}
-                  </dd>
-                </div>
-                <div>
-                  <dt>Last contacted</dt>
-                  <dd>{c.lastContactedLabel}</dd>
-                </div>
-              </dl>
-              {c.unclassified ? (
-                <p className="cardnote">
-                  This channel never labels its paid posts, so we record every post but do not guess which are
-                  paid. Showing a zero here would read as “they do no paid work”, which is untrue.
-                </p>
-              ) : null}
-              {c.halted ? <div className="halt">On hold — they replied</div> : null}
-            </div>
-          ))}
-        </div>
-      </section>
+      <ChannelsPanel channels={v.channels} />
+
+      <AccountsPanel accounts={v.accounts} />
 
       <AutopilotPanel state={v.autopilot} accounts={v.accounts} />
 
