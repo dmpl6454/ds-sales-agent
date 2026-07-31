@@ -1,5 +1,5 @@
 import type { BrowserContext, Page } from 'patchright'
-import { launchProfile, loggedInAs } from './session'
+import { launchProfile, loggedInAs, sessionUserId } from './session'
 import { profileStatus } from './profile'
 import { log } from '@/lib/logger'
 
@@ -108,6 +108,20 @@ export async function pollConnect(handle: string): Promise<ConnectState> {
       return { state: 'connected', handle }
     }
     if (who) return { state: 'wrong-account', actual: who, expected: handle }
+
+    /**
+     * A session cookie with no resolvable username is a THIRD state, and collapsing
+     * it into "still waiting" is what made this spin forever once already: the
+     * identity lookup was broken, so a fully logged-in account polled indefinitely
+     * with the UI cheerfully saying "waiting for you to log in". Whenever the answer
+     * is "I cannot tell", say so instead of implying the user has not acted.
+     */
+    if (await sessionUserId(s.page)) {
+      return {
+        state: 'waiting',
+        message: 'Logged in — confirming which account with Instagram…',
+      }
+    }
     return { state: 'waiting', message: 'Waiting for you to log in…' }
   } catch (err) {
     return { state: 'error', message: err instanceof Error ? err.message : String(err) }

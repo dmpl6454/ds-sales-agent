@@ -376,10 +376,10 @@ export async function buildCeoView(): Promise<CeoView> {
       state = 'broken'
       note = 'contact details invalid'
     } else if (!hasProfile) {
-      // The most common outstanding step now, so it gets said plainly with the
-      // exact command rather than a vague "not set up".
+      // The most common outstanding step, and the dashboard now owns it — pointing
+      // at a terminal command from a button-driven page just sends people away.
       state = 'setup'
-      note = `one-time login needed — pnpm ig:login ${s.handle}`
+      note = 'not connected — press Connect'
     } else if (s.status === 'PAUSED') {
       state = 'setup'
       note = 'paused'

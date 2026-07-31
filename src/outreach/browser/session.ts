@@ -122,24 +122,45 @@ export function assertNoCheckpoint(page: Page, handle?: string): void {
  * authenticated by definition, and its job here is the opposite of risky: making
  * sure we do not send from the wrong account.
  */
+export async function sessionUserId(page: Page): Promise<string | null> {
+  const cookies = await page.context().cookies('https://www.instagram.com')
+  const raw = cookies.find((c) => c.name === 'ds_user_id')?.value
+  // Numeric-only: this value is interpolated into a URL below.
+  return raw && /^\d{1,25}$/.test(raw) ? raw : null
+}
+
 export async function loggedInAs(page: Page): Promise<string | null> {
   try {
-    const res = await page.request.get('https://www.instagram.com/api/v1/accounts/current_user/', {
+    /**
+     * Two steps, because there is no single endpoint that answers "who am I" on
+     * instagram.com web.
+     *
+     * The obvious-looking `/api/v1/accounts/current_user/` DOES NOT WORK, and it
+     * fails in the worst possible way. Measured 2026-07-31 against a genuinely
+     * logged-in profile: it returns **HTTP 200 with `text/html`** — the SPA shell,
+     * because it is a mobile-API path that www does not serve. So every check
+     * against it returned null, for logged-in and logged-out sessions alike.
+     *
+     * That was not a cosmetic bug. `assertLoggedInAs` runs before every send, so
+     * a fully connected account would have been reported "not logged in" and no
+     * message could ever have been delivered. The dashboard's Connect button
+     * polling forever is the same fault, just the visible end of it.
+     *
+     * What does work, verified on the same profile: `ds_user_id` from the session
+     * cookie, resolved through `/api/v1/users/{id}/info/`, which returns
+     * `application/json` with `user.username`. The cookie establishes that a
+     * session exists at all; the lookup establishes whose it is. Both matter —
+     * sending from the wrong account is its own failure.
+     */
+    const userId = await sessionUserId(page)
+    if (!userId) return null
+
+    const res = await page.request.get(`https://www.instagram.com/api/v1/users/${userId}/info/`, {
       headers: { 'x-ig-app-id': '936619743392459' },
     })
 
-    /**
-     * The status check alone is not enough, and relying on it was a latent bug.
-     * Logged out, Instagram does not return 4xx here — it 302s to
-     * `/accounts/login/?next=...` and serves that page with **HTTP 200 and an HTML
-     * body**. So `res.ok()` is true, and the function only returned null because
-     * `res.json()` then threw into the bare catch below. Correct answer, reached by
-     * accident, and one tightened `catch` away from silently reporting logged-out
-     * profiles as logged in.
-     *
-     * Checking the content type states the actual intent: JSON means a session,
-     * HTML means a login page.
-     */
+    // Content type, not just status: logged out, Instagram serves the login page
+    // with HTTP 200 and HTML rather than a 4xx.
     const contentType = res.headers()['content-type'] ?? ''
     if (!res.ok() || !contentType.includes('json')) return null
 
