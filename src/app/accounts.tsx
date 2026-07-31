@@ -9,6 +9,7 @@ import {
   removeSender,
   setAccountAutopilot,
   setPairEnabled,
+  clearChallenge,
 } from './actions'
 import type { AccountCard } from './view-model'
 import type { ConnectState } from '@/outreach/browser/connect'
@@ -64,6 +65,13 @@ function AccountRow({ account }: { account: AccountCard }) {
   )
   const [msg, setMsg] = useState<string | null>(null)
   const [confirmRemove, setConfirmRemove] = useState(false)
+  /**
+   * Separate flags per action, deliberately. Save and Send once shared one and opening
+   * the editor rendered Save as "Saving…" before any save had been attempted; a control
+   * must never report the state of something that has not started.
+   */
+  const [confirmClear, setConfirmClear] = useState(false)
+  const [clearing, setClearing] = useState(false)
   const polling = useRef<ReturnType<typeof setInterval> | null>(null)
 
   /**
@@ -87,6 +95,18 @@ function AccountRow({ account }: { account: AccountCard }) {
       polling.current = null
     }
   }, [connect?.state, account.handle])
+
+  const doClear = async () => {
+    setClearing(true)
+    setMsg(null)
+    try {
+      const r = await clearChallenge(account.handle)
+      setMsg(r.message)
+      if (r.ok) setConfirmClear(false)
+    } finally {
+      setClearing(false)
+    }
+  }
 
   const start = async () => {
     setBusy(true)
@@ -196,6 +216,28 @@ function AccountRow({ account }: { account: AccountCard }) {
             </>
           ) : null}
           {connect.state === 'closed' || connect.state === 'error' ? connect.message : null}
+        </div>
+      ) : null}
+
+      {account.status === 'CHALLENGED' ? (
+        <div className="connect-strip warn">
+          Instagram flagged @{account.handle} and sending is halted. Open the account yourself and deal with whatever
+          it is asking before clearing this — the session may still work, which is not the same as the cause being
+          sorted.
+          {confirmClear ? (
+            <>
+              <button className="link-btn" onClick={doClear} disabled={clearing}>
+                {clearing ? 'Clearing…' : 'I have checked it — clear the halt'}
+              </button>
+              <button className="link-btn" onClick={() => setConfirmClear(false)}>
+                Cancel
+              </button>
+            </>
+          ) : (
+            <button className="link-btn" onClick={() => setConfirmClear(true)}>
+              Clear the halt
+            </button>
+          )}
         </div>
       ) : null}
 

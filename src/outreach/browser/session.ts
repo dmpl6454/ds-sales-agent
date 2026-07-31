@@ -26,12 +26,26 @@ import { log } from '@/lib/logger'
  */
 
 /** Instagram surfaces enforcement at these paths. Seeing one means STOP, never retry. */
-const CHECKPOINT_PATHS = [
-  '/challenge',
-  '/accounts/suspended',
-  '/accounts/disabled',
-  '/two_factor',
-]
+const CHECKPOINT_PATHS = ['/challenge', '/accounts/suspended', '/accounts/disabled']
+
+/**
+ * A 2FA prompt. ROUTINE, and its own state.
+ *
+ * This used to sit in CHECKPOINT_PATHS, and `assertNoCheckpoint` runs five times inside
+ * a single send — so if Instagram asked for a code at any point, the account was marked
+ * CHALLENGED, every pair using it halted, and by design nothing retried. But 2FA is the
+ * recommended configuration for these accounts, and a re-prompt means an existing
+ * session is being re-verified, not that Instagram has taken action.
+ *
+ * It is the same conflation already fixed for `/accounts/login` immediately below, and
+ * that comment's reasoning applies verbatim: an operator who sees CHALLENGED for routine
+ * events learns to dismiss it, and then dismisses the one that matters.
+ *
+ * Not simply merged into LOGIN_PATHS because the remedy differs — a login form means
+ * re-authenticate, a 2FA prompt means enter a code for a session that already exists.
+ * Checked BEFORE the login paths, because IG's 2FA URL sits under `/accounts/login/`.
+ */
+const TWO_FACTOR_PATHS = ['/two_factor', '/accounts/login/two_factor']
 
 /**
  * A login form is NOT a checkpoint, and conflating the two was a real bug.
@@ -66,6 +80,21 @@ export class NotLoggedInError extends Error {
   }
 }
 
+/**
+ * Instagram wants a 2FA code. NOT enforcement — the account is fine, a human just has
+ * to enter a code. Kept distinct from NotLoggedInError because the remedy differs: a
+ * login form means re-authenticate, this means re-verify a session that already exists.
+ */
+export class TwoFactorRequiredError extends Error {
+  constructor(readonly handle: string) {
+    super(
+      `@${handle} needs a 2FA code — press Connect and enter it. The account is NOT flagged ` +
+        `and nothing was retried.`,
+    )
+    this.name = 'TwoFactorRequiredError'
+  }
+}
+
 export class WrongAccountError extends Error {
   constructor(
     readonly expected: string,
@@ -94,20 +123,83 @@ export async function launchProfile(handle: string): Promise<BrowserContext> {
   })
 }
 
+export type UrlVerdict = 'ok' | 'checkpoint' | 'needs-login' | 'needs-2fa'
+
+/** Pure, so every verdict is testable without a browser. */
+export function classifyUrl(url: string): UrlVerdict {
+  for (const p of CHECKPOINT_PATHS) if (url.includes(p)) return 'checkpoint'
+  for (const p of TWO_FACTOR_PATHS) if (url.includes(p)) return 'needs-2fa'
+  for (const p of LOGIN_PATHS) if (url.includes(p)) return 'needs-login'
+  return 'ok'
+}
+
+/**
+ * Enforcement that renders in the page rather than changing the URL.
+ *
+ * `assertNoCheckpoint` only ever looked at `page.url()`. But Instagram's most common
+ * response to DM activity — "Action Blocked", "We restrict certain activity" — is a
+ * MODAL on the current URL, as is a suspension notice on a profile page. None of those
+ * change the path, so none were detected: the send carried on, failed some later check,
+ * and was recorded as an ordinary retryable failure. The account stayed ACTIVE and
+ * eligible for the next slot, which is retrying into a block — the one thing the
+ * checkpoint rule exists to prevent.
+ *
+ * Phrases are matched loosely on normalised text, and kept narrow and specific on
+ * purpose: a false positive halts a healthy revenue account, so this must never match
+ * ordinary conversation. Everything here is enforcement language, not chat.
+ */
+const ENFORCEMENT_PHRASES = [
+  'action blocked',
+  'we restrict certain activity',
+  'temporarily blocked',
+  'your account has been disabled',
+  'try again later',
+  'please wait a few minutes before you try again',
+  'message could not be sent',
+] as const
+
+export function looksLikeEnforcement(pageText: string): boolean {
+  const t = pageText.replace(/\s+/g, ' ').trim().toLowerCase()
+  if (t.length === 0) return false
+  return ENFORCEMENT_PHRASES.some((p) => t.includes(p))
+}
+
 /**
  * Throws if the current URL is an enforcement surface (CheckpointError — halt the
- * account) or a login form (NotLoggedInError — just log in again).
+ * account), a 2FA prompt (TwoFactorRequiredError — a human enters a code and the
+ * account stays ACTIVE), or a login form (NotLoggedInError — just log in again).
  *
- * `handle` is only needed for the login-form message; it is optional so existing
- * mid-send call sites can stay terse where the account is obvious from context.
+ * `handle` is only needed for the message; it is optional so existing mid-send call
+ * sites can stay terse where the account is obvious from context.
  */
 export function assertNoCheckpoint(page: Page, handle?: string): void {
   const url = page.url()
-  for (const p of CHECKPOINT_PATHS) {
-    if (url.includes(p)) throw new CheckpointError(url, p.replace(/^\//, ''))
+  switch (classifyUrl(url)) {
+    case 'checkpoint': {
+      const kind = CHECKPOINT_PATHS.find((p) => url.includes(p))!.replace(/^\//, '')
+      throw new CheckpointError(url, kind)
+    }
+    case 'needs-2fa':
+      throw new TwoFactorRequiredError(handle ?? 'this account')
+    case 'needs-login':
+      throw new NotLoggedInError(handle ?? 'this account')
+    case 'ok':
+      return
   }
-  for (const p of LOGIN_PATHS) {
-    if (url.includes(p)) throw new NotLoggedInError(handle ?? 'this account')
+}
+
+/**
+ * The URL check PLUS the in-page check. Use this wherever a page has just been navigated
+ * or acted upon; `assertNoCheckpoint` alone answers only half the question.
+ *
+ * Async because it has to read the page, which is why the cheap URL-only variant still
+ * exists for the navigation steps that run before any action.
+ */
+export async function assertNoEnforcement(page: Page, handle?: string): Promise<void> {
+  assertNoCheckpoint(page, handle)
+  const text = (await page.locator('body').textContent().catch(() => '')) ?? ''
+  if (looksLikeEnforcement(text)) {
+    throw new CheckpointError(page.url(), 'in-page enforcement notice')
   }
 }
 

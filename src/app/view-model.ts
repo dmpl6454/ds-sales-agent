@@ -132,6 +132,13 @@ export interface AccountCard {
   handle: string
   name: string
   autopilot: boolean
+  /**
+   * Raw SenderAccount.status. Needed because clearing a CHALLENGED halt is now an
+   * explicit operator act with its own control, so the UI has to know the difference
+   * between "broken because Instagram flagged it" and "broken because details are
+   * invalid" — `state` collapses both to 'broken'.
+   */
+  status: string
   /** A hand login has happened, so this account CAN send unattended. */
   canSendAutomatically: boolean
   /** A Chrome window is open right now waiting for this account to be logged in. */
@@ -422,6 +429,7 @@ export async function buildCeoView(): Promise<CeoView> {
         }))
         .sort((a, b) => a.targetHandle.localeCompare(b.targetHandle)),
       sentThisWeek,
+      status: s.status,
       state,
       note,
     })

@@ -378,14 +378,52 @@ export async function checkConnect(handle: string): Promise<ConnectState> {
     const st = profileStatus(handle)
     await prisma.senderAccount.update({
       where: { handle },
-      // status back to ACTIVE: a fresh hand login is exactly what clears a
-      // CHALLENGED account, and it is the only thing that should.
-      data: { sessionPath: st.dir, sessionSavedAt: new Date(), status: 'ACTIVE' },
+      /**
+       * Records the session. Deliberately does NOT touch status.
+       *
+       * This set `status: 'ACTIVE'`, reasoning that a fresh hand login is what clears a
+       * CHALLENGED account. But `connected` is returned on two paths where no login
+       * happens: `startConnect` when the profile is already logged in, and
+       * `pollConnect`'s no-window fallback, which reported connected purely from a
+       * cookie on disk with no identity check at all. So "Instagram flagged the account
+       * -> CHALLENGED -> press Connect -> silently ACTIVE" took one click and inspected
+       * nothing, which is the opposite of what the halt is for.
+       *
+       * Clearing it is now `clearChallenge`, a separate deliberate act.
+       */
+      data: { sessionPath: st.dir, sessionSavedAt: new Date() },
     })
     await audit('sender.login', `SenderAccount:${handle}`, `connected via dashboard into ${st.dir}`)
     revalidatePath('/')
   }
   return result
+}
+
+/**
+ * Clear a CHALLENGED halt, after a human has actually looked at the account.
+ *
+ * Separate from connecting on purpose. A checkpoint means Instagram took action; the
+ * session may well still be valid, so "the session works" is not evidence the cause was
+ * addressed. The only thing that should lift this is a person confirming they opened the
+ * account and dealt with whatever Instagram was asking.
+ *
+ * Deliberately does NOT re-enable auto-send. Coming back from a halt and returning to
+ * unattended sending are two decisions, and this is only the first.
+ */
+export async function clearChallenge(handle: string): Promise<MutationResult> {
+  const sender = await prisma.senderAccount.findUnique({ where: { handle } })
+  if (!sender) return { ok: false, message: `@${handle} not found.` }
+  if (sender.status !== 'CHALLENGED') {
+    return { ok: false, message: `@${handle} is ${sender.status} — nothing to clear.` }
+  }
+  if (!profileStatus(handle).hasSession) {
+    return { ok: false, message: `@${handle} is not connected. Press Connect first, then clear the halt.` }
+  }
+
+  await prisma.senderAccount.update({ where: { handle }, data: { status: 'ACTIVE' } })
+  await audit('sender.challenge.cleared', `SenderAccount:${handle}`, 'operator confirmed they checked the account')
+  revalidatePath('/')
+  return { ok: true, message: `@${handle} is active again. Auto-send is still off — arm it deliberately.` }
 }
 
 export async function abortConnect(handle: string): Promise<{ ok: true }> {

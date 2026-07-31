@@ -3,7 +3,7 @@ import { profileUrl } from '@/lib/urls'
 import { log } from '@/lib/logger'
 import { copyToClipboard } from '@/lib/clipboard'
 import { messageMatchesOurs } from '@/outreach/matching'
-import { assertLoggedInAs, assertNoCheckpoint, launchProfile } from './session'
+import { assertLoggedInAs, assertNoCheckpoint, assertNoEnforcement, launchProfile } from './session'
 
 /**
  * Sending one DM from the account's own logged-in Chrome profile.
@@ -126,7 +126,7 @@ export async function sendDm(params: SendDmParams): Promise<SendDmResult> {
       assertNoCheckpoint(page)
       return { ok: false, reason: 'message thread opened but no composer was found' }
     }
-    assertNoCheckpoint(page)
+    await assertNoEnforcement(page, senderHandle)
 
     await composer.click()
     await jitter(600, 1400)
@@ -161,7 +161,9 @@ export async function sendDm(params: SendDmParams): Promise<SendDmResult> {
     // 7. Send.
     await page.keyboard.press('Enter')
     await jitter(1500, 2600)
-    assertNoCheckpoint(page)
+    // Full check, not URL-only: "Action Blocked" is a modal on the same URL, and this is
+    // the moment it appears.
+    await assertNoEnforcement(page, senderHandle)
 
     /**
      * 8. Confirm it actually left, in two parts.
