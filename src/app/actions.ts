@@ -179,12 +179,29 @@ export async function sendNow(attemptId: string): Promise<SendNowResult> {
  * the automated path fails and you finish it yourself, the record has to catch up
  * or the agent will prepare a duplicate.
  */
-export async function markSent(attemptId: string) {
+export async function markSent(attemptId: string): Promise<MutationResult> {
   const attempt = await prisma.outreachAttempt.findUniqueOrThrow({
     where: { id: attemptId },
     include: { pair: { include: { sender: true, target: true } } },
   })
-  if (attempt.status === 'SENT') return
+
+  /**
+   * Only from a state where the message was not already recorded as delivered.
+   *
+   * This returned early for SENT alone, so SKIPPED, SENDING and — worst — REPLIED could
+   * all be flipped to SENT. Flipping REPLIED keeps `repliedAt` but changes the status,
+   * desynchronising the two: status-based queries stop seeing the reply while
+   * `repliedAt`-based ones still do, so the same conversation reads as answered to one
+   * guard and unanswered to another. It also incremented the variant's usage counter on
+   * every call.
+   */
+  if (attempt.status === 'SENT') return { ok: true, message: 'Already recorded as sent.' }
+  if (attempt.status === 'REPLIED') {
+    return { ok: false, message: 'They replied to that message — it is already recorded as delivered.' }
+  }
+  if (attempt.status === 'SENDING') {
+    return { ok: false, message: 'That message is being sent right now — wait for it to finish.' }
+  }
 
   await prisma.$transaction([
     prisma.outreachAttempt.update({
@@ -202,6 +219,7 @@ export async function markSent(attemptId: string) {
     `@${attempt.pair.sender.handle} → @${attempt.pair.target.handle}`,
   )
   revalidatePath('/')
+  return { ok: true, message: `Recorded as sent to @${attempt.pair.target.handle}.` }
 }
 
 /** Longest body we will hand to the composer. Well above any real pitch. */
@@ -598,11 +616,40 @@ export async function setPairEnabled(senderHandle: string, targetHandle: string,
 }
 
 /** Discard a queued message without sending. Does not start the cooldown. */
-export async function skipAttempt(attemptId: string, reason: string) {
-  await prisma.outreachAttempt.update({
-    where: { id: attemptId },
+export async function skipAttempt(attemptId: string, reason: string): Promise<MutationResult> {
+  /**
+   * Only a message that is still waiting may be discarded.
+   *
+   * This had no status check at all. Applied to a SENT attempt it erased the record of
+   * a message a real person received — and that record is what `touchesSoFar`, the
+   * spacing rule and the new-material rule are computed from, so the system would then
+   * be free to write to someone it had already written to. That is exactly the outcome
+   * the "removal never deletes send history" rule exists to prevent, reachable in one
+   * call. Applied to a SENDING attempt it corrupted the state of a live browser send.
+   *
+   * Conditional updateMany rather than read-then-write, for the same reason `sendNow`
+   * needed it: a check and a write in separate statements is not a guard.
+   */
+  const claimed = await prisma.outreachAttempt.updateMany({
+    where: { id: attemptId, status: { in: ['READY', 'QUEUED'] } },
     data: { status: 'SKIPPED', error: reason || 'skipped by operator' },
   })
+
+  if (claimed.count === 0) {
+    const now = await prisma.outreachAttempt.findUnique({
+      where: { id: attemptId },
+      select: { status: true },
+    })
+    return {
+      ok: false,
+      message:
+        now?.status === 'SENDING'
+          ? 'That message is being sent right now — too late to discard.'
+          : `That message is already ${(now?.status ?? 'gone').toLowerCase()} and cannot be discarded.`,
+    }
+  }
+
   await audit('attempt.skipped', `OutreachAttempt:${attemptId}`, reason)
   revalidatePath('/')
+  return { ok: true, message: 'Discarded.' }
 }
