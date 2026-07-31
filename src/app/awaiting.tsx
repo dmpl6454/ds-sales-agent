@@ -102,7 +102,17 @@ function AwaitingItem({ item }: { item: AwaitingCard }) {
     }
   }
 
-  const busy = sending || pending || item.inFlight || editing
+  /**
+   * Two different "busy", and conflating them broke the editor.
+   *
+   * `saving` is the edit round-trip. `sendBlocked` additionally includes `editing`,
+   * because a half-edited message must not be sendable. One flag served both, so the
+   * moment the editor opened, `editing` made it true and the Save button rendered
+   * "Saving…" disabled — permanently, before any save had been attempted. A control
+   * cannot report the state of an action that has not started.
+   */
+  const saving = pending
+  const sendBlocked = sending || pending || item.inFlight || editing
 
   return (
     <div className="card">
@@ -144,27 +154,31 @@ function AwaitingItem({ item }: { item: AwaitingCard }) {
             rows={16}
           />
           <div className="row">
-            <button className="primary" onClick={save} disabled={busy || draft.trim().length === 0}>
-              {busy ? 'Saving…' : 'Save'}
+            <button className="primary" onClick={save} disabled={saving || draft.trim().length === 0}>
+              {saving ? 'Saving…' : 'Save'}
             </button>
-            <button onClick={() => setEditing(false)} disabled={busy}>
+            <button onClick={() => setEditing(false)} disabled={saving}>
               Cancel
             </button>
             <span className="acc-note">{draft.trim().length} characters</span>
           </div>
-          {editMsg ? (
-            <p className="cardnote" style={{ color: editMsg.ok ? 'var(--good)' : 'var(--warn)' }}>
-              {editMsg.ok ? '✓ ' : '⚠ '}
-              {editMsg.text}
-            </p>
-          ) : null}
         </div>
+      ) : null}
+
+      {/* Outside the editor block on purpose: a successful save closes the editor,
+          so a confirmation rendered inside it would unmount in the same tick and the
+          user would see nothing happen. */}
+      {editMsg ? (
+        <p className="cardnote" style={{ color: editMsg.ok ? 'var(--good)' : 'var(--warn)' }}>
+          {editMsg.ok ? '✓ ' : '⚠ '}
+          {editMsg.text}
+        </p>
       ) : null}
 
       <div className="row">
         <button
           className="primary"
-          disabled={busy || !item.canSendAutomatically}
+          disabled={sendBlocked || !item.canSendAutomatically}
           onClick={send}
           title={
             item.canSendAutomatically
@@ -178,7 +192,7 @@ function AwaitingItem({ item }: { item: AwaitingCard }) {
               ? 'Sending — watch the browser…'
               : `Send from @${item.senderHandle}`}
         </button>
-        <button disabled={busy} onClick={() => start(() => skipAttempt(item.id, 'skipped'))}>
+        <button disabled={sendBlocked} onClick={() => start(() => skipAttempt(item.id, "skipped"))}>
           Discard
         </button>
       </div>
@@ -201,7 +215,7 @@ function AwaitingItem({ item }: { item: AwaitingCard }) {
             Open @{item.targetHandle}
           </a>
           <button
-            disabled={busy}
+            disabled={sendBlocked}
             onClick={() => start(() => markSent(item.id))}
             title="Records that you sent it yourself. Press only after actually sending — spacing, caps and follow-ups are all derived from this."
           >
