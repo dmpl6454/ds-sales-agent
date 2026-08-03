@@ -7,9 +7,9 @@
     "node": ">=20"
   },
   "scripts": {
-    "dev": "next dev",
+    "dev": "next dev -H 127.0.0.1",
     "build": "next build",
-    "start": "next start",
+    "start": "next start -H 127.0.0.1",
     "worker": "tsx src/worker/index.ts",
     "worker:dev": "tsx watch src/worker/index.ts",
     "run:slot": "tsx src/worker/runOnce.ts",
@@ -31,7 +31,9 @@
     "queued": "tsx src/scripts/queued.ts",
     "burner": "tsx src/scripts/burner.ts",
     "ig:login": "tsx src/scripts/login.ts",
-    "ig:audit": "tsx src/scripts/audit.ts"
+    "ig:audit": "tsx src/scripts/audit.ts",
+    "ig:reply": "tsx src/scripts/reply.ts",
+    "ig:thread": "tsx src/scripts/thread.ts"
   },
   "dependencies": {
     "@prisma/adapter-better-sqlite3": "^7.9.1",

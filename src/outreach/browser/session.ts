@@ -26,12 +26,26 @@ import { log } from '@/lib/logger'
  */
 
 /** Instagram surfaces enforcement at these paths. Seeing one means STOP, never retry. */
-const CHECKPOINT_PATHS = [
-  '/challenge',
-  '/accounts/suspended',
-  '/accounts/disabled',
-  '/two_factor',
-]
+const CHECKPOINT_PATHS = ['/challenge', '/accounts/suspended', '/accounts/disabled']
+
+/**
+ * A 2FA prompt. ROUTINE, and its own state.
+ *
+ * This used to sit in CHECKPOINT_PATHS, and `assertNoCheckpoint` runs five times inside
+ * a single send — so if Instagram asked for a code at any point, the account was marked
+ * CHALLENGED, every pair using it halted, and by design nothing retried. But 2FA is the
+ * recommended configuration for these accounts, and a re-prompt means an existing
+ * session is being re-verified, not that Instagram has taken action.
+ *
+ * It is the same conflation already fixed for `/accounts/login` immediately below, and
+ * that comment's reasoning applies verbatim: an operator who sees CHALLENGED for routine
+ * events learns to dismiss it, and then dismisses the one that matters.
+ *
+ * Not simply merged into LOGIN_PATHS because the remedy differs — a login form means
+ * re-authenticate, a 2FA prompt means enter a code for a session that already exists.
+ * Checked BEFORE the login paths, because IG's 2FA URL sits under `/accounts/login/`.
+ */
+const TWO_FACTOR_PATHS = ['/two_factor', '/accounts/login/two_factor']
 
 /**
  * A login form is NOT a checkpoint, and conflating the two was a real bug.
@@ -66,6 +80,44 @@ export class NotLoggedInError extends Error {
   }
 }
 
+/**
+ * Instagram wants a 2FA code. NOT enforcement — the account is fine, a human just has
+ * to enter a code. Kept distinct from NotLoggedInError because the remedy differs: a
+ * login form means re-authenticate, this means re-verify a session that already exists.
+ */
+export class TwoFactorRequiredError extends Error {
+  constructor(readonly handle: string) {
+    super(
+      `@${handle} needs a 2FA code — press Connect and enter it. The account is NOT flagged ` +
+        `and nothing was retried.`,
+    )
+    this.name = 'TwoFactorRequiredError'
+  }
+}
+
+/**
+ * A session cookie exists but the identity lookup could not be made — a network blip, a
+ * timeout, Instagram returning something unparseable.
+ *
+ * Distinct from NotLoggedInError because `loggedInAs` used to swallow every error into
+ * `null`, which `assertLoggedInAs` turned into "not logged in, run pnpm ig:login". That
+ * told the operator to re-login on a transient failure, and re-logging-in is the action
+ * that carries real risk in this design. "I could not ask" is a third answer.
+ */
+export class IdentityCheckFailedError extends Error {
+  constructor(
+    readonly handle: string,
+    /** Named `detail` rather than `cause`, which collides with Error.cause. */
+    readonly detail: string,
+  ) {
+    super(
+      `could not confirm which account @${handle} is logged in as (${detail}) — not sending, ` +
+        `and NOT a reason to log in again`,
+    )
+    this.name = 'IdentityCheckFailedError'
+  }
+}
+
 export class WrongAccountError extends Error {
   constructor(
     readonly expected: string,
@@ -94,20 +146,83 @@ export async function launchProfile(handle: string): Promise<BrowserContext> {
   })
 }
 
+export type UrlVerdict = 'ok' | 'checkpoint' | 'needs-login' | 'needs-2fa'
+
+/** Pure, so every verdict is testable without a browser. */
+export function classifyUrl(url: string): UrlVerdict {
+  for (const p of CHECKPOINT_PATHS) if (url.includes(p)) return 'checkpoint'
+  for (const p of TWO_FACTOR_PATHS) if (url.includes(p)) return 'needs-2fa'
+  for (const p of LOGIN_PATHS) if (url.includes(p)) return 'needs-login'
+  return 'ok'
+}
+
+/**
+ * Enforcement that renders in the page rather than changing the URL.
+ *
+ * `assertNoCheckpoint` only ever looked at `page.url()`. But Instagram's most common
+ * response to DM activity — "Action Blocked", "We restrict certain activity" — is a
+ * MODAL on the current URL, as is a suspension notice on a profile page. None of those
+ * change the path, so none were detected: the send carried on, failed some later check,
+ * and was recorded as an ordinary retryable failure. The account stayed ACTIVE and
+ * eligible for the next slot, which is retrying into a block — the one thing the
+ * checkpoint rule exists to prevent.
+ *
+ * Phrases are matched loosely on normalised text, and kept narrow and specific on
+ * purpose: a false positive halts a healthy revenue account, so this must never match
+ * ordinary conversation. Everything here is enforcement language, not chat.
+ */
+const ENFORCEMENT_PHRASES = [
+  'action blocked',
+  'we restrict certain activity',
+  'temporarily blocked',
+  'your account has been disabled',
+  'try again later',
+  'please wait a few minutes before you try again',
+  'message could not be sent',
+] as const
+
+export function looksLikeEnforcement(pageText: string): boolean {
+  const t = pageText.replace(/\s+/g, ' ').trim().toLowerCase()
+  if (t.length === 0) return false
+  return ENFORCEMENT_PHRASES.some((p) => t.includes(p))
+}
+
 /**
  * Throws if the current URL is an enforcement surface (CheckpointError — halt the
- * account) or a login form (NotLoggedInError — just log in again).
+ * account), a 2FA prompt (TwoFactorRequiredError — a human enters a code and the
+ * account stays ACTIVE), or a login form (NotLoggedInError — just log in again).
  *
- * `handle` is only needed for the login-form message; it is optional so existing
- * mid-send call sites can stay terse where the account is obvious from context.
+ * `handle` is only needed for the message; it is optional so existing mid-send call
+ * sites can stay terse where the account is obvious from context.
  */
 export function assertNoCheckpoint(page: Page, handle?: string): void {
   const url = page.url()
-  for (const p of CHECKPOINT_PATHS) {
-    if (url.includes(p)) throw new CheckpointError(url, p.replace(/^\//, ''))
+  switch (classifyUrl(url)) {
+    case 'checkpoint': {
+      const kind = CHECKPOINT_PATHS.find((p) => url.includes(p))!.replace(/^\//, '')
+      throw new CheckpointError(url, kind)
+    }
+    case 'needs-2fa':
+      throw new TwoFactorRequiredError(handle ?? 'this account')
+    case 'needs-login':
+      throw new NotLoggedInError(handle ?? 'this account')
+    case 'ok':
+      return
   }
-  for (const p of LOGIN_PATHS) {
-    if (url.includes(p)) throw new NotLoggedInError(handle ?? 'this account')
+}
+
+/**
+ * The URL check PLUS the in-page check. Use this wherever a page has just been navigated
+ * or acted upon; `assertNoCheckpoint` alone answers only half the question.
+ *
+ * Async because it has to read the page, which is why the cheap URL-only variant still
+ * exists for the navigation steps that run before any action.
+ */
+export async function assertNoEnforcement(page: Page, handle?: string): Promise<void> {
+  assertNoCheckpoint(page, handle)
+  const text = (await page.locator('body').textContent().catch(() => '')) ?? ''
+  if (looksLikeEnforcement(text)) {
+    throw new CheckpointError(page.url(), 'in-page enforcement notice')
   }
 }
 
@@ -129,7 +244,18 @@ export async function sessionUserId(page: Page): Promise<string | null> {
   return raw && /^\d{1,25}$/.test(raw) ? raw : null
 }
 
-export async function loggedInAs(page: Page): Promise<string | null> {
+export type IdentityResult =
+  | { kind: 'logged-in'; username: string }
+  | { kind: 'logged-out' }
+  | { kind: 'unknown'; detail: string }
+
+/**
+ * Who is this profile logged in as — with "I could not tell" as a distinct answer.
+ */
+export async function identify(page: Page): Promise<IdentityResult> {
+  const userId = await sessionUserId(page)
+  if (!userId) return { kind: 'logged-out' }
+
   try {
     /**
      * Two steps, because there is no single endpoint that answers "who am I" on
@@ -152,9 +278,6 @@ export async function loggedInAs(page: Page): Promise<string | null> {
      * session exists at all; the lookup establishes whose it is. Both matter —
      * sending from the wrong account is its own failure.
      */
-    const userId = await sessionUserId(page)
-    if (!userId) return null
-
     const res = await page.request.get(`https://www.instagram.com/api/v1/users/${userId}/info/`, {
       headers: { 'x-ig-app-id': '936619743392459' },
     })
@@ -162,13 +285,24 @@ export async function loggedInAs(page: Page): Promise<string | null> {
     // Content type, not just status: logged out, Instagram serves the login page
     // with HTTP 200 and HTML rather than a 4xx.
     const contentType = res.headers()['content-type'] ?? ''
-    if (!res.ok() || !contentType.includes('json')) return null
+    if (!res.ok() || !contentType.includes('json')) return { kind: 'logged-out' }
 
     const body = (await res.json()) as { user?: { username?: string } }
-    return body.user?.username?.toLowerCase() ?? null
-  } catch {
-    return null
+    const username = body.user?.username?.toLowerCase()
+    return username ? { kind: 'logged-in', username } : { kind: 'logged-out' }
+  } catch (err) {
+    return { kind: 'unknown', detail: err instanceof Error ? err.message : String(err) }
   }
+}
+
+/**
+ * Backwards-compatible wrapper: `null` means "not confirmed as anyone". `connect.ts`
+ * uses this, where the three-way distinction is not needed — an unknown there just keeps
+ * the poll waiting, which is correct.
+ */
+export async function loggedInAs(page: Page): Promise<string | null> {
+  const r = await identify(page)
+  return r.kind === 'logged-in' ? r.username : null
 }
 
 /**
@@ -180,7 +314,10 @@ export async function loggedInAs(page: Page): Promise<string | null> {
  * happily type a pitch into a login form if nothing checked.
  */
 export async function assertLoggedInAs(page: Page, expected: string): Promise<void> {
-  const actual = await loggedInAs(page)
-  if (actual === null) throw new NotLoggedInError(expected)
-  if (actual !== expected.toLowerCase()) throw new WrongAccountError(expected, actual)
+  const r = await identify(page)
+  // Three outcomes, three errors. Collapsing "could not ask" into "not logged in" sent
+  // the operator to re-login for a network blip.
+  if (r.kind === 'unknown') throw new IdentityCheckFailedError(expected, r.detail)
+  if (r.kind === 'logged-out') throw new NotLoggedInError(expected)
+  if (r.username !== expected.toLowerCase()) throw new WrongAccountError(expected, r.username)
 }

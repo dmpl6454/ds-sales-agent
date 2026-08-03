@@ -81,9 +81,15 @@ export async function startConnect(handle: string): Promise<ConnectState> {
 export async function pollConnect(handle: string): Promise<ConnectState> {
   const s = sessions.get(handle)
   if (!s) {
-    // Either never started, or the login already completed and closed the window.
+    /**
+     * No window open. A session cookie on disk means a previous login succeeded, but it
+     * does NOT say which account — so this cannot report a verified connection. It used
+     * to, and combined with `hasSession` matching `ds_user_id` as well as `sessionid`
+     * that let a stale cookie read as "connected", skipping the wrong-account guard and
+     * (via checkConnect) silently clearing a CHALLENGED halt. Report it as unverified.
+     */
     return profileStatus(handle).hasSession
-      ? { state: 'connected', handle }
+      ? { state: 'closed', message: 'A session is already stored for this account. Press Connect to re-verify it.' }
       : { state: 'closed', message: 'No connection in progress. Press Connect to start.' }
   }
 
@@ -153,3 +159,28 @@ export async function cancelConnect(handle: string): Promise<void> {
 export function isConnecting(handle: string): boolean {
   return sessions.has(handle)
 }
+
+/**
+ * Close abandoned Connect windows.
+ *
+ * `MAX_AGE_MS` was only enforced when `pollConnect` was called, so closing the dashboard
+ * tab with a window open left Chrome running indefinitely, holding the lock on that
+ * account's profile directory. Every later send for it then failed to launch until
+ * somebody noticed. A timeout that only fires while someone is watching is not a timeout.
+ */
+const SWEEP_INTERVAL_MS = 60_000
+
+const sweeper = setInterval(() => {
+  void (async () => {
+    for (const [handle, s] of [...sessions]) {
+      if (Date.now() - s.startedAt > MAX_AGE_MS) {
+        log.warn('closing an abandoned connect window', {
+          handle,
+          ageMinutes: Math.round((Date.now() - s.startedAt) / 60_000),
+        })
+        await cancelConnect(handle)
+      }
+    }
+  })()
+}, SWEEP_INTERVAL_MS)
+sweeper.unref?.()

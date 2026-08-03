@@ -86,6 +86,28 @@ function AwaitingItem({ item }: { item: AwaitingCard }) {
   }
 
   /**
+   * Both of these now return a result and can refuse — discarding a message that is
+   * already sending, or confirming one the recipient has already replied to. The
+   * refusal has to be visible: a button that silently does nothing reads as a broken
+   * button, and the operator's next move is to press it again.
+   */
+  const discard = () => {
+    setResult(null)
+    start(async () => {
+      const r = await skipAttempt(item.id, 'skipped')
+      setResult({ ok: r.ok, message: r.message })
+    })
+  }
+
+  const confirmSentByHand = () => {
+    setResult(null)
+    start(async () => {
+      const r = await markSent(item.id)
+      setResult({ ok: r.ok, message: r.message })
+    })
+  }
+
+  /**
    * Not wrapped in useTransition: this takes ~40 seconds and needs its own
    * explicit in-progress state, so the button can be disabled for the whole
    * duration rather than for a React tick.
@@ -192,7 +214,7 @@ function AwaitingItem({ item }: { item: AwaitingCard }) {
               ? 'Sending — watch the browser…'
               : `Send from @${item.senderHandle}`}
         </button>
-        <button disabled={sendBlocked} onClick={() => start(() => skipAttempt(item.id, "skipped"))}>
+        <button disabled={sendBlocked} onClick={discard}>
           Discard
         </button>
       </div>
@@ -216,7 +238,7 @@ function AwaitingItem({ item }: { item: AwaitingCard }) {
           </a>
           <button
             disabled={sendBlocked}
-            onClick={() => start(() => markSent(item.id))}
+            onClick={confirmSentByHand}
             title="Records that you sent it yourself. Press only after actually sending — spacing, caps and follow-ups are all derived from this."
           >
             I sent it myself

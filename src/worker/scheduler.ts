@@ -141,6 +141,64 @@ export async function startScheduler(host: SchedulerHeartbeat['host']): Promise<
       },
       { timezone: TIMEZONE, name: `slot-${slot}`, noOverlap: true },
     )
+    /**
+     * A slot the process slept through, recovered.
+     *
+     * `catchUpIfMissed` only runs at startup, so it covers "the machine was off at
+     * 11:00" and nothing else. Closing a laptop lid does not restart the process — it
+     * suspends it — so on wake there is no startup to catch up from.
+     *
+     * What node-cron does on its own is not enough either. It arms a `setTimeout`,
+     * which macOS suspends with the process; on wake the timer fires late, and
+     * `missedExecutionTolerance` (default **1000 ms**, and we do not override it)
+     * decides whether "late" counts as a run. Anything slept through is far more than
+     * a second late, so it is classified as missed and emitted here — and until this
+     * handler existed, nothing was listening. The slot vanished with no log line, no
+     * retry, and a dashboard still reporting autopilot ON.
+     *
+     * That is the exact failure the catch-up comment above calls the most dangerous
+     * one: the system looks healthy and does nothing.
+     *
+     * The same staleness window applies as at startup, and for the same reason —
+     * waking on Wednesday must not replay Monday's 11:00 slot. `noOverlap` on the
+     * task keeps this from colliding with a slot that is already running.
+     */
+    task.on('execution:missed', (context) => {
+      void (async () => {
+        const missedAt = context.date
+        const ageMinutes = Math.floor((Date.now() - missedAt.getTime()) / 60_000)
+
+        if (env.CATCHUP_WINDOW_MINUTES <= 0) {
+          log.warn('slot was missed and catch-up is disabled — nothing will run', { slot, ageMinutes })
+          return
+        }
+        if (ageMinutes > env.CATCHUP_WINDOW_MINUTES) {
+          log.warn('slot was missed but is too old to replay', {
+            slot,
+            ageMinutes,
+            window: env.CATCHUP_WINDOW_MINUTES,
+          })
+          return
+        }
+
+        // Another process (or the startup catch-up) may already have run it.
+        const already = await prisma.scrapeRun
+          .findFirst({ where: { slot, startedAt: { gte: istDayStart(new Date()) } }, select: { id: true } })
+          .catch(() => null)
+        if (already) {
+          log.step('slot was missed but has already run today — not replaying', { slot })
+          return
+        }
+
+        log.warn('slot was missed while the process was suspended — running it now', { slot, ageMinutes })
+        try {
+          await runSlot(slot)
+        } catch (err) {
+          log.alarm('missed-slot replay threw', { slot, error: err instanceof Error ? err.message : String(err) })
+        }
+      })()
+    })
+
     tasks.push(task)
     log.step('scheduled', { slot, cron: expression, next: task.getNextRun()?.toISOString() ?? 'unknown' })
   }

@@ -1,17 +1,15 @@
-import { execFile } from 'node:child_process'
-import { promisify } from 'node:util'
 import { prisma } from '@/lib/db'
 import { env } from '@/lib/env'
 import { log } from '@/lib/logger'
 import { profileUrl } from '@/lib/urls'
 import { copyToClipboard } from '@/lib/clipboard'
+import { openUrlCommand, run } from '@/lib/platform'
 
 /**
- * `execFile`, not `exec` — no shell is involved, so nothing in the URL can be
+ * No shell is involved anywhere in the URL open, so nothing in the URL can be
  * interpreted as a shell metacharacter. Named explicitly to stop the next reader
  * (or scanner) mistaking it for the shell-invoking `exec`.
  */
-const openUrl = promisify(execFile)
 
 /**
  * The send step: everything automated except the click.
@@ -130,9 +128,10 @@ ${
   }
 
   try {
-    // `open -a <app>` targets a named browser; bare `open` uses the macOS default
-    // https handler, which may not be the browser holding the Instagram session.
-    await openUrl('open', env.SEND_BROWSER ? ['-a', env.SEND_BROWSER, url] : [url])
+    // Platform-specific; see src/lib/platform.ts. `open` was hardcoded, so this
+    // fallback was unavailable on Windows - and it is the documented escape hatch when
+    // the automated path fails.
+    await run(openUrlCommand(process.platform, url, env.SEND_BROWSER))
   } catch {
     console.log(`  Could not open ${browserLabel}. Go to: ${url}`)
   }

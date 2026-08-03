@@ -6,10 +6,12 @@ import { env } from '@/lib/env'
 import { runSlot } from '@/worker/runSlot'
 import { browserSender } from '@/outreach/senders/browser'
 import { profileStatus } from '@/outreach/browser/profile'
+import { recheckBeforeSend } from '@/outreach/gate'
 import { setSetting, SETTING_KEYS } from '@/lib/settings'
 import { startConnect, pollConnect, cancelConnect, type ConnectState } from '@/outreach/browser/connect'
 import { handleExists } from '@/detection/exists'
 import { assertSafeHandle } from '@/lib/urls'
+import { distinctiveSlice } from '@/outreach/matching'
 import { MESSAGE_VARIANTS } from '../../prisma/variants'
 
 /**
@@ -59,10 +61,14 @@ export interface SendNowResult {
  *
  * Guards, in the order they bite:
  *
- *   1. The attempt must still be awaiting send. A double click cannot double send.
- *   2. The Chrome profile must exist and be logged in as exactly this sender.
- *   3. The composer must contain our message before Enter is pressed.
- *   4. The message must appear in the thread before it is recorded as SENT.
+ *   1. `recheckBeforeSend` — the SAME gate autopilot runs: still waiting, account
+ *      ACTIVE and connected, route on, channel not retired, THEY HAVE NOT REPLIED,
+ *      and neither daily cap spent. The only difference from the unattended path is
+ *      that a human being present substitutes for the auto-send switch.
+ *   2. An atomic claim to SENDING, so two clicks cannot become two messages.
+ *   3. The Chrome profile must be logged in as exactly this sender.
+ *   4. The composer must contain our message before Enter is pressed.
+ *   5. The message must appear in the thread before it is recorded as SENT.
  *
  * A checkpoint marks the sender CHALLENGED and halts it. That state is cleared by a
  * human who has looked at the account, never automatically.
@@ -74,32 +80,51 @@ export async function sendNow(attemptId: string): Promise<SendNowResult> {
   })
   const { sender, target } = attempt.pair
 
-  // Guard 1 — idempotency. Two clicks, or a click racing the worker, must not
-  // produce two messages to a real prospect.
-  if (attempt.status !== 'READY' && attempt.status !== 'QUEUED') {
-    return { ok: false, message: `already ${attempt.status.toLowerCase()} — nothing sent` }
-  }
-  if (sender.status !== 'ACTIVE') {
-    return { ok: false, message: `@${sender.handle} is ${sender.status} — sending is halted for this account` }
+  /**
+   * Guard 1 — the SAME re-check autopilot runs.
+   *
+   * This used to be three inline guards, and it silently lacked five that
+   * `deliverWaiting` enforced: the route being switched off, the channel retired,
+   * *they replied*, and both daily caps. A human clicking Send is not a reason to skip
+   * any of those — it is only a reason not to require the account's unattended-sending
+   * switch, which is the single difference `unattended: false` expresses.
+   */
+  const gate = await recheckBeforeSend(attempt, { unattended: false })
+  if (!gate.ok) {
+    const fix =
+      gate.reason === 'no-session'
+        ? ` Press Connect on its row, and log in in the Chrome window that opens.`
+        : ''
+    return { ok: false, message: `@${sender.handle}: ${gate.detail ?? gate.reason}.${fix}` }
   }
 
-  // Guard 2 — a profile that was never logged into by hand cannot send, and must
-  // not be "fixed" by importing a session from somewhere else.
-  const profile = profileStatus(sender.handle)
-  if (!profile.hasSession) {
-    return {
-      ok: false,
-      message: `@${sender.handle} is not connected yet. Press Connect on its row, and log in in the Chrome window that opens.`,
-    }
+  /**
+   * Guard 2 — claim it ATOMICALLY.
+   *
+   * This was a check-then-act: read the status, then write SENDING as a separate
+   * statement, under a comment asserting "a double click cannot double send". Two
+   * clicks, two operators, or a click racing a slot's `deliverWaiting` all passed the
+   * read before either wrote. `deliverWaiting` got this right with a conditional
+   * updateMany; the button did not. Condition and write in one statement.
+   */
+  const claimed = await prisma.outreachAttempt.updateMany({
+    where: { id: attemptId, status: { in: ['READY', 'QUEUED'] } },
+    data: { status: 'SENDING' },
+  })
+  if (claimed.count === 0) {
+    const now = await prisma.outreachAttempt.findUnique({
+      where: { id: attemptId },
+      select: { status: true },
+    })
+    return { ok: false, message: `already ${(now?.status ?? 'gone').toLowerCase()} — nothing sent` }
   }
 
-  await prisma.outreachAttempt.update({ where: { id: attemptId }, data: { status: 'SENDING' } })
   await audit('attempt.send.start', `OutreachAttempt:${attemptId}`, `@${sender.handle} → @${target.handle}`)
 
   const outcome = await browserSender.send({
     attemptId,
     senderHandle: sender.handle,
-    sessionPath: profile.dir,
+    sessionPath: profileStatus(sender.handle).dir,
     targetHandle: target.handle,
     body: attempt.renderedBody,
   })
@@ -111,7 +136,7 @@ export async function sendNow(attemptId: string): Promise<SendNowResult> {
         data: {
           status: 'SENT',
           sentAt: new Date(),
-          sentBy: `auto:${sender.handle}`,
+          sentBy: `operator:${sender.handle}`,
           threadUrl: outcome.threadUrl ?? null,
           error: null,
         },
@@ -155,12 +180,29 @@ export async function sendNow(attemptId: string): Promise<SendNowResult> {
  * the automated path fails and you finish it yourself, the record has to catch up
  * or the agent will prepare a duplicate.
  */
-export async function markSent(attemptId: string) {
+export async function markSent(attemptId: string): Promise<MutationResult> {
   const attempt = await prisma.outreachAttempt.findUniqueOrThrow({
     where: { id: attemptId },
     include: { pair: { include: { sender: true, target: true } } },
   })
-  if (attempt.status === 'SENT') return
+
+  /**
+   * Only from a state where the message was not already recorded as delivered.
+   *
+   * This returned early for SENT alone, so SKIPPED, SENDING and — worst — REPLIED could
+   * all be flipped to SENT. Flipping REPLIED keeps `repliedAt` but changes the status,
+   * desynchronising the two: status-based queries stop seeing the reply while
+   * `repliedAt`-based ones still do, so the same conversation reads as answered to one
+   * guard and unanswered to another. It also incremented the variant's usage counter on
+   * every call.
+   */
+  if (attempt.status === 'SENT') return { ok: true, message: 'Already recorded as sent.' }
+  if (attempt.status === 'REPLIED') {
+    return { ok: false, message: 'They replied to that message — it is already recorded as delivered.' }
+  }
+  if (attempt.status === 'SENDING') {
+    return { ok: false, message: 'That message is being sent right now — wait for it to finish.' }
+  }
 
   await prisma.$transaction([
     prisma.outreachAttempt.update({
@@ -178,6 +220,7 @@ export async function markSent(attemptId: string) {
     `@${attempt.pair.sender.handle} → @${attempt.pair.target.handle}`,
   )
   revalidatePath('/')
+  return { ok: true, message: `Recorded as sent to @${attempt.pair.target.handle}.` }
 }
 
 /** Longest body we will hand to the composer. Well above any real pitch. */
@@ -219,6 +262,34 @@ export async function editAttemptBody(attemptId: string, body: string): Promise<
   if (next.length > MAX_BODY_CHARS) {
     return { ok: false, message: `That is ${next.length} characters; the limit is ${MAX_BODY_CHARS}.` }
   }
+  /**
+   * Refuse a body the send guards cannot verify.
+   *
+   * `distinctiveSlice` returns null when no body line is distinctive enough to look
+   * for on the page. Saving such a body is not harmless: the composer read-back would
+   * then refuse the send with "composer content does not match the drafted message",
+   * which is true but points at entirely the wrong thing — the operator would go
+   * hunting for a paste bug. Fail at the point of the mistake, with an explanation.
+   */
+  const bodyLines = next.split('\n').filter((l) => l.trim().length > 0)
+  if (bodyLines.length < 2 || distinctiveSlice(next) === null) {
+    /**
+     * Two conditions, one message, because they are the same mistake.
+     *
+     * A single-line body defeats the interior-line rule: with nothing to strip,
+     * `distinctiveSlice` has to use the only line there is, and if that line is the
+     * greeting the needle is the target's name — which renders in the thread header
+     * regardless of whether anything was delivered. `renderMessage` never produces a
+     * one-line body, so this is only reachable by editing, which is exactly why it is
+     * checked here.
+     */
+    return {
+      ok: false,
+      message:
+        'That message is too short to verify on screen before sending. It needs a greeting line and at least one sentence of 20 characters or more below it.',
+    }
+  }
+
   if (next === attempt.renderedBody.trim()) return { ok: true, message: 'No changes.' }
 
   await prisma.outreachAttempt.update({ where: { id: attemptId }, data: { renderedBody: next } })
@@ -307,14 +378,52 @@ export async function checkConnect(handle: string): Promise<ConnectState> {
     const st = profileStatus(handle)
     await prisma.senderAccount.update({
       where: { handle },
-      // status back to ACTIVE: a fresh hand login is exactly what clears a
-      // CHALLENGED account, and it is the only thing that should.
-      data: { sessionPath: st.dir, sessionSavedAt: new Date(), status: 'ACTIVE' },
+      /**
+       * Records the session. Deliberately does NOT touch status.
+       *
+       * This set `status: 'ACTIVE'`, reasoning that a fresh hand login is what clears a
+       * CHALLENGED account. But `connected` is returned on two paths where no login
+       * happens: `startConnect` when the profile is already logged in, and
+       * `pollConnect`'s no-window fallback, which reported connected purely from a
+       * cookie on disk with no identity check at all. So "Instagram flagged the account
+       * -> CHALLENGED -> press Connect -> silently ACTIVE" took one click and inspected
+       * nothing, which is the opposite of what the halt is for.
+       *
+       * Clearing it is now `clearChallenge`, a separate deliberate act.
+       */
+      data: { sessionPath: st.dir, sessionSavedAt: new Date() },
     })
     await audit('sender.login', `SenderAccount:${handle}`, `connected via dashboard into ${st.dir}`)
     revalidatePath('/')
   }
   return result
+}
+
+/**
+ * Clear a CHALLENGED halt, after a human has actually looked at the account.
+ *
+ * Separate from connecting on purpose. A checkpoint means Instagram took action; the
+ * session may well still be valid, so "the session works" is not evidence the cause was
+ * addressed. The only thing that should lift this is a person confirming they opened the
+ * account and dealt with whatever Instagram was asking.
+ *
+ * Deliberately does NOT re-enable auto-send. Coming back from a halt and returning to
+ * unattended sending are two decisions, and this is only the first.
+ */
+export async function clearChallenge(handle: string): Promise<MutationResult> {
+  const sender = await prisma.senderAccount.findUnique({ where: { handle } })
+  if (!sender) return { ok: false, message: `@${handle} not found.` }
+  if (sender.status !== 'CHALLENGED') {
+    return { ok: false, message: `@${handle} is ${sender.status} — nothing to clear.` }
+  }
+  if (!profileStatus(handle).hasSession) {
+    return { ok: false, message: `@${handle} is not connected. Press Connect first, then clear the halt.` }
+  }
+
+  await prisma.senderAccount.update({ where: { handle }, data: { status: 'ACTIVE' } })
+  await audit('sender.challenge.cleared', `SenderAccount:${handle}`, 'operator confirmed they checked the account')
+  revalidatePath('/')
+  return { ok: true, message: `@${handle} is active again. Auto-send is still off — arm it deliberately.` }
 }
 
 export async function abortConnect(handle: string): Promise<{ ok: true }> {
@@ -355,9 +464,16 @@ export async function addSender(handleRaw: string, displayNameRaw: string): Prom
   if (await prisma.senderAccount.findUnique({ where: { handle } })) {
     return { ok: false, message: `@${handle} is already one of your accounts.` }
   }
-  if (await prisma.targetAccount.findUnique({ where: { handle } })) {
-    return { ok: false, message: `@${handle} is already a channel you watch — it cannot also send.` }
-  }
+  /**
+   * Being both a sender and a target is allowed — messaging one account you own from
+   * another is the safest end-to-end rehearsal available, which is exactly why
+   * `addTarget` permits it. This used to refuse it, so the same combined state was
+   * reachable by adding the target second and forbidden by adding the sender second.
+   *
+   * The invariant that actually matters is narrower and is enforced below: a sender must
+   * never message ITSELF, so that pair is simply not created.
+   */
+  const alsoATarget = await prisma.targetAccount.findUnique({ where: { handle } })
 
   const exists = await handleExists(handle)
   if (exists === 'missing') return { ok: false, message: `@${handle} does not exist on Instagram.` }
@@ -386,23 +502,31 @@ export async function addSender(handleRaw: string, displayNameRaw: string): Prom
     data: MESSAGE_VARIANTS.map((v) => ({ senderId: sender.id, label: v.label, body: v.body })),
   })
 
-  // Same rule as addTarget: never a pair from an account to itself.
+  // Same rule as addTarget: never a pair from an account to itself. One statement, so a
+  // failure part-way cannot leave a sender wired to only some channels.
   const targets = await prisma.targetAccount.findMany()
-  for (const t of targets) {
-    if (t.handle === handle) continue
-    await prisma.outreachPair.create({
-      data: { senderId: sender.id, targetId: t.id, cooldownDays: env.DEFAULT_COOLDOWN_DAYS, enabled: false },
-    })
-  }
+  await prisma.outreachPair.createMany({
+    data: targets
+      .filter((t) => t.handle !== handle)
+      .map((t) => ({
+        senderId: sender.id,
+        targetId: t.id,
+        cooldownDays: env.DEFAULT_COOLDOWN_DAYS,
+        enabled: false,
+      })),
+  })
 
   await audit('sender.added', `SenderAccount:${handle}`, `${targets.length} pairs created, all disabled`)
   revalidatePath('/')
   return {
     ok: true,
     message:
-      exists === 'unknown'
+      (exists === 'unknown'
         ? `Added @${handle}. Could not reach Instagram to confirm it exists — check the spelling. Connect it next.`
-        : `Added @${handle}. Connect it next, then enable the channels you want it to message.`,
+        : `Added @${handle}. Connect it next, then enable the channels you want it to message.`) +
+      (alsoATarget
+        ? ` Note @${handle} is also a channel you watch; no route from it to itself was created.`
+        : ''),
   }
 }
 
@@ -498,12 +622,16 @@ export async function addTarget(
    * send path would not survive it, so that pair is simply not created.
    */
   const senders = await prisma.senderAccount.findMany()
-  for (const s of senders) {
-    if (s.handle === handle) continue
-    await prisma.outreachPair.create({
-      data: { senderId: s.id, targetId: target.id, cooldownDays: env.DEFAULT_COOLDOWN_DAYS, enabled: false },
-    })
-  }
+  await prisma.outreachPair.createMany({
+    data: senders
+      .filter((s) => s.handle !== handle)
+      .map((s) => ({
+        senderId: s.id,
+        targetId: target.id,
+        cooldownDays: env.DEFAULT_COOLDOWN_DAYS,
+        enabled: false,
+      })),
+  })
 
   await audit('target.added', `TargetAccount:${handle}`, `${senders.length} pairs created, all disabled`)
   revalidatePath('/')
@@ -574,11 +702,40 @@ export async function setPairEnabled(senderHandle: string, targetHandle: string,
 }
 
 /** Discard a queued message without sending. Does not start the cooldown. */
-export async function skipAttempt(attemptId: string, reason: string) {
-  await prisma.outreachAttempt.update({
-    where: { id: attemptId },
+export async function skipAttempt(attemptId: string, reason: string): Promise<MutationResult> {
+  /**
+   * Only a message that is still waiting may be discarded.
+   *
+   * This had no status check at all. Applied to a SENT attempt it erased the record of
+   * a message a real person received — and that record is what `touchesSoFar`, the
+   * spacing rule and the new-material rule are computed from, so the system would then
+   * be free to write to someone it had already written to. That is exactly the outcome
+   * the "removal never deletes send history" rule exists to prevent, reachable in one
+   * call. Applied to a SENDING attempt it corrupted the state of a live browser send.
+   *
+   * Conditional updateMany rather than read-then-write, for the same reason `sendNow`
+   * needed it: a check and a write in separate statements is not a guard.
+   */
+  const claimed = await prisma.outreachAttempt.updateMany({
+    where: { id: attemptId, status: { in: ['READY', 'QUEUED'] } },
     data: { status: 'SKIPPED', error: reason || 'skipped by operator' },
   })
+
+  if (claimed.count === 0) {
+    const now = await prisma.outreachAttempt.findUnique({
+      where: { id: attemptId },
+      select: { status: true },
+    })
+    return {
+      ok: false,
+      message:
+        now?.status === 'SENDING'
+          ? 'That message is being sent right now — too late to discard.'
+          : `That message is already ${(now?.status ?? 'gone').toLowerCase()} and cannot be discarded.`,
+    }
+  }
+
   await audit('attempt.skipped', `OutreachAttempt:${attemptId}`, reason)
   revalidatePath('/')
+  return { ok: true, message: 'Discarded.' }
 }

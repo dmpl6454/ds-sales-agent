@@ -43,28 +43,58 @@ export interface BespokeSeed {
 }
 
 /**
- * The burner rehearsal message.
+ * The burner rehearsal messages — one per sender, and DISTINCT per sender.
  *
- * Deliberately obvious as a test. It has to exercise the same machinery as a real
- * send — multi-line body, punctuation, an em dash, roughly the same length, the same
- * greeting and signature assembly — because the point is to prove the paste, the
- * composer read-back, and the thread confirmation all work on realistic input. But
- * it must never read as a genuine pitch: if it somehow reached the wrong account,
- * being unmistakably a test is what keeps that harmless.
+ * Each has to exercise the same machinery as a real send — multi-line body,
+ * punctuation, an em dash, roughly the same length, the same greeting and signature
+ * assembly — because the point is to prove the paste, the composer read-back, and the
+ * thread confirmation all work on realistic input. Each must also be unmistakably a
+ * test: if one somehow reached the wrong account, being obviously a test is what keeps
+ * that harmless.
  *
- * One draft per sender, so each account's own Chrome profile gets proven separately.
+ * WHY THEY ARE NOT THE SAME BODY ANY MORE
+ *
+ * They were one shared `BURNER_BODY`, so three senders held byte-identical 534-char
+ * drafts to the same recipient. Sending them would have delivered the same message
+ * three times from three different accounts — the exact cross-account repetition that
+ * decision 3 exists to prevent, in the one place we were least likely to look because
+ * "it is only a test". Meta's policy penalises repetition, and it does not care that
+ * we labelled it a rehearsal.
+ *
+ * It also mattered for a second reason: `matching.ts` picks a distinctive slice of the
+ * body to look for on the page, and identical bodies produce identical needles. Two
+ * sends running close together share the OS clipboard, so an interleaved copy/paste
+ * could put one message into the other's thread and the read-back guard — comparing
+ * against a needle both bodies satisfy — would not catch it.
+ *
+ * Keep them different. Each one names its own sender, which is the cheapest way to
+ * guarantee the needle differs while staying obviously a test.
  */
-const BURNER_BODY = `This is a delivery test from our outreach system — nothing to action.
+const BURNER_BODIES: Record<string, string> = {
+  bollywoodsocietyy: `This is a delivery test from the Bollywood Society account — nothing to action.
 
-I am checking that a multi-line message arrives intact: that the line breaks survive, that punctuation and dashes come through unmangled — and that the whole body lands as one message rather than several.
+What it checks is that a multi-line message survives the trip intact: line breaks preserved, punctuation and dashes unmangled — and the whole body arriving as one message rather than as several.
 
-If you are reading this and it looks like one clean message, the test passed.`
+If this reads as one clean message, that account's profile can deliver.`,
 
-const BURNER_DRAFTS: BespokeSeed[] = ['bollywoodsocietyy', 'madaboutmarketingg', 'bollywoodchronicle'].map((sender) => ({
+  madaboutmarketingg: `Delivery test from the Mad About Marketing account — please ignore, nothing here needs a reply.
+
+The thing being proven is narrow: that a long body pastes as a single message, that an em dash — like this one — survives the clipboard, and that nothing gets split across several sends.
+
+Seeing this as one unbroken message means the paste and the read-back both behaved.`,
+
+  bollywoodchronicle: `Test send from the Bollywood Chronicle account. No action needed at your end.
+
+I am confirming three things at once here: that the line breaks hold, that punctuation including an em dash — this one — comes through unchanged, and that twenty lines do not turn into twenty separate messages.
+
+One tidy message on your side is the result we are looking for.`,
+}
+
+const BURNER_DRAFTS: BespokeSeed[] = Object.entries(BURNER_BODIES).map(([sender, body]) => ({
   sender,
   target: 'priyanshu123321123',
-  note: `Rehearsal on the burner from @${sender}. Proves this account's Chrome profile can actually deliver, before it is pointed at a real prospect.`,
-  body: BURNER_BODY,
+  note: `Rehearsal on the burner from @${sender}. Proves this account's Chrome profile can actually deliver, before it is pointed at a real prospect. Body is unique to this sender on purpose — see the comment above.`,
+  body,
 }))
 
 export const BESPOKE_DRAFTS: BespokeSeed[] = [

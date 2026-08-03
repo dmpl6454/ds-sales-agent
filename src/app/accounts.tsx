@@ -9,6 +9,7 @@ import {
   removeSender,
   setAccountAutopilot,
   setPairEnabled,
+  clearChallenge,
 } from './actions'
 import type { AccountCard } from './view-model'
 import type { ConnectState } from '@/outreach/browser/connect'
@@ -64,6 +65,13 @@ function AccountRow({ account }: { account: AccountCard }) {
   )
   const [msg, setMsg] = useState<string | null>(null)
   const [confirmRemove, setConfirmRemove] = useState(false)
+  /**
+   * Separate flags per action, deliberately. Save and Send once shared one and opening
+   * the editor rendered Save as "Saving…" before any save had been attempted; a control
+   * must never report the state of something that has not started.
+   */
+  const [confirmClear, setConfirmClear] = useState(false)
+  const [clearing, setClearing] = useState(false)
   const polling = useRef<ReturnType<typeof setInterval> | null>(null)
 
   /**
@@ -87,6 +95,18 @@ function AccountRow({ account }: { account: AccountCard }) {
       polling.current = null
     }
   }, [connect?.state, account.handle])
+
+  const doClear = async () => {
+    setClearing(true)
+    setMsg(null)
+    try {
+      const r = await clearChallenge(account.handle)
+      setMsg(r.message)
+      if (r.ok) setConfirmClear(false)
+    } finally {
+      setClearing(false)
+    }
+  }
 
   const start = async () => {
     setBusy(true)
@@ -199,6 +219,28 @@ function AccountRow({ account }: { account: AccountCard }) {
         </div>
       ) : null}
 
+      {account.status === 'CHALLENGED' ? (
+        <div className="connect-strip warn">
+          Instagram flagged @{account.handle} and sending is halted. Open the account yourself and deal with whatever
+          it is asking before clearing this — the session may still work, which is not the same as the cause being
+          sorted.
+          {confirmClear ? (
+            <>
+              <button className="link-btn" onClick={doClear} disabled={clearing}>
+                {clearing ? 'Clearing…' : 'I have checked it — clear the halt'}
+              </button>
+              <button className="link-btn" onClick={() => setConfirmClear(false)}>
+                Cancel
+              </button>
+            </>
+          ) : (
+            <button className="link-btn" onClick={() => setConfirmClear(true)}>
+              Clear the halt
+            </button>
+          )}
+        </div>
+      ) : null}
+
       {confirmRemove ? (
         <div className="connect-strip warn">
           Remove @{account.handle}? Anything it has already sent is kept — that record is what stops someone being
@@ -232,30 +274,42 @@ function AccountRow({ account }: { account: AccountCard }) {
 
 function RouteChip({ senderHandle, route }: { senderHandle: string; route: AccountCard['routes'][number] }) {
   const [busy, setBusy] = useState(false)
+  const [msg, setMsg] = useState<string | null>(null)
+  /**
+   * The result used to be discarded, so a refusal - a retired channel, a route that no
+   * longer exists - showed the operator nothing and the chip simply reverted. A control
+   * that silently does nothing reads as broken, and the next move is to press it again.
+   * Only refusals are surfaced; a success is visible in the chip itself.
+   */
   const flip = async () => {
     setBusy(true)
+    setMsg(null)
     try {
-      await setPairEnabled(senderHandle, route.targetHandle, !route.enabled)
+      const r = await setPairEnabled(senderHandle, route.targetHandle, !route.enabled)
+      if (!r.ok) setMsg(r.message)
     } finally {
       setBusy(false)
     }
   }
   return (
-    <button
-      className={`chip ${route.enabled ? 'on' : ''}`}
-      onClick={flip}
-      disabled={busy || route.targetRetired}
-      title={
-        route.targetRetired
-          ? `@${route.targetHandle} is retired and will never be contacted again`
-          : route.enabled
-            ? `Stop messaging @${route.targetHandle} from @${senderHandle}`
-            : `Let @${senderHandle} message @${route.targetHandle}`
-      }
-    >
-      {route.enabled ? '● ' : '○ '}
-      @{route.targetHandle}
-    </button>
+    <>
+      <button
+        className={`chip ${route.enabled ? 'on' : ''}`}
+        onClick={flip}
+        disabled={busy || route.targetRetired}
+        title={
+          route.targetRetired
+            ? `@${route.targetHandle} is retired and will never be contacted again`
+            : route.enabled
+              ? `Stop messaging @${route.targetHandle} from @${senderHandle}`
+              : `Let @${senderHandle} message @${route.targetHandle}`
+        }
+      >
+        {route.enabled ? '● ' : '○ '}
+        @{route.targetHandle}
+      </button>
+      {msg ? <span className="acc-note">{msg}</span> : null}
+    </>
   )
 }
 

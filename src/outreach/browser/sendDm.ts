@@ -2,8 +2,9 @@ import type { Locator, Page } from 'patchright'
 import { profileUrl } from '@/lib/urls'
 import { log } from '@/lib/logger'
 import { copyToClipboard } from '@/lib/clipboard'
+import { pasteShortcut } from '@/lib/platform'
 import { messageMatchesOurs } from '@/outreach/matching'
-import { assertLoggedInAs, assertNoCheckpoint, launchProfile } from './session'
+import { assertLoggedInAs, assertNoCheckpoint, assertNoEnforcement, launchProfile } from './session'
 
 /**
  * Sending one DM from the account's own logged-in Chrome profile.
@@ -126,15 +127,17 @@ export async function sendDm(params: SendDmParams): Promise<SendDmResult> {
       assertNoCheckpoint(page)
       return { ok: false, reason: 'message thread opened but no composer was found' }
     }
-    assertNoCheckpoint(page)
+    await assertNoEnforcement(page, senderHandle)
 
     await composer.click()
     await jitter(600, 1400)
 
-    // 5. Paste. The OS clipboard plus Cmd+V is a real user action; the paste event
-    //    is trusted and the composer receives multi-line text as one message.
+    // 5. Paste. The OS clipboard plus a real modifier+V is a user action; the paste
+    //    event is trusted and the composer receives multi-line text as one message.
+    //    The modifier resolves per platform - it was hardcoded Meta+V, which is the
+    //    Super key on Windows and therefore pasted nothing at all.
     await copyToClipboard(body)
-    await page.keyboard.press('Meta+V')
+    await page.keyboard.press(pasteShortcut())
     await jitter(900, 1800)
 
     // 6. THE GUARD. Read back what is actually in the composer and refuse to send
@@ -161,7 +164,9 @@ export async function sendDm(params: SendDmParams): Promise<SendDmResult> {
     // 7. Send.
     await page.keyboard.press('Enter')
     await jitter(1500, 2600)
-    assertNoCheckpoint(page)
+    // Full check, not URL-only: "Action Blocked" is a modal on the same URL, and this is
+    // the moment it appears.
+    await assertNoEnforcement(page, senderHandle)
 
     /**
      * 8. Confirm it actually left, in two parts.

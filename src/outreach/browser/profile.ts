@@ -127,8 +127,18 @@ export function profileStatus(handle: string): ProfileStatus {
   return { handle, dir, initialised, hasSession: hasSessionCookie(dir) }
 }
 
-/** Cookies Instagram sets only for a logged-in session. */
-const SESSION_COOKIES = ['sessionid', 'ds_user_id']
+/**
+ * The cookie that actually proves a session.
+ *
+ * This was `['sessionid', 'ds_user_id']` matched with `name in (...)` and
+ * `count(*) > 0` - an OR. `ds_user_id` is an account identifier, not a session, and it
+ * can outlive one, so a profile holding only that reported `hasSession: true`. That is
+ * autopilot switch #4, so it would arm an account that cannot send; and it was the sole
+ * basis of `pollConnect`'s fallback, which reports "connected" with no identity check
+ * at all. The docblock above says this gate must fail CLOSED and the query was the
+ * loosest available.
+ */
+const SESSION_COOKIE = 'sessionid'
 
 /**
  * Does this profile's cookie jar contain an Instagram session cookie?
@@ -167,9 +177,9 @@ function hasSessionCookie(profileDir: string): boolean {
       const row = conn
         .prepare(
           `select count(*) as n from cookies
-            where host_key like '%instagram.com' and name in (${SESSION_COOKIES.map(() => '?').join(',')})`,
+            where host_key like '%instagram.com' and name = ?`,
         )
-        .get(...SESSION_COOKIES) as { n: number } | undefined
+        .get(SESSION_COOKIE) as { n: number } | undefined
       return (row?.n ?? 0) > 0
     } finally {
       conn.close()

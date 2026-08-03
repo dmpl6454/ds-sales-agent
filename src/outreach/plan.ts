@@ -2,7 +2,7 @@ import { prisma } from '@/lib/db'
 import { env } from '@/lib/env'
 import { log } from '@/lib/logger'
 import { getSettings } from '@/lib/settings'
-import { hoursAgo, istDayStart } from '@/lib/time'
+import { hoursAgo, istDayStart, randomInt } from '@/lib/time'
 import { evaluatePair, type GovernorDecision } from './governor'
 import { renderMessage, validatePersona } from './render'
 import { manualAssistSender } from './senders/manual'
@@ -71,6 +71,8 @@ export async function runOutreach(): Promise<PlanSummary> {
   // sharing a target in the same slot cannot both slip past the daily cap.
   const sentToTargetToday = new Map<string, number>()
   const sentBySenderToday = new Map<string, number>()
+  /** Sends completed in THIS run, so consecutive ones can be spaced. */
+  let sentThisRun = 0
 
   for (const pair of pairs) {
     const pairKey = `${pair.sender.handle}→${pair.target.handle}`
@@ -79,7 +81,22 @@ export async function runOutreach(): Promise<PlanSummary> {
     // is what makes a follow-up a genuinely new message rather than a repeat.
     const usedCampaignIds = (
       await prisma.outreachAttempt.findMany({
-        where: { pairId: pair.id, campaignId: { not: null } },
+        where: {
+          pairId: pair.id,
+          campaignId: { not: null },
+          /**
+           * MUST match `createAndDispatch`'s definition of "used" below — the recipient
+           * has to have actually seen it. A SKIPPED or FAILED draft referenced nothing.
+           *
+           * The filter existed there and not here, so the two disagreed: every discarded
+           * draft burned a campaign for the NO_NEW_MATERIAL gate while the hook lookup
+           * still considered it available. `pnpm burner on` mass-SKIPs drafts by design,
+           * so rehearsal mode silently consumed the pool - measured at 2 of 4 already
+           * gone on one pair - until the gate reported no-new-material with fresh
+           * campaigns sitting right there. Permanent, silent, self-inflicted.
+           */
+          status: { in: ['SENT', 'REPLIED', 'SENDING', 'READY', 'QUEUED'] },
+        },
         select: { campaignId: true },
       })
     )
@@ -160,6 +177,14 @@ export async function runOutreach(): Promise<PlanSummary> {
     }
 
     try {
+      // Space consecutive sends. Same reasoning as deliverWaiting: SEND_JITTER_* was
+      // validated config nothing read, and the clipboard is process-global.
+      if (sentThisRun > 0) {
+        const waitSeconds = randomInt(env.SEND_JITTER_MIN_SECONDS, env.SEND_JITTER_MAX_SECONDS)
+        log.step('spacing before the next send', { seconds: waitSeconds })
+        await new Promise((r) => setTimeout(r, waitSeconds * 1000))
+      }
+
       const result = await createAndDispatch({
         pair,
         touchNumber: decision.touchNumber,
@@ -174,6 +199,7 @@ export async function runOutreach(): Promise<PlanSummary> {
         totalSentEver += 1
       }
       if (result.status === 'SENT') {
+        sentThisRun += 1
         sentToTargetToday.set(pair.targetId, (sentToTargetToday.get(pair.targetId) ?? 0) + 1)
         sentBySenderToday.set(pair.senderId, (sentBySenderToday.get(pair.senderId) ?? 0) + 1)
       }
@@ -340,7 +366,7 @@ async function createAndDispatch(args: {
     body,
   })
 
-  await applyOutcome(attempt.id, variant.id, pair.senderId, outcome)
+  await applyOutcome(attempt.id, variant.id, pair.senderId, pair.sender.handle, outcome)
   return { attemptId: attempt.id, status: outcome.status, hookLine }
 }
 
@@ -348,17 +374,43 @@ async function applyOutcome(
   attemptId: string,
   variantId: string,
   senderId: string,
+  senderHandle: string,
   outcome: SendOutcome,
 ): Promise<void> {
   if (outcome.status === 'SENT') {
     await prisma.$transaction([
       prisma.outreachAttempt.update({
         where: { id: attemptId },
-        data: { status: 'SENT', sentAt: new Date(), sentBy: 'auto', threadUrl: outcome.threadUrl },
+        data: {
+          status: 'SENT',
+          sentAt: new Date(),
+          /**
+           * Was the bare string 'auto', which loses which account sent it and is a
+           * glance away from the dashboard's 'auto:<handle>'. The three paths now
+           * read: `autopilot:<handle>` for both unattended ones (this and
+           * deliverWaiting) and `operator:<handle>` when a human clicked Send.
+           */
+          sentBy: `autopilot:${senderHandle}`,
+          threadUrl: outcome.threadUrl,
+        },
       }),
       prisma.messageVariant.update({
         where: { id: variantId },
         data: { timesUsed: { increment: 1 }, lastUsedAt: new Date() },
+      }),
+      /**
+       * The planner is the autopilot path, and it wrote no audit row at all — so the
+       * one send that happens with nobody present was the one with no audit trail,
+       * while actions.ts states "every state change writes an AuditLog row". The
+       * 14:00 cron-fired send to a real recipient had no entry.
+       */
+      prisma.auditLog.create({
+        data: {
+          actor: 'autopilot',
+          action: 'attempt.sent.autopilot',
+          entity: `OutreachAttempt:${attemptId}`,
+          detail: `planner dispatch from @${senderHandle} — ${outcome.threadUrl ?? 'delivered'}`,
+        },
       }),
     ])
     return
@@ -369,11 +421,18 @@ async function applyOutcome(
     return
   }
 
-  // FAILED. A challenge pauses the sender so nothing else touches it until a
-  // human has looked. Retrying into a challenge is how accounts get banned.
+  /**
+   * FAILED — but keep the draft READY so a human can retry or send it by hand, which is
+   * what `deliverWaiting` and `sendNow` both already do. Setting FAILED here abandoned a
+   * perfectly good body with no Send button, and left the pair to redraft from scratch
+   * next slot. Same event, three different outcomes across three paths.
+   *
+   * A challenge additionally pauses the sender so nothing else touches it until a human
+   * has looked. Retrying into a challenge is how accounts get banned.
+   */
   await prisma.outreachAttempt.update({
     where: { id: attemptId },
-    data: { status: 'FAILED', error: outcome.error },
+    data: { status: 'READY', error: outcome.error },
   })
   if (outcome.challenged) {
     await prisma.senderAccount.update({ where: { id: senderId }, data: { status: 'CHALLENGED' } })
