@@ -2828,6 +2828,32 @@ docs/specs/            design docs and plans
   one file it lives in and reused; a held lock skips planning and is deliberately NOT logged
   as a failure, because the slot holding it is doing the same planning anyway. **When adding
   a scheduled task, ask which existing schedules its interval divides.**
+- **THIS REPO LIVES ON AN iCLOUD-SYNCED DESKTOP, AND iCLOUD IS NOT A BACKUP — IT
+  CORRUPTED `.git` WHILE PRESERVING EVERY SOURCE FILE.** 2026-08-12: turning OFF iCloud
+  Desktop sync moved the whole repo to `~/iCloud Drive (Archive)/Desktop/` and left an
+  empty Desktop. Nothing was deleted, and the working tree came back complete — 24,796
+  files, typecheck clean, 1,221 tests passing. **The git object store did not.** iCloud
+  excluded `.git/HEAD` and `.git/config` (one-liners, rebuildable) and silently dropped
+  **108 objects**, including blobs HEAD's own tree points at: `git ls-tree -r HEAD`
+  returned **32 entries for a repo with thousands of files**, and `git add` failed with
+  *"invalid object … for instrumentation.ts"* about a file sitting readable on disk. Also
+  **19 tracked source files were missing from the archive entirely** (`next.config.ts`,
+  `tsconfig.json`, `src/lib/session-cookie.ts`, `src/outreach/pacing.ts` …).
+  **What made recovery possible was having a second copy that was not a sync client:** the
+  deployed source on the Linode. 5 of the 19 came back from surviving git objects; the
+  other 14 were `scp`'d from `/opt/ds-sales-agent` and proven byte-identical rather than
+  assumed — after restoring them the ONLY files git reported as changed were the three of
+  the in-flight fix, which is the check that distinguishes "restored" from "restored
+  something else". A repo whose history cannot be read is not history, so the damaged
+  `.git` was preserved under `/tmp` and the tree re-committed as a clean root.
+  **Consequences to keep:** `~/.ds-sales-agent` (credentials) and `~/.ds-sales-agent-data`
+  survived untouched, because they are OUTSIDE the synced folder — the sibling-directory
+  split earning its keep a second time. A `.git` copy now lives at
+  `~/ds-agent-git-backup-<date>`, outside Desktop, for the same reason. And `node_modules`
+  came back partially populated, which presents as `Cannot find module '…/typescript/bin/tsc'`
+  — the same `rm -rf node_modules && pnpm install` remedy as the entry below, but note that
+  install regenerates the **SQLite** client, so `bash scripts/prisma-client-for-env.sh`
+  afterwards or the device agent cannot reach the server.
 - **`ERR_INVALID_PACKAGE_CONFIG` FROM A `package.json` THAT LOOKS PERFECTLY VALID MEANS
   `node_modules` IS DAMAGED, NOT YOUR CODE.** Hit 2026-08-07: every `tsx` script, `vitest`
   AND `pnpm install` itself started failing, first pointing at
