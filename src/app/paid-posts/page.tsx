@@ -2,6 +2,7 @@ import { redirect } from 'next/navigation'
 import { currentUser } from '@/lib/session'
 import { buildPaidPostsView } from '../view-model'
 import { Nav } from '../nav'
+import { PageHead } from '../page-head'
 import { BrandsPanelView } from '../brands'
 import { CoverageNote } from '../coverage'
 import { ReviewQueue } from './review'
@@ -46,12 +47,10 @@ export default async function PaidPostsPage() {
     <>
       <Nav current="/paid-posts" email={user.email} />
       <div className="page">
-        <header className="page-head">
-          <h1>Paid posts</h1>
-          <p className="page-sub">
-            {v.weekDetected} spotted in the last 7 days · {v.totalDetected} ever
-          </p>
-        </header>
+        <PageHead
+          title="Paid posts"
+          sub={`${v.weekDetected} spotted in the last 7 days · ${v.totalDetected} ever`}
+        />
 
         {/*
           The coverage caveat travels with any figure it qualifies. See the note on Today —
@@ -59,7 +58,7 @@ export default async function PaidPostsPage() {
         */}
         <CoverageNote detection={v.detection} channelCount={v.perChannel.length} showLink={false} />
 
-        <section className="group">
+        <section>
           <h2>What we have judged</h2>
           {/*
             Every figure is scoped to the detection window, and the window is NAMED.
@@ -83,7 +82,7 @@ export default async function PaidPostsPage() {
               </>
             )}
           </p>
-          <ul className="summary-row">
+          <ul className="statgrid">
             {v.byVerdict.map((r) => (
               <li key={r.verdict}>
                 <strong>{r.count}</strong>
@@ -155,13 +154,21 @@ export default async function PaidPostsPage() {
 
         <ReviewQueue rows={v.review} />
 
-        <section className="group">
+        <section>
           <h2>The posts</h2>
           {v.posts.length === 0 ? (
             <p className="group-blurb">Nothing judged paid yet.</p>
           ) : (
             <>
-              <table className="sent-table">
+              {/*
+                THE TABLE SCROLLS, NOT THE PAGE. Caught by `pnpm ig:layout` at 800px:
+                six columns of post, channel, brands and verdict came to 1069px against an
+                800px viewport, so the whole document scrolled sideways and the rail went
+                with it. Wide content gets its own `overflow-x` container — a body that
+                scrolls horizontally moves every other element on the page as collateral.
+              */}
+              <div className="table-wrap">
+              <table className="table">
                 <thead>
                   <tr>
                     <th>Date</th>
@@ -194,6 +201,7 @@ export default async function PaidPostsPage() {
                   ))}
                 </tbody>
               </table>
+              </div>
               {v.postsTotal > v.posts.length ? (
                 <p className="muted">
                   Showing the newest {v.posts.length} of {v.postsTotal}.
@@ -203,7 +211,7 @@ export default async function PaidPostsPage() {
           )}
         </section>
 
-        <section className="group">
+        <section>
           <h2>By channel</h2>
           <ul className="plain-list">
             {v.perChannel.map((c) => (

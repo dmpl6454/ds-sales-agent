@@ -6,7 +6,9 @@ import { checkPersonaDistinct } from '@/outreach/brandGuards'
 import { getSettings } from '@/lib/settings'
 import { replyHaltFloor } from '@/outreach/replyHalt'
 import { daysAgo } from '@/lib/time'
+import { readHeartbeat } from '@/worker/scheduler'
 import { SignOutButton } from './sign-out-button'
+import { RailToggle } from './chrome'
 
 /**
  * The shell's navigation — a SIDEBAR, since 2026-08-05.
@@ -130,6 +132,13 @@ async function navCounts(): Promise<NavCounts> {
 interface Entry {
   href: string
   label: string
+  /**
+   * The two-letter code shown in the rail, and the only thing left when the rail is
+   * collapsed. Deliberately NOT an icon set: an icon is a second vocabulary to learn
+   * and to keep consistent, and at 10px "PP" is unambiguous where a glyph for "paid
+   * posts" is a guess. It also cannot drift from the label the way a picture can.
+   */
+  code: string
   /** Which count to show, if any. */
   count?: (c: NavCounts) => number
   /** True when the count means "this wants you", not "this is how many there are". */
@@ -151,27 +160,27 @@ interface Entry {
 const GROUPS = [
   {
     label: null,
-    entries: [{ href: '/', label: 'Autopilot', count: (c) => c.needsAttention, attention: true }],
+    entries: [{ href: '/', label: 'Autopilot', code: 'AU', count: (c) => c.needsAttention, attention: true }],
   },
   {
     label: 'Outreach',
     entries: [
-      { href: '/targets', label: 'Targets', count: (c) => c.prospects },
-      { href: '/paid-posts', label: 'Paid posts', count: (c) => c.paidPosts },
-      { href: '/analytics', label: 'Analytics' },
+      { href: '/targets', label: 'Targets', code: 'TG', count: (c) => c.prospects },
+      { href: '/paid-posts', label: 'Paid posts', code: 'PP', count: (c) => c.paidPosts },
+      { href: '/analytics', label: 'Analytics', code: 'AN' },
     ],
   },
   {
     label: 'The fleet',
     // The count is a REQUEST, not a volume: how many accounts need signing in.
-    entries: [{ href: '/senders', label: 'Senders', count: (c) => c.needSignIn, attention: true }],
+    entries: [{ href: '/senders', label: 'Senders', code: 'SE', count: (c) => c.needSignIn, attention: true }],
   },
   {
     label: null,
     entries: [
-      { href: '/rules', label: 'Rules' },
-      { href: '/cost', label: 'Cost' },
-      { href: '/settings', label: 'Settings' },
+      { href: '/rules', label: 'Rules', code: 'RU' },
+      { href: '/cost', label: 'Cost', code: 'CO' },
+      { href: '/settings', label: 'Settings', code: 'ST' },
     ],
   },
 ] as const satisfies ReadonlyArray<{ label: string | null; entries: readonly Entry[] }>
@@ -181,8 +190,40 @@ const GROUPS = [
  * simply means no sign-out control — never a broken one. `tests/shell.test.ts` asserts every
  * authenticated page passes it, so "optional" does not become "forgotten".
  */
+/**
+ * The rail's own geometry, in one place, because the sliding active marker needs to know
+ * where each row sits and there is no honest source for that but the layout itself.
+ *
+ * These four numbers are the ONLY duplication between this file and `globals.css`, and a
+ * mismatch is visible instantly (the marker sits beside the wrong row) rather than silently,
+ * which is why it is acceptable to state them here rather than measure in the browser.
+ * Measuring would mean a client component and a layout pass to draw two pixels.
+ */
+const ROW_H = 34
+const GROUP_LABEL_H = 26
+const GROUP_GAP_H = 16
+
+/** Where the marker goes, walked exactly the way the rows are rendered below. */
+function indicatorTop(activeHref: string | undefined): number | null {
+  let y = 0
+  for (const [i, group] of GROUPS.entries()) {
+    if (i > 0) y += GROUP_GAP_H
+    if (group.label) y += GROUP_LABEL_H
+    for (const e of group.entries) {
+      if (e.href === activeHref) return y
+      y += ROW_H
+    }
+  }
+  return null
+}
+
+/**
+ * `email` is optional so a page that has not been converted yet still compiles, and its absence
+ * simply means no sign-out control — never a broken one. `tests/shell.test.ts` asserts every
+ * authenticated page passes it, so "optional" does not become "forgotten".
+ */
 export async function Nav({ current, email }: { current: string; email?: string }) {
-  const counts = await navCounts()
+  const [counts, heartbeat] = await Promise.all([navCounts(), readHeartbeat()])
 
   /**
    * `/accounts/login` starts with `/accounts`, so a bare `startsWith` lights both. Longest
@@ -192,16 +233,26 @@ export async function Nav({ current, email }: { current: string; email?: string 
     .filter((h) => (h === '/' ? current === '/' : current === h || current.startsWith(h + '/')))
     .sort((a, b) => b.length - a.length)[0]
 
+  const top = indicatorTop(activeHref)
+
   return (
     <nav className="side" aria-label="Sections">
-      <Link href="/" className="side-brand">
-        Instagram Outreach
-      </Link>
+      <div className="rail-top">
+        <Link href="/" className="rail-brand rail-when-open">
+          Instagram Outreach
+        </Link>
+        <RailToggle />
+      </div>
 
-      {GROUPS.map((group, i) => (
-        <div className="side-group" key={group.label ?? `group-${i}`}>
-          {group.label && <p className="side-group-label">{group.label}</p>}
-          <ul>
+      <div className="rail-nav">
+        {/* Hidden from assistive tech: `aria-current` on the row already says which is
+            active, and a decorative bar announcing itself would say it twice. */}
+        {top !== null && <div className="rail-indicator" style={{ top }} aria-hidden="true" />}
+
+        {GROUPS.map((group, i) => (
+          <div key={group.label ?? `group-${i}`}>
+            {i > 0 && <div className="rail-gap" aria-hidden="true" />}
+            {group.label && <p className="rail-group-label rail-when-open">{group.label}</p>}
             {group.entries.map((e) => {
               // `in` narrows the union that `as const` produces — every entry has a
               // different shape, so optional-chaining a key not all of them declare
@@ -210,54 +261,108 @@ export async function Nav({ current, email }: { current: string; email?: string 
               const attention = 'attention' in e && e.attention === true
               const active = e.href === activeHref
               return (
-                <li key={e.href}>
-                  <Link
-                    href={e.href}
-                    className={active ? 'active' : undefined}
-                    aria-current={active ? 'page' : undefined}
-                  >
-                    <span>{e.label}</span>
-                    {n !== undefined && n > 0 && (
-                      <span className={attention ? 'side-count attention' : 'side-count'}>{n}</span>
-                    )}
-                  </Link>
-                </li>
+                <Link
+                  key={e.href}
+                  href={e.href}
+                  className="rail-item"
+                  title={e.label}
+                  aria-current={active ? 'page' : undefined}
+                >
+                  <span className="rail-item-main">
+                    <span className="rail-icon" aria-hidden="true">
+                      {e.code}
+                    </span>
+                    <span className="rail-label rail-when-open">{e.label}</span>
+                  </span>
+                  {n !== undefined && n > 0 && (
+                    <span className={attention ? 'rail-count attention' : 'rail-count'}>{n}</span>
+                  )}
+                </Link>
               )
             })}
-          </ul>
+          </div>
+        ))}
+      </div>
+
+      <div className="rail-foot">
+        <div className="rail-status rail-when-open">
+          <p className="rail-group-label">Right now</p>
+
+          {/*
+            THE HEARTBEAT, ON EVERY SCREEN. A toggle that promises behaviour must show
+            whether anything is behind it: for a day this dashboard reported "Autopilot is
+            ON — messages go out at 11:00" with no process on earth able to send one, and
+            on 2026-08-08 nothing ran for twenty hours while the page said nothing at all.
+
+            FRESHNESS IS NOT LIVENESS, so this reports what `readHeartbeat` measured and
+            not a guess: a beat older than its window is red, and "we have never seen one"
+            is its own sentence rather than a very old one.
+          */}
+          <div className="rail-status-row">
+            <span className={`dot ${heartbeat?.fresh ? 'dot-good' : 'dot-bad'}`} />
+            <span className={heartbeat?.fresh ? 'muted' : undefined} style={heartbeat?.fresh ? undefined : { color: 'var(--bad)' }}>
+              {heartbeat === null
+                ? 'The watch has never run'
+                : heartbeat.fresh
+                  ? 'The watch is running'
+                  : `The watch last ran ${minutesAgo(new Date(heartbeat.beat.at))}`}
+            </span>
+          </div>
+
+          {/*
+            Autopilot's own line is DERIVED, never the switch position. Three accounts
+            sharing one signature means nothing can send whatever the switch says, and a
+            rail claiming "on" over a fleet that cannot move is the exact failure the
+            heartbeat line above exists to prevent, one level along.
+          */}
+          <div className="rail-status-row">
+            <span className={`dot ${counts.sharedPersona > 0 ? 'dot-warn' : 'dot-idle'}`} />
+            <span className="muted">
+              {counts.sharedPersona > 0 ? 'Nothing can send' : 'Sending is clear to run'}
+            </span>
+          </div>
         </div>
-      ))}
 
-      {/*
-        The one sentence explaining why the whole dashboard looks idle, on every screen rather
-        than on one page someone might not open. CONDITIONAL on the clash actually existing —
-        a hardcoded "sending is paused" would become a lie the moment personas are fixed, and
-        a stale banner is how an operator learns to ignore the real one.
-      */}
-      {counts.sharedPersona > 0 && (
-        <p className="side-foot">
-          Nothing is sending: {counts.sharedPersona} accounts share one identity.{' '}
-          <Link href="/senders">Give each its own</Link>.
-        </p>
-      )}
+        {/*
+          The one sentence explaining why the whole dashboard looks idle, on every screen rather
+          than on one page someone might not open. CONDITIONAL on the clash actually existing —
+          a hardcoded "sending is paused" would become a lie the moment personas are fixed, and
+          a stale banner is how an operator learns to ignore the real one.
+        */}
+        {counts.sharedPersona > 0 && (
+          <p className="rail-note rail-when-open">
+            {counts.sharedPersona} accounts share one identity.{' '}
+            <Link href="/senders">Give each its own</Link>.
+          </p>
+        )}
 
-      {/*
-        SIGN OUT LIVES HERE, since step C.
+        {/*
+          SIGN OUT LIVES HERE, since step C.
 
-        It was inside `/`'s health card — the one whose border and dot go amber or red. So
-        whenever a draft was waiting, which is the ordinary state, the dashboard rendered an
-        amber alarm box containing a dot, a warning sentence, "Last check read 168 posts" and
-        Sign out. Two separate faults in one container: neutral facts wearing an alarm's colour,
-        and a piece of furniture inside a control that is supposed to mean something is wrong.
+          It was inside `/`'s health card — the one whose border and dot go amber or red. So
+          whenever a draft was waiting, which is the ordinary state, the dashboard rendered an
+          amber alarm box containing a dot, a warning sentence, "Last check read 168 posts" and
+          Sign out. Two separate faults in one container: neutral facts wearing an alarm's colour,
+          and a piece of furniture inside a control that is supposed to mean something is wrong.
 
-        A container that changes colour must contain only things that colour is about. Sign-out
-        is chrome, so it belongs with the navigation, at the bottom, out of the reading path.
-      */}
-      {email && (
-        <div className="side-user">
-          <SignOutButton email={email} />
-        </div>
-      )}
+          A container that changes colour must contain only things that colour is about. Sign-out
+          is chrome, so it belongs with the navigation, at the bottom, out of the reading path.
+        */}
+        {email && (
+          <div className="rail-user">
+            <SignOutButton email={email} />
+          </div>
+        )}
+      </div>
     </nav>
   )
+}
+
+/** Whole minutes, because a heartbeat age to the second reads as precision nobody needs. */
+function minutesAgo(at: Date): string {
+  const mins = Math.max(0, Math.round((Date.now() - at.getTime()) / 60_000))
+  if (mins < 1) return 'less than a minute ago'
+  if (mins < 60) return `${mins} min ago`
+  const hours = Math.round(mins / 60)
+  return hours < 24 ? `${hours}h ago` : `${Math.round(hours / 24)} days ago`
 }

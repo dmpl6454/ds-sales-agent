@@ -28,7 +28,7 @@ import type { SendVerdict, WaitingMessage } from '../view-model/messages-page'
  * reached the database once that eighteen passing assertions missed, and one glance at a
  * rendered message caught both.
  */
-export function WaitingList({ waiting }: { waiting: WaitingMessage[] }) {
+export function WaitingList({ waiting, autopilotOn }: { waiting: WaitingMessage[]; autopilotOn: boolean }) {
   if (waiting.length === 0) {
     return (
       <section className="group">
@@ -46,7 +46,7 @@ export function WaitingList({ waiting }: { waiting: WaitingMessage[] }) {
       <h2>Waiting for you ({waiting.length})</h2>
       <div className="group-rows">
         {waiting.map((m) => (
-          <WaitingCard key={m.id} m={m} />
+          <WaitingCard key={m.id} m={m} autopilotOn={autopilotOn} />
         ))}
       </div>
     </section>
@@ -73,7 +73,7 @@ export function WaitingList({ waiting }: { waiting: WaitingMessage[] }) {
  * `autoSendEnabled` hold in `deliverWaiting` made it false for a day; see the docblock at
  * that call site for why that hold went rather than gaining a sentence here.
  */
-function Refusal({ send, auto }: { send: SendVerdict; auto: SendVerdict | null }) {
+function Refusal({ send, auto, autopilotOn }: { send: SendVerdict; auto: SendVerdict | null; autopilotOn: boolean }) {
   if (!send.ok) {
     return (
       <p className="reason bad">
@@ -92,8 +92,30 @@ function Refusal({ send, auto }: { send: SendVerdict; auto: SendVerdict | null }
     )
   }
 
-  // Both permit. Say so — "everything is clear" is information too, and its absence is exactly
-  // what made a blocked draft indistinguishable from a healthy one.
+  /*
+    Both GUARDS permit. Whether anything will actually happen is a separate question, and
+    this branch used to answer it wrongly.
+
+    FOUND BY READING THE RENDERED PAGE, 2026-08-12. With autopilot off, every clear draft
+    said "the paced dispatcher will pick this up in turn" — a promise about a dispatcher
+    that was never going to run. The docblock above states the exact condition this claim
+    depends on ("only true while nothing outside `gate.ts` can hold a message the gate
+    permitted") and the autopilot switch is precisely such a thing: `gate.ts` deliberately
+    does not check it, because the DISPATCHER does.
+
+    Same shape as the `autoSendEnabled` hold that made this sentence false for a day, one
+    door along. The fix is not to move the switch into the gate — one decision, one
+    enforcer — it is for the sentence to stop claiming more than it knows.
+  */
+  if (!autopilotOn) {
+    return (
+      <p className="reason">
+        <strong>Ready, and waiting for you.</strong> Every check passes, but autopilot is off — so nothing
+        picks this up on its own. Send it with the button above whenever you like.
+      </p>
+    )
+  }
+
   return (
     <p className="reason good">
       <strong>Clear to send.</strong> Every check passes; the paced dispatcher will pick this up in turn.
@@ -115,7 +137,7 @@ function Remedy({ remedy }: { remedy: SendVerdict['remedy'] }) {
 }
 
 
-function WaitingCard({ m }: { m: WaitingMessage }) {
+function WaitingCard({ m, autopilotOn }: { m: WaitingMessage; autopilotOn: boolean }) {
   const [body, setBody] = useState(m.body)
   const [editing, setEditing] = useState(false)
   // A separate flag per action. One shared flag rendered Save as "Saving…" the moment
@@ -169,7 +191,7 @@ function WaitingCard({ m }: { m: WaitingMessage }) {
 
         The sentence is the GATE'S OWN. Only the link is ours. See `remedy.ts`.
       */}
-      {!m.inFlight && <Refusal send={m.send} auto={m.auto} />}
+      {!m.inFlight && <Refusal send={m.send} auto={m.auto} autopilotOn={autopilotOn} />}
 
       {editing ? (
         <>

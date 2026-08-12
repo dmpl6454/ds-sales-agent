@@ -37,13 +37,37 @@ export function AutopilotPanel({ state }: { state: AutopilotState }) {
 
   return (
     <section>
-      <h2>
-        Sending
-        <span className="h2-note">who presses send</span>
-      </h2>
-
       <div className={`card autopilot ${state.on && covered > 0 ? 'live' : ''}`}>
         <div className="autopilot-top">
+          {/*
+            A REAL SWITCH, not a button labelled with its next action.
+            `role="switch"` + `aria-checked` is the difference between a control that
+            announces "Turn autopilot on, button" (which reads as the current state to
+            anyone scanning quickly, and is the opposite of it) and one that announces
+            "Autopilot, switch, off". On the single most consequential control in the
+            product, that ambiguity is not acceptable.
+
+            It is deliberately large. This is the one thing on the page that changes what
+            the system does to strangers' inboxes; it should not look like the Discard
+            button next to a draft.
+          */}
+          <button
+            type="button"
+            role="switch"
+            aria-checked={state.on}
+            aria-label="Autopilot"
+            className="bigswitch"
+            disabled={busy || (!state.on && !state.allowedByEnv)}
+            onClick={() => flip(!state.on)}
+            title={
+              state.allowedByEnv
+                ? 'Switches unattended sending on or off'
+                : 'Blocked by AUTOPILOT_ENABLED=false in .env'
+            }
+          >
+            <span className="bigswitch-knob" />
+          </button>
+
           <div>
             <div className="autopilot-title">
               {state.on
@@ -73,18 +97,23 @@ export function AutopilotPanel({ state }: { state: AutopilotState }) {
                 : 'Nothing sends. Paid posts are still found and messages are still written — drafts keep their Send buttons.'}
             </div>
           </div>
-          <button
-            className={state.on ? '' : 'primary'}
-            disabled={busy || (!state.on && !state.allowedByEnv)}
-            onClick={() => flip(!state.on)}
-            title={
-              state.allowedByEnv
-                ? 'Switches unattended sending on or off'
-                : 'Blocked by AUTOPILOT_ENABLED=false in .env'
-            }
-          >
-            {busy ? 'Saving…' : state.on ? 'Turn autopilot off' : 'Turn autopilot on'}
-          </button>
+
+          {/*
+            THE FLOOR THE PAGE CANNOT CROSS, stated beside the control rather than in a
+            footnote. `AUTOPILOT_ENABLED` lives in the environment precisely so a web page
+            cannot widen its own access — same reasoning as `SIGNUP_INVITE_CODE` — and a
+            reader who cannot find why the switch is refusing them would otherwise go
+            looking for a second switch that does not exist.
+          */}
+          <div className="autopilot-env">
+            <p className="eyebrow">Permitted by the machine</p>
+            <p className="autopilot-envnote">
+              {state.allowedByEnv
+                ? 'This deployment allows unattended sending. The switch is yours.'
+                : 'This deployment does not allow unattended sending at all. The switch cannot turn on here.'}
+            </p>
+            {busy ? <p className="autopilot-envnote muted">Saving…</p> : null}
+          </div>
         </div>
 
         {/*
@@ -113,13 +142,11 @@ export function AutopilotPanel({ state }: { state: AutopilotState }) {
           </p>
         )}
 
-        {!state.allowedByEnv ? (
-          <p className="cardnote">
-            This deployment has autopilot disabled at the environment level
-            (<code>AUTOPILOT_ENABLED=false</code>). That switch is intentionally not changeable from this page — a web
-            page should not be able to start unattended sending on its own.
-          </p>
-        ) : null}
+        {/*
+          The environment floor USED TO BE RESTATED HERE as well as beside the switch. It
+          is now said once, in the panel above, where the control it constrains actually
+          is. A reader who sees the same fact twice on one screen learns to skip both.
+        */}
 
         {/*
           `.reason` rather than an inline colour. Step F: every "why this will not happen" on the
