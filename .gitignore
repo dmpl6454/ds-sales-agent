@@ -1,0 +1,74 @@
+# ── SECRETS & SESSIONS ────────────────────────────────────────────────────────
+# Instagram login sessions captured by `pnpm session:add`. These are live
+# credentials in cookie form — leaking one is equivalent to leaking a password.
+# NEVER commit. The directory is kept (via .gitkeep), the contents never are.
+sessions/*
+!sessions/.gitkeep
+*.storageState.json
+
+.env
+.env.local
+.env.*.local
+!.env.example
+
+# ── DATABASE ──────────────────────────────────────────────────────────────────
+# Contains real prospect data, message bodies and send history.
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+prisma/dev.db*
+
+# ── GENERATED ─────────────────────────────────────────────────────────────────
+src/generated/
+.next/
+out/
+build/
+dist/
+next-env.d.ts
+
+# ── DEPS & TOOLING ────────────────────────────────────────────────────────────
+node_modules/
+.pnpm-store/
+*.tsbuildinfo
+.vitest/
+coverage/
+
+# Playwright
+.playwright-mcp/
+playwright-report/
+test-results/
+browser-profiles/
+
+# Selector diagnostics — contains screenshots and full HTML of a LOGGED-IN
+# account. Useful locally, never committed.
+diagnostics/
+
+# Ad-hoc screenshots. Same reasoning: they can capture a logged-in session.
+*.png
+*.jpg
+!docs/**/*.png
+
+# ── LOGS & SCRATCH ────────────────────────────────────────────────────────────
+logs/
+*.log
+npm-debug.log*
+pnpm-debug.log*
+raw-payloads/
+
+# ── OS / EDITOR ───────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/*
+!.vscode/extensions.json
+
+# Chrome profiles live in ~/.ds-sales-agent, never in the repo — but guard against
+# anyone relocating them here. A profile contains a live Instagram session, and a
+# session that appears on new hardware is the exact signal we avoid.
+chrome-profiles/
+
+# The generated Postgres schema is derived from schema.prisma by
+# scripts/make-postgres-schema.sh — but it IS committed, because
+# tests/schema-parity.test.ts compares them and CI must see both.
+prisma/test-default.db

@@ -1,0 +1,36 @@
+-- How many times we have driven a browser at this attempt, and what went wrong last time.
+--
+-- Hand-written and additive (ADD COLUMN only), per CLAUDE.md's migration rule:
+-- `prisma migrate dev` wants to RESET this database because of pre-existing drift on
+-- OutreachPair, so migrations are written by hand and applied with `migrate deploy`.
+--
+-- WHY `attempts`
+--
+-- Every failure path sets an attempt back to READY so a human can retry or send by hand.
+-- That is right, and it is also unbounded: nothing counts how many times the same draft
+-- has driven a Chrome profile at the same recipient's inbox. At four accounts a stuck
+-- draft was one retry per slot; under a 65-account rotation the same draft is reachable
+-- by many senders and the loop is no longer visible to anyone watching one account.
+-- Counting is the prerequisite for bounding it.
+--
+-- WHY `failureCode`, AND WHY IT IS NOT JUST THE ERROR STRING
+--
+-- `error` already holds prose. Prose cannot be queried, and the distinction that matters
+-- most here is invisible in it:
+--
+--   'not-in-thread'  the composer CLEARED but the message never appeared in the thread.
+--                    Instagram accepted the keystroke and then did not show the message.
+--                    That is what a shadow restriction looks like from the outside, and
+--                    it is ALSO the one failure where the DM may genuinely have been
+--                    delivered. Treating it as an ordinary retryable failure means
+--                    retrying into a possible restriction with a possible duplicate.
+--
+--   everything else  a paste that did not land, a composer that never opened, a timeout.
+--                    Nothing was delivered and nothing was restricted.
+--
+-- Recording them apart is Phase 0's whole contribution here. Phase 0 deliberately does
+-- NOT change what happens next on either — that is new behaviour and belongs in a phase
+-- that can be reviewed on its own.
+
+ALTER TABLE "OutreachAttempt" ADD COLUMN "attempts" INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE "OutreachAttempt" ADD COLUMN "failureCode" TEXT;

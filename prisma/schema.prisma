@@ -1,0 +1,791 @@
+// DS AI Sales Agent — Phase 1 schema
+// SQLite for Phase 1 (zero services, single file). Postgres later = change provider + adapter only.
+//
+// SQLite constraints that shape this schema:
+//   - no native array type  -> handle/brand/signal lists are JSON strings ("[]")
+//   - no native enum type   -> status/verdict are String with the allowed set documented inline
+// Helpers in src/lib/json.ts wrap the JSON columns so callers never touch raw strings.
+
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+// Prisma 7: connection config lives in prisma.config.ts (CLI/migrate) and is passed
+// to PrismaClient as a driver adapter at runtime. `url` is no longer valid here.
+datasource db {
+  provider = "sqlite"
+}
+
+/// An Instagram account WE own and send from. Credentials are never stored here —
+/// only a path to a Playwright storageState file captured by `pnpm session:add`.
+model SenderAccount {
+  id          String @id @default(cuid())
+  handle      String @unique
+  displayName String
+
+  // Persona block — reproduced verbatim in every message. Never varied.
+  //
+  // Role and brand are stored separately, not as one pre-joined title, because
+  // the two places they appear need different grammar:
+  //   intro     "I'm Kapil Jain, Co-founder of Bollywood Society."
+  //   signature "Co-founder, Bollywood Society"
+  // A single "Co-founder, Bollywood Society" field produces "I'm Kapil Jain,
+  // Co-founder, Bollywood Society." in the opening line, which reads badly.
+  personaName  String
+  personaRole  String
+  personaBrand String
+  personaPhone String
+  personaEmail String
+
+  /// false = queue for human confirmation; true = full autopilot for this sender.
+  autoSendEnabled Boolean @default(false)
+
+  /// Is this account part of the automatic rotation? The burner (@tabishmukaddam1) is
+  /// NOT: it exists for rehearsal and on-demand sends. With per-route switches gone
+  /// (2026-08-08, one-switch decision), this flag is the only thing keeping a test
+  /// account out of automatic outreach to real prospects. Identity, not a switch —
+  /// no UI toggles it.
+  fleetMember     Boolean @default(true)
+
+  /// Safety ceiling on DMs/day for this account. Well above expected use.
+  dailyCap        Int     @default(5)
+  /// ACTIVE | PAUSED | CHALLENGED  (CHALLENGED is set automatically on any IG checkpoint)
+  status          String  @default("ACTIVE")
+
+  /// WHEN Instagram flagged this account. Cleared when a human clears the halt.
+  ///
+  /// The fleet circuit breaker needs the time, not just the state: a checkpoint on any
+  /// account halts every OTHER account too, because all 65 drive the same code path from
+  /// one residential IP and a flag is evidence about the pattern rather than about the
+  /// account. Keyed on existence alone that halt could only ever be released by clearing
+  /// it, and a hard stop with no release is a bug wearing a safety feature's clothes.
+  ///
+  /// Written ONLY through `markChallenged` (src/outreach/challenge.ts). Four separate code
+  /// paths set CHALLENGED and any one of them forgetting this column would make the
+  /// breaker under-count — permitting, which is the wrong direction to fail in.
+  challengedAt    DateTime?
+
+  /// Which onboarding COHORT this account belongs to. Phase 9.
+  ///
+  /// 61 new accounts go live a few at a time, and a group must be WATCHED for a stated
+  /// period before the next may be armed. This is the phase that actually changes exposure,
+  /// so the ladder is the mechanism rather than a convention someone remembers.
+  ///
+  /// How long a cohort has been sending, and whether anything went wrong, is DERIVED from
+  /// `OutreachAttempt` and `challengedAt` rather than stored — see `src/outreach/cohorts.ts`.
+  /// Phase 3 made the same choice for rotation: a stored "cohort 2 cleared on the 12th" can
+  /// drift from what actually happened, and this codebase has been bitten by exactly that.
+  ///
+  /// Defaults 1, so the four accounts that predate the ladder are the baseline it measures
+  /// against.
+  cohort          Int      @default(1)
+
+  /// Relative path to the Playwright storageState JSON. Contents are gitignored.
+  sessionPath    String?
+  sessionSavedAt DateTime?
+
+  /// WHEN we LEARNED the on-disk session is dead — Instagram showed a login form (or the
+  /// wrong account) where a session was expected, during a real send.
+  ///
+  /// `sessionSavedAt` records that a login once happened; this records the moment that
+  /// stopped being true. The pair exists because `profileStatus().hasSession` is a
+  /// FILESYSTEM check — a `sessionid` cookie surviving on disk is not Instagram honouring
+  /// it, and for @tabishmukaddam1 on 2026-08-06 both were live at once: the dashboard said
+  /// "connected" while every real send failed with "not logged in". Nothing recorded the
+  /// failure, so autopilot drove a browser at the dead session every fifteen minutes,
+  /// forever. Freshness is not liveness — fourth appearance in this codebase.
+  ///
+  /// Written ONLY through `markSessionInvalid` (src/outreach/sessionHealth.ts), exactly
+  /// like `challengedAt` and `markChallenged` above. Cleared only by PROOF: an
+  /// identity-verified hand login, or a send that actually delivered. Never by a page
+  /// load, and never as a side effect of anything else.
+  sessionInvalidAt     DateTime?
+  /// What proved it, in prose — for the Senders page and the audit trail.
+  sessionInvalidReason String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  variants MessageVariant[]
+  pairs      OutreachPair[]
+  attempts   OutreachAttempt[]
+  categories CategorySender[]
+
+  @@index([status])
+  /// The breaker's only query: is any account flagged, and how recently.
+  @@index([status, challengedAt])
+  @@index([cohort])
+}
+
+/// An account we send TO. Phase 1: the two publisher channels.
+/// Phase 1.5 flips `kind` to BRAND for sponsors discovered in campaigns.
+model TargetAccount {
+  id          String  @id @default(cuid())
+  handle      String  @unique
+  displayName String
+  /// First name used in the greeting. One per recipient — never a shared placeholder.
+  contactFirstName String?
+
+  /// CHANNEL | BRAND
+  kind      String  @default("CHANNEL")
+  /// Which ChannelDetector handles this target: "mom" | "semantic" | "passthrough".
+  ///
+  /// `semantic` was missing from this comment AND from DETECTOR_KEYS while
+  /// @viralbhayani ran on it in production. See src/lib/constants.ts — the registry and
+  /// the union are now cross-checked by a test, because nothing validates this string on
+  /// write and getDetector falls back rather than throwing.
+  detectorKey String @default("passthrough")
+  /// Hard stop: never contact again, regardless of pairs.
+  optedOut  Boolean @default(false)
+
+  /// Is this account's feed READ four times a day?
+  ///
+  /// Separate from whether it may be MESSAGED, which is what pairs decide. Detection
+  /// reads four pages per target per slot, so a 60-row prospect list would turn 16
+  /// requests a slot into ~240 against an anonymous endpoint — bought for almost nothing,
+  /// since a cold first touch needs no hook from the recipient's own feed.
+  ///
+  /// Defaults TRUE so every existing row keeps being watched. Imported prospects are
+  /// created with it false and a person turns it on for the ones worth following.
+  watchEnabled Boolean @default(true)
+
+  /// Where this row came from, when it was not discovered in a paid post.
+  ///
+  /// `discoveredFromCampaignId` answers "why is this company in our database?" for brands.
+  /// Nothing answered it for a pasted list, and that question gets asked months later.
+  importNote String?
+
+  /// For kind=BRAND: the campaign post that surfaced this brand.
+  ///
+  /// Kept so the first message can reference the specific placement we saw ("your
+  /// Royal Canin piece with M.O.M last week"), and so the audit trail can answer
+  /// "why is this company in our database?" months later.
+  discoveredFromCampaignId String?
+  /// Instagram's own category for a brand, copied from BrandLookup. Display only.
+  brandCategory            String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  campaigns DetectedCampaign[]
+  pairs      OutreachPair[]
+  attempts   OutreachAttempt[]
+  categories CategoryTarget[]
+
+  @@index([kind])
+  /// What the detection pipeline asks every slot, once this table is 60 rows not four.
+  @@index([kind, watchEnabled])
+}
+
+/// The routing matrix, stored as data. Phase 1 seeds exactly 4 rows.
+/// Adding a target in Phase 1.5 is an INSERT, not a code change.
+model OutreachPair {
+  id       String @id @default(cuid())
+  senderId String
+  targetId String
+
+  /// Minimum days between touches for this pair.
+  /// 7, matching DEFAULT_COOLDOWN_DAYS. These were 5 and 7 respectively; the documented
+  /// value held only because addSender/addTarget pass it explicitly, so any other insert
+  /// path silently got 5 days of spacing while every document said 7.
+  cooldownDays Int     @default(7)
+  /// How many unanswered messages before we stop until the target engages.
+  /// Instagram will not deliver a second PENDING request to a non-follower, so
+  /// beyond a couple these are likely wasted rather than dangerous.
+  maxUnansweredTouches Int @default(3)
+  enabled      Boolean @default(true)
+
+  /// A message written from scratch for THIS specific recipient — the FIRST touch.
+  /// Follow-ups use a variant plus a campaign not referenced before, so that each
+  /// message genuinely says something new.
+  ///
+  /// Preferred over the rotating variants whenever present. Meta's written spam
+  /// policy states that repetitive content lowers the frequency threshold at which
+  /// restrictions apply — so at one or two messages a day, genuine per-recipient
+  /// writing is the single highest-leverage safety control available, and a shared
+  /// skeleton with substituted fields does not qualify as variation.
+  bespokeBody  String?
+  bespokeNote  String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  sender   SenderAccount @relation(fields: [senderId], references: [id], onDelete: Cascade)
+  target   TargetAccount @relation(fields: [targetId], references: [id], onDelete: Cascade)
+  attempts OutreachAttempt[]
+
+  @@unique([senderId, targetId])
+  @@index([enabled])
+}
+
+/// One post observed on a target's feed, with its classification.
+/// `shortcode` is the natural idempotency key: four scrapes/day see each post ~4x,
+/// so upsert-on-shortcode makes re-detection free and crash-safe.
+model DetectedCampaign {
+  id        String @id @default(cuid())
+  targetId  String
+  shortcode String @unique
+  permalink String
+
+  postedAt   DateTime
+  detectedAt DateTime @default(now())
+
+  caption      String
+  likeCount    Int?
+  commentCount Int?
+  /// "clips" (reel) | "carousel_container" | "feed" | null
+  mediaType    String?
+
+  /// JSON string[] — brands extracted from hashtags/@mentions
+  brands  String @default("[]")
+  /// JSON string[] — which detection rules fired, for auditability
+  signals String @default("[]")
+
+  confidence Int    @default(0)
+  /// CAMPAIGN | REVIEW | ORGANIC | UNCLASSIFIED
+  verdict    String
+
+  /// Human answer from the REVIEW queue. Feeds precision reporting.
+  humanLabel   Boolean?
+  labelledBy   String?
+  labelledAt   DateTime?
+
+  /// Which mechanism produced `verdict`: "rules" | "semantic" | "none".
+  ///
+  /// Recorded because the two are not interchangeable and must never be silently
+  /// mixed. @madovermarketing_mom discloses with #Collaboration, so a rule is exact.
+  /// @viralbhayani discloses nothing — measured 0/48 on is_paid_partnership,
+  /// sponsor_tags, branded_content_tag_info, #ad, #sponsored AND #collaboration — so
+  /// only meaning separates a paid post there, and a verdict is a judgement with a
+  /// confidence rather than a fact read off the payload. A dashboard presenting both
+  /// as "paid campaigns found" without distinction overstates one of them.
+  verdictSource String @default("none")
+
+  /// Model identifier, when verdictSource = "semantic". Precision is only comparable
+  /// across posts scored by the same model, so re-scoring after a change needs this.
+  classifierModel  String?
+  /// Why the classifier decided this, in one line. For the review queue, never sent.
+  classifierReason String?
+
+  /// Accounts tagged IN the media (not the caption), as a JSON string[].
+  ///
+  /// An unused signal until now: 17 across 48 @viralbhayani posts, and business vs
+  /// person IS resolvable anonymously — @redrosemart returns category "Grocery
+  /// Store", @karanjohar returns none. Weak alone, but it corroborates a semantic
+  /// verdict with something structural, which is what a judgement call needs.
+  taggedAccounts String @default("[]")
+
+  /// Raw parsed payload, kept so a parser break can be diffed against a known-good day.
+  rawPayload String?
+
+  /// ── WHAT THE FOOTAGE SAID (2026-08-07) — read for free, locally ───────────
+  ///
+  /// The text OCR read off this post's cover frame, as one line, or null when no frame
+  /// was read. A paid placement can live entirely in the footage: `DbtNU9UzWYU` is a
+  /// SWITCH-branded double-decker centre-frame under a caption that names no brand, and
+  /// the decisive evidence was literally text on screen — a title card plus "SWITCH" on
+  /// the bumper, both read at confidence 1.00 by Apple's Vision framework, offline, for
+  /// nothing (src/detection/ocr.ts).
+  ///
+  /// Stored so `/paid-posts` can show a person WHAT to look at when a post is flagged
+  /// because of its footage rather than its caption — a flag that does not say why is a
+  /// nag. NULL IS NOT "the footage was clean": a frame that was never saved, a machine
+  /// with no OCR engine, and a frame genuinely containing no text are three different
+  /// facts, and they are kept apart in `signals` as `frame:not-saved`,
+  /// `frame:no-ocr-engine` and `frame:no-text`.
+  ///
+  /// Never sent to a recipient. This is text off a stranger's video; it informs a
+  /// verdict and has no business in message copy.
+  frameText String?
+
+  target   TargetAccount     @relation(fields: [targetId], references: [id], onDelete: Cascade)
+  attempts OutreachAttempt[]
+
+  @@index([targetId, postedAt])
+  @@index([verdict])
+  @@index([detectedAt])
+}
+
+/// One message: queued, then sent (or not). The audit trail.
+model OutreachAttempt {
+  id     String @id @default(cuid())
+  pairId String
+
+  /// WHO sent it and WHO received it, denormalised from the pair.
+  ///
+  /// Redundant by construction and deliberately so. Every question rotation and the
+  /// per-recipient cap ask is per-TARGET or per-SENDER across all pairs — "what has this
+  /// recipient been sent today, by anyone" — and answering that through `pair` is a join
+  /// on every one of ~3,900 pairs per slot.
+  ///
+  /// NOT NULL is the point. A nullable key does not fail loudly when a code path forgets
+  /// it; it silently drops the row out of every per-recipient query, so the cap
+  /// under-counts and permits an extra message to a real person.
+  senderId String
+  targetId String
+
+  /// Campaign used as the personalisation hook. Nullable — outreach is never blocked on detection.
+  campaignId String?
+  variantId  String
+
+  /// 1-based counter of how many times this pair has been contacted.
+  touchNumber Int
+
+  hookLine     String?
+  /// Exact bytes queued. Never regenerated — this is what was (or will be) sent.
+  renderedBody String
+
+  /// QUEUED | READY | SENT | SKIPPED | FAILED | REPLIED
+  status   String   @default("QUEUED")
+  queuedAt DateTime @default(now())
+  /// "time contacted at" — the dashboard's primary column.
+  sentAt   DateTime?
+  /// Human's name, or "auto" when sent by PlaywrightSender.
+  sentBy   String?
+  threadUrl String?
+  error     String?
+
+  /// How many times a browser has been driven at this attempt.
+  ///
+  /// Every failure path returns an attempt to READY so it can be retried or sent by
+  /// hand, and nothing counted the retries. At four accounts that was one retry per
+  /// slot and visible; under rotation the same draft is reachable by many senders, so
+  /// the loop stops being visible to anyone watching one account. Counting first.
+  attempts Int @default(0)
+
+  /// Machine-readable reason the last send failed. See FAILURE_CODES in lib/constants.
+  ///
+  /// Distinct from `error`, which is prose for a human. The distinction that needs
+  /// querying is `not-in-thread` — the composer cleared but the message never appeared,
+  /// which is both what a shadow restriction looks like AND the one failure where the
+  /// DM may actually have been delivered.
+  failureCode String?
+
+  /// Set when a reply is observed. Halts every sender to this target.
+  repliedAt DateTime?
+
+  /// What they actually said. Nullable: a reply recorded by hand may have no text.
+  ///
+  /// Before this existed the dashboard rendered the reply preview from `error` — a
+  /// column meant for send failures — so a message that failed and was later marked
+  /// replied would have displayed its own error string as the recipient's words.
+  /// Reply content is not an error and must not share a column with one.
+  replyText String?
+
+  /// When a human last LOOKED for a reply on this conversation, reply or not.
+  ///
+  /// Distinct from `repliedAt` in the way that matters: `repliedAt == null` alone
+  /// cannot distinguish "they have not answered" from "nobody has ever checked", and
+  /// for the first two days of this system's life every conversation was the second
+  /// while the dashboard displayed the first. A silence you have verified and a
+  /// silence you have merely assumed are different facts.
+  replyCheckedAt DateTime?
+
+  /// Set when a human has dealt with the reply, so outreach may resume.
+  ///
+  /// A reply halts every sender to that target, which is correct — but nothing could
+  /// ever clear it, so the first reply retired the channel permanently and the
+  /// dashboard nagged about it forever with no control to dismiss. A hard stop with
+  /// no release is a bug, not a safety feature.
+  replyHandledAt DateTime?
+  replyHandledBy String?
+
+  pair     OutreachPair      @relation(fields: [pairId], references: [id], onDelete: Cascade)
+  sender   SenderAccount     @relation(fields: [senderId], references: [id], onDelete: Cascade)
+  target   TargetAccount     @relation(fields: [targetId], references: [id], onDelete: Cascade)
+  campaign DetectedCampaign? @relation(fields: [campaignId], references: [id], onDelete: SetNull)
+  variant  MessageVariant    @relation(fields: [variantId], references: [id])
+
+  @@index([pairId, sentAt])
+  @@index([status])
+  @@index([sentAt])
+  /// The fleet's hottest query: what has this recipient been sent today, by anyone.
+  /// Nothing indexed attempts by target before, and every rotation and per-recipient
+  /// cap query needs it.
+  @@index([targetId, sentAt])
+  @@index([senderId, sentAt])
+  @@index([targetId, status])
+}
+
+/// What a model call cost, so generation spend is observable rather than remembered.
+///
+/// `cachedInputTokens` is split out because DeepSeek's cached input is FIFTY TIMES
+/// cheaper than uncached ($0.0028/1M vs $0.14/1M). A cache-hit rate that quietly drops —
+/// which is what interpolating anything into a system prompt does — is a fifty-fold cost
+/// increase visible nowhere else.
+model ModelCall {
+  id String @id @default(cuid())
+  at DateTime @default(now())
+
+  /// 'classify' | 'generate' | 'quality' | 'resolve' — what the call was FOR, not which
+  /// model. The union lives in src/lib/modelCall.ts as ModelPurpose; 'resolve' is brand
+  /// resolution, kept a separate bucket so its spend is not blurred into the classifier's.
+  purpose String
+  model   String
+  /// What it was about. Free text for a human; never parsed back into logic.
+  subject String?
+
+  inputTokens       Int   @default(0)
+  cachedInputTokens Int   @default(0)
+  outputTokens      Int   @default(0)
+  costUsd           Float @default(0)
+  ms                Int   @default(0)
+
+  /// Failed calls are recorded too: a rising failure rate is exactly what a cost table
+  /// would otherwise hide by leaving it out.
+  ok    Boolean @default(true)
+  error String?
+
+  @@index([at])
+  @@index([purpose, at])
+}
+
+/// Hand-written message bodies, rotated least-recently-used.
+/// Identical bodies across senders is both a spam signal and visibly bad when one
+/// recipient receives two, so every send picks the stalest variant.
+model MessageVariant {
+  id       String @id @default(cuid())
+  senderId String
+  label    String
+  body     String
+
+  /// CHANNEL | BRAND — which pitch this body is.
+  ///
+  /// A channel is pitched a PARTNERSHIP (we and you both publish; let's work together).
+  /// A brand is pitched MEDIA BUYING (you are already spending on placement; here is a
+  /// 200-page network). Different proposition, different reader, and a brand's social
+  /// team reads pitches for a living.
+  ///
+  /// This column exists because variant selection is keyed on `senderId` alone
+  /// (`plan.ts`, least-recently-used). Without a discriminator the two pools are ONE
+  /// pool: the LRU would hand a media-buying body to @madovermarketing_mom, and a
+  /// partnership pitch to Royal Canin, with nothing anywhere reporting a problem.
+  ///
+  /// Defaults to CHANNEL so every pre-existing row keeps its current meaning — the 48
+  /// seeded variants are all channel copy.
+  targetKind String @default("CHANNEL")
+
+  timesUsed  Int       @default(0)
+  lastUsedAt DateTime?
+  enabled    Boolean   @default(true)
+
+  createdAt DateTime @default(now())
+
+  sender   SenderAccount     @relation(fields: [senderId], references: [id], onDelete: Cascade)
+  attempts OutreachAttempt[]
+
+  /// Matches the LRU lookup in plan.ts: filter by sender AND pool, order by staleness.
+  @@index([senderId, targetKind, lastUsedAt])
+}
+
+/// One execution of the 4x/day pipeline. Powers /runs and the health checks.
+model ScrapeRun {
+  id   String @id @default(cuid())
+  /// "11:00" | "15:00" | "17:00" | "20:00" | "manual" | "catchup"
+  slot String
+
+  startedAt  DateTime  @default(now())
+  finishedAt DateTime?
+
+  postsSeen  Int @default(0)
+  newPosts   Int @default(0)
+  detected   Int @default(0)
+  queued     Int @default(0)
+  sent       Int @default(0)
+
+  /// OK | PARTIAL | FAILED
+  status String  @default("OK")
+  error  String?
+  /// JSON — per-channel counts, for spotting one channel silently failing.
+  detail String  @default("{}")
+
+  @@index([startedAt])
+  @@index([status])
+}
+
+/// Human labels on REVIEW-queue items. Drives the weekly precision report so
+/// rule weights are tuned from evidence rather than intuition.
+model RuleFeedback {
+  id              String   @id @default(cuid())
+  campaignId      String
+  wasActuallyPaid Boolean
+  labelledBy      String
+  labelledAt      DateTime @default(now())
+  note            String?
+
+  @@index([campaignId])
+}
+
+/// Append-only record of every state change a human or the worker made.
+model AuditLog {
+  id     String @id @default(cuid())
+  actor  String
+  action String
+  entity String
+  detail String?
+  at     DateTime @default(now())
+
+  @@index([at])
+  @@index([entity])
+}
+
+/// Is this @handle a brand worth pitching, or a person who appeared in the post?
+///
+/// Cached permanently once answered, because Instagram's profile endpoint is scarce:
+/// measured 2026-08-03, 7 of 10 lookups returned HTTP 400 even at 2.5s spacing, while
+/// the feed endpoint took 48 consecutive requests without complaint. Re-asking a
+/// settled question would spend the whole budget re-deriving what we already know.
+///
+/// `kind = UNKNOWN` rows are stored so a later pass can find and retry them, but are
+/// never READ back as an answer — an unanswered lookup must never harden into
+/// "not a brand", which would discard prospects silently.
+model BrandLookup {
+  /// Lowercased, no leading @.
+  handle String @id
+
+  /// BRAND | PERSON | MISSING | UNRESOLVED | UNKNOWN — see BRAND_LOOKUP_KINDS.
+  ///
+  /// FIVE values. `UNRESOLVED` was missing from this comment while it existed in
+  /// resolveBrand.ts and in four live rows, and it is the one that most needs stating:
+  /// two of these are different kinds of "don't know".
+  ///
+  ///   UNRESOLVED  we READ the profile and the data is not there. Retrying will NOT
+  ///               help; a human must decide. NEVER a negative verdict — collapsing it
+  ///               into PERSON discarded real brands permanently.
+  ///   UNKNOWN     we never got to look (rate-limited / network). Retrying WILL help.
+  kind String
+
+  /// Instagram's own category. "Grocery & Convenience Stores" vs "Artist" is what
+  /// separates a media buyer from the talent that appeared in the same caption.
+  category    String?
+  displayName String?
+  followers   Int?
+
+  /// What we know about an UNRESOLVED handle, in one human-readable line.
+  ///
+  /// Facts, never a verdict — "1.2M followers · professional account · verified". Filled
+  /// by `enrichHandle.ts` for handles Instagram's category endpoint cannot serve, so an
+  /// operator can recognise the company and decide, instead of the row being an opaque
+  /// dead end.
+  ///
+  /// It is deliberately NOT parsed back into a classification. Measured 2026-08-03:
+  /// @tilara.india (a brand) and @adityathackeray (a politician) produce the IDENTICAL
+  /// string, so any rule over this field would message the politician.
+  enrichment  String?
+  /// True when the feed endpoint reached the account. Distinguishes "Meta's bug is hiding
+  /// a live professional account" from "this handle is dead" — which UNRESOLVED alone
+  /// cannot say, and which is exactly the difference an operator needs.
+  reachable   Boolean?
+
+  /// Who settled `kind`: 'endpoint' (Instagram's category data), 'model' (the
+  /// decideBrand resolver), 'human' (historic button decisions). Null on rows written
+  /// before 2026-08-08 and on UNKNOWN rows (nothing settled).
+  decidedBy       String?
+  /// The model's confidence (0-100) and one-line reason, recorded so an auto-created
+  /// prospect is auditable months later. Null unless decidedBy = 'model'.
+  modelConfidence Int?
+  modelReason     String?
+
+  checkedAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([kind])
+}
+
+/// Single-row key/value store for runtime-editable settings (cooldown, slots, caps).
+/// Kept as a table so /settings can change behaviour without a redeploy.
+model Setting {
+  key       String   @id
+  value     String
+  updatedAt DateTime @updatedAt
+}
+
+/// A dashboard operator. NOT an Instagram account.
+///
+/// "Nothing in this repo stores, reads, or transmits a password" is still true of
+/// INSTAGRAM credentials — there is no field for one and detection is anonymous. This
+/// password is ours, for our own dashboard, and it is stored only as a scrypt hash
+/// that cannot be reversed. The two are unrelated; conflating them would be an
+/// argument for leaving the send button unauthenticated, which is how 18 server
+/// actions came to be reachable by anything that could reach the port.
+///
+/// OPEN SIGNUP, chosen deliberately by Tabish 2026-08-03 after the exposure was
+/// stated twice. There is no role column and no permission model: every signed-in
+/// user can send DMs from every connected account, because `sendNow` checks the
+/// safety gate rather than who is asking. The Chrome profiles hold the sessions, so
+/// a signed-in stranger inherits them.
+///
+/// What limits this today is the `127.0.0.1` bind, NOT anything in this model. Before
+/// the dashboard is reachable beyond localhost this needs revisiting — the intended
+/// growth path is a `role` column defaulting to view-only, which is why email is
+/// unique and why nothing here assumes a single user.
+model User {
+  id           String @id @default(cuid())
+  /// Lowercased on write. The identity recorded in `sentBy` and `AuditLog.actor`.
+  email        String @unique
+  /// scrypt, as "scrypt$N$r$p$salt$hash". Never a bare digest — see src/lib/password.ts.
+  passwordHash String
+
+  /// "viewer" | "operator". READ THE HEADER in src/lib/roles.ts before changing this.
+  ///
+  /// Added 2026-08-08, when the dashboard stopped being a page bound to 127.0.0.1 and
+  /// became a product on a public URL. Until then `sendNow` checked the safety gate and
+  /// not WHO was asking, so anyone who could register could DM from a revenue account —
+  /// stated in CLAUDE.md and limited only by the bind. On the open internet that is not
+  /// a limit at all.
+  ///
+  /// Defaults to `viewer`, so a new account can READ everything and CHANGE nothing. The
+  /// safe direction: an account that arrives with no explicit grant must not be able to
+  /// send. Promotion is a deliberate act by an existing operator.
+  role         String @default("viewer")
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  sessions Session[]
+}
+
+/// One signed-in browser. Deleted on sign-out and on expiry.
+///
+/// The token is stored HASHED, not raw. A session token is a bearer credential
+/// exactly like Instagram's `sessionid` — the whole reason this project refuses cookie
+/// transplants is that a bearer token works for whoever holds it. Storing raw tokens
+/// would mean a database read (a backup, a screen share, `pnpm db:studio`) hands over
+/// live sessions for every logged-in operator.
+model Session {
+  /// SHA-256 of the cookie value. The raw token exists only in the client's cookie.
+  tokenHash String   @id
+  userId    String
+  expiresAt DateTime
+
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([expiresAt])
+}
+
+/// An atomic claim on one unit of a daily allowance.
+///
+/// The per-recipient cap was a count-then-check, which two concurrent runs both pass.
+/// This makes the check and the write the same statement: to send the Nth message to a
+/// recipient today you must CREATE (day, 'target', targetId, N), and the unique index
+/// lets exactly one caller win. Same shape as the slot lock's `create`-on-primary-key.
+///
+/// It exists BEFORE rotation because `cooldownDays` is per PAIR: 63 senders rotating
+/// through one category can message a recipient daily while every pair stays inside its
+/// 7-day cooldown. Rotation solves sender risk and does nothing for recipient risk.
+model DailyReservation {
+  id String @id @default(cuid())
+
+  /// IST day key, "2026-08-04". IST, like every other date boundary here.
+  day String
+  /// 'target' | 'sender' | 'fleet' — one mechanism, three questions.
+  scope String
+  /// The target id, the sender id, or the literal 'fleet'.
+  subjectId String
+  /// 1-based position within the day's allowance. The unique part.
+  seq Int
+
+  /// Stamped once the attempt exists, so a retry reuses its own reservation instead of
+  /// consuming another slot of the recipient's allowance. Nullable and not unique: a
+  /// reservation is taken before the send.
+  attemptId String?
+
+  createdAt DateTime @default(now())
+
+  @@unique([day, scope, subjectId, seq])
+  @@index([attemptId])
+  @@index([day, scope, subjectId])
+}
+
+/// A group of senders that are interchangeable for a kind of recipient.
+///
+/// The first is "Bollywood/Celebs". Per target, each successive paid post is pitched by
+/// the NEXT sender in the category, never the same one back to back, wrapping forever.
+/// Editable from the dashboard at runtime — a category is a business grouping, not a
+/// constant.
+model Category {
+  id   String @id @default(cuid())
+  name String
+  slug String @unique
+  note String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @default(now()) @updatedAt
+
+  senders CategorySender[]
+  targets CategoryTarget[]
+}
+
+/// A sender's place in a category's rotation ring.
+///
+/// `position` exists because rotation needs a STABLE order. Ordering by handle would
+/// reshuffle the whole ring the moment an account is renamed, which would silently change
+/// who writes to whom next.
+///
+/// There is deliberately NO cursor column anywhere: rotation is derived from
+/// `OutreachAttempt` history, not stored. A cursor is a second source of truth that can
+/// drift from what was actually sent, and this codebase has been bitten by exactly that.
+model CategorySender {
+  id         String @id @default(cuid())
+  categoryId String
+  senderId   String
+  position   Int    @default(0)
+
+  /// Suspended rather than deleted. The send history rotation reads is interpreted
+  /// against this membership, so removing the row would rewrite the past.
+  enabled Boolean @default(true)
+
+  createdAt DateTime @default(now())
+
+  category Category      @relation(fields: [categoryId], references: [id], onDelete: Cascade)
+  sender   SenderAccount @relation(fields: [senderId], references: [id], onDelete: Cascade)
+
+  @@unique([categoryId, senderId])
+  @@index([categoryId, position])
+}
+
+/// Which category's senders rotate through this recipient.
+model CategoryTarget {
+  id         String  @id @default(cuid())
+  categoryId String
+  targetId   String
+  enabled    Boolean @default(true)
+
+  createdAt DateTime @default(now())
+
+  category Category      @relation(fields: [categoryId], references: [id], onDelete: Cascade)
+  target   TargetAccount @relation(fields: [targetId], references: [id], onDelete: Cascade)
+
+  @@unique([categoryId, targetId])
+  @@index([targetId])
+}
+
+/// A post a PERSON told us was paid — ground-truth labels, held apart from verdicts.
+///
+/// Tabish supplied 33 shortcodes across 9 brands on 2026-08-06 (simple-sender plan §3).
+/// 0 of the 33 are in the stored corpus and their captions cannot be fetched anonymously
+/// (four endpoints probed, all dead), so today these are LABELS WITHOUT TEXT. The moment
+/// a deeper feed backfill of the posting pages picks the captions up, they become a
+/// second accuracy harness — a differently-worded source of truth beside M.O.M's
+/// `#Collaboration` disclosures, which is worth more than any prompt edit.
+///
+/// Deliberately NOT a DetectedCampaign row: `verdictSource` keeps facts and model
+/// opinions apart, and a human label with no caption is a third thing again.
+model KnownPaidPost {
+  id        String @id @default(cuid())
+  shortcode String @unique
+  /// The paying brand, as the person named it (a name, never a guessed handle).
+  brand     String
+  /// The URL exactly as supplied, so the post can be opened even if our parse was wrong.
+  url       String
+  /// Who told us, verbatim — a label is only as good as its provenance.
+  source    String
+
+  createdAt DateTime @default(now())
+
+  @@index([brand])
+}

@@ -1,0 +1,13 @@
+-- Who may CHANGE anything, as opposed to who is merely signed in.
+--
+-- Added when the dashboard moved from a 127.0.0.1 bind to a public URL. Until now
+-- `sendNow` checked the safety gate and not who was asking, so anyone who could register
+-- could DM from a revenue account — CLAUDE.md states exactly that, and the bind was the
+-- only thing limiting it.
+--
+-- DEFAULT 'viewer' is the safe direction, and it applies to every EXISTING row too: a
+-- deployment upgrading through this migration finds all its accounts demoted to
+-- read-only until someone is deliberately promoted. That is intended. The alternative —
+-- defaulting existing users to operator because they predate the column — would grant
+-- send rights by accident of history, which is how absence of data becomes a permission.
+ALTER TABLE "User" ADD COLUMN "role" TEXT NOT NULL DEFAULT 'viewer';

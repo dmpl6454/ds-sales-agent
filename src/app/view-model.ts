@@ -1,0 +1,1421 @@
+import { prisma } from '@/lib/db'
+import { env } from '@/lib/env'
+import { readStringArray } from '@/lib/json'
+import { istDayStart, istDateKey, daysAgo, istStamp, relativeLabel as relative } from '@/lib/time'
+/**
+ * `operatorName` — never a raw `displayName`.
+ *
+ * `displayName` is an internal label. The live values include "Bollywood Chronicle (test
+ * target)", "Burner (test target)" and "Tabish (trial)", and every one of them reached the
+ * screen: the headline read "Burner (test target) replied" and an account row offered
+ * "Send from Tabish (trial)". `tests/labels.test.ts` fails if a raw one comes back.
+ */
+import { validatePersona, prettifyBrand, operatorName } from '@/outreach/render'
+import { FOLLOWER_SNAPSHOT, DELIVERED_STATUSES, IN_FLIGHT_STATUSES } from '@/lib/constants'
+import { profileStatus } from '@/outreach/browser/profile'
+import { sessionUsable } from '@/outreach/sessionHealth'
+import { postUrl } from '@/lib/urls'
+import { isConnecting } from '@/outreach/browser/connect'
+import { getSettings } from '@/lib/settings'
+import { detectionCutoff } from '@/lib/cutoff'
+import { replyHaltFloor } from '@/outreach/replyHalt'
+import { readHeartbeat } from '@/worker/scheduler'
+import { assessWatch, watchHealthSentence } from '@/detection/watchHealth'
+import { getDetector } from '@/detection/detectors'
+import type { ReviewRow } from './paid-posts/review'
+/**
+ * The SAME function the planner's guard calls, deliberately. A page that computed
+ * "personas are shared" its own way could disagree with the rule actually blocking the
+ * send — and `MAX_TOTAL_SENDS` was measured two different ways for two days, rendering
+ * headroom that did not exist.
+ */
+import { checkPersonaDistinct } from '@/outreach/brandGuards'
+
+/**
+ * Everything the CEO page shows, assembled in one place.
+ *
+ * The page itself does no querying and no interpretation — it renders sentences
+ * this file produces. Keeping the judgement here (what counts as "healthy", how
+ * an event reads in English) means the view stays a view, and the wording can be
+ * changed without touching layout.
+ */
+
+export type Health = 'healthy' | 'attention' | 'broken'
+
+export interface CeoView {
+  health: Health
+  /** Last check, phrased so it cannot be mistaken for the 7-day totals below. */
+  lastCheckLabel: string
+  /** One plain sentence. Never a stack trace, never a status code. */
+  headline: string
+  nextSlotLabel: string
+  nowLabel: string
+
+  replies: ReplyCard[]
+  week: { detected: number; sent: number; replies: number }
+  activity: ActivityDay[]
+  channels: ChannelCard[]
+  accounts: AccountCard[]
+  brands: BrandsPanel
+
+  /**
+   * Messages written and ready to send.
+   *
+   * A COUNT since step C, not cards. The full tray — every body, the Send button, the refusal
+   * reason — is on `/messages`, and `/` rendered a second copy of it with no reason attached.
+   * `src/app/awaiting.tsx` was that second copy and is deleted: it also still told operators to
+   * "press Connect under Your accounts", a section that no longer exists.
+   */
+  awaitingCount: number
+
+  autopilot: AutopilotState
+
+  /**
+   * Detection health, stated rather than implied.
+   *
+   * `week.detected` counts only what a detector actually judged. On a channel whose
+   * classifier is unconfigured that number is 0 — and a bare 0 reads as "they run no
+   * paid campaigns", which is false and is the reason this field exists. The screen
+   * has to be able to say "not looked at" in words.
+   */
+  detection: DetectionHealth
+}
+
+export interface DetectionHealth {
+  /** Channels whose posts are stored but never judged, with the reason. */
+  unclassifiedChannels: { name: string; handle: string; reason: string }[]
+  /** Checks in the last two days that could not read every channel. */
+  degradedRuns: number
+  /** True when at least one channel is genuinely being classified. */
+  anyClassifying: boolean
+}
+
+export interface RouteToggle {
+  targetHandle: string
+  targetName: string
+  enabled: boolean
+  /** Target is marked never-contact; the route cannot be turned on. */
+  targetRetired: boolean
+}
+
+export interface SchedulerState {
+  /** A scheduler process has beaten within the last few minutes. */
+  running: boolean
+  /** 'dashboard' (embedded) or 'worker' (separate process). */
+  host: string | null
+  lastBeatLabel: string | null
+}
+
+export interface AutopilotState {
+  /** The dashboard toggle. Sending happens by itself when this and an armed account line up. */
+  on: boolean
+  /**
+   * AUTOPILOT_ENABLED in .env. A hard floor — with this false the toggle cannot be
+   * switched on at all, so a compromised or misclicked dashboard cannot start
+   * unattended sending on a deployment that never opted in.
+   */
+  allowedByEnv: boolean
+  /**
+   * Is anything actually going to fire at the slot times?
+   *
+   * Kept beside the toggle deliberately. "Autopilot is ON" with no scheduler running
+   * is a claim the system cannot honour, and that combination existed for a whole day
+   * without the page mentioning it.
+   */
+  scheduler: SchedulerState
+  /** "Next check at 15:00" — answers "when will this actually send?" on screen. */
+  nextSlotLabel: string
+  /** Accounts that are armed AND have a logged-in Chrome profile. */
+  readyHandles: string[]
+  /** Armed, but no hand login yet — the toggle will not help these. */
+  needLoginHandles: string[]
+}
+
+export interface ReplyCard {
+  /** Needed so the card can carry a "handled" button. */
+  attemptId: string
+  targetName: string
+  targetHandle: string
+  senderName: string
+  whenLabel: string
+  /**
+   * What they actually said, from `replyText`.
+   *
+   * This used to read `attempt.error` — a column for send failures — because no field
+   * for reply content existed. A message that failed and was later marked replied
+   * would have rendered its own error string as the recipient's words.
+   */
+  preview: string | null
+}
+
+export interface ActivityEvent {
+  timeLabel: string
+  sentence: string
+  kind: 'sent' | 'reply' | 'detected'
+}
+
+export interface ActivityDay {
+  dayLabel: string
+  events: ActivityEvent[]
+}
+
+export interface ChannelCard {
+  name: string
+  handle: string
+  followers: string
+  campaignsThisWeek: number
+  postsThisWeek: number
+  postsLogged: number
+  lastContactedLabel: string
+  halted: boolean
+  /**
+   * True when this channel's posts are deliberately NOT classified.
+   *
+   * This matters more than it looks. @viralbhayani never discloses paid posts, so
+   * our verdict count for them is 0 — and showing a bare "0 paid campaigns" would
+   * tell a reader they do no paid work, which is the opposite of the truth
+   * (roughly half their output is commercial). The card says "not classified"
+   * instead of a number that would actively mislead.
+   */
+  unclassified: boolean
+  /**
+   * WHY it is not classified, from the detector itself.
+   *
+   * Was a single hardcoded sentence on the card ("this channel never labels its paid
+   * posts"), which is true of a passthrough channel and false of one whose classifier
+   * merely lacks an API key. Two different problems with two different fixes must not
+   * render as the same sentence.
+   */
+  unclassifiedReason: string | null
+  /** Retired: kept for its history, never contacted again. */
+  retired: boolean
+  /** Has this channel ever been sent a message? Governs delete vs retire. */
+  everContacted: boolean
+}
+
+export interface AccountCard {
+  handle: string
+  name: string
+  /**
+   * Raw SenderAccount.status. Needed because clearing a CHALLENGED halt is now an
+   * explicit operator act with its own control, so the UI has to know the difference
+   * between "broken because Instagram flagged it" and "broken because details are
+   * invalid" — `state` collapses both to 'broken'.
+   */
+  status: string
+  /** A hand login has happened, so this account CAN send unattended. */
+  canSendAutomatically: boolean
+  /** A Chrome window is open right now waiting for this account to be logged in. */
+  connecting: boolean
+  /** Which channels this account is allowed to message. */
+  routes: RouteToggle[]
+  sentThisWeek: number
+  /**
+   * ready  — logged in and healthy: sends by itself while Autopilot is on
+   * setup  — nothing wrong, but a sign-in is outstanding
+   * broken — needs a human: locked by Instagram, or invalid details
+   *
+   * Three states rather than two because green beside "not logged in yet" reads
+   * as healthy at a glance, which is precisely what a status light must not do.
+   *
+   * ONE SWITCH, 2026-08-08: `ready` no longer means "armed", and `setup` no longer
+   * has "autopilot off" as one of its causes — there is no per-account switch to be off.
+   */
+  state: 'ready' | 'setup' | 'broken'
+  note: string
+
+  /**
+   * Who this account says it is, in every message it sends.
+   *
+   * On screen because it is the one thing a recipient always reads and nobody could see
+   * without opening Prisma Studio. All four accounts currently carry the identical
+   * *Kapil Jain, Co-founder, Bollywood Society* block, so a DM from Mad About Marketing
+   * introduces the co-founder of a different company — invisible for weeks precisely
+   * because the dashboard never showed it.
+   */
+  persona: {
+    name: string
+    role: string
+    brand: string
+    phone: string
+    email: string
+  }
+  /**
+   * True when another sending account carries a byte-identical persona.
+   *
+   * Blocks BRAND outreach from this account (see `brandGuards.ts`) and is surfaced here
+   * because a blocked send with no visible cause is the failure this project keeps
+   * producing. Channel outreach is unaffected — it already runs this way.
+   */
+  personaSharedWithAnother: boolean
+}
+
+/**
+ * Companies discovered inside paid posts — the other half of the scope Tabish set on
+ * 2026-08-03: *"Message channels that posted and the brands (their instagram channels)."*
+ *
+ * They are `kind: 'BRAND'` and the channels panel filters `kind: 'CHANNEL'`, so before
+ * this they existed in the database and appeared nowhere on screen.
+ */
+export interface BrandCard {
+  handle: string
+  name: string
+  /** Instagram's own category — "Grocery & Convenience Stores". Display only. */
+  category: string | null
+  /** The publisher whose paid post surfaced this company, in prose. */
+  discoveredOn: string | null
+  /** Is any route to this brand switched on? Discovery never enables one. */
+  enabled: boolean
+  /** Messages delivered to this brand so far. */
+  sent: number
+  retired: boolean
+}
+
+/**
+ * A handle the MODEL decided about, and what it decided — a record, not a queue.
+ *
+ * ── WHAT THIS REPLACED, AND WHY THE OLD REASONING WAS RIGHT ────────────────
+ *
+ * `UnresolvedBrandCard` carried FACTS for a human to judge, and it was correct to. Meta deleted
+ * the schema behind `ig_business_category_subvertical`, so Instagram's category endpoint returns
+ * HTTP 400 for accounts that HAVE a business category — precisely the accounts most likely to be
+ * brands. 18 of 19 turned out to be live professional accounts, @tilara.india and @netflix_in
+ * among them. And no verdict could be read off what remained: measured 2026-08-03, the readable
+ * fields are IDENTICAL for @tilara.india (a brand) and @adityathackeray (a politician).
+ *
+ * That argument bounded what could be done with THOSE FIELDS. It was never an argument that the
+ * question is unanswerable — and the missing piece was an INPUT, the paid post the handle
+ * appeared in, which the endpoint never had. Same shape as the caption-vs-footage finding: a
+ * classifier reading the only thing it is given, and the evidence sitting somewhere else.
+ *
+ * Tabish, on finding @adidas in that queue: *"How can adidas not be recognized as anything? I do
+ * not want this option to select manually, correct it."*
+ *
+ * So the queue is answered before anyone sees it, and this reports what happened. The reason is
+ * carried because an automatic decision nobody can inspect is worse than a manual one: a prospect
+ * created by a model months ago still has to be explicable today.
+ */
+export interface AutoDecidedBrandCard {
+  handle: string
+  /** 'company' — added as a prospect; 'left-alone' — the model was not confident. */
+  outcome: 'company' | 'left-alone'
+  /** One line, in prose. The only part of this that reaches a screen. */
+  reason: string | null
+  /**
+   * 0-100, and deliberately NOT rendered: "no confidence scores on the dashboard" is a
+   * standing rule here, because a number invites an operator to second-guess a threshold
+   * rather than read the sentence. Carried so the panel can start showing it if that is ever
+   * asked for, and so a reader of this type is not left wondering where it went.
+   */
+  confidence: number | null
+}
+
+export interface BrandsPanel {
+  confirmed: BrandCard[]
+  /**
+   * What the model decided about handles Instagram could not classify, newest first.
+   *
+   * A RECORD, not a queue: nothing here is waiting on anybody. It replaced `undecided`, which
+   * was a work list with two buttons on every row (one switch, 2026-08-08).
+   */
+  autoDecided: AutoDecidedBrandCard[]
+  /** How many new brands may be contacted for the first time today. */
+  newTouchCap: number
+  /** How many of that allowance is already used. */
+  newTouchesUsedToday: number
+}
+
+
+/**
+ * ── STEP C OF THE REDESIGN: `/` WAS SIX JOBS, AND IS NOW THREE PAGES ────────
+ *
+ * `buildCeoView` still assembles everything, and the three builders below hand each page its
+ * slice. That is deliberately NOT three independent query sets.
+ *
+ * The risk in this redesign is stated in the plan's §0: *every refusal in this system is a
+ * sentence on a screen, and a redesign that loses a warning is worse than a dull dashboard.*
+ * Three separate assemblies would be three places for a reason to be dropped, and two of them
+ * would drift — which has already happened twice in this codebase, once when `view-model.ts`
+ * counted `MAX_TOTAL_SENDS` differently from `plan.ts` (two silent days), and once when
+ * `deliverWaiting` checked eight conditions and `sendNow` checked three.
+ *
+ * So there is ONE assembly and three projections. The cost is that each page runs the other
+ * pages' queries — measured at ~200 ms on the live database, against a `force-dynamic` page on
+ * localhost. If that ever matters, split the QUERIES and keep one definition of each SENTENCE.
+ */
+export async function buildCeoView(): Promise<CeoView> {
+  const dayStart = istDayStart()
+  const weekStart = daysAgo(7)
+  const settings = await getSettings()
+
+  const [senders, targets, lastRun, weekSent, weekReplies, recentSends, unreadReplies, awaitingRaw] =
+    await Promise.all([
+      prisma.senderAccount.findMany({
+        orderBy: { handle: 'asc' },
+        include: { pairs: { include: { target: true } } },
+      }),
+      prisma.targetAccount.findMany({
+        where: { kind: 'CHANNEL' },
+        include: { pairs: { include: { sender: true } } },
+        orderBy: { handle: 'asc' },
+      }),
+      prisma.scrapeRun.findFirst({ orderBy: { startedAt: 'desc' } }),
+      // DELIVERED_STATUSES, not 'SENT': a replied-to message is still a message we sent.
+      prisma.outreachAttempt.count({
+        where: { status: { in: [...DELIVERED_STATUSES] }, sentAt: { gte: weekStart } },
+      }),
+      prisma.outreachAttempt.count({ where: { repliedAt: { gte: weekStart } } }),
+      prisma.outreachAttempt.findMany({
+        where: { sentAt: { gte: daysAgo(14) } },
+        include: { pair: { include: { sender: true, target: true } }, campaign: true },
+        orderBy: { sentAt: 'desc' },
+        take: 40,
+      }),
+      /**
+       * Replies still needing a human. `replyHandledAt: null` is the whole point.
+       *
+       * This previously had NO filter of any kind, so once anyone replied the card
+       * and its to-do sat on the dashboard permanently — there was no "handled"
+       * state and no control to dismiss it. A notification that can never be cleared
+       * stops being read, which defeats the one event here that represents revenue.
+       */
+      prisma.outreachAttempt.findMany({
+        // Only ACTIVE halts — replies inside the one-day resume window (Tabish,
+        // 2026-08-07). Older ones released themselves and left the card with them.
+        where: { repliedAt: { gte: replyHaltFloor(settings.replyResumeHours) }, replyHandledAt: null },
+        include: { pair: { include: { sender: true, target: true } } },
+        orderBy: { repliedAt: 'desc' },
+      }),
+      prisma.outreachAttempt.findMany({
+        // SENDING is included so a send interrupted by a crash stays visible rather
+        // than vanishing from the tray with no way to reach it.
+        where: { status: { in: ['READY', 'QUEUED', 'SENDING'] } },
+        include: { pair: { include: { sender: true, target: true } } },
+        orderBy: { queuedAt: 'asc' },
+      }),
+    ])
+
+  const weekDetected = await prisma.detectedCampaign.count({
+    where: { verdict: 'CAMPAIGN', detectedAt: { gte: weekStart } },
+  })
+
+  /**
+   * Every reply in the feed's window, handled or not.
+   *
+   * Separate from `unreadReplies` on purpose. That query is filtered `replyHandledAt: null`
+   * because it drives what needs a person; this one drives HISTORY, and history must not change
+   * when someone ticks a box. Same window as `recentSends` so the two halves of the feed cover
+   * the same period — a reply from three weeks ago appearing above sends from three days ago is
+   * the kind of thing that makes a feed unreadable.
+   */
+  const repliesInWindow = await prisma.outreachAttempt.findMany({
+    where: { repliedAt: { gte: daysAgo(14) } },
+    include: { pair: { include: { sender: true, target: true } } },
+    orderBy: { repliedAt: 'desc' },
+  })
+
+  // ── Health ────────────────────────────────────────────────────────────────
+  /**
+   * ONE read, serving both the health ladder below and the autopilot card further down.
+   * Two reads would be two answers to "is the watch alive" a few milliseconds apart, and
+   * a page contradicting itself about that is exactly what this alarm is for.
+   */
+  const heartbeat = await readHeartbeat()
+  const challenged = senders.filter((s) => s.status === 'CHALLENGED')
+  const paused = senders.filter((s) => s.status === 'PAUSED')
+  const personaBroken = senders.filter((s) => validatePersona(s).length > 0)
+
+  /**
+   * IS THE WATCH RUNNING — asked of the HEARTBEAT, not of `ScrapeRun`.
+   *
+   * This was `!lastRun || startedAt older than 26 hours`, and that check could no longer
+   * fire in time. Detection moved to its OWN 15-minute clock on 2026-08-07 and writes no
+   * `ScrapeRun` row — those rows are written by the four send SLOTS. So the alarm was
+   * watching a table detection had stopped touching, with a threshold sized for a
+   * four-times-a-day cadence. MEASURED on 2026-08-08: the watch was dead 20 hours, ~108
+   * posts were missed, 9 of them paid, and this branch had not fired — a slot was not yet
+   * 26 hours late.
+   *
+   * Two clocks write to two tables, so "is detection running?" had two answers and the
+   * alarm read the wrong one. The heartbeat is the right witness: it is written every 60s
+   * by whichever process holds the schedule, and it is what `readHeartbeat` already
+   * exposes for the autopilot card.
+   *
+   * The threshold is no longer a chosen number either. `assessWatch` derives it from the
+   * measured feed depth and the busiest channel's measured posting rate, because the
+   * deadline is a property of how fast the feed window turns over — about 18 hours — not
+   * of anyone's preference.
+   */
+  const watch = assessWatch({
+    lastBeatAt: heartbeat ? new Date(heartbeat.beat.at) : null,
+    fresh: heartbeat?.fresh ?? false,
+    now: new Date(),
+  })
+
+  /**
+   * The ceiling must be counted the way the PLANNER counts it, or the page reports
+   * a limit that is not the one being enforced.
+   *
+   * This read `['SENT','REPLIED']` while `plan.ts` reads IN_FLIGHT_STATUSES, so with
+   * MAX_TOTAL_SENDS=6 and 2 sent + 1 replied + 3 drafted, the planner saw 6/6 and
+   * refused to prepare anything while the page saw 3/6 and rendered no blocker at
+   * all. Measured 2026-08-03, after two days in which the agent correctly drafted
+   * nothing and the dashboard offered no reason why.
+   */
+  const totalInFlight = await prisma.outreachAttempt.count({
+    where: { status: { in: [...IN_FLIGHT_STATUSES] } },
+  })
+  const ceilingReached = env.MAX_TOTAL_SENDS !== null && totalInFlight >= env.MAX_TOTAL_SENDS
+
+  /**
+   * ONE sentence, and nowhere to put a shell command.
+   *
+   * This replaced a "Needs you" list that read, verbatim:
+   *     Send the next one: pnpm send
+   *     Raise the send limit when ready (MAX_TOTAL_SENDS in .env)
+   *     Check which channels are failing: pnpm ig:audit
+   * on a page whose stated audience is a CEO. Every one of those was a developer
+   * instruction for something the page could simply DO, and a to-do list that cannot
+   * be ticked off is a nag, not information.
+   *
+   * So each condition now renders where it belongs — on the account row, the channel
+   * card, the reply — beside a control that resolves it. What survives here is a
+   * single summary line, because a page still has to answer "is this working?" above
+   * the fold.
+   *
+   * Severity, not a list: `broken` means something a person must fix before anything
+   * can happen; `attention` means it is working and something is waiting.
+   */
+  const degradedRuns = await prisma.scrapeRun.count({
+    where: { startedAt: { gte: daysAgo(2) }, status: { not: 'OK' }, finishedAt: { not: null } },
+  })
+
+  let health: Health = 'healthy'
+  let headline = 'Watching normally. Nothing to send right now.'
+
+  if (challenged.length > 0) {
+    health = 'broken'
+    headline = `Instagram has locked ${challenged.map((s) => operatorName(s.displayName)).join(' and ')}. Open the account and clear the prompt.`
+  } else if (personaBroken.length > 0) {
+    health = 'broken'
+    headline = `Contact details on ${operatorName(personaBroken[0]!.displayName)} are incomplete, so nothing can be written.`
+  } else if (watch.severity !== 'ok') {
+    /**
+     * ABOVE the replies and the waiting drafts, deliberately. A missed paid post is the
+     * only thing on this ladder that is UNRECOVERABLE — a reply keeps until it is read
+     * and a draft keeps until it is sent, but a post that scrolls out of the feed window
+     * is gone, and no endpoint will hand it back.
+     *
+     * `broken` for both stopped states rather than only the lossy one, because the whole
+     * failure this replaces is that the previous, milder wording was true and ignored.
+     */
+    health = 'broken'
+    headline = watchHealthSentence(watch) ?? 'The watch is not running.'
+  } else if (unreadReplies.length > 0) {
+    // A reply outranks a waiting draft: it is the only event here that is revenue.
+    health = 'attention'
+    headline =
+      unreadReplies.length === 1
+        ? `${operatorName(unreadReplies[0]!.pair.target.displayName)} replied. Outreach to them is on hold until you have answered.`
+        : `${unreadReplies.length} channels replied. Outreach to them is on hold.`
+  } else if (awaitingRaw.length > 0) {
+    health = 'attention'
+    headline = `${awaitingRaw.length} message${awaitingRaw.length === 1 ? '' : 's'} written and ready to send.`
+  } else if (env.DRY_RUN) {
+    health = 'attention'
+    headline = 'Practice mode: watching and deciding, but writing nothing to send.'
+  } else if (ceilingReached) {
+    health = 'attention'
+    headline = `Send limit reached — ${totalInFlight} of ${env.MAX_TOTAL_SENDS} used or waiting. Nothing new is being prepared.`
+  } else if (paused.length > 0) {
+    health = 'attention'
+    headline = `${paused.map((s) => operatorName(s.displayName)).join(', ')} is paused.`
+  }
+
+  // ── Replies ───────────────────────────────────────────────────────────────
+  // Built by `toReplyCards`, shared with `/conversations`. Step D moved the CARD to that page
+  // and left the headline here, so two files now describe the same reply — through one function,
+  // because two mappings of the same row is how a preview once came to be read out of `error`.
+  const replies = toReplyCards(unreadReplies)
+
+  // ── Activity, as sentences, grouped by day ────────────────────────────────
+  const events: { at: Date; event: ActivityEvent }[] = []
+
+  for (const a of recentSends) {
+    if (!a.sentAt) continue
+    const brand = a.campaign ? readStringArray(a.campaign.brands).map(prettifyBrand)[0] : null
+    const hook = brand ? `, referencing their ${brand} campaign` : ''
+    events.push({
+      at: a.sentAt,
+      event: {
+        timeLabel: timeOnly(a.sentAt),
+        kind: 'sent',
+        sentence: `Messaged ${operatorName(a.pair.target.displayName)} as ${operatorName(a.pair.sender.displayName)}${hook}`,
+      },
+    })
+  }
+  /**
+   * Replies as HISTORY, and therefore every reply in the window — not just the unhandled ones.
+   *
+   * This iterated `unreadReplies`, which is filtered `replyHandledAt: null`. So the moment
+   * someone pressed "I have replied", that reply disappeared from "What happened" — a record of
+   * what happened that changes depending on whether a box has been ticked. Handling a reply is
+   * explicitly NOT erasing it: `repliedAt`, `replyText` and status REPLIED all survive by
+   * design, and the feed was the one place that contradicted it.
+   *
+   * The SENTENCE differs by state, because "outreach is on hold" stops being true once a person
+   * has taken over, and a history entry asserting a halt that has been released is worse than no
+   * entry at all.
+   */
+  for (const r of repliesInWindow) {
+    if (!r.repliedAt) continue
+    events.push({
+      at: r.repliedAt,
+      event: {
+        timeLabel: timeOnly(r.repliedAt),
+        kind: 'reply',
+        sentence:
+          r.replyHandledAt === null
+            ? `${operatorName(r.pair.target.displayName)} replied — all outreach to them is on hold`
+            : `${operatorName(r.pair.target.displayName)} replied — someone has taken the conversation over`,
+      },
+    })
+  }
+
+  events.sort((a, b) => b.at.getTime() - a.at.getTime())
+
+  const byDay = new Map<string, ActivityEvent[]>()
+  for (const e of events) {
+    const key = istDateKey(e.at)
+    const list = byDay.get(key) ?? []
+    list.push(e.event)
+    byDay.set(key, list)
+  }
+  const activity: ActivityDay[] = [...byDay.entries()].slice(0, 7).map(([key, evs]) => ({
+    dayLabel: dayLabel(key),
+    events: evs,
+  }))
+
+  // ── Channels ──────────────────────────────────────────────────────────────
+  // Lives in `buildChannelCards` since step C of the redesign moved the cards to their own
+  // page. Today still needs the LIST — the coverage line counts channels, and the on-demand
+  // dialog needs the reachable ones — so this is the same function, called from two builders
+  // rather than two queries that could disagree about what a channel is.
+  const channels = await buildChannelCards(targets, weekStart)
+
+  // ── Our accounts ──────────────────────────────────────────────────────────
+  const accounts: AccountCard[] = []
+  for (const s of senders) {
+    const sentThisWeek = await prisma.outreachAttempt.count({
+      where: { pair: { senderId: s.id }, status: { in: [...DELIVERED_STATUSES] }, sentAt: { gte: weekStart } },
+    })
+    const problems = validatePersona(s)
+    let state: AccountCard['state']
+    let note: string
+
+    // §3.5: a cookie on disk AND nothing has since proved it dead. `hasSession` alone said
+    // "connected" about a session every real send was failing against.
+    const hasProfile = sessionUsable({
+      hasSessionOnDisk: profileStatus(s.handle).hasSession,
+      sessionInvalidAt: s.sessionInvalidAt,
+    })
+
+    if (s.status === 'CHALLENGED') {
+      state = 'broken'
+      note = 'locked by Instagram — needs you'
+    } else if (problems.length > 0) {
+      state = 'broken'
+      note = 'contact details invalid'
+    } else if (s.sessionInvalidAt !== null) {
+      state = 'setup'
+      note = `logged out ${relative(s.sessionInvalidAt)} — press Connect and sign in again`
+    } else if (!hasProfile) {
+      // The most common outstanding step, and the dashboard now owns it — pointing
+      // at a terminal command from a button-driven page just sends people away.
+      state = 'setup'
+      note = 'not connected — press Connect'
+    } else if (s.status === 'PAUSED') {
+      state = 'setup'
+      note = 'paused'
+    } else {
+      state = 'ready'
+      /**
+       * ONE SWITCH, 2026-08-08. This read "armed — will send by itself" off `autoSendEnabled`,
+       * and there is no arming left to report. What differs between these two is EVIDENCE —
+       * this account has actually delivered something this week, or it has not yet — which is
+       * the distinction the old wording only appeared to make.
+       */
+      note = sentThisWeek > 0 ? 'sending by itself' : 'ready to send'
+    }
+
+    accounts.push({
+      handle: s.handle,
+      name: operatorName(s.displayName),
+      canSendAutomatically: hasProfile,
+      connecting: isConnecting(s.handle),
+      routes: s.pairs
+        .map((p) => ({
+          targetHandle: p.target.handle,
+          targetName: operatorName(p.target.displayName),
+          enabled: p.enabled,
+          targetRetired: p.target.optedOut,
+        }))
+        .sort((a, b) => a.targetHandle.localeCompare(b.targetHandle)),
+      sentThisWeek,
+      status: s.status,
+      state,
+      note,
+      persona: {
+        name: s.personaName,
+        role: s.personaRole,
+        brand: s.personaBrand,
+        phone: s.personaPhone,
+        email: s.personaEmail,
+      },
+      /**
+       * Computed from the same fingerprint the guard uses, so the page cannot disagree
+       * with the enforcer. A limit reported by a different rule than the one enforcing it
+       * is worse than no limit shown — `MAX_TOTAL_SENDS` was measured two different ways
+       * for two days and the dashboard rendered headroom that did not exist.
+       */
+      personaSharedWithAnother: !checkPersonaDistinct({
+        persona: s,
+        otherPersonas: senders.filter((o) => o.id !== s.id),
+        targetKind: 'BRAND',
+      }).ok,
+    })
+  }
+
+  const brands = await buildBrandsPanel(settings)
+
+  const hb = heartbeat
+  const autopilot: AutopilotState = {
+    on: settings.autopilotEnabled,
+    allowedByEnv: env.AUTOPILOT_ENABLED,
+    scheduler: {
+      running: hb?.fresh ?? false,
+      host: hb?.beat.host ?? null,
+      lastBeatLabel: hb ? relative(new Date(hb.beat.at)) : null,
+    },
+    nextSlotLabel: nextSlotLabel(),
+    /**
+     * ONE SWITCH, 2026-08-08. Both of these used to require `s.autoSendEnabled`.
+     *
+     * `readyHandles` is what the switch's own sentence names as covered, so it has to mean
+     * "would send" and nothing else. With the per-account bit gone that is session + status,
+     * and the ladder — asked by `gate.ts` at delivery, never mirrored here, because a page
+     * computing a rule its own way is how a dashboard comes to disagree with the enforcer.
+     *
+     * `needLoginHandles` widened in the safe direction and that is the point: it used to
+     * report only accounts somebody had ARMED, so a signed-out account nobody had flipped
+     * was invisible on the one card that explains why nothing is sending. Every session-less
+     * account is now named there.
+     */
+    readyHandles: senders
+      .filter(
+        (s) =>
+          s.status === 'ACTIVE' &&
+          sessionUsable({ hasSessionOnDisk: profileStatus(s.handle).hasSession, sessionInvalidAt: s.sessionInvalidAt }),
+      )
+      .map((s) => s.handle),
+    needLoginHandles: senders
+      .filter(
+        (s) =>
+          !sessionUsable({ hasSessionOnDisk: profileStatus(s.handle).hasSession, sessionInvalidAt: s.sessionInvalidAt }),
+      )
+      .map((s) => s.handle),
+  }
+
+
+  /**
+   * A run in progress must not be reported as a finished one.
+   *
+   * `ScrapeRun` is created with zeros at the start of a slot and updated at the end,
+   * and this reads the newest row by `startedAt` — so for the ~60s a slot takes, the
+   * header rendered "Last check read 0 posts · 0 new". Zero posts parsed is supposed
+   * to be an ALARM (60 parsed / 0 paid is a quiet day; 0 parsed means the parser
+   * broke), so the one number that must never appear falsely was appearing four
+   * times a day. Observed 2026-08-03: the same row read 0 at 11:01 and 168 at 11:03.
+   */
+  const lastCheckLabel = lastCheckLabelFor(lastRun)
+
+  const detection = await buildDetectionHealth(targets, degradedRuns)
+
+  return {
+    health,
+    headline,
+    lastCheckLabel,
+    nextSlotLabel: nextSlotLabel(),
+    nowLabel: istStamp(),
+    replies,
+    week: { detected: weekDetected, sent: weekSent, replies: weekReplies },
+    activity,
+    channels,
+    accounts,
+    brands,
+    awaitingCount: awaitingRaw.length,
+    autopilot,
+    detection,
+  }
+}
+
+/**
+ * The unhandled replies, as cards. ONE mapping, two callers.
+ *
+ * `preview` reads `replyText` and nothing else. It used to read `OutreachAttempt.error` — a
+ * column for send failures — because no field for reply content existed, so a message that
+ * failed and was later marked replied would have displayed its own error string as the
+ * recipient's words. A second copy of this mapping is how that comes back.
+ */
+export function toReplyCards(
+  rows: Array<{
+    id: string
+    repliedAt: Date | null
+    replyText: string | null
+    pair: { target: { displayName: string; handle: string }; sender: { displayName: string } }
+  }>,
+): ReplyCard[] {
+  return rows.map((r) => ({
+    attemptId: r.id,
+    targetName: operatorName(r.pair.target.displayName),
+    targetHandle: r.pair.target.handle,
+    senderName: operatorName(r.pair.sender.displayName),
+    whenLabel: relative(r.repliedAt),
+    preview: r.replyText && r.replyText.length > 0 ? r.replyText : null,
+  }))
+}
+
+// ── the three projections ────────────────────────────────────────────────────
+
+/**
+ * **Today** — is it working, and what needs me.
+ *
+ * What it deliberately does NOT carry, and where each went:
+ *
+ *   the channel cards      -> `/channels`. Five cards of per-channel detail is a reference
+ *                             table, not an answer to "is it working".
+ *   the brands panel       -> `/paid-posts`. Both halves are detection output: a confirmed
+ *                             brand names the campaign it was found in, and an undecided
+ *                             handle is a detection result awaiting a person.
+ *   the accounts panel     -> `/accounts`, which already rendered its own copy of it.
+ *   the full draft list    -> `/messages`, which also already rendered its own copy. Today
+ *                             keeps the COUNT, because "3 waiting" is the answer to "what
+ *                             needs me" and three full message bodies is not.
+ *   "send a message now"   -> `/messages`. It is an action, not a place.
+ *
+ * The three metrics and the coverage line stay TOGETHER and stay here. "5 paid campaigns
+ * spotted" describes one channel out of five, and *a metric that covers part of the data must
+ * say which part* — putting the number on one page and its qualifier on another is the same
+ * defect as omitting the qualifier.
+ */
+export interface TodayView {
+  health: Health
+  headline: string
+  /** Neutral fact, and it must render OUTSIDE the health card — see the page. */
+  lastCheckLabel: string
+  nextSlotLabel: string
+  nowLabel: string
+  /**
+   * How many replies are waiting for a person, NOT the cards themselves.
+   *
+   * The cards moved to `/conversations` in step D. Before that the same reply appeared three
+   * times on this one page: in the health headline, as a full card with its text and buttons,
+   * and again as a row in "What happened". The headline is a summary and the feed row is
+   * history; the card was the duplicate, and it belongs beside the control that releases the
+   * halt. Handing this projection only a COUNT is what stops it being rendered here again.
+   */
+  repliesWaiting: number
+  week: { detected: number; sent: number; replies: number }
+  activity: ActivityDay[]
+  detection: DetectionHealth
+  channelCount: number
+  autopilot: AutopilotState
+  accounts: AccountCard[]
+  /** How many drafts are waiting. The bodies live on `/messages`. */
+  waitingCount: number
+}
+
+export async function buildTodayView(): Promise<TodayView> {
+  const v = await buildCeoView()
+  return {
+    health: v.health,
+    headline: v.headline,
+    lastCheckLabel: v.lastCheckLabel,
+    nextSlotLabel: v.nextSlotLabel,
+    nowLabel: v.nowLabel,
+    repliesWaiting: v.replies.length,
+    week: v.week,
+    activity: v.activity,
+    detection: v.detection,
+    channelCount: v.channels.length,
+    autopilot: v.autopilot,
+    accounts: v.accounts,
+    waitingCount: v.awaitingCount,
+  }
+}
+
+/**
+ * **Channels** — what we watch, and whether reading works.
+ *
+ * `lastCheckLabel` and `degradedRuns` belong here as well as on Today, and that is not
+ * duplication for its own sake: Today answers "is the watch alive" in one line, and this page
+ * is where an operator finds out WHICH channel is failing. Both read `lastCheckLabelFor`, so
+ * the two cannot word it differently.
+ */
+export interface ChannelsView {
+  channels: ChannelCard[]
+  lastCheckLabel: string
+  nextSlotLabel: string
+  /**
+   * Degraded checks in the last two days.
+   *
+   * A health signal read from ONE sample cannot show a trend: the old blocker looked only at
+   * the newest run, so a channel failing at every slot for two days read exactly like one
+   * unlucky fetch, and the next success read like nothing had ever been wrong. Measured
+   * 2026-08-03: 8 of 12 consecutive slots PARTIAL and the page never said so.
+   */
+  degradedRuns: number
+}
+
+export async function buildChannelsView(): Promise<ChannelsView> {
+  const v = await buildCeoView()
+  return {
+    channels: v.channels,
+    lastCheckLabel: v.lastCheckLabel,
+    nextSlotLabel: v.nextSlotLabel,
+    degradedRuns: v.detection.degradedRuns,
+  }
+}
+
+/**
+ * **Paid posts** — what detection found, and what it cost.
+ *
+ * The cost is on screen because it is the only spending this system does, and because a rising
+ * FAILURE rate is exactly what a cost table hides by leaving failed calls out. `ModelCall`
+ * records them, so this counts them.
+ */
+export interface PaidPostsView {
+  /** CAMPAIGN verdicts in the last 7 days, and ever. */
+  weekDetected: number
+  totalDetected: number
+  /**
+   * The window every figure on this page covers — the detection cutoff. Reported on
+   * screen, because a number that silently describes part of the data is the failure
+   * this codebase keeps rediscovering.
+   */
+  since: Date
+  /** Posts held from BEFORE the window: kept for the vocabulary, never judged, not a task. */
+  storedBeforeCutoff: number
+  /** Every verdict IN THE WINDOW, including UNCLASSIFIED — NOT JUDGED, never "organic". */
+  byVerdict: { verdict: string; count: number }[]
+  /** Per channel: how much we have stored, and how much of it has been judged. */
+  perChannel: { name: string; handle: string; postsLogged: number; campaignsThisWeek: number; unclassified: boolean; unclassifiedReason: string | null }[]
+  detection: DetectionHealth
+  brands: BrandsPanel
+  /**
+   * The verdicts themselves, newest first — date, channel, brand, a LINK to the post,
+   * verdict. Nothing in the system could link a verdict to the post it judged before
+   * 2026-08-06; `postUrl()` in `lib/urls.ts` is the four-line helper that fixed it.
+   */
+  posts: PaidPostRow[]
+  /** How many exist beyond the rows shown. Truncation is reported, never silent. */
+  postsTotal: number
+  /**
+   * The frame check, counted separately from caption verdicts — a flagged frame ASKED a
+   * person to look, it did not decide, and adding it to "paid" would overstate a
+   * judgement nobody made (the verdictSource rule, one modality over).
+   */
+  /** Read, and the frame carried legible text. The only state that can move a verdict. */
+  framesRead: number
+  /**
+   * The four states that are NOT "the footage was read and said nothing". Kept apart
+   * because they have four different remedies, and because a single low number reading
+   * "few frames read" cannot distinguish a clean corpus from a broken engine — the second
+   * is an outage wearing the costume of a quiet day.
+   */
+  framesNotSaved: number
+  framesNoEngine: number
+  framesFailed: number
+  frameFlagged: number
+  /**
+   * Posts waiting for a person to settle — REVIEW with no human answer yet, oldest first.
+   * Separate from `posts` because work to do and a record of what happened are different
+   * things: a row needing an answer inside a 100-row history scrolls off within days.
+   */
+  review: ReviewRow[]
+}
+
+export interface PaidPostRow {
+  shortcode: string
+  url: string
+  dayLabel: string
+  channelName: string
+  channelHandle: string
+  /** Display names from the caption. Empty when extraction found none. */
+  brands: string[]
+  verdict: string
+  /**
+   * Set when this row is here because the FOOTAGE flagged it — the caption said
+   * ordinary. Carries what the model saw, because a review request that does not say
+   * what to look at is a nag, not information.
+   */
+  frameEvidence: string | null
+}
+
+export async function buildPaidPostsView(): Promise<PaidPostsView> {
+  const v = await buildCeoView()
+
+  const PAID_VERDICTS = ['CAMPAIGN', 'REVIEW']
+  const POSTS_SHOWN = 100
+
+  /**
+   * ── THIS PAGE COUNTS THE WINDOW THE SYSTEM ACTUALLY JUDGES ────────────────
+   *
+   * Every figure here is scoped to `detectionCutoff()` (1 Aug 00:00 IST, Tabish's
+   * decision). Before this, the breakdown counted the WHOLE corpus, so it reported ~370
+   * posts as "not judged" — and every one of those was pre-cutoff history the classifier
+   * is deliberately never asked to read. A permanent, un-clearable backlog on a screen
+   * where "not judged" means A JOB TO DO.
+   *
+   * The rows are NOT deleted, and must not be: `buildVocabulary` learns how a channel
+   * writes from every stored caption, and shrinking that baseline would make ordinary
+   * vocabulary look novel and degrade the free filter. History is worth keeping precisely
+   * because it is history — it is just not something to report as an outstanding task.
+   *
+   * So the fix is scope, not deletion: the page states its window, and inside that window
+   * "not judged" is a real number that real work can drive to zero.
+   */
+  const since = detectionCutoff()
+  const inWindow = { postedAt: { gte: since } }
+
+  const [
+    byVerdictRaw,
+    totalDetected,
+    paidRows,
+    postsTotal,
+    storedBefore,
+    framesRead,
+    framesNotSaved,
+    framesNoEngine,
+    framesFailed,
+    frameFlagged,
+    reviewRows,
+  ] = await Promise.all([
+    prisma.detectedCampaign.groupBy({ by: ['verdict'], where: inWindow, _count: { _all: true } }),
+    prisma.detectedCampaign.count({ where: { verdict: 'CAMPAIGN', ...inWindow } }),
+    // CAMPAIGN and REVIEW both belong on this table: REVIEW means the classifier was not
+    // confident, which is a request for a person to look — and the link is how they look.
+    prisma.detectedCampaign.findMany({
+      where: { verdict: { in: PAID_VERDICTS }, ...inWindow },
+      orderBy: { postedAt: 'desc' },
+      take: POSTS_SHOWN,
+      select: {
+        shortcode: true,
+        postedAt: true,
+        brands: true,
+        verdict: true,
+        signals: true,
+        frameText: true,
+        target: { select: { handle: true, displayName: true } },
+      },
+    }),
+    prisma.detectedCampaign.count({ where: { verdict: { in: PAID_VERDICTS }, ...inWindow } }),
+    // Reported, never hidden: a corpus we hold but do not judge is a fact worth one line.
+    prisma.detectedCampaign.count({ where: { postedAt: { lt: since } } }),
+    /**
+     * FIVE STATES, NOT ONE NUMBER.
+     *
+     * This was `count({ frameText: { not: null } })` and reported as "N posts had the text
+     * in their video read as well as their caption" — a single figure standing in for five
+     * situations with five different remedies:
+     *
+     *   read, with text     the footage spoke, and was judged
+     *   read, no text       a frame with nothing legible on it. A real finding.
+     *   no frame saved      the post predates capture, or its CDN URL had already expired
+     *   no OCR engine       nothing on this machine CAN look
+     *   the engine failed   something ran and errored
+     *
+     * Collapsing them means an operator reading a low number cannot tell whether the
+     * footage is clean, the frames are missing, or OCR is broken — and the last of those
+     * is an outage wearing the costume of a quiet day. It is the same shape as the
+     * `unreadable` / `incomplete` distinction in the reply check, and the four-outcome
+     * `OcrOutcome` type this very module already keeps apart at the point of reading.
+     *
+     * The signals are the evidence: `applyFrameSignal` writes exactly one per post, so
+     * these counts are what the permission table actually recorded rather than a guess
+     * reconstructed from a nullable column.
+     */
+    prisma.detectedCampaign.count({ where: { frameText: { not: null }, ...inWindow } }),
+    prisma.detectedCampaign.count({ where: { signals: { contains: 'frame:not-saved' }, ...inWindow } }),
+    prisma.detectedCampaign.count({ where: { signals: { contains: 'frame:no-ocr-engine' }, ...inWindow } }),
+    prisma.detectedCampaign.count({ where: { signals: { contains: 'frame:ocr-failed' }, ...inWindow } }),
+    // `signals` is a JSON string; this marker is written by applyFrameSignal alone.
+    prisma.detectedCampaign.count({ where: { signals: { contains: 'frame:flagged-for-review' }, ...inWindow } }),
+    /**
+     * Oldest first, and bounded. `humanLabel: null` is the whole queue definition — a post
+     * a person has answered is settled forever, whatever any classifier says later.
+     */
+    prisma.detectedCampaign.findMany({
+      where: { verdict: 'REVIEW', humanLabel: null, ...inWindow },
+      orderBy: { postedAt: 'asc' },
+      take: 25,
+      select: {
+        shortcode: true,
+        postedAt: true,
+        caption: true,
+        classifierReason: true,
+        frameText: true,
+        signals: true,
+        target: { select: { handle: true } },
+      },
+    }),
+  ])
+
+  return {
+    weekDetected: v.week.detected,
+    totalDetected,
+    since,
+    storedBeforeCutoff: storedBefore,
+    byVerdict: byVerdictRaw
+      .map((r) => ({ verdict: r.verdict, count: r._count._all }))
+      .sort((a, b) => b.count - a.count),
+    perChannel: v.channels.map((c) => ({
+      name: c.name,
+      handle: c.handle,
+      postsLogged: c.postsLogged,
+      campaignsThisWeek: c.campaignsThisWeek,
+      unclassified: c.unclassified,
+      unclassifiedReason: c.unclassifiedReason,
+    })),
+    detection: v.detection,
+    brands: v.brands,
+    posts: paidRows.map((p) => ({
+      shortcode: p.shortcode,
+      url: postUrl(p.shortcode),
+      dayLabel: istDateKey(p.postedAt),
+      channelName: operatorName(p.target.displayName),
+      channelHandle: p.target.handle,
+      brands: readStringArray(p.brands),
+      verdict: p.verdict,
+      frameEvidence: readStringArray(p.signals).includes('frame:flagged-for-review') ? p.frameText : null,
+    })),
+    postsTotal,
+    framesRead,
+    framesNotSaved,
+    framesNoEngine,
+    framesFailed,
+    frameFlagged,
+    review: reviewRows.map((r) => ({
+      shortcode: r.shortcode,
+      url: postUrl(r.shortcode),
+      dayLabel: istDateKey(r.postedAt),
+      channelHandle: r.target.handle,
+      caption: r.caption,
+      reason: r.classifierReason,
+      frameEvidence: readStringArray(r.signals).includes('frame:flagged-for-review') ? r.frameText : null,
+    })),
+  }
+}
+
+/**
+ * **Cost** — what detection costs, on its own page since the simple-sender redesign.
+ *
+ * The only spending this system does. Failed calls are counted deliberately: a rising
+ * failure rate is exactly what a cost table hides by leaving them out, and a failed call
+ * is never recorded as a verdict.
+ */
+export interface CostView {
+  spend: { calls: number; failed: number; usd: number; cachedShare: number | null }
+  byPurpose: { purpose: string; calls: number; usd: number }[]
+  /** Classify calls attributed to the channel whose post was judged. */
+  perChannel: { handle: string; calls: number; usd: number }[]
+}
+
+export async function buildCostView(): Promise<CostView> {
+  const calls = await prisma.modelCall.findMany({
+    select: { ok: true, purpose: true, subject: true, costUsd: true, inputTokens: true, cachedInputTokens: true },
+  })
+
+  const input = calls.reduce((n, c) => n + c.inputTokens, 0)
+  const cached = calls.reduce((n, c) => n + c.cachedInputTokens, 0)
+
+  const byPurpose = new Map<string, { calls: number; usd: number }>()
+  for (const c of calls) {
+    const row = byPurpose.get(c.purpose) ?? { calls: 0, usd: 0 }
+    row.calls += 1
+    row.usd += c.costUsd
+    byPurpose.set(c.purpose, row)
+  }
+
+  // A classify call's subject is the post's shortcode, so the channel it was spent on is
+  // one join away. Calls whose subject no longer resolves are reported, never dropped.
+  const shortcodes = [...new Set(calls.filter((c) => c.purpose === 'classify' && c.subject).map((c) => c.subject!))]
+  const posts = await prisma.detectedCampaign.findMany({
+    where: { shortcode: { in: shortcodes } },
+    select: { shortcode: true, target: { select: { handle: true } } },
+  })
+  const channelOf = new Map(posts.map((p) => [p.shortcode, p.target.handle]))
+
+  const perChannelMap = new Map<string, { calls: number; usd: number }>()
+  for (const c of calls) {
+    if (c.purpose !== 'classify') continue
+    const handle = (c.subject && channelOf.get(c.subject)) ?? 'no longer stored'
+    const row = perChannelMap.get(handle) ?? { calls: 0, usd: 0 }
+    row.calls += 1
+    row.usd += c.costUsd
+    perChannelMap.set(handle, row)
+  }
+
+  return {
+    spend: {
+      calls: calls.length,
+      failed: calls.filter((c) => !c.ok).length,
+      usd: calls.reduce((n, c) => n + c.costUsd, 0),
+      // Null rather than 0 when nothing has been sent: "no calls yet" and "the cache never
+      // hits" are different facts, and a bare 0% would report the second.
+      cachedShare: input + cached > 0 ? cached / (input + cached) : null,
+    },
+    byPurpose: [...byPurpose.entries()].map(([purpose, r]) => ({ purpose, ...r })).sort((a, b) => b.usd - a.usd),
+    perChannel: [...perChannelMap.entries()].map(([handle, r]) => ({ handle, ...r })).sort((a, b) => b.usd - a.usd),
+  }
+}
+
+/**
+ * The channel cards, extracted in step C of the redesign so `/channels` and `/` can share ONE
+ * definition of what a channel card is. Two pages computing "paid campaigns found" their own
+ * way is how a hardcoded `detectorKey === 'passthrough'` came to render a misleading zero.
+ */
+async function buildChannelCards(
+  targets: Array<{ id: string; handle: string; displayName: string; optedOut: boolean; detectorKey: string }>,
+  weekStart: Date,
+): Promise<ChannelCard[]> {
+  const channels: ChannelCard[] = []
+  for (const t of targets) {
+    const [campaignsThisWeek, postsThisWeek, postsLogged, lastSent, halted] = await Promise.all([
+      prisma.detectedCampaign.count({
+        where: { targetId: t.id, verdict: 'CAMPAIGN', detectedAt: { gte: weekStart } },
+      }),
+      prisma.detectedCampaign.count({ where: { targetId: t.id, detectedAt: { gte: weekStart } } }),
+      prisma.detectedCampaign.count({ where: { targetId: t.id } }),
+      prisma.outreachAttempt.findFirst({
+        where: { pair: { targetId: t.id }, status: { in: ['SENT', 'REPLIED'] } },
+        orderBy: { sentAt: 'desc' },
+      }),
+      prisma.outreachAttempt.count({ where: { pair: { targetId: t.id }, repliedAt: { not: null } } }),
+    ])
+    channels.push({
+      name: operatorName(t.displayName),
+      handle: t.handle,
+      followers: FOLLOWER_SNAPSHOT[t.handle] ?? '—',
+      campaignsThisWeek,
+      postsThisWeek,
+      postsLogged,
+      lastContactedLabel: lastSent?.sentAt ? relative(lastSent.sentAt) : 'not yet',
+      halted: halted > 0 || t.optedOut,
+      /**
+       * Ask the detector, never the key.
+       *
+       * This read `detectorKey === 'passthrough'`, and switching @viralbhayani to the
+       * semantic detector turned it false — so the card immediately rendered "Paid
+       * campaigns found: 0" for a channel where roughly half of ~62 posts/day are
+       * commercial and the classifier has no API key. The exact misleading zero this
+       * flag exists to prevent, reintroduced by a hardcoded key comparison.
+       *
+       * `readiness()` is the detector's own statement about whether it can judge, so
+       * it stays true when a classifier is present but unconfigured, and becomes false
+       * the moment one actually works.
+       */
+      unclassified: !(getDetector(t.detectorKey).readiness?.() ?? { ready: true }).ready,
+      unclassifiedReason: (getDetector(t.detectorKey).readiness?.() ?? { ready: true }).reason ?? null,
+      retired: t.optedOut,
+      everContacted: lastSent !== null,
+    })
+  }
+  return channels
+}
+
+/**
+ * The brands panel.
+ *
+ * Two lists, and the split changed meaning on 2026-08-08 without changing shape. It used to be
+ * "what we KNOW is a buyer" beside "what a HUMAN still has to decide". The second list is now
+ * "what the MODEL decided", and it is a record rather than a work queue — nothing in it is
+ * waiting on anybody.
+ *
+ * The lists stay separate for the original reason, which survived the change: a confirmed buyer
+ * and an automatic judgement are different kinds of claim, and merging them would present a
+ * guess as a verdict.
+ */
+async function buildBrandsPanel(settings: Awaited<ReturnType<typeof getSettings>>): Promise<BrandsPanel> {
+  const brandTargets = await prisma.targetAccount.findMany({
+    where: { kind: 'BRAND' },
+    include: {
+      pairs: { select: { enabled: true } },
+      campaigns: { select: { id: true } },
+    },
+    orderBy: { createdAt: 'asc' },
+  })
+
+  const confirmed: BrandCard[] = []
+  for (const b of brandTargets) {
+    const sent = await prisma.outreachAttempt.count({
+      where: { pair: { targetId: b.id }, status: { in: [...DELIVERED_STATUSES] } },
+    })
+    // Which publisher's post surfaced this company. Prose, never a handle.
+    const campaign = b.discoveredFromCampaignId
+      ? await prisma.detectedCampaign.findUnique({
+          where: { id: b.discoveredFromCampaignId },
+          select: { target: { select: { handle: true, displayName: true } } },
+        })
+      : null
+
+    confirmed.push({
+      handle: b.handle,
+      name: operatorName(b.displayName),
+      category: b.brandCategory,
+      discoveredOn: campaign ? operatorName(campaign.target.displayName) : null,
+      enabled: b.pairs.some((p) => p.enabled),
+      sent,
+      retired: b.optedOut,
+    })
+  }
+
+  /**
+   * WHAT THE MODEL DECIDED, newest first — a record of automatic work, not a queue.
+   *
+   * `decidedBy: 'model'` is the whole filter, and it is the honest one: rows settled by
+   * Instagram's own category data are not the model's opinion and must not be reported as
+   * though they were, exactly as `verdictSource` keeps a `#Collaboration` fact apart from a
+   * classifier's judgement. Historic `'human'` rows are excluded for the same reason — those
+   * buttons are gone, and attributing an operator's decision to the model would be a lie in
+   * the audit direction.
+   *
+   * Capped at 30. This is context for "where did these prospects come from", not an inventory,
+   * and an unbounded list on a CEO's page becomes something nobody reads.
+   */
+  const recentDecisions = await prisma.brandLookup.findMany({
+    where: { decidedBy: 'model' },
+    orderBy: { updatedAt: 'desc' },
+    take: 30,
+  })
+  const autoDecided: AutoDecidedBrandCard[] = recentDecisions.map((r) => ({
+    handle: r.handle,
+    /**
+     * BRAND is the only outcome that creates a prospect, so everything else is "left alone".
+     *
+     * Deliberately NOT reported as "not a company": PERSON and UNRESOLVED are different facts
+     * and neither is proof of a negative. What an operator needs to know is that nothing was
+     * messaged and nothing is waiting on them — which is true of both, and which is the safe
+     * direction this codebase has failed to hold five times.
+     */
+    outcome: r.kind === 'BRAND' ? ('company' as const) : ('left-alone' as const),
+    reason: r.modelReason,
+    confidence: r.modelConfidence,
+  }))
+
+  const newBrandTouchesUsed = await prisma.outreachAttempt.count({
+    where: {
+      touchNumber: 1,
+      status: { in: [...DELIVERED_STATUSES] },
+      sentAt: { gte: istDayStart() },
+      pair: { target: { kind: 'BRAND' } },
+    },
+  })
+
+  return {
+    confirmed,
+    autoDecided,
+    newTouchCap: settings.maxNewBrandTouchesPerDay,
+    newTouchesUsedToday: newBrandTouchesUsed,
+  }
+}
+
+/**
+ * Which channels are stored but never judged, and WHY.
+ *
+ * The reason string comes from the detector's own `readiness()`, so a channel whose
+ * classifier lacks an API key says exactly that instead of contributing a silent 0
+ * to "paid campaigns spotted". A metric of 5 that describes one channel out of five
+ * is not wrong so much as unreadable, and the page has to be able to say so.
+ */
+async function buildDetectionHealth(
+  targets: Array<{ handle: string; displayName: string; detectorKey: string }>,
+  degradedRuns: number,
+): Promise<DetectionHealth> {
+  const unclassifiedChannels: DetectionHealth['unclassifiedChannels'] = []
+  for (const t of targets) {
+    // Asks the detector, rather than special-casing `key === 'passthrough'` here.
+    // A hardcoded key check is a fact stated in the wrong file, and it stops being
+    // true the moment a second non-judging detector exists.
+    const r = getDetector(t.detectorKey).readiness?.() ?? { ready: true }
+    if (!r.ready) {
+      unclassifiedChannels.push({ name: operatorName(t.displayName), handle: t.handle, reason: r.reason ?? 'not configured' })
+    }
+  }
+  return {
+    unclassifiedChannels,
+    degradedRuns,
+    anyClassifying: unclassifiedChannels.length < targets.length,
+  }
+}
+
+/**
+ * A run in progress must not be reported as a finished one.
+ *
+ * `ScrapeRun` is created with zeros at the start of a slot and updated at the end, and the
+ * caller reads the newest row by `startedAt` — so for the ~60s a slot takes, the header
+ * rendered "Last check read 0 posts · 0 new". Zero posts parsed is supposed to be an ALARM
+ * (60 parsed / 0 paid is a quiet day; 0 parsed means the parser broke), so the one number
+ * that must never appear falsely was appearing four times a day. Observed 2026-08-03: the
+ * same row read 0 at 11:01 and 168 at 11:03.
+ *
+ * Extracted in step C so Today and Channels cannot phrase this differently.
+ */
+function lastCheckLabelFor(run: { finishedAt: Date | null; postsSeen: number; newPosts: number } | null): string {
+  return !run
+    ? 'No check has run yet'
+    : run.finishedAt === null
+      ? 'Checking the channels now…'
+      : `Last check read ${run.postsSeen} posts · ${run.newPosts} new`
+}
+
+// ── formatting ───────────────────────────────────────────────────────────────
+
+function timeOnly(at: Date): string {
+  return new Intl.DateTimeFormat('en-GB', {
+    timeZone: env.TZ,
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  }).format(at)
+}
+
+
+function dayLabel(dateKey: string): string {
+  const today = istDateKey()
+  const yesterday = istDateKey(daysAgo(1))
+  if (dateKey === today) return 'Today'
+  if (dateKey === yesterday) return 'Yesterday'
+  const [y, m, d] = dateKey.split('-').map(Number)
+  return new Intl.DateTimeFormat('en-GB', { day: 'numeric', month: 'short' }).format(
+    new Date(Date.UTC(y!, m! - 1, d!)),
+  )
+}
+
+function nextSlotLabel(): string {
+  const now = new Date()
+  const dayStart = istDayStart(now)
+  const mins = Math.floor((now.getTime() - dayStart.getTime()) / 60_000)
+  const parsed = env.SLOTS.map((s) => {
+    const [hh, mm] = s.split(':').map(Number)
+    return { slot: s, minutes: hh! * 60 + mm! }
+  }).sort((a, b) => a.minutes - b.minutes)
+
+  const upcoming = parsed.find((p) => p.minutes > mins)
+  if (upcoming) {
+    const delta = upcoming.minutes - mins
+    const inWords = delta >= 60 ? `${Math.floor(delta / 60)}h ${delta % 60}m` : `${delta}m`
+    return `Next check today at ${upcoming.slot} · in ${inWords}`
+  }
+  return `Next check tomorrow at ${parsed[0]!.slot}`
+}

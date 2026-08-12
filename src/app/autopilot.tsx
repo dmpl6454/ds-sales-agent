@@ -1,0 +1,177 @@
+'use client'
+
+import { useState } from 'react'
+import Link from 'next/link'
+import { setAutopilot } from './actions'
+import type { AutopilotState } from './view-model'
+
+/**
+ * THE switch. Since 2026-08-08 there is no other one.
+ *
+ * On = the agent finds paid posts, decides brands, writes messages and sends them, with no
+ * human present. That is a consequential thing to put on a page a CEO reads, so it states what
+ * it will do in a full sentence rather than relying on the word "autopilot", and it says which
+ * accounts it actually covers — a toggle that reads ON while covering zero accounts would be
+ * the worst possible outcome here.
+ *
+ * It no longer takes the account cards. It used them for one thing — listing accounts whose
+ * per-account switch was off — and that switch is gone, so the prop would have been furniture:
+ * a parameter nobody reads is the sort of thing a later reader wires a new rule to.
+ */
+export function AutopilotPanel({ state }: { state: AutopilotState }) {
+  const [busy, setBusy] = useState(false)
+  const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null)
+
+  const flip = async (on: boolean) => {
+    setBusy(true)
+    setMsg(null)
+    try {
+      const r = await setAutopilot(on)
+      setMsg({ ok: r.ok, text: r.message })
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const covered = state.readyHandles.length
+
+  return (
+    <section>
+      <h2>
+        Sending
+        <span className="h2-note">who presses send</span>
+      </h2>
+
+      <div className={`card autopilot ${state.on && covered > 0 ? 'live' : ''}`}>
+        <div className="autopilot-top">
+          <div>
+            <div className="autopilot-title">
+              {state.on
+                ? covered > 0
+                  ? 'Autopilot is ON — the agent sends by itself'
+                  : 'Autopilot is ON, but no account is ready to use it'
+                : 'Autopilot is OFF — messages wait for you'}
+            </div>
+            {/*
+              ── THE SWITCH STATES ITS CONTRACT ─────────────────────────────────
+
+              ONE SWITCH, 2026-08-08. This used to describe the SLOTS and name the accounts it
+              covered, on the assumption that a reader had already armed some of them. With the
+              per-account toggle gone, this sentence IS the product: it has to say what turning
+              it on causes, end to end, because there is nothing else left to configure.
+
+              Tabish: *"Automated mode must simply send the messages."* So the ON copy names the
+              whole chain — find, decide, write, send — and the pacing, because "on" must not read
+              as "immediately and continuously". The OFF copy states the one thing an operator
+              needs to trust: nothing is dropped, drafts keep their Send buttons.
+            */}
+            <div className="autopilot-sub">
+              {state.on
+                ? covered > 0
+                  ? 'It finds paid posts, decides which brands are worth writing to, writes the messages, and sends them — paced, and only between 10:00 and 21:00 IST.'
+                  : 'It finds paid posts, decides brands and writes messages — but no account can send yet, so everything waits. Sign one in and it starts on its own.'
+                : 'Nothing sends. Paid posts are still found and messages are still written — drafts keep their Send buttons.'}
+            </div>
+          </div>
+          <button
+            className={state.on ? '' : 'primary'}
+            disabled={busy || (!state.on && !state.allowedByEnv)}
+            onClick={() => flip(!state.on)}
+            title={
+              state.allowedByEnv
+                ? 'Switches unattended sending on or off'
+                : 'Blocked by AUTOPILOT_ENABLED=false in .env'
+            }
+          >
+            {busy ? 'Saving…' : state.on ? 'Turn autopilot off' : 'Turn autopilot on'}
+          </button>
+        </div>
+
+        {/*
+          The scheduler is what turns the toggle into behaviour. Autopilot ON with
+          nothing scheduled is a promise the system cannot keep, and that exact state
+          existed unmentioned for a day — the page said messages go out at 11:00
+          while no process existed to send one.
+        */}
+        {state.scheduler.running ? (
+          <p className="cardnote">
+            <span className="pill good">watch running</span>{' '}
+            {state.scheduler.host === 'dashboard' ? 'inside this dashboard' : 'in a separate worker'} — last heartbeat{' '}
+            {state.scheduler.lastBeatLabel}. Slots will fire on their own.
+          </p>
+        ) : (
+          /*
+            The one case where this panel is a LIE if it stays quiet: autopilot reading ON with
+            nothing scheduled is a promise the system cannot keep, and that exact state existed
+            unmentioned for a day. `.reason.bad` because it is the most severe thing this card can
+            say — not a delay, an impossibility.
+          */
+          <p className="reason bad">
+            <strong>Nothing is scheduled.</strong> No watch process has checked in
+            {state.scheduler.lastBeatLabel ? ` since ${state.scheduler.lastBeatLabel}` : ' ever'}, so no slot will fire
+            and no message will be sent by itself — whatever this toggle says. Restarting the dashboard starts it again.
+          </p>
+        )}
+
+        {!state.allowedByEnv ? (
+          <p className="cardnote">
+            This deployment has autopilot disabled at the environment level
+            (<code>AUTOPILOT_ENABLED=false</code>). That switch is intentionally not changeable from this page — a web
+            page should not be able to start unattended sending on its own.
+          </p>
+        ) : null}
+
+        {/*
+          `.reason` rather than an inline colour. Step F: every "why this will not happen" on the
+          dashboard now carries the same left severity stripe, so it is recognisable as a refusal
+          before a word of it is read. Inline `style={{ color }}` was six different treatments for
+          one idea.
+        */}
+        {/*
+          ONE SWITCH, 2026-08-08: this read "@x is ALLOWED to send on its own but is not signed
+          in". "Allowed" was the per-account bit, and it no longer exists — so the sentence would
+          have named a permission a reader could not find, about the very accounts it is telling
+          them to go and fix. Being signed in IS the permission now.
+
+          `needLoginHandles` also widened with the bit's removal, deliberately: it used to list
+          only accounts somebody had armed, which meant a signed-out account nobody had flipped
+          was invisible on the one card that explains why nothing is sending.
+        */}
+        {state.needLoginHandles.length > 0 ? (
+          <p className="reason">
+            {state.needLoginHandles.map((h) => '@' + h).join(', ')}{' '}
+            {state.needLoginHandles.length === 1 ? 'is' : 'are'} not signed in, so{' '}
+            {state.needLoginHandles.length === 1 ? 'it' : 'they'} cannot send and{' '}
+            {state.needLoginHandles.length === 1 ? 'its' : 'their'} messages will keep waiting for you.{' '}
+            <Link href="/senders">Sign {state.needLoginHandles.length === 1 ? 'it' : 'them'} in</Link>.
+          </p>
+        ) : null}
+
+        {/*
+          "Signed in but not yet allowed to send on their own" USED TO RENDER HERE, listing
+          accounts whose per-account switch was off. There is no such switch (one switch,
+          2026-08-08), so the state it described cannot exist and the sentence would have sent a
+          reader to the Senders page looking for a control that is not there.
+
+          Nothing replaces it, because nothing is hidden by its absence: a signed-in, healthy
+          account is now covered by the switch above and appears in that sentence's own count,
+          and an account that CANNOT send says so on its own row.
+        */}
+
+        <p className="cardnote">
+          An account sends unattended when three things are true: this switch is on, someone signed that account in by
+          hand, and Instagram has not flagged it. If any is missing the message is still written — it waits for you
+          instead of being dropped. New accounts also serve a settling-in period before they join in, which is
+          automatic; nothing needs switching on.
+        </p>
+      </div>
+
+      {msg ? (
+        <p className={msg.ok ? 'cardnote note-ok' : 'cardnote note-warn'}>
+          {msg.ok ? '✓ ' : '⚠ '}
+          {msg.text}
+        </p>
+      ) : null}
+    </section>
+  )
+}

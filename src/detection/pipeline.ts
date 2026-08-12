@@ -1,0 +1,471 @@
+import { prisma } from '@/lib/db'
+import { log } from '@/lib/logger'
+import { writeStringArray } from '@/lib/json'
+import { fetchFeed, FeedFetchError, type FeedPost } from './feed'
+import { getDetector } from './detectors'
+import { setChannelVocabulary } from './detectors/semantic'
+import { buildVocabulary } from './detectors/novelty'
+import { saveFrame } from './media'
+import { judgeWithFrame } from './judge'
+import { hoursAgo } from '@/lib/time'
+import { DETECT_LOOKBACK_HOURS } from './cadence'
+import { autoResolveBrands, type AutoResolveSummary } from './autoResolve'
+
+/**
+ * Detection: read each watched channel's recent posts and classify them.
+ *
+ * One anonymous HTTP request per page, no browser, no credentials. See feed.ts
+ * for why that matters — anything that attaches a session here would turn an
+ * IP-level risk into an account-ban risk.
+ *
+ * Idempotency comes free from `DetectedCampaign.shortcode @unique`: four checks a
+ * day means each post is seen repeatedly, so known shortcodes are filtered before
+ * any work and the rest are upserted. Re-running a slot is safe.
+ */
+
+export interface ChannelOutcome {
+  handle: string
+  fetched: number
+  alreadyKnown: number
+  stored: number
+  campaigns: number
+  unclassified: number
+  organic: number
+  officiallyPaid: number
+  /**
+   * Posts whose FOOTAGE changed the answer — a caption that read ordinary, raised to
+   * REVIEW because the frame's text said otherwise. Counted separately because it is the
+   * only number that says whether reading the video is earning its keep, and because a
+   * frame-driven judgement is measured by nothing in `ig:accuracy` (its labels are
+   * caption-derived), so it must stay visible as its own thing rather than merge into
+   * the campaign count.
+   */
+  frameFlagged: number
+  pagesFetched: number
+  error?: string
+  parseFailure?: boolean
+}
+
+export interface DetectionSummary {
+  channels: ChannelOutcome[]
+  postsSeen: number
+  newPosts: number
+  detected: number
+  hadParseFailure: boolean
+  hadError: boolean
+  /**
+   * What the automatic brand resolver did in this pass — lookups spent, prospects created,
+   * and whether a throttle cut it short.
+   *
+   * Surfaced rather than logged, because a number that silently falls as the endpoint
+   * degrades is exactly the failure this project keeps finding late. `haltedEarly` in
+   * particular is the difference between "no new brands today" and "we have been blocked
+   * and have found nothing since".
+   */
+  brandsResolved: AutoResolveSummary
+}
+
+/**
+ * How far back to look. The DEFAULT is the fast-cadence window; a catch-up pass after a
+ * restart passes the longer one explicitly. See src/detection/cadence.ts for both, and
+ * for why detection no longer runs on the sending schedule.
+ */
+export async function runDetection(
+  opts: { lookbackHours?: number } = {},
+): Promise<DetectionSummary> {
+  const lookbackHours = opts.lookbackHours ?? DETECT_LOOKBACK_HOURS
+  /**
+   * Only channels we have chosen to WATCH.
+   *
+   * Reading a feed and messaging an account became separate decisions in Phase 7. Four
+   * pages per target per slot is 16 requests at four channels — measured healthy, 48/48
+   * HTTP 200 — and ~240 a slot once a provided prospect list lands, against an anonymous
+   * endpoint whose only risk is IP rate limiting. A cold first touch does not need a hook
+   * from the recipient's own feed, so that cost buys almost nothing.
+   *
+   * `watchEnabled` defaults TRUE, so every channel that was being read still is. It is
+   * imported prospects that arrive unwatched, and turning one on is one toggle.
+   */
+  const targets = await prisma.targetAccount.findMany({
+    where: { kind: 'CHANNEL', watchEnabled: true },
+    orderBy: { handle: 'asc' },
+  })
+
+  const channels: ChannelOutcome[] = []
+  const sinceUnix = Math.floor(hoursAgo(lookbackHours).getTime() / 1000)
+
+  for (const target of targets) {
+    const outcome: ChannelOutcome = {
+      handle: target.handle,
+      fetched: 0,
+      alreadyKnown: 0,
+      stored: 0,
+      campaigns: 0,
+      unclassified: 0,
+      organic: 0,
+      officiallyPaid: 0,
+      frameFlagged: 0,
+      pagesFetched: 0,
+    }
+
+    try {
+      const { posts, pagesFetched } = await fetchFeed(target.handle, { maxPosts: 48, sinceUnix })
+      outcome.fetched = posts.length
+      outcome.pagesFetched = pagesFetched
+
+      if (posts.length === 0) {
+        // The endpoint returned 200 with nothing. Either the account is empty or
+        // the response shape changed — both warrant a shout, because "0 posts" is
+        // indistinguishable from "quiet day" downstream.
+        outcome.parseFailure = true
+        log.alarm('feed returned zero posts — shape change or blocked', { handle: target.handle })
+        channels.push(outcome)
+        continue
+      }
+
+      const known = await prisma.detectedCampaign.findMany({
+        where: { shortcode: { in: posts.map((p) => p.shortcode) } },
+        select: { shortcode: true },
+      })
+      const knownSet = new Set(known.map((k) => k.shortcode))
+      outcome.alreadyKnown = knownSet.size
+
+      const fresh = posts.filter((p) => !knownSet.has(p.shortcode))
+      const detector = getDetector(target.detectorKey)
+
+      /**
+       * KNOWN posts can still be missing their FRAME — everything detected before the
+       * frame store existed (2026-08-07), plus any save that failed. This re-observation
+       * carries the only thumbnail URL that is still alive, so bank the bytes now:
+       * `saveFrame` is idempotent (a frame already on disk costs one stat()) and never
+       * throws. This is how `DbtNU9UzWYU`'s class of post stays re-examinable after its
+       * CDN URL rotates — the corpus keeps the evidence, not a pointer to it.
+       */
+      for (const post of posts) {
+        if (knownSet.has(post.shortcode)) await saveFrame(post.shortcode, post.thumbnailUrl)
+      }
+
+      /**
+       * The channel's own hashtag history, so stage 1 can tell "unusual for THIS
+       * channel" from "unusual in general". Built from everything stored for this
+       * target — which is exactly what the 690-post corpus was accumulated for.
+       *
+       * Only for the semantic detector; the rule-based ones ignore it. Cleared in the
+       * `finally` so one channel's vocabulary can never be applied to another's posts.
+       */
+      if (detector.key === 'semantic') {
+        const captions = await prisma.detectedCampaign.findMany({
+          where: { targetId: target.id },
+          select: { caption: true },
+        })
+        setChannelVocabulary(buildVocabulary(captions.map((c) => c.caption)))
+      }
+
+      for (const post of fresh) {
+        /**
+         * SAVE THE COVER FRAME FIRST — before classification, because the classifier now
+         * READS it (src/detection/ocr.ts runs local OCR and hands the frame's text to the
+         * same model that reads the caption). Ordering these the other way round would
+         * leave every first sighting judged on its caption alone, and a post is only
+         * classified once.
+         *
+         * It is also the only reliable moment to save it at all: the thumbnail is a CDN URL
+         * with a lifetime, and a post that scrolls out of the feed window can never be
+         * re-fetched. Saved for EVERY channel, including the ones whose frames are never
+         * used for a verdict — @madovermarketing_mom's disclosed posts are exactly the
+         * labelled set any measurement of frame reading has to be built from.
+         *
+         * `saveFrame` never throws: a frame that fails to save costs one piece of evidence,
+         * never a detection pass.
+         */
+        await saveFrame(post.shortcode, post.thumbnailUrl)
+
+        // Awaited: the semantic detector calls a model. Rule detectors return
+        // synchronously and `await` on a non-promise costs a microtask.
+        const cls = await detector.classify(post)
+
+        // Instagram's own Paid Partnership label overrides any heuristic. Neither
+        // Phase 1 target uses it today, but when one does this becomes the truth.
+        const officiallyPaid = post.isPaidPartnership
+        if (officiallyPaid) outcome.officiallyPaid += 1
+
+        const captionVerdict = officiallyPaid ? 'CAMPAIGN' : cls.verdict
+        const confidence = officiallyPaid ? 100 : cls.confidence
+        const captionSignals = officiallyPaid ? [...cls.signals, 'official:is_paid_partnership'] : cls.signals
+
+        /**
+         * NOW READ THE FOOTAGE — and this is the fix for a feature that was built and
+         * then never ran.
+         *
+         * MEASURED 2026-08-08: 166 posts detected that day had a cover frame sitting on
+         * disk that nothing had read. This loop saved the frame (above) and classified
+         * the CAPTION ALONE, while the only frame-aware code lived in
+         * `scripts/ocr.ts --reclassify`. So the Thane class of paid post — the entire
+         * reason the OCR work exists — was still being missed in normal operation, and
+         * `DbtNU9UzWYU` was escalated only because a person ran a command by hand.
+         *
+         * `judgeWithFrame` is the ONE judging path, shared with the backfill and the
+         * classify CLI. It decides on its own whether a call is worth making (retired
+         * target, unsupported detector, a caption verdict a frame cannot move) and the
+         * footage may only ever raise ORGANIC to REVIEW.
+         */
+        const judged = await judgeWithFrame(
+          {
+            shortcode: post.shortcode,
+            caption: post.caption,
+            /**
+             * Retired channels still get their FRAME SAVED above — those are the labelled
+             * set any future measurement is built from — but not a classifier call.
+             * MEASURED: 64% of OCR runs were against our own retired pages.
+             */
+            optedOut: target.optedOut,
+            frameJudgingSupported: detector.key === 'semantic',
+          },
+          captionVerdict,
+        )
+
+        const verdict = judged.verdict
+        const signals = [...captionSignals, ...judged.signals]
+        if (judged.changedByFrame) {
+          outcome.frameFlagged += 1
+          log.step('the footage changed the answer', {
+            shortcode: post.shortcode,
+            from: captionVerdict,
+            to: verdict,
+            footage: judged.frameSummary ?? '',
+          })
+        }
+
+        const brands = dedupe([
+          ...post.sponsorHandles.map((h) => `@${h}`),
+          ...post.collabHandles.map((h) => `@${h}`),
+          ...cls.brands,
+        ])
+
+        if (verdict === 'CAMPAIGN') outcome.campaigns += 1
+        else if (verdict === 'UNCLASSIFIED') outcome.unclassified += 1
+        else outcome.organic += 1
+
+        await persist(target.id, post, verdict, confidence, signals, brands, {
+          // Instagram's own label is a fact, not a judgement, so it is recorded as
+          // 'rules' regardless of which detector ran.
+          verdictSource: officiallyPaid ? 'rules' : cls.verdictSource,
+          classifierModel: cls.classifierModel ?? null,
+          classifierReason: cls.classifierReason ?? null,
+          taggedAccounts: post.taggedAccounts ?? [],
+          /**
+           * What the footage said, from the ONE writer of that sentence
+           * (`frameTextSummaryLine`), falling back to whatever the detector recorded.
+           * The screen and the stored record must not be able to describe the same
+           * evidence differently.
+           */
+          frameText: judged.frameText ?? cls.frameText ?? null,
+        })
+        outcome.stored += 1
+      }
+
+      log.info('channel done', {
+        handle: target.handle,
+        detector: detector.key,
+        fetched: posts.length,
+        new: outcome.stored,
+        campaigns: outcome.campaigns,
+        officiallyPaid: outcome.officiallyPaid,
+      })
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      outcome.error = message
+      if (err instanceof FeedFetchError && err.isParseFailure) {
+        outcome.parseFailure = true
+        log.alarm('feed shape changed — detection is blind until fixed', { handle: target.handle, message })
+      } else {
+        log.error('channel failed', { handle: target.handle, error: message })
+      }
+    } finally {
+      // Never let one channel's vocabulary leak into the next channel's scoring.
+      setChannelVocabulary(null)
+    }
+
+    channels.push(outcome)
+  }
+
+  /**
+   * RESOLVE THE BRANDS IN WHAT WE JUST CLASSIFIED — the step that makes brand discovery
+   * something that RUNS rather than something a command can do.
+   *
+   * After classification, deliberately: a CAMPAIGN verdict written moments ago is what makes
+   * its caption's @mentions worth a lookup, and `autoResolveBrands` reads the verdict from
+   * the database rather than from this loop's state.
+   *
+   * NEVER FATAL. Detection must never gate on brand resolution — decision 5 in CLAUDE.md is
+   * that a monitoring subsystem must not be able to silence the thing it monitors, and the
+   * same reasoning applies one layer along: a scarce third-party endpoint failing must not
+   * cost us the posts we already read and stored. Every lookup is cached UNKNOWN and the
+   * next pass retries.
+   */
+  const brandsResolved = await autoResolveBrands().catch((err): AutoResolveSummary => {
+    log.warn('brand auto-resolve failed — next pass retries', {
+      error: err instanceof Error ? err.message : String(err),
+    })
+    return {
+      looked: 0,
+      decided: 0,
+      skippedUnsure: 0,
+      haltedEarly: false,
+      unreached: 0,
+      backingOff: 0,
+      awaitingRetry: 0,
+    }
+  })
+
+  /**
+   * `awaitingRetry` is in the CONDITION as well as the body, deliberately: a pass that looked
+   * at nothing because every candidate is backing off is precisely the state worth a line, and
+   * `looked > 0` alone would render it as silence — the same shape as a stale latch reporting
+   * nothing four times an hour.
+   */
+  if (
+    brandsResolved.looked > 0 ||
+    brandsResolved.awaitingRetry > 0 ||
+    brandsResolved.backingOff > 0 ||
+    brandsResolved.unreached > 0
+  ) {
+    /**
+     * `unreached` and `backingOff` are in the CONDITION as well as the body, for the same
+     * reason `awaitingRetry` already was: the state worth a line is a pass that looked at
+     * almost nothing because a queue is stuck behind a halt, and `looked > 0` alone rendered
+     * exactly that as `looked=1 haltedEarly=true` — four times an hour, for hours, while one
+     * handle held the head of the queue and nothing else was ever asked about.
+     */
+    log.info('brand auto-resolve', {
+      looked: brandsResolved.looked,
+      created: brandsResolved.decided,
+      needsAHuman: brandsResolved.skippedUnsure,
+      // Eligible and not asked about this pass. A halt with a backlog behind it is a
+      // problem; a halt with nothing behind it is an ordinary quiet pass.
+      unreached: brandsResolved.unreached,
+      backingOff: brandsResolved.backingOff,
+      awaitingRetry: brandsResolved.awaitingRetry,
+      haltedEarly: brandsResolved.haltedEarly,
+    })
+  }
+
+  return {
+    channels,
+    postsSeen: channels.reduce((n, c) => n + c.fetched, 0),
+    newPosts: channels.reduce((n, c) => n + c.stored, 0),
+    detected: channels.reduce((n, c) => n + c.campaigns, 0),
+    hadParseFailure: channels.some((c) => c.parseFailure === true),
+    hadError: channels.some((c) => c.error !== undefined),
+    brandsResolved,
+  }
+}
+
+function dedupe(values: string[]): string[] {
+  const seen = new Set<string>()
+  const out: string[] = []
+  for (const v of values) {
+    const k = v.toLowerCase().replace(/^[@#]/, '')
+    if (!k || seen.has(k)) continue
+    seen.add(k)
+    out.push(v)
+  }
+  return out.slice(0, 6)
+}
+
+async function persist(
+  targetId: string,
+  post: FeedPost,
+  verdict: string,
+  confidence: number,
+  signals: string[],
+  brands: string[],
+  provenance: {
+    verdictSource: string
+    classifierModel: string | null
+    classifierReason: string | null
+    taggedAccounts: string[]
+    /** What OCR read off the cover frame, or null when no frame was read. */
+    frameText: string | null
+  },
+): Promise<void> {
+  const data = {
+    targetId,
+    permalink: post.permalink,
+    postedAt: post.postedAt,
+    caption: post.caption,
+    likeCount: post.likeCount,
+    commentCount: post.commentCount,
+    mediaType: post.mediaType,
+    brands: writeStringArray(brands),
+    signals: writeStringArray(signals),
+    confidence,
+    verdict,
+    verdictSource: provenance.verdictSource,
+    classifierModel: provenance.classifierModel,
+    classifierReason: provenance.classifierReason,
+    taggedAccounts: writeStringArray(provenance.taggedAccounts),
+    /**
+     * MEDIA URLS ARE STORED HERE, and the reason is that they EXPIRE.
+     *
+     * `rawPayload` rather than new columns, deliberately: this is captured evidence about
+     * one observation, it is not queried, and no guard reads it — exactly what this
+     * column already holds.
+     *
+     * ── AND THE URL IS NOT THE EVIDENCE. THE BYTES ARE ─────────────────────
+     *
+     * This docblock used to claim these URLs were "REFRESHED on every re-observation", so
+     * that "the newest sighting carries the only ones still fetchable". THAT WAS NEVER
+     * TRUE. `persist` is reached only from `for (const post of fresh)`, and `fresh`
+     * excludes every shortcode already stored — so the `update:` branch below has never
+     * run for a re-observed post in normal operation, and the refresh never happened.
+     * MEASURED on the live database: 48 of 1,310 in-window posts hold a thumbnail URL,
+     * while 156 frames are on disk. The claim was "verified" by checking that NEW posts
+     * carried URLs, which cannot test a claim about re-observation.
+     *
+     * That is why the frame is now saved as BYTES at scrape time
+     * (`src/detection/media.ts`), before classification, on every channel. A stored URL is
+     * a promise that something else will still be there later; the file is the evidence.
+     * The URLs stay because they cost nothing and record what the CDN offered.
+     */
+    rawPayload: JSON.stringify({
+      isPaidPartnership: post.isPaidPartnership,
+      sponsorHandles: post.sponsorHandles,
+      collabHandles: post.collabHandles,
+      thumbnailUrl: post.thumbnailUrl,
+      videoUrl: post.videoUrl,
+      videoDurationSeconds: post.videoDurationSeconds,
+      capturedAt: new Date().toISOString(),
+    }),
+    frameText: provenance.frameText,
+  }
+
+  await prisma.detectedCampaign.upsert({
+    where: { shortcode: post.shortcode },
+    /**
+     * NOT DEAD CODE, and this was measured before anyone deleted it: the update branch
+     * fired 16 times on 2026-08-07 alone.
+     *
+     * Callers filter known shortcodes out before getting here, so it looks unreachable —
+     * but the four IST slots run detection at minute 0, always a multiple of 15, so they
+     * COLLIDE with the 15-minute detect cron four times a day. `noOverlap` is per-task and
+     * the slot lock is slot-vs-slot, so nothing stops the two overlapping; both passes
+     * compute their known-set before either writes, both see a post as fresh, and the
+     * loser lands here. This branch is the reconciler that makes that safe, which is also
+     * why `pnpm ig:detect` alongside the scheduler is safe.
+     *
+     * Never overwrites a human's REVIEW-queue label.
+     */
+    update: {
+      likeCount: data.likeCount,
+      commentCount: data.commentCount,
+      confidence: data.confidence,
+      verdict: data.verdict,
+      signals: data.signals,
+      brands: data.brands,
+      rawPayload: data.rawPayload,
+      frameText: data.frameText,
+    },
+    create: { ...data, shortcode: post.shortcode },
+  })
+}
