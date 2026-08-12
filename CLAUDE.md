@@ -1,0 +1,3375 @@
+# CLAUDE.md — DS AI Sales Agent
+
+Instructions for anyone (human or model) working on this repo. Read this before
+changing anything that touches sending.
+
+---
+
+## Read this before you "fix" anything
+
+Four things here are counter-intuitive enough that a competent person will undo them.
+
+0. **NOTHING RUNS UNLESS A PROCESS IS RUNNING, AND ON 2026-08-08 NOTHING WAS.** Measured:
+   no process at all, `schedulerHeartbeat` **20 hours stale**, and 108 posts arrived in one
+   burst the moment it restarted — **9 of them CAMPAIGN**. The dashboard said nothing, and
+   the branch that should have said it *could not fire*: `staleRun` read `ScrapeRun` with a
+   26-hour threshold, but detection moved to its own 15-minute clock on 2026-08-07 and
+   writes no `ScrapeRun` row. **Two clocks, two tables, and the alarm read the one detection
+   had stopped touching.**
+
+   The deadline is not a chosen number. The anonymous feed is a **WINDOW** (48 posts deep),
+   `@viralbhayani` posts 49–75 a day (8 days, mean ~64), so the corpus survives about
+   **eighteen hours** and that outage cleared it by roughly one. A post that scrolls out
+   can never be re-scraped — no endpoint hands it back.
+
+   Now: `assessWatch` (PURE, `src/detection/watchHealth.ts`) derives the boundary from the
+   measured feed depth and posting rate and separates **at-risk** (recoverable — one pass
+   gets it all back) from **losing-posts** (gone). It sits ABOVE replies and drafts on the
+   health ladder, because a missed post is the only unrecoverable item there. The copy says
+   *"this is not about sending"* — the previous wording lived in the autopilot card and
+   ended "whatever this toggle says", so with autopilot correctly OFF it read as irrelevant.
+   `bash scripts/install-watch.sh install` keeps a dead worker restarted;
+   `pnpm worker:heartbeat` answers it from a terminal and exits non-zero only when posts are
+   being lost. **launchd cannot wake a sleeping Mac** and the docblock says so — the server
+   is that answer, not this.
+
+1. **The database is `journal_mode = delete`. Do NOT switch it to WAL.** WAL was tried,
+   measured, and reverted — under WAL a long-lived process never sees another process's
+   writes. Full argument in the docblock at the top of `src/lib/db.ts`, and below.
+2. **Nothing sends at all right now — and since 2026-08-06 the persona gate is NOT the
+   reason.** Each account was given its own channel name, which released the gate on all
+   three revenue accounts; verified by executing `recheckBeforeSend`, not by reading code.
+   What blocks sending today is that no account has a working Instagram session. The shared
+   PHONE NUMBER and EMAIL survive on all four and the gate cannot see them, because it
+   compares the whole block. Never satisfy any of this by inventing personas.
+
+   **CORRECTION, 2026-08-06 evening: "no account has a working session" was PARTLY AN
+   ARTEFACT OF A BUG, and the bug is fixed.** `@tabishmukaddam1` was signed in the whole
+   time. The identity lookup had died and `identify()` read a dead endpoint as *"this account
+   is logged out"* — see the `/api/v1/users/<id>/info/` entry under Gotchas, which is the
+   root cause of both that claim and Connect never working. Its `sessionInvalidAt` mark was
+   written on that false evidence and has been cleared through `clearSessionInvalid` on real
+   proof. The three REVENUE accounts genuinely have no session: measured on disk, only
+   `@tabishmukaddam1` holds a `sessionid`, and `@bollywoodsocietyy` holds device cookies
+   (`datr`, `ig_did`, `mid`) with no session. So the sentence is true of the accounts that
+   matter and was false of the fourth — and the fourth is the one somebody would have
+   re-logged-in for no reason.
+
+   **UPDATE 2026-08-07: `@bollywoodchronicle` is signed in too** — Tabish signed in by
+   hand through the dashboard, the row button's missing poll left it unrecorded (see the
+   Gotcha), and it was finalised and identity-verified via `pnpm ig:login`. TWO accounts
+   now hold live sessions (the burner and @bollywoodchronicle); `@bollywoodsocietyy` and
+   `@madaboutmarketingg` still have none. Autopilot remains OFF, so nothing sends
+   unattended regardless. Also that day: chronicle and society were RETIRED as message
+   targets by Tabish (posts kept, still watched — watching our own pages is ground truth,
+   not prospecting), chronicle's detector switched to `semantic` like society's, and the
+   seven BRAND rows' `watchEnabled` set false (the scraper never read them; the flag
+   claimed otherwise).
+
+   **A DEAD session is RECORDED now (2026-08-06, simple-sender §3.5).** `hasSession` is a
+   cookie-on-disk check and Instagram revokes server-side, so "the dashboard says connected"
+   and "every send fails with a login form" were both true at once — and the dispatcher
+   drove a browser at the dead session every 15 minutes forever, because `NotLoggedInError`
+   was filed under `failureCode: 'navigation'` (the retryable code) and written nowhere.
+   Now: `markSessionInvalid` (src/outreach/sessionHealth.ts, ONE writer like
+   `markChallenged`) records the evidence to `SenderAccount.sessionInvalidAt`; the gate
+   folds it into the EXISTING `no-session` stop via `sessionUsable`; `logged-out` and
+   `two-factor` split out of `navigation` (FAILURE_CODES is 10); and it clears only on
+   PROOF — an identity-verified hand login or a delivered send, never a page load. Fourth
+   appearance of "freshness is not liveness" in this codebase. Verified in both directions
+   against the live database.
+3. **The dashboard is on port 3100**, not 3000. Another project on this machine binds
+   `*:3000` on IPv6 and macOS resolves `localhost` to `::1` first, so `localhost:3000`
+   served the wrong app. Still `127.0.0.1` only; that bind must not change.
+4. **Delivery does not happen in a slot any more.** A paced dispatcher sends at most one
+   message every fifteen minutes, inside 10:00-21:00 IST. "Autopilot is on and nothing
+   has gone out" is the ordinary state for most of an hour, and `/messages` says why.
+5. **Generated message copy is BUILT and switched OFF** (`generateMessages`, default false).
+   With it off, drafting behaves exactly as it did before. Turning it on is Tabish's
+   decision and the reason is not the cost — measured at $0.000045-$0.000138 a message,
+   under $10/year at full fleet scale. It is that the gate provably cannot catch every
+   invented claim. See Phase 8 below.
+6. **Adding a sending account does not mean it can send — and since 2026-08-08 the reason
+   is not an arming switch.** New accounts join an onboarding GROUP and a group waits 14
+   days behind the one before it. Not overridable. The per-account Auto-send switch is
+   GONE (autopilot is one switch, Tabish's instruction), so the ladder is now enforced in
+   exactly one place: `mayArmAccount`, asked by `gate.ts` at the moment of delivery. An
+   earlier version of the one-switch plan said to delete that function on the strength of
+   its name — it was the only thing left standing between an un-soaked group and an
+   unattended send. **A group is now "live" when it can actually send** (`hasSession &&
+   status === 'ACTIVE'`), not when a bit said so; the bit was never the evidence, and rule
+   4 — has this group actually DELIVERED something — carries the weight. Groups are
+   visible on `/senders`.
+
+---
+
+## The read-it-yourself list
+
+Four defects were fixed on 2026-08-05 that had all been recorded as "known, not fixed" or
+were not known at all. Each was invisible on reading and obvious on running, and each is
+written up in full where the code lives:
+
+| | |
+|---|---|
+| `src/outreach/matching.ts` | the post-send thread check asked *is the needle present* — satisfiable by a message we sent last week. Now a delta. |
+| `src/outreach/compose.ts` | the variant LRU was scoped to the SENDER, so 8 of 11 pairs had already been handed the same body twice. |
+| `src/outreach/render.ts` | `{{brand}}` meant two different things in two pools and one rule served both, so a pitch could name a competitor. |
+| `src/outreach/browser/readThread.ts` | a **jitter** decided whether the reply guard saw the conversation. The losing side reported "no reply". |
+
+---
+
+## The one rule that overrides everything
+
+**Account safety outranks throughput, always.**
+
+Three Instagram accounts send from here — `@madaboutmarketingg`,
+`@bollywoodsocietyy`, `@bollywoodchronicle` (note the doubled final letters on the
+first two; both were wrong in the seed until 2026-07-30). They are revenue-generating business
+assets tied to Digital Sukoon's 200-page network. Losing one costs more than any
+outreach campaign gains. Tabish stated it directly: *"there must be no sabotage,
+these are high risk accounts and should not get banned for suspicious activities."*
+
+In practice:
+
+- Never raise volume, shorten a delay, or disable a guard to hit a number.
+- Never retry into an Instagram checkpoint. Pause and surface it.
+- If a change increases account exposure, do not ship it silently — raise it.
+- When uncertain, take the conservative option and say so plainly. Do not reassure.
+- Cold DMs already violate Instagram's ToS. Residual risk is never zero; the job
+  is keeping it near zero, not pretending it is absent.
+
+---
+
+## What this is
+
+A standing watch on two Instagram publisher channels — `@madovermarketing_mom`
+and `@viralbhayani`. When either posts paid/branded content, the agent writes a
+partnership pitch and **sends it**.
+
+```
+Every slot — 11:00 / 15:00 / 17:00 / 20:00 IST:
+  1. READ     watched channels → detect paid campaigns (anonymous, no login)
+  2. REPLIES  11:00 and 20:00  → read open conversations, halt any that answered
+  3. DISPATCH one tick         → see below
+  4. PREPARE  drafts           → bespoke on first touch, fresh hook on follow-ups.
+                                 The planner NEVER sends; it only writes drafts.
+
+Every 15 minutes — the paced dispatcher, 10:00-21:00 IST:
+  - may the fleet send at all?   circuit breaker, autopilot, active hours, the gap
+  - whose turn is it?            rotation, per category, derived from send history
+  - is this conversation clean?  a follow-up READS its own thread first, or holds
+  - claim, atomically            recipient + sender + fleet allowance, or none
+  - send ONE message             under a fleet-wide lock, then stop until next tick
+
+Sending happens three ways, one code path underneath:
+  autopilot   → unattended, if the ONE switch is on AND pacing permits AND the
+                account can actually send (session, status, group, persona — all
+                DERIVED, none of them a switch since 2026-08-08)
+  one click   → "Send from @x" on the dashboard
+  by hand     → pnpm send, or the "send it by hand" fallback on each card
+```
+
+**Detection and DRAFTING both run on their own 15-minute clock** (drafting joined it
+2026-08-11), so the four IST slots above are about reply checks and catch-up, not about
+when a paid post is noticed or written about. See "AUTOPILOT IS ONE SWITCH".
+
+### How the send actually works
+
+Each sending account has **its own real Chrome profile**, at
+`~/.ds-sales-agent/chrome-profiles/<handle>`. You log into it **once, by hand** —
+press **Connect** on the dashboard, or run `pnpm ig:login <handle>`; automation
+drives that same profile forever after.
+
+That one design choice is the whole safety argument. What gets accounts banned is a
+session appearing on a device that has never seen it — a hand login writes durable
+device identifiers (`mid`, `ig_did`, `ig-u-rur`) and records a login event from your
+home IP, and reusing that profile means Instagram sees a device it already knows.
+**Never import a cookie or `storageState` into one of these profiles.** `sessionid`
+is a bearer token with no channel binding, so a transplant *works* — right up until
+enforcement lands silently. If a profile is not logged in, the fix is
+`pnpm ig:login <handle>`, never a transplant.
+
+The send path (`src/outreach/browser/sendDm.ts`) is: feed → scroll → target's
+profile → scroll → **Message** → paste → verify → Enter → confirm it appeared in
+the thread. Never deep-link `/direct/t/<id>`. Input is `page.mouse` /
+`page.keyboard` / `locator.click()` only, so events carry `isTrusted` — never
+`evaluate(el => el.click())`, never `fill()`.
+
+The body is **pasted**, not typed: nobody hand-types a 1200-character pitch, and
+typing it would need Shift+Enter between twenty lines, where one missed modifier
+sends twenty separate DMs to a prospect.
+
+**Two guards that must not be removed.** Before Enter, the composer's contents are
+read back and compared to the drafted body — a failed paste or misplaced focus
+cannot be delivered. After Enter, the message must be found in the thread before
+anything is recorded as SENT.
+
+**A checkpoint is never retried.** A challenge, suspension notice, or login form
+where a session was expected marks the sender `CHALLENGED` and halts every pair
+using it. An automatic retry here is not an improvement.
+
+### Hands-free needs a scheduler, and it must be visible
+
+Autopilot is a *permission*. The **scheduler** is what actually fires at 11:00 /
+15:00 / 17:00 / 20:00. For a day those were confused: the scheduler only existed as
+`pnpm worker`, nobody had run it, and the dashboard reported "Autopilot is ON —
+messages go out at 11:00" with no process on earth able to send one.
+
+The dashboard now starts the same scheduler in its own process
+(`instrumentation.ts`), so turning the app on is enough. `pnpm worker` still works
+for a server; whichever starts second sees the other's heartbeat (`Setting` key
+`schedulerHeartbeat`, written every 60s) and declines rather than double-firing every
+slot. The dashboard shows that heartbeat, in red when it is stale — **a toggle that
+promises behaviour must show whether anything is behind it.**
+
+The scheduler on its own only detects and drafts. Delivery still needs all four
+switches below, so embedding it does not widen what can be sent.
+
+### Delivery is a PACED DISPATCHER, not a step in the slot
+
+Rewritten in Phase 5 (2026-08-05). `runSlot` is: detect → check replies → **one dispatch
+tick** → plan new drafts. The tick is also fired on its own cron, every
+`DISPATCH_INTERVAL_MINUTES` (15), by the same scheduler.
+
+**Why it left the slot.** `deliverWaiting` drained the whole queue with a 45-180 s sleep
+between sends. At four accounts with three drafts that is a two-minute slot. At measured
+fleet volume — 11-14 paid posts a day from `@viralbhayani` alone — it is an hour of
+continuous browser driving, and every message of it lands inside the same hour, in one
+inbox, from a dozen different pages. That is the recipient-side pattern the whole fleet
+design exists to avoid, arriving as a side effect of a loop rather than as anyone's choice.
+
+The rules live in `src/outreach/pacing.ts`, PURE and tested both directions:
+
+- **at most one send per tick** (`maxSendsPerTick`). Spacing is a property of the
+  schedule, not of a sleep inside a loop that can wedge while holding a lock. The bound
+  counts BROWSER DRIVES, not deliveries — a run of failures otherwise drove Instagram once
+  per waiting draft with the counter stuck at zero.
+- **10:00-21:00 IST** (`withinActiveHours`). This guard used to exist by accident: delivery
+  only ran at four daytime slots, so "we never DM at 4 a.m." was a property of the slot
+  list. A dispatcher on its own cadence would send at 03:40 from an Indian business page.
+  Taking an implicit safety property and writing it down is the only way a refactor can be
+  shown not to have dropped it.
+- **a minimum gap** between fleet sends, and a **per-hour fleet allowance** (3/hour).
+  Nothing is refused by pacing — it is DEFERRED, and the draft keeps its Send button.
+- **a per-DAY fleet allowance that defaults to unlimited.** A fleet-per-day cap IS a
+  system-wide cap and Tabish decided there is none; shipping a number would quietly
+  reverse that. The mechanism is wired and is one `Setting` row (`fleetMaxPerDay`) from
+  binding.
+
+Fleet pacing uses `DailyReservation` with `scope: 'fleet'` — the scope Phase 2 added and
+left unused. Same table, same unique key, same `create`-is-the-test-and-set. **Do not add
+a second mechanism.**
+
+**The circuit breaker.** Any account challenged in the last 24 h halts the WHOLE fleet:
+all 65 drive one code path from one residential IP, so a checkpoint is evidence about the
+pattern rather than about the account. Also a rising rate of `not-in-thread` — 2 or more
+AND ≥30% of recent sends, both conditions, so one slow render cannot stop 65 accounts.
+
+It can always be released, because *a hard stop with no release is a bug wearing a safety
+feature's clothes*: clear the account's halt (immediate), or wait out the window (so an
+un-cleared flag cannot wedge the fleet forever). `SenderAccount.challengedAt` is written by
+**one** function, `markChallenged` — four code paths set CHALLENGED and any one omitting
+the timestamp would make the breaker read "nothing was flagged" and keep sending.
+
+**The planner no longer delivers.** It drove browsers inside its loop over pairs whenever
+the switches lined up — a second send path, and the unpaced one: no fleet allowance, no
+active hours, no breaker, no gap, no lock. There is now exactly one way a message reaches a
+recipient unattended, and every condition is re-checked at delivery by `gate.ts`, which is
+strictly better than checking them when the draft was written. **Verified rather than
+assumed, 2026-08-11:** `plan.ts` has exactly ONE `.send()` call site and it is hardcoded to
+`manualAssistSender`, which logs and returns `{ status: 'READY' }`; `browserSender` is not
+imported there. Asserted by tests now, not by that file's comment — a comment claiming "one
+implementation, two callers" was already present and untrue in `readThread.ts`.
+
+**One clipboard, one send.** `sendDm` pastes from the OS clipboard, so two overlapping
+sends can put message A into thread B. The per-attempt READY→SENDING claim stops the SAME
+message twice and says nothing about two DIFFERENT ones racing — a dashboard click landing
+during a tick. `withSendLock` covers every path that drives a browser, asks the OS whether
+the holder is alive, and never steps over a live one however stale the lock. It also
+refuses to NEST: granting a nested acquisition let the inner `finally` delete the outer
+call's lock mid-send, which was found by running it.
+
+`deliverWaiting` still re-checks only what can have CHANGED since the draft was written —
+account CHALLENGED or disconnected, channel retired, they replied, today's caps used.
+Anything held stays READY with its Send button; nothing is ever dropped.
+
+**Its own `autoSendEnabled` hold was removed with the switches (2026-08-08), and leaving
+it would have split one decision across two enforcers.** With the stop gone from `gate.ts`,
+`recheckBeforeSend(unattended: true)` returned ok and `/messages` rendered *"Clear to send.
+Every check passes; the paced dispatcher will pick this up in turn"* over a draft this loop
+then held **forever** — for a reason deleted from `REMEDIES` and `STOP_LABELS`, so it
+appeared on no screen at all. `autoSendEnabled: false` was the schema default, so that was
+the common path rather than an edge case. Same shape as the `MAX_TOTAL_SENDS` bug: a page
+reporting a limit by a different rule than the one enforcing it reads as headroom. **The
+invariant is that a draft the gate permits is a draft the dispatcher will attempt**; the
+two checks left in the loop re-read state that can move between the query and the send,
+which is a freshness concern about an input, not a second copy of a rule. Each hold is logged with its reason, and `/messages` shows what the last tick did,
+because "nothing happened" with no explanation is the failure this whole section exists to
+prevent — and a dispatcher that holds silently would reintroduce it four times an hour.
+
+### `not-in-thread` is never retried
+
+The composer cleared — Instagram accepted the keystroke — and the message then never
+appeared. Two things are true at once: **the recipient may have it**, and **this is what a
+shadow restriction looks like from outside**. Re-sending is wrong under both readings.
+
+Phase 0 made it recordable and deliberately changed no behaviour, so it went back to READY
+— which is exactly what the delivery loop picks up. It now parks in `FAILED`, where nothing
+automatic reads it (`deliverWaiting` queries READY; `evaluateResend` refuses anything else
+with `not-waiting`, which is not overridable), and appears on `/messages` under **"check the
+conversation"** with the two buttons that settle it. Confirmed delivered records it as SENT
+and keeps the reservation; confirmed absent releases the reservation and re-queues it —
+the one moment when delivery has genuinely been ruled out by someone who looked.
+
+Parking a message where nothing picks it up is only safe because it is VISIBLE. Both halves
+shipped together.
+
+### AUTOPILOT IS ONE SWITCH (2026-08-08, Tabish's instruction)
+
+> *"The moment autopilot is turned on there must be no more switches. One switch to turn
+> on the process (which gets tracked) and when the switch is turned off no sabotage or
+> discrepancy should take place. The channels which are undecided must also be decided on
+> their own. How can adidas not be recognized as anything? I do not want this option to
+> select manually, correct it. Automated mode must simply send the messages."*
+> — Tabish, 2026-08-08
+
+**There is exactly one control.** The **Autopilot** toggle on the dashboard. It defaults
+**off**, both flips are audited, and nothing else has to be turned on afterwards.
+
+Three subordinate switches were DELETED, not hidden: the per-account **Auto-send** bit
+(`SenderAccount.autoSendEnabled`), the per-route chip (`OutreachPair.enabled`), and the
+manual company / not-a-company buttons on the brands panel. `RESEND_BLOCKS` went 12 → 10 —
+`AUTO_SEND_OFF` and `PAIR_DISABLED` are gone from `gate.ts`, from `governor.ts`, from
+`deliverWaiting`, and from the four server actions that wrote them (29 actions → 25).
+
+**What ON means, end to end.** One clock, and no step waits for a person:
+
+```
+every 15 minutes            detect        anonymous feed read, cover frames banked,
+                                          caption judged then footage (judge.ts)
+              ↓ same pass    auto-resolve  @mentions in in-window CAMPAIGN captions →
+                                          BRAND targets, bounded at 10 lookups/pass
+              ↓ same clock   draft         runOutreach, inside the SLOT LOCK.
+                                          The planner NEVER sends
+every 15 minutes, 10:00-21:00 IST
+                             deliver       dispatchTick: at most ONE message, under the
+                                          fleet-wide send lock, every invariant re-asked
+```
+
+**Drafting moved onto the detect clock on 2026-08-11** (it was stage 4 of the four IST
+slots). A paid post found at 11:20 waited until 15:00 before anything was written about
+it, and a hook line is age-bounded by `HOOK_MAX_AGE_HOURS`, so a slow draft could retire
+the very material it was going to reference. Same lesson as the 166 cover frames saved in
+a day and never read: **the only reason the draft did not exist was a schedule nobody had
+asked for.** Nothing about *sending* moved — four slots, reply checks at 11:00 and 20:00,
+active hours, the gap, the allowance and the breaker are all untouched.
+
+**What OFF means.** The dispatcher holds at its next decision point; at most the one
+message already in flight completes, because a send under way is a browser mid-paste and
+interrupting it is how a message lands with no record of it. Drafts keep their Send
+buttons and are still delivered by a person clicking. Nothing else changes state — no
+pair row is rewritten, no account is disarmed, no draft is discarded. Both flips are
+audited. *"No sabotage or discrepancy"* is the requirement and it is met by OFF being a
+gate the dispatcher asks rather than a sweep that edits rows: the burner's `pnpm burner
+off` used to brake by rewriting `OutreachPair.enabled` across the fleet, and that command
+is deleted for exactly this reason.
+
+**THE INVARIANTS ARE NOT SWITCHES, AND EVERY ONE IS STILL ENFORCED.** This is the
+sentence to check a future change against — removing the switches removed nothing below:
+
+| | |
+|---|---|
+| pacing | active hours 10:00-21:00 IST, the minimum gap, 3/hour fleet, **one send per tick** |
+| caps | per-target 2/day, per-sender daily, new-brand first-touches 2/day, the lifetime ceiling |
+| circuit breaker | any account challenged in 24 h halts the WHOLE fleet; also a rising `not-in-thread` rate |
+| checkpoints | a challenge or a login form marks CHALLENGED and is **never retried** |
+| replies | halts every sender to that target; auto-resumes after `replyResumeHours` (24) |
+| opt-out | `optedOut` refuses **forever**, checked before the reply halt |
+| spacing | 7-day per-pair cooldown, the unanswered-touch cap (3), the new-material rule |
+| the ladder | 14-day cohort soak, enforced at delivery by `mayArmAccount` at `gate.ts` |
+| identity | persona distinctness; `PERSONA_CHANGED_SINCE_DRAFT` if the account was re-identified after drafting |
+| proof | composer read-back before Enter, thread **delta** after it; `not-in-thread` parks in FAILED |
+| env floors | `AUTOPILOT_ENABLED`, `SEND_ENABLED` — deployment config, no UI exposes either |
+
+The two env floors are the one thing that outranks the toggle, and they are not switches
+in the product sense: `SEND_ENABLED=false` lives inside `withSendLock`, so the **server
+cannot send and never will**, and `AUTOPILOT_ENABLED=false` means a deployment may not
+send unattended at all. A web page must not be able to widen its own access — same
+reasoning as `SIGNUP_INVITE_CODE`.
+
+**A physical limit no switch can cross.** Ability is DERIVED now (session + status +
+cohort + persona), and two of the three revenue accounts derive to *cannot*:
+`@bollywoodsocietyy` and `@madaboutmarketingg` hold no hand-login session, so turning
+Autopilot on cannot make them send. **Only `@bollywoodchronicle` can.** Someone must press
+Connect once, by hand, from the home IP — the one act in this design that cannot be
+automated and must not be (see "log in once, by hand"). `/senders` says this as a
+sentence per row rather than offering a control that would not work.
+
+**`fleetMember` is what keeps the burner out, and it is IDENTITY rather than a switch.**
+With the route chips gone it is the only thing standing between `@tabishmukaddam1` and
+automatic outreach to real companies: `ensureFleetPairs` and `runOutreach` both scope
+senders to `fleetMember: true`. It is deliberately NOT "every account we own" — the burner
+is still MESSAGEABLE as a target, because it is the rehearsal recipient every end-to-end
+send in this project was proven against, and widening the set reads like the safer
+simplification while silently retiring the only safe test recipient there is.
+
+**THE EXPOSURE THIS WIDENED, STATED PLAINLY.** ON now means cold DMs to brands discovered
+within the last few hours, from revenue accounts, with **no per-route human step anywhere
+in the path**. Before this, a discovered brand sat behind a chip somebody had to flip; the
+recipient-side caps are now the only brake between a detected paid post and a stranger's
+inbox. And the resolver is a model: a handle mislabelled as a company puts a media-buying
+pitch in a private person's DMs from a revenue account. `RESOLVE_CONFIDENCE_FLOOR = 90`
+and honouring `'unsure'` regardless of the number are structural mitigations and **not
+evidence that the confident answers are right** — there is no accuracy harness for brand
+resolution the way `pnpm ig:accuracy` exists for classification, so its error rate here is
+unmeasured. That is the honest state of it, not a caveat to be smoothed over.
+
+#### The four-yeses design, superseded — kept because it explains the shape
+
+> Until 2026-08-08 autopilot needed four independent yeses: `AUTOPILOT_ENABLED` in `.env`,
+> the dashboard toggle, **that account's own Auto-send switch** ("accounts graduate one at
+> a time"), and a hand-logged-in Chrome profile. Any one missing meant the message was
+> *prepared and waits for a click*.
+>
+> Three of the four survive in substance. The env floor is unchanged; the toggle is now
+> the only control; and the profile requirement was never a switch — it is the physical
+> fact above, which is why it is the thing still blocking two accounts today. **What went
+> was #3**, and its stated purpose ("accounts graduate one at a time") is now served by
+> the cohort ladder, which was always the mechanism that actually staged an expansion:
+> 14 days per group, derived from send history rather than from an arming bit, enforced at
+> delivery. The bit was a statement of intent; a delivered message is an observation.
+>
+> **The bit had also gone quietly inert, which is why leaving it would have been worse
+> than removing it.** `autoSendEnabled` defaults false and nothing wrote it after the
+> actions went, so anything reading it read false forever: `cohorts.ts` rule 2 would have
+> reported **zero live accounts** and frozen the ladder at group 1 with no way to clear a
+> step, and `plan.ts`'s missing-session warning could not fire at all — under-warning to
+> total silence, exactly as the fleet grew. Rule 2 now means what it says: connected and
+> not halted.
+>
+> The old fallback sentence — *"prepared and waits for a click"* — is still true of every
+> stop in the table above. It stopped being true of a *switch*, because there is only one.
+
+### The send is proven three times, all from one throwaway account
+
+All on 2026-07-31, all from `@tabishmukaddam1`, all verified by reading the thread
+rather than trusting our own logs:
+
+| | |
+|---|---|
+| one click, dashboard | → `@priyanshu123321123`, 47s, thread `/direct/t/18098292211925958` |
+| unattended, hand-run slot | → `@bollywoodchronicle`, `sentBy=autopilot:…`, thread `/direct/t/107198187338891` |
+| **cron-fired, on the clock** | → `@bollywoodsocietyy`, 14:00:00 IST exactly, 77.5s |
+
+The third closed a gap the first two did not: both of those were started by a person
+or by a hand-run `pnpm run:slot`. **No slot had ever fired on its own schedule and
+delivered anything** — today's `11:00` row in `ScrapeRun` started at 11:40, which was
+catch-up-on-boot, not cron. A temporary `14:00` slot was added, fired on time, and
+sent; a `14:15` net slot correctly sent nothing because the lifetime ceiling was
+reached. Both slots were removed afterwards — a test slot is not a chosen cadence.
+
+Four cron slots then fired on schedule the same afternoon — 14:00, 14:15, 15:00, 17:00,
+each at `:00` exactly — so "the scheduler fires" is now observed repeatedly rather than
+once. Only the 14:00 one had anything eligible to send.
+
+That send needed **no guard loosened**. Both reachable pairs were inside their 7-day
+cooldown, and cooldown was not even the binding rule: `@bollywoodchronicle` and
+`@priyanshu123321123` are `passthrough` targets whose posts are all `UNCLASSIFIED`,
+so `unusedCampaignCount` is 0 and `NO_NEW_MATERIAL` blocks every *follow-up* to them
+regardless of spacing. Only `@madovermarketing_mom` has fresh `CAMPAIGN` material,
+and it is a real prospect. So the clean path was a **first touch**
+(`touchesSoFar = 0`), which skips the new-material rule by construction: a new
+rehearsal target `@bollywoodsocietyy` — an account we own, therefore safe under
+`safeTargetIds()` — with a pair created deliberately enabled.
+
+Verified independently afterwards with `pnpm ig:thread`, on a fresh navigation: the
+message came back from Instagram's own store, rendered, not from a `<script>` payload
+and not from optimistic UI.
+
+Read that as **the mechanism works**, not **the approach is validated**. Three sends
+from a throwaway account prove the paste, the composer read-back, the thread
+confirmation, the delivery gates, the lifetime ceiling and now the schedule. They say
+nothing about a 2-4 week soak on an aged account, which remains the outstanding
+recommendation and the reason the first send from a revenue account is still the real
+test.
+
+### Replies are detected now, and that guard had never once fired
+
+`OutreachAttempt.repliedAt` was **read in six places and written in none**. The
+governor's hardest stop — `TARGET_REPLIED`, which halts *every* sender to a target
+the moment a human answers — was wired to a field no code path could set. Status
+`REPLIED` was likewise never assigned anywhere.
+
+This is the project's signature failure in its purest form. The negative direction
+worked perfectly: no reply → `null` → proceed. Six call sites read the field, so it
+looked thoroughly plumbed. Nobody tested the positive direction because there was no
+way to produce it. **A guard nobody can trigger is not a guard**, and it reads as
+healthy precisely because the common path is the one that works.
+
+The cost was specific: someone answers a pitch, and the agent keeps firing cold
+follow-ups into a live conversation from up to three accounts — the exact "repeated
+unwanted contact" Meta's policy penalises, aimed at the one person who engaged.
+
+Two commands now write it:
+
+- `pnpm ig:reply <sender> <target> [--at <ISO>]` — record it by hand. Re-running with
+  `--at` *corrects* the timestamp, because the common case is recording "now" and
+  learning the real time later; without that the approximation would be permanent.
+- `pnpm ig:thread <sender> <target> [--record-reply]` — open the real conversation,
+  read it back, and classify each message as ours or theirs.
+
+Verified in **both** directions against live threads: `@bollywoodsocietyy` (no reply)
+reads as one `[US ]` message and reports none; `@bollywoodchronicle` (which had
+replied `"Hi"`, and we had never noticed) reads `[US ]` + `[THEM]` and reports the
+reply. Recording it then produced `target-replied` from the governor — the first time
+that stop has ever executed.
+
+**A reply is not an opt-out.** `optedOut` means "never contact again" and is used for
+retirement; a reply is the outcome we *want*. It stops automated outreach so a human
+can take over. Conflating them would file every interested prospect under do-not-contact.
+
+**Replies are now checked automatically, twice a day.** `src/outreach/replyCheck.ts`
+runs inside the 11:00 and 20:00 slots, before delivery — discovering a reply *after*
+this slot has already sent into the conversation would make the check worthless for
+the one message it most needed to stop.
+
+The volume question CLAUDE.md was weighing is still respected: **two slots, not four**, a
+10-hour minimum between checks on the same conversation, and at most four browser sessions
+per run so a backlog cannot become a burst. `pnpm ig:replies` runs the identical function
+on demand — one implementation, two callers.
+
+### The sweep cannot scale, so the check moved to the send (Phase 6)
+
+The sweep's capacity is a **constant** — four conversations twice a day — and the number of
+conversations is not. At the planned size, 60 open conversations against 8 checks a day is
+a mean staleness of **7.5 days**, while the dispatcher sends every twenty minutes. The
+hardest stop in the system would still be there, reading data nobody had refreshed in a
+week. And it degrades **silently**: "no reply recorded" looks identical whether the thread
+was read yesterday or never.
+
+Raising the cap is the obvious move and the wrong one — it buys coverage of conversations
+nobody is about to write to, in unattended browser sessions against revenue accounts.
+
+So `ensureConversationChecked` runs **immediately before a follow-up is delivered**, on
+exactly the thread that message would land in. Its cost is proportional to messages SENT,
+which the dispatcher already paces, rather than to prospects held — so coverage of what
+matters is total at any fleet size.
+
+- **First touches are exempt**, and not as a shortcut: there is no conversation to read,
+  and `openAndReadThread` on a never-messaged profile is indistinguishable from an
+  unreadable thread, so a fail-closed guard would refuse every first touch forever.
+- **Skipped when this pair's thread was read within `REPLY_FRESHNESS_HOURS` (24).**
+
+#### And a JITTER decided whether the read saw the conversation
+
+Found 2026-08-05 while pruning a profile and re-reading a thread to check the session had
+survived. **Two consecutive reads of the same conversation returned "1 message, no reply"
+and then "6 messages, they replied twice."** The truth was two replies.
+
+Instrumenting the live page explained it completely:
+
+```
+t+1528ms   composer visible, all six bubbles present in the DOM
+t+2528ms   the DOM RESTRUCTURES; exactly ONE bubble still matches the selector
+ever after one bubble. Scrolling recovers nothing — scrollTop is already 0.
+```
+
+`openAndReadThread` slept `jitter(2000, 3500)` before reading, so the read landed either
+side of that boundary **depending on a random number**. The losing side is the silent,
+permissive one: a thread showing only our own newest message reports "no reply",
+`replyCheckedAt` is stamped as **verified silence**, and the next follow-up fires into a
+live conversation — the "repeated unwanted contact" this guard exists to prevent, aimed at
+the one person who engaged.
+
+Note the shape, because `unreadable` was carefully designed against and this walked round
+it: **the read did not fail. It succeeded and returned a truthful subset.**
+
+Two independent fixes, because a fix that depends on winning a race is not a fix:
+
+- **Observe DURING the dwell** instead of sleeping through it. Same wall-clock pause — the
+  behavioural property is not traded away — but the window where the data exists is no
+  longer discarded. A `MutationObserver`, not polling: it catches a node that appears and is
+  removed between two samples, which is exactly this failure, and costs two CDP round-trips
+  instead of a dozen.
+- **CHECK completeness.** We know which bodies we delivered to this pair, so a read that
+  cannot find them all has provably not seen the conversation and must not vouch for
+  silence. Counted per body, never by comparing lengths — Instagram can group two of our
+  messages into one bubble, and a length check would then be satisfied by bubbles that are
+  not ours, including the reply.
+
+`incomplete` is a **distinct outcome from `unreadable`** all the way to the dashboard. Both
+hold and neither stamps `replyCheckedAt`, so the safety behaviour is identical; what differs
+is what an operator should do about it.
+
+Three things found on the way, each worth more than the original bug:
+
+1. `ensureConversationChecked` ended with a bare `return { ok: true }` for anything it had
+   not explicitly handled, so adding `incomplete` made an incomplete read **permit** the
+   send. Fail-open, no type error, because a fall-through return is valid code. It is now
+   exhaustive with a `never` binding, which turns "a new outcome quietly permits a send"
+   into a compile error.
+2. **`src/scripts/thread.ts` had a full private copy** of `readMessages`, `firstVisible`,
+   `browseBriefly` and `jitter`, while `readThread.ts`'s own docblock claimed *"one
+   implementation, two callers"*. The extraction happened and the CLI was never switched
+   over. Left alone, this fix would have landed in the scheduled check and NOT in the
+   command a person runs to verify it by hand.
+3. Deduplication is on **raw** text, not normalised: normalising merged a reply of "Hi" and
+   a later "hi" into one bubble.
+- **Fails closed.** Unreadable, no session, or a checkpoint all HOLD the send.
+- Runs **before** the SENDING claim and any reservation, so a hold leaves nothing to
+  unwind, and the gate is re-asked afterwards if a thread was actually opened — that read
+  can RECORD a reply, and the earlier verdict predates it.
+
+**A check covers one THREAD, not one inbox — a correction.** The sweep checked once per
+TARGET and skipped every other sender, on the reasoning that "three senders to one channel
+is one inbox — triple the exposure for the same fact". The premise is true from the
+recipient's side and the conclusion does not follow: **Instagram DMs are per account
+PAIR.** A session logged in as `@a` can only read `@a`'s thread, so a reply sent to `@b`
+was invisible to a check through `@a` — which then stamped `replyCheckedAt` and recorded
+**verified silence**. That is "unreadable becomes no-reply" wearing a different hat, and
+rotation makes it the normal case, since spreading senders across one recipient is the
+entire point.
+
+Deduplication is now per pair. The cap is unchanged, so this costs no extra browser
+sessions — it changes WHICH conversations the same budget reads. (Stated as structural
+reasoning about Instagram DMs, not as something measured here.) The HALT stays per target:
+a reply to any sender stops them all.
+
+**A limited budget is spent on what matters.** `prioritiseConversations` (pure, tested)
+orders pairs with a draft waiting first, then never-read, then stalest. The old ordering
+was oldest-first — fairness, which is the wrong criterion for a safety guard: the
+conversation where a missed reply does real damage is the one about to be written into
+again.
+
+**And the degradation is visible.** `deferred` is returned and reported rather than logged
+and forgotten, and `replyCoverage` puts open / never-read / stale on `/messages`. A number
+that falls quietly as the fleet grows is exactly what this project keeps finding late.
+
+An unreadable thread is recorded as **unreadable, never as "no reply"**, and
+`replyCheckedAt` is deliberately NOT stamped in that case: "we looked and can vouch
+for the silence" and "we could not read it" are different facts, and collapsing them
+would let a DOM change silently disable the hardest guard in the system. A checkpoint
+during a read marks the account CHALLENGED and stops the whole run — reading is lower
+risk than sending, but it is the same account and the same enforcement surface.
+
+**Only messages we have not already recorded count as a reply.** A thread holds the
+whole conversation, so `theirs.length > 0` is true forever once anyone answers once.
+The first version recorded on that alone, which meant every subsequent check
+re-detected the SAME old message as fresh — re-halting outreach seconds after an
+operator pressed "I have replied", making that button useless and the halt
+inescapable all over again. Replies are compared on normalised text against every
+reply already stored for that target, **handled ones included**: the point of handling
+one is that it stops counting, and dropping it from the comparison would resurrect it.
+A reply recorded before `replyText` existed carries no text and cannot be compared, so
+the first read that sees the thread **backfills it and records nothing new** — self
+-healing, and the safe direction, since the existing halt is left untouched.
+
+**Reply checking never runs on the `manual` slot.** The dashboard's "Check now" button
+calls `runSlot('manual')`, so including it would have opened up to four Chrome windows
+and driven Instagram for minutes when someone pressed a button labelled *check the
+channels*. A control must do what its label says. Reply checking is reachable
+deliberately — `pnpm ig:replies` — or on its own schedule.
+
+**THE REPLY HALT RELEASES ITSELF AFTER ONE DAY (2026-08-07, Tabish's decision).** The
+manual-release requirement below is HISTORY — kept because it explains the shape. Tabish
+asked to remove the manual step; the risk was stated to him plainly (an automated
+follow-up resuming into a conversation a human answered is the "repeated unwanted
+contact" pattern, aimed at the one prospect who engaged) and he chose auto-resume after
+1 day. Recorded as his. Mechanics: `replyResumeHours` Setting (default 24),
+`src/outreach/replyHalt.ts` is the ONE place the window lives (`replyHaltFloor` for
+query sites, `replyHaltActive` for rows in hand), and every halt site uses it — gate,
+planner, on-demand warning, nav badge, replies card, /targets chip — so the UI never
+claims a halt the gate is not enforcing. "I have replied" survives as an EARLY release.
+A newer reply re-arms the window from its own timestamp, so an actively-replying
+prospect keeps deferring. `TARGET_OPTED_OUT` is checked before `TARGET_REPLIED` and
+still refuses forever — retirement is the promise that survives every feature. The old
+behaviour is one Setting row away: any very large `replyResumeHours`.
+
+**A reply can now be released.** It halts every sender to that target, which is right,
+but nothing could ever clear it: the first reply retired a channel permanently, the
+dashboard nagged forever with no control to dismiss, and the only exit was editing the
+database. **A hard stop with no release is a bug wearing a safety feature's clothes.**
+`replyHandledAt` records that a person took over; `repliedAt`, `replyText` and status
+`REPLIED` all survive, because handling a reply is not erasing it. Every reply-halt
+query is scoped `replyHandledAt: null` — verified in both directions, halting before
+and releasing after, with the record intact.
+
+Reply text lives in `replyText`. It was previously read out of `error` — a column for
+send failures — because no field for reply content existed, so a message that failed
+and was later marked replied would have displayed its own error string as the
+recipient's words.
+
+### Sending on demand, and the only stops a person may cross
+
+Added 2026-08-03. **Send a message now** on the dashboard: pick an account, pick a
+channel, it writes the message, shows it, and sends it on a second click.
+
+The scheduled path exists so nobody has to think about spacing, and most of the time its
+answer is *not yet*. This is the other case — someone knows something the agent does not
+— and it deliberately does not ask what that reason is. What it does instead is name,
+in a sentence each, every rule about to be crossed. **It removes no guard; it moves the
+decision to a human and makes sure the human is told what they are deciding.**
+
+Two lists, and the split is the whole safety argument:
+
+- **Warnings** are shown, acknowledged with a checkbox, and crossed: spacing, nothing
+  new to say, a draft already waiting, the unanswered-touch cap, the lifetime ceiling,
+  the route being off — and **they replied**, which Tabish chose deliberately on
+  2026-08-03 so the button can reach someone mid-conversation. That last one is the
+  riskiest thing here, so the dialog shows the reply and how long ago it was rather than
+  a generic "are you sure".
+- **Blocks** refuse outright with no dialog offered: Instagram has flagged the account,
+  the channel is retired (`optedOut`), the account is not connected, either daily cap is
+  spent, contact details are invalid, or it is trying to message itself.
+
+The two BRAND-only guards (`brandGuards.ts` — the new-brand daily cap and the persona
+gate) sit in the planner, not in `gate.ts`, and are therefore **not** overridable from the
+on-demand dialog. That is deliberate: the persona gate is about the message being wrong for
+its recipient rather than about timing, so "I know something the agent does not" is not an
+argument that applies to it. Give the account its own persona instead.
+
+`OVERRIDABLE_BLOCKS` in `gate.ts` is a **closed whitelist**, and overrides are applied by
+membership in it — never by trusting the caller's strings. A server action is reachable
+by anything that can reach the page, so passing `['sender-not-active']` must be inert,
+and there is a test per absolute stop asserting exactly that. Overrides are also dropped
+entirely when `unattended` — autopilot has no human to have acknowledged anything, so an
+override arriving with it is a bug upstream and fails closed.
+
+Daily caps are **not** crossable and that is deliberate: crossing cooldown sends one
+extra message to one person, crossing a daily cap has no bound at all — the difference
+between a considered follow-up and a stuck button.
+
+Preparing is not sending. `prepareOnDemandSend` writes a real `OutreachAttempt` in READY
+and returns it; delivery needs a second call to `sendNow` carrying the acknowledged
+codes. A draft the operator abandons is an ordinary waiting message with the usual Send
+and Discard beside it, so there is no half-created state. An overridden send records
+`sentBy: override(<codes>):<handle>` — months later that string is the only record of
+why, and it must never read like the system decided it was fine.
+
+### Editing a drafted message
+
+Allowed while `READY`/`QUEUED`, never once `SENDING` (a browser is typing it) or
+`SENT` (the recipient has it, and editing the record would make the audit trail
+describe a message nobody received). The stored body is the single source of truth
+downstream — the composer read-back compares against exactly it — so an edit is
+carried through the send guard without that guard needing to know editing exists.
+
+### The database is `journal_mode = delete`, and WAL is the wrong fix
+
+**Measured and reverted 2026-08-04.** Phase 0 switched to WAL to reduce `SQLITE_BUSY`, on
+the reasoning that a contended write could roll back the transaction recording a DELIVERED
+message and leave the recipient holding a DM our records said we never sent. WAL did fix
+that contention. It also broke something worse:
+
+> A long-lived process pins a WAL read snapshot at its FIRST query and never releases it.
+> Writes made by ANOTHER process after that moment are invisible to it until it restarts.
+
+Reproduced repeatedly and confirmed against a falsifiable prediction: restart the
+dashboard, make five external writes, read them back — #1 visible, #2-#5 not. Restart,
+make three writes *before* the first query — all three visible, the next one not.
+Identical through the plain `sqlite3` CLI, so it is not this codebase's doing; WAL merely
+exposes it, because a rollback-journal reader takes a fresh shared lock per read and
+therefore always sees the latest commit. In `delete` mode, 5/5 visible.
+
+**Three processes share this file by design** — the dashboard, the scheduler embedded in
+it, and any CLI script. Under WAL the worker never saw an account marked CHALLENGED from
+the dashboard: the exact Phase 0 guard that re-reads live sender status before driving a
+browser. **A guard reading a frozen snapshot is this project's signature failure arriving
+through the storage engine.** Between "a write may contend and retry" and "a guard silently
+reads the past", the second is far worse.
+
+The symptom that led there is worth knowing: under WAL the server began returning
+`SQLITE_CORRUPT: database disk image is malformed` on ordinary reads while
+`integrity_check`, `quick_check` and `foreign_key_check` on the file were all clean with
+every row present. **Corruption reported by one connection against a healthy file means
+the connection's view, not the data.**
+
+The double-send risk WAL was bought for is handled structurally instead:
+`src/outreach/recordSend.ts` commits the SENT row ALONE, retries it, and never returns an
+attempt to READY when delivery cannot be ruled out. WAL was the belt; that is the braces,
+and the braces are what hold.
+
+**If WAL is ever reconsidered** it is only safe once every long-lived process is proven to
+see another process's writes. Run the experiment above first.
+
+**Never run `ANALYZE` at process start.** It was added in Phase 1 and removed in the same
+commit: it made every CLI script write to the database just to boot, and on a WAL database
+the closing connection can truncate the `-wal` file underneath another process's reader.
+`refreshStatistics()` in `src/lib/db.ts` runs it deliberately, after a bulk import or a
+migration.
+
+### The profile directory is a credential file, and normal Chrome destroys it
+
+Two facts verified 2026-07-30 against the live process, both counter-intuitive:
+
+Patchright hardcodes `--use-mock-keychain --password-store=basic` and `launchProfile`
+cannot opt out without `ignoreDefaultArgs`. So Chrome's cookie-encryption key is a
+**public constant**, not a macOS Keychain entry.
+
+1. **Never open one of these profiles with ordinary Chrome.** Plain Chrome derives its
+   key from the Keychain, cannot decrypt these cookies, and **deletes the rows it
+   cannot read** — taking `mid`, `datr` and `ig_did` with them. That destroys the
+   device identity the whole design exists to preserve, so the next login looks like
+   new hardware to Instagram: the precise state we are avoiding. Measured on throwaway
+   profiles; returning to Patchright does not recover it. Opening the profile by hand
+   is the natural reflex when something looks wrong, which is exactly why this has to
+   be written down. If a manual launch is unavoidable it must carry the same flags:
+   `--user-data-dir=<profile> --password-store=basic --use-mock-keychain`.
+2. **`~/.ds-sales-agent` is as sensitive as a password file.** The key is a constant
+   and not machine-bound, so anyone with a copy of the directory can decrypt the
+   session cookies offline. Backups, cloud-synced folders, screen shares all count.
+
+   **AND SINCE 2026-08-08 IT CONTAINS NOTHING ELSE, which is what makes that rule
+   followable.** Two non-secret things had accumulated inside it: post cover frames
+   (public CDN images, 321 files) and the Swift OCR binary this repo compiles itself.
+   Neither is a credential, and both are things a future feature wants to touch casually —
+   a contact-sheet UI, a support bundle, an `rsync` to the server. Every one of those is
+   safe for frames and catastrophic for profiles, and while they shared a parent the
+   difference depended on whoever wrote that feature remembering it.
+
+   `src/lib/paths.ts` is now the one place that split lives: **`~/.ds-sales-agent` is
+   credentials ONLY** (chrome-profiles, identity-backups) and **`~/.ds-sales-agent-data`**
+   is everything else (frames, bin, logs). A SIBLING directory, not a subdirectory, so the
+   two are separable by a glob or a backup rule. Same reasoning as `middleware.ts` listing
+   public routes and the pruner deleting from an allowlist: make the dangerous set small,
+   explicit, and impossible to widen by accident.
+
+   **AND THEY CAME BACK, because a moved directory is not a moved PROCESS.** Frames
+   reappeared in the credential directory between 11:30 and 12:15 — after the migration —
+   because the running worker still held the old `FRAMES_ROOT` in memory. Node caches
+   modules at require time; moving files and editing a constant does nothing to a process
+   that is already up. They stopped the moment the agent was restarted (0 files written
+   since), which is the same lesson as the OCR fix on the server: **build, restart, and
+   verify the restart happened.**
+
+   Removing the strays found the other half of it. A filename comparison said all 93 were
+   duplicated in the data directory and nothing would be lost. **A HASH comparison found 3
+   that differed** — the same posts re-fetched later, and Instagram's CDN returns a
+   slightly different JPEG each time. Both encodings OCR to the same words, so nothing was
+   lost either way, but the filename check would have been a deletion justified by a claim
+   that was measurably false. Backed up before deleting, then removed.
+
+   `pnpm ig:migrate-data` moved them — dry run by default, copy then verify then unlink.
+   **FOUND BY RUNNING IT:** the first version hash-verified all 322 files, reported success,
+   and the Swift binary landed **mode 644** because `writeFile` creates a new file and
+   SHA-256 cannot see a mode bit. Bytes perfect, file unrunnable, `ig:ocr` immediately
+   reported "could not be read" on the founding case. **The check was not wrong, it was
+   INCOMPLETE — it verified the property I thought to verify.** Mode is now copied and
+   compared. Ask what a check would MISS, not whether it passes.
+
+### "Log in once" is true; "log in once, ever" is not
+
+Verified: persistent cookies survive close/relaunch of a Patchright profile with
+expiries intact, and device cookies come back byte-identical, so there is no
+per-send or per-week re-login. The design works.
+
+But nobody has measured how long an authenticated Instagram *web* session survives.
+The only primary observation found was `sessionid` with `Max-Age=31536000` (1 year)
+from a 2020 hobby repo; the "corroborating" source turned out to be a commented-out
+placeholder. Cookies on disk are capped at 400 days by Chrome regardless. And a
+cookie surviving on disk is **not** the same claim as Instagram still honouring it —
+revocation is server-side and invisible until a request is made.
+
+So: log in once per account now, expect to do it again occasionally, and rely on the
+system to say so rather than on a promise. `hasSession` is the honest gate.
+
+### A model may write the body, and a gate decides whether anyone may send it (Phase 8)
+
+Built 2026-08-05, **switched OFF** (`generateMessages`, default false). With it off,
+`composeForPair` behaves byte-for-byte as before. Phase 3 shipped the same way: a change to
+what a real prospect reads should be switched on by a person on a day they chose.
+
+**The reason it is off is not the money.** Measured across 7 real calls,
+**$0.000045-$0.000138 a message** — under $10/year at 65 senders × 60 recipients, and the
+prompt cache holds at **95-98%**. The reason is stated below.
+
+`src/outreach/generate.ts` — `deepseek-v4-flash`, `thinking: { type: 'disabled' }`, and the
+**system prompt is a module-level constant with nothing interpolated into it, ever**. The
+cache discount is 50× and destroying it is silent and permanent. Per-recipient facts go in
+the user message.
+
+`src/outreach/qualityGate.ts` is PURE and every bound in it was **measured** against the 25
+bodies that already ship, not chosen: 348-1031 chars, 3-4 paragraphs, 25 of 25 with a needle,
+0 cross-matching. The first test is that all 25 pass — *a gate no good copy can satisfy is an
+outage wearing caution's clothes.*
+
+It checks: no placeholder survived **rendering** (not the middle — `{{brand}}` is legitimate
+there), length and shape, the persona block exactly ours and appearing exactly once, the
+greeting the one `buildGreeting` would produce, no chat preamble, every figure claimed one we
+actually claim, and the body verifiable by `distinctiveSlice` **including that its needle does
+not match a message this recipient already has**.
+
+**WHAT READING THE REAL OUTPUT FOUND, three times, none of it caught by a test:**
+
+1. **Figures spelled in WORDS bypassed the entire allowlist.** Every rule matched digits, so
+   "eighty million followers", "five hundred pages", "two billion views a day" and "fifty
+   crore views" all passed the check that exists to stop exactly them. Verified by execution
+   before and after. What made it visible was a harmless "under fifteen minutes".
+2. **An invented claim about the RECIPIENT.** Told to reference nothing, the model told Royal
+   Canin *"your team already buys placement across pet-focused pages and lifestyle feeds"*.
+   The prompt already forbade guessing; it guessed anyway. Two fixes — a prior-knowledge
+   phrase check that only fires when there is no observation, and the better half: actually
+   *giving* it one, since `discoveredFromCampaignId` records the paid post that made a brand a
+   prospect and the generator was ignoring what `brandPitch` already used.
+3. **An invented claim about US.** *"We run a network of owned pages in the pet and general
+   interest space"* — to a pet-food brand, from a Bollywood network. And audience data we do
+   not have: *"the audience skews young, urban and highly engaged"*.
+
+**The third category is not mechanically checkable and that is the honest conclusion of this
+phase.** The figures are guarded because they are enumerable; what the network IS is not.
+There is no accuracy harness for generation the way `pnpm ig:accuracy` exists for
+classification. So the gate is a **floor**, `pnpm ig:generate` prints the whole message rather
+than a verdict, and turning `generateMessages` on without a person reading messages is not
+something this work justifies.
+
+`observationFor` is exported and shared by the planner and the CLI — the first version left
+`ig:generate` with its own copy, so the command whose entire job is showing what the planner
+would produce showed something else.
+
+### 61 accounts arrive as a LADDER, and the ladder is code (Phase 9)
+
+Built 2026-08-05. **No account was added.** This is the only phase that changes exposure: 4
+sending accounts become 65, and each of the 61 needs a hand login writing device identity
+that cannot be rebuilt.
+
+The risk is not per-account — at 65 each sends 0.27 messages a day against a
+practitioner-safe 20-35. It is that **all 65 drive one code path from one residential IP
+against overlapping recipients**, a correlation surface that does not exist today. Rotation
+hides volume from *our* metrics while the recipient's inbox is unchanged.
+
+`SenderAccount.cohort` is the **only stored column**; how long a group has been sending and
+whether anything went wrong is DERIVED from `OutreachAttempt` and `challengedAt`, following
+Phase 3's decision that state comes from history rather than a cursor.
+
+Four rules in `src/outreach/cohorts.ts` (PURE), each answering a different question:
+
+- **Group 1 is the BASELINE and always passes.** Those accounts predate the ladder and one has
+  done every send this project has made.
+- **The previous group must be LIVE** — connected AND active. Otherwise a step is skipped by
+  leaving it empty. This read `autoSendEnabled && hasSession && status === 'ACTIVE'` until
+  2026-08-08; the arming bit is gone and **leaving it would have made `live` permanently
+  ZERO**, freezing the ladder at group 1 with no way to clear a step. That is a
+  strengthening: an armed account with a dead session cannot send and counted as live,
+  while a signed-in healthy account nobody had flipped counted as dead.
+- **It must have SENT something.** Never-delivered has not been observed at all, and without
+  this thirteen steps could be climbed in a fortnight. Same "freshness is not liveness"
+  mistake as reading a heartbeat's age. **This rule now carries the whole evidential
+  weight**, which is where it always belonged — arming was a statement of intent, a
+  delivered message is what was observed.
+- **Nothing in ANY earlier group may have been questioned.** `ever`, not `currently`: a
+  cleared checkpoint still happened and is evidence about the pattern. Clearing a halt lets
+  that account send again; it must not buy permission to add five more. Checked FIRST so the
+  sentence a person reads names the real problem.
+
+**FOUND BY RUNNING IT:** the live database reported *"next new account joins cohort 1"*. Group
+1 had 4 of 5 places free — and group 1 is the baseline, exempt from the soak. **The first
+account of the 61-account expansion would have been armable the moment it was logged in**,
+bypassing the whole mechanism built to stage it. Room in the baseline is not room on the
+ladder; new accounts start at 2.
+
+**Since 2026-08-08 it is enforced in exactly ONE place, and that place is the send path.**
+It used to hold at both ends — the dashboard refused to arm a blocked group, and `gate.ts`
+re-asked at delivery so editing `autoSendEnabled` in the database could not get round it.
+Arming is gone, so the arming end went with it and `gate.ts:414` →
+`RESEND_BLOCKS.COHORT_NOT_CLEARED` is now the **only** thing standing between an un-soaked
+group and an unattended send. `mayArmAccount` therefore **must not be deleted on the
+strength of its name** — an earlier version of the one-switch plan said to, on the reasoning
+that its only caller was the deleted action, and the cohort tests would all have carried on
+passing because they exercise the pure function and not the caller. Not overridable — every
+stop a human may cross is about timing, this one is about how many accounts are at risk at
+once. Turning Autopilot OFF is always allowed; a stop must never need permission.
+
+The soak is **14 days, and that is a floor chosen rather than measured** — the standing
+recommendation is a 2-4 week soak before touching the revenue accounts and it has never been
+done. Both it and the group size are `Setting` rows, like `fleetMaxPerDay`.
+
+Operator-facing strings say **"group", never "cohort"**, matching the page heading, with a
+test asserting the word never appears.
+
+### The disk fills before the fleet finishes onboarding
+
+Measured 2026-08-05, and it had moved since the plan: free disk **32 GB → 26 GB**, and the
+sending profile **604 MB → 685 MB in a day containing ZERO sends**. The growth was
+reply-check browser sessions — and Phase 6 made those run before every follow-up, so **cache
+growth is now proportional to messages sent**, which is what scales with the fleet. One
+thread read alone added 37 MB.
+
+`pnpm ig:prune`. **88% of a profile is disposable cache; the irreplaceable part is 27 KB**
+(`Default/Cookies` — `mid`, `datr`, `ig_did` — plus `Local State`). Run once: **627 MB freed,
+794.8 MB → 167.2 MB**, both protected files byte-identical by SHA-256, and the session then
+verified **against Instagram** by reading a real thread — because a cookie on disk is not the
+same claim as Instagram honouring it.
+
+Projection printed by the command itself: at 65 profiles, **44.7 GB unpruned → 5.4 GB
+pruned** against 26 GB free.
+
+Three things about it are load-bearing:
+
+- **The deletable set is an ALLOWLIST** — `Default/Cache`, `Default/Code Cache`,
+  `Default/GPUCache`, and nothing else, ever. A denylist of protected paths fails in the
+  dangerous direction the day Chrome invents a directory, which is exactly why
+  `src/middleware.ts` lists public routes rather than private ones. 79 MB more per profile
+  sits in top-level caches and is deliberately left alone.
+- **"Is Chrome closed?" asks the OS**, matching `--user-data-dir=<dir>` in a live process's
+  argv. Not `SingletonLock`, which survives a crash. The first version matched the path plus
+  the word "chrome" anywhere and **matched my own mutation-testing shell command** — a false
+  positive, so the safe direction, but it proved the matcher was never testing the right
+  thing. Both "a browser has it" and "we could not tell" refuse.
+- **The 27 KB is backed up before anything is deleted and verified by hash afterwards.**
+  "This does not touch the cookies" is a claim; a hash is evidence. Mutation testing then
+  showed the verification could be replaced with a constant `true` and break no test — it is
+  now a pure function driven to fail.
+
+### Being worth messaging and being worth READING are separate decisions
+
+Phase 7, 2026-08-05. `TargetAccount.watchEnabled`.
+
+Detection reads every `kind: 'CHANNEL'` target, four pages per slot. At four channels that
+is 16 requests a slot and it has been measured healthy (48/48 HTTP 200, median 1090 ms). A
+provided list of 60 prospects makes it ~240 a slot and about **a thousand a day** against
+an anonymous, undocumented endpoint whose only risk is IP rate limiting — and it buys
+almost nothing, because a cold **first touch does not use a hook from the recipient's own
+feed**.
+
+So watching is now its own toggle. It **defaults true**, so every channel that was being
+read still is; imported prospects arrive unwatched, and so do brands the resolver
+discovers — set `watchEnabled: false` explicitly against a schema default of TRUE, or
+every auto-discovered prospect would enrol itself into detection. `/targets` shows what
+watching currently costs in requests per slot, because that number is otherwise invisible
+— which is exactly how a 60-row list quietly becomes a thousand requests a day.
+
+**This is the one toggle the one-switch change did NOT remove, and the distinction is the
+section heading.** Watching is a question about spending requests against an anonymous
+endpoint; messaging is a question about a stranger's inbox. Autopilot decides the second.
+
+**Importing a list.** `pnpm ig:import <file>` or the form on `/prospects`. Parsing is pure
+and forgiving about format — a bare list, a header row in several spellings, tabs or
+commas or semicolons, quoted fields, CRLF, an Excel BOM, a pasted profile URL, duplicates
+under different capitalisation. It is **completely unforgiving about the handle**: an
+unparseable one is rejected WITH ITS LINE NUMBER and never repaired, because "never guess a
+handle" has a measurement behind it and a typo deserves the same treatment as a guess.
+
+Dry run by default, like `ig:classify` and `ig:brands`. The preview checks every handle
+against Instagram, so it is the real answer rather than an optimistic one. Rows past the
+limit are **reported, never silently truncated**. Created targets are unwatched, are never
+self-paired, and never routed from one of our own pages — the rule for that is
+`src/outreach/routes.ts` and every creator asks it.
+
+**Their routes are LIVE, and "adding is never the same act as sending" changed meaning on
+2026-08-08.** It used to be kept by creating pairs DISABLED, so importing sixty prospects
+was inert until somebody flipped sixty chips. With the chips gone a pair row IS a live
+route, so what keeps the promise is the *dry run* and the *import itself being a deliberate
+act* — not a downstream switch. Anything that imports or discovers a target now widens what
+the rotation will write to, and the copy on the import form was corrected the same day: it
+had gone on saying *"every route is switched off … turn on what you want"*, which
+**overstated safety about the one act that now reaches a real prospect**.
+
+**`/targets` is not the channels card grown larger** (it absorbed `/prospects` in the
+2026-08-06 redesign). That card rendered a chip per sender×target route: twenty then,
+**3,900** at 65×60. That was not a layout problem, it was the wrong control — nobody
+decides 3,900 routes one at a time, which is a large part of why Tabish asked for the
+switches to go. Each row now reads *"Messaged automatically by rotation while Autopilot is
+on (N accounts able to send)"*, and **`sendersAble` is ABILITY**: it reads zero when the
+fleet is signed out even with the switch on, which is the honest answer to "will anything
+happen here?" that a wall of chips buried and that a bare route count would have faked.
+
+### Accounts and channels are managed from the dashboard, not the terminal
+
+The terminal flow still exists and still works, but it is the developer path. The
+person running this day to day should never need a shell, so the dashboard owns:
+
+- **Connect / Reconnect** an account — opens that account's own Chrome window and
+  polls until Instagram reports the login. Identical to `pnpm ig:login` underneath;
+  only "are you done yet?" changed, from a readline prompt to a poll.
+- **Add / Remove** a sending account, **Add / Remove** a channel. The per-route chip is
+  GONE (2026-08-08, one switch), and so are `setAccountAutopilot`, `setPairEnabled`,
+  `confirmBrand` and `dismissBrandCandidate` — 29 server actions became 25.
+
+Two rules the UI must keep:
+
+1. **Adding is never the same act as sending — but the mechanism changed, and the new one
+   is thinner.** New senders and new channels used to get their pairs created **disabled**,
+   so adding a channel to see what it looks like could not message it under any
+   circumstance. Routes are now created live, so what stands between adding and sending is
+   the Autopilot switch, the caps, the cooldown and the cohort ladder — real rules, but a
+   *shared* brake rather than a per-row one. **Say this plainly to anyone adding a channel;
+   do not restate the old sentence, which is now false.** Four pieces of copy still claimed
+   it on 2026-08-08 (`addTarget`, `addSender`, the import form, the channels card) and all
+   four were corrected: they named a deleted chip AND implied adding was inert.
+2. **Removal never deletes send history.** Attempts record what real people were
+   actually sent, and spacing, the unanswered-touch cap and the new-material rule are
+   all derived from that. Deleting it would let the system write to someone it has
+   already written to. So anything with send history is *retired* — the target marked
+   `optedOut`, which is a hard stop the governor checks independently and `gate.ts` checks
+   again at delivery — and only a never-used account or channel is deleted outright. The
+   Chrome profile is left on disk either way: it holds device identity that cannot be
+   rebuilt.
+
+   **Retirement was NEVER a missing pair row and that now matters much more.**
+   `ensureFleetPairs` recreates every allowed route at the top of each pass, so a promise
+   carried by a deleted row would survive exactly one run. It is a flag on the TARGET for
+   precisely this reason, and `routes.ts` refuses an `optedOut` target as housekeeping on
+   top — never as the promise itself.
+
+`connect.ts` keeps open browser contexts in a module-level Map, which is correct for
+one local Node process and would not survive a multi-process deployment or a dev-server
+hot reload. Both cases fail visibly ("no connection in progress"), never silently.
+
+New channels get the `passthrough` detector. `mom` is a hand-written rule set for one
+publisher's `#Collaboration` convention; applying it to an arbitrary channel would
+silently mislabel posts.
+
+### Credentials
+
+**Nothing in this repo stores, reads, or transmits an INSTAGRAM password.** There is
+no field for one. Detection is anonymous; sending uses a browser profile you logged
+into yourself. A login prompt therefore always means the browser lacks a session,
+never that the agent lost one.
+
+That sentence used to read "…stores a password" without the qualifier, and since
+2026-08-03 the qualifier is load-bearing: the **dashboard** has its own accounts, and
+a dashboard password is stored as a scrypt hash. The two are unrelated, and conflating
+them would be an argument for leaving the send button unauthenticated.
+
+All Instagram URLs are built in one place, `src/lib/urls.ts`, because the CLI and
+the dashboard drifted apart once — the dashboard used `ig.me/m/<handle>`, which
+returns **HTTP 400** on desktop web and so never worked at all.
+
+### The dashboard has a front door now, and registration is deliberately open
+
+Added 2026-08-03. Before it, there was **no `middleware.ts` and 18 exported server
+actions** — `sendNow`, `setAutopilot`, `connectAccount`, `removeSender`, `removeTarget`.
+A server action is reachable by anything that can reach the page, so every one of those
+was callable with no password by any client that could open the port.
+
+- `src/middleware.ts` is **deny-by-default**: it lists PUBLIC paths (`/sign-in`,
+  `/sign-up`, static assets) and protects everything else. A list of *protected* paths
+  fails in the dangerous direction — a route added later would be exposed until someone
+  remembered it, which is exactly how 18 actions ended up with nothing in front of them.
+  The routing decision is a pure function, `decideRoute`, tested in both directions.
+- **Every action also calls `requireUser()` as its first statement**, before arguments
+  are read or anything is written. Not redundant: middleware is a router filter and an
+  action is a POST endpoint. Several actions mutate then audit, so a check deferred into
+  `audit()` would let the mutation land and fail afterwards.
+- An unauthenticated **POST gets a bare 401, never a redirect.** Redirecting would hand
+  the client a 200 for the login page, which reads as success — a refused mutation must
+  never look like a completed one.
+- Passwords are **scrypt** from `node:crypto` (N=65536), not bcrypt or argon2, because
+  both are native: `serverExternalPackages` exists precisely because native bindings
+  break this build, and the same code must run in the Next bundle *and* under `tsx`.
+  Cost parameters are stored in the hash, so raising them later cannot lock anyone out.
+- Session tokens are 32 random bytes, stored **SHA-256 hashed**. A session token is a
+  bearer credential exactly like Instagram's `sessionid` — the reason this project
+  refuses cookie transplants applies to our own tokens, so a database read (a backup,
+  `pnpm db:studio`, a screen share) must not hand over live sessions.
+- `sentBy` and `AuditLog.actor` now record the **signed-in user's email**. The CLI has
+  no session and writes `cli:<OPERATOR_NAME>`, prefixed so "pressed Send on the
+  dashboard" and "typed y in a terminal" stay distinguishable.
+
+**REGISTRATION IS NO LONGER OPEN, AND THERE ARE ROLES NOW — 2026-08-08.** The paragraph
+below is HISTORY, kept because it explains the shape and because its final sentence was
+the instruction that got followed.
+
+> *"Registration is OPEN, and this was chosen after the exposure was stated twice. There
+> is no role model: `sendNow` checks the safety gate, not who is asking… So anyone who
+> registers can DM from `@madaboutmarketingg`, `@bollywoodsocietyy` and
+> `@bollywoodchronicle`. What limits that today is the `127.0.0.1` bind and nothing else.
+> **Before this is reachable from anywhere else, add roles** — view on signup, send on
+> approval."*
+
+Open registration was a defensible trade while **the bind WAS the access control**. Hosting
+removes the bind, so the same sentence stops being a note and becomes the vulnerability.
+Two independent gates now:
+
+1. **`SIGNUP_INVITE_CODE`** (environment) to create an account at all. An **unset code means
+   signup is CLOSED**, never "no gate" — a server deployed without it refuses new accounts
+   rather than offering an open door onto a page with a Send button. Same hard-floor
+   reasoning as `AUTOPILOT_ENABLED`: a web page must not be able to widen its own access.
+2. **`User.role`** — `viewer` | `operator` (`src/lib/roles.ts`). Passing (1) grants a
+   **VIEWER**, so someone handed the code still cannot send.
+
+Both fail closed. `parseRole` maps `null`, `''`, `'admin'`, `'Operator'`, `'OPERATOR'` all
+to `viewer`: `role` is a String because SQLite has no enums, so the column can hold
+anything, and absence-of-data becoming a **permission** is worse than the four times this
+codebase has already produced that shape without one.
+
+**All 25 actions in `actions.ts` call `requireOperator()`** (29 until 2026-08-08, when the
+four switch-writing actions were deleted — `setAccountAutopilot`, `setPairEnabled`,
+`confirmBrand`, `dismissBrandCandidate`; the authorisation test passed unaltered and no
+safety assertion was lowered) — every one mutates, which is
+what makes the blanket rule correct rather than lazy; read-only work belongs in a view
+model. It is a separate function rather than a flag on `requireUser`, because an argument
+defaulting to "no role check" is one forgotten parameter away from an unprotected mutation,
+and this file once exported 18 actions with nothing in front of them at all.
+`tests/action-authorisation.test.ts` asserts every action is guarded, that the guard
+precedes any `prisma.` call, and that none downgrades to `requireUser`.
+
+The **FIRST account** on a deployment bootstraps as `operator`, or a fresh server has nobody
+who can promote anybody — a locked door with the key inside, "solved" by editing the
+database by hand. Existing users default to `viewer` on upgrade, deliberately: granting send
+rights by accident of history is the same fail-open in migration clothing.
+
+**The migration was written BY HAND.** `prisma migrate dev` found pre-existing drift in
+`OutreachPair` and offered to reset the database — 1,833 posts and every send record.
+Declined. The playbook's rule that production migrations are never automatic applies to a
+dev database holding irreplaceable data too.
+
+Verified against the running server, both directions: anonymous GET → 307 to `/sign-in`;
+unauthenticated POST → 401; valid session → 200 with the dashboard; **expired** session
+→ 307; **forged** token → 307. That last pair is what proves the downstream
+`currentUser()` validation is real rather than middleware's cookie-presence check
+standing in for it.
+
+---
+
+## Decisions that must not be quietly reversed
+
+Each of these was researched, verified, and chosen deliberately. If you think one
+is wrong, say so — but do not undo it as a side effect of another change.
+
+### 1. Automated send is BUILT. Do not undo it, and do not loosen how it works
+
+Automated sending exists (`src/outreach/browser/`) and manual is now a fallback, not
+the mode. An earlier version of this file said "the send is never automated" — that
+was a *phase* decision hardened into doctrine Tabish never chose. He stated the
+sequencing twice: manual to prove it works, then automate. It is automated.
+
+What the research actually established, verified 2026-07-30 (18 research agents;
+10 of 12 load-bearing claims refuted on adversarial verification) — read this as the
+list of constraints automation must satisfy, never as an argument against it:
+
+- **Device + network identity continuity is a pass/fail gate, not a score.** A hand
+  login records a login event binding (browser × account) to durable identifiers
+  (`mid`, `ig_did`, `ig-u-rur`) and a residential IP. Cookie-replay into a fresh
+  automation profile destroys all of it — and `sessionid` is a bearer token with
+  **no channel binding**, so replay *works* right until enforcement lands silently.
+  This is why we drive a hand-logged-in profile rather than importing a session, and
+  it is the single load-bearing choice in the whole send path.
+- **Behavioural telemetry** — pointer movement, focus changes, scroll depth, dwell
+  before clicking Message — is what a person emits. Hence the deliberate scrolling
+  and jittered pauses in `sendDm.ts`, which are not decoration.
+- **CDP attach does not help, and stock Playwright is detectable.**
+  `navigator.webdriver` is true in *every* stock Playwright configuration including
+  attach, and `Runtime.enable` is emitted per-frame identically whether you launch
+  or attach. Hence **Patchright**, which patches both. Do not swap it for
+  `playwright`.
+
+Requirements still in force:
+
+- Log in **by hand**, once per account, into that account's own profile
+  (`pnpm ig:login <handle>`). Never transplant a cookie.
+- **Patchright**, never stock `playwright`.
+- Same **home residential IP** the accounts normally use. No VPS, no VPN.
+- Input only via `page.mouse` / `page.keyboard` / `locator.click()`. Never
+  `evaluate(el => el.click())`, never `fill()` for the body.
+- `headless: false`, always. Headless Chrome differs measurably.
+- Realistic navigation: feed → scroll → profile → dwell → Message. Never deep-link
+  the thread.
+- **Still outstanding:** none of this has been proven on a throwaway 4th account for
+  2-4 weeks before touching these three. That was the recommendation and it has not
+  been done. The first real send is therefore the test, which is a genuine risk that
+  was accepted rather than eliminated — say so plainly, do not paper over it.
+
+**Wasted effort — verified refutations, do not spend time here:** TLS/JA3/JA4
+fingerprinting (Playwright-driven Chrome produces JA4 identical to Chrome stable);
+`X-IG-WWW-Claim` "session warmth" (real clients send `'0'` on every new tab);
+browser extensions as low-signal transport (worse on telemetry, synthetic events
+lack `isTrusted`); anti-detect browsers or proxies for three legitimate accounts
+(converts a normal pattern into an evasion pattern).
+
+### 2. Multiple messages per target ARE allowed — with new material
+
+A channel that ran four paid campaigns this week gives four genuinely different
+reasons to write, and the system supports that.
+
+**Corrected 2026-07-30.** An earlier version locked each pair after one message, on
+the reading that Instagram allows "one message per target, ever". That was wrong.
+The actual constraint is **one message *pending*** to a non-follower — it lifts the
+moment they accept. It was also built on a research claim that never went through
+the adversarial verification pass, which is exactly the sort of thing that pass
+exists to catch.
+
+What actually protects the account is **the new-material rule**: every follow-up
+must reference a campaign not used before for that pair. Meta's written spam policy
+penalises *repetition*, not volume — so fresh material is what makes a second
+message a new message rather than a repeat. That permits volume and protects the
+account with one rule.
+
+Supporting guards: per-pair spacing (`cooldownDays` — the schema column defaults to
+5 but seeded pairs and `DEFAULT_COOLDOWN_DAYS` both use **7**, which is the value
+actually in force), a cap on unanswered touches (`maxUnansweredTouches`, default 3 —
+beyond that a pending request will not deliver anyway), and per-target/per-sender
+daily caps.
+
+**`MAX_PER_TARGET_PER_DAY` accepts `"unlimited"` and has no ceiling.** Corrected
+2026-08-04: the `Setting` override is now shape-clamped (a positive whole number, or an
+explicit "unlimited") with **no upper bound**, because Tabish called 1/day "laughingly
+low". The effective value is **2**, from `.env`. Changing it is one `Setting` row and no
+code change.
+
+The risk is stated rather than waved away: measured, `@viralbhayani` posts **11-14 paid
+posts a day**, and uncapped rotation across 65 senders puts all of that into ONE inbox from
+a different page each time. **Rotation solves SENDER risk and does nothing for RECIPIENT
+risk**, and a recipient's spam report is what gets accounts banned. This cap is the only
+control addressing that, and it is a control we chose rather than a property of the
+platform.
+
+`cooldownDays` cannot help here: it is **per pair**, so 63 senders rotating through one
+category can message a recipient every single day while every individual pair sits
+comfortably inside its 7-day spacing. `DailyReservation` is what closes it, and it is
+claimed atomically — a count-then-compare is passed by two concurrent runs.
+
+**On volume:** practitioner figures put aged, healthy business accounts at **25-35**
+cold DMs/day. We operate at 1-2. Several per day is safe; the caps are guard-rails
+with large headroom, not the binding constraint.
+
+### 3. Every message written from scratch per recipient
+
+Meta's **written** spam policy states repetitive content *lowers the frequency
+threshold at which restrictions apply*. Templates with merge fields and spintax do
+not count as variation — research found an aged account sending only ~20
+spintax-varied messages that was still blocked. At 1–2 messages/day this is the
+highest-leverage safety control available.
+
+Bespoke bodies live in `prisma/bespoke.ts` → `OutreachPair.bespokeBody`, used for the
+**first** touch. Follow-ups use a fresh variant plus a campaign not referenced
+before — reusing the bespoke body would be the exact repetition this guards against.
+The 12 variants in `prisma/variants.ts` are the follow-up pool.
+
+**THE SINGLE TEMPLATE IS BUILT AND OFF (`singleTemplate`, default false, 2026-08-06).**
+Tabish asked for "no super custom messages"; that partially reverses this decision, so it
+shipped behind a flag the way Phases 3 and 8 did, and **turning it on is his call, to be
+recorded as his.** When on, every body is ONE template (`SINGLE_TEMPLATE_MIDDLE` in
+compose.ts) with ONE variable line — the paid post we actually saw, omitted when there is
+none, never invented. Every figure in it is already in the quality gate's allowlist. The
+variant is still CLAIMED per send so the per-pair exclusion, `VariantsExhaustedError` and
+the send-guard needles all keep working — the hook line is what keeps two touches to one
+recipient from being byte-identical, which `distinctiveSlice`/`bodyAppearedSince` require.
+Real output was rendered and read for all four shapes (channel±hook, brand±discovery)
+before this shipped. If he also says "drop the hook line", that breaks the post-send
+delivery check by construction — say so, then record it as his call.
+
+**"A fresh variant" was documented and not enforced, for weeks.** Corrected 2026-08-05.
+The LRU was scoped to the SENDER — `{ senderId, enabled, targetKind }` ordered by
+`lastUsedAt` — so it said nothing about which bodies a given RECIPIENT had already read.
+Nothing in the query looked at the pair. **MEASURED against the live database: 8 of 11 pairs
+had already been handed the same variant more than once, one of them five times.** A pool of
+12 shared across a sender's 7-9 pairs wraps after 12 messages to *any* target and comes back
+round.
+
+The campaign half of the rule was enforced and the variant half was not, which is the half
+that matters: Meta penalises **repetition**, and a fresh hook line stapled to a body the
+recipient has already read is exactly that. Selection now excludes variants this pair has
+been sent (counting `IN_FLIGHT` only, so a discarded draft does not burn the pool — the bug
+already recorded for campaigns), and **exhaustion REFUSES** via `VariantsExhaustedError`
+rather than wrapping round to something they have read. Not overridable; nearly unreachable
+(pool 12, `maxUnansweredTouches` 3, deepest live pair 4).
+
+**It also weaponised a shared needle, and that is the worse half.** Two messages built from
+one variant carry the same `distinctiveSlice`, and the post-send thread confirmation asked
+*is the needle present* against `page.locator('body').textContent()` — the whole
+conversation. So an earlier message of ours satisfied it alone: the new message need never
+have appeared and we record SENT. Verified by execution — building a thread from one attempt
+and asking about a LATER one returned `true`, with the bodies not even identical.
+
+That is the same mistake this guard has now made **twice, one level up each time**: first the
+check read the whole page and our text sat in the COMPOSER whether Enter worked or not; now
+it read the whole page and our text sat in an EARLIER BUBBLE. Both times the answer is the
+one already written down: *check the thing that changes, not the thing that is there either
+way.* `bodyAppearedSince` reads the thread with an empty composer before pasting and requires
+the occurrence count to **increase** — a delta history cannot fake.
+
+It was LATENT, not live: 0 delivered messages yet shared a needle with a later one on the
+same pair, because only 6 have ever been delivered and the reuse was in SKIPPED drafts that
+never reached a thread. Both halves ship together on purpose — the guard must not depend on
+selection being right, and selection must not depend on the guard catching it.
+
+**And `{{brand}}` meant two different things while one rule served both.**
+`prisma/brandVariants.ts` states the contract in as many words — *"{{brand}} becomes the
+recipient's own name"* — and nothing implemented it. `renderMessage` had the CHANNEL rule
+only: the sponsor detected in the recipient's paid post, falling back to "your brand
+partners". Found by rendering the real message to a real prospect:
+
+- **reachable today** — a media-buying pitch to Royal Canin closed *"indicative numbers for
+  YOUR BRAND PARTNERS?"*, addressing a buyer as though it were a publisher with sponsors.
+- **latent, worse** — with a hook present it becomes *a different company's name*:
+  *"indicative numbers for Amazon Dot In?"* sent to Royal Canin, under a hook line claiming
+  Royal Canin collaborated with them. An invented claim about the recipient's own marketing,
+  addressed to the people certain to know it is false.
+
+Both fixed, and the latent pair asserted anyway: they are unreachable only because
+`pickHook` queries by the RECIPIENT's `targetId` and `pipeline.ts` scrapes `kind: 'CHANNEL'`
+alone, which is a property of which rows the scraper visits rather than a rule. A brand now
+receives **no hook line at all** — its first touch has `brandPitch`, which names a placement
+we genuinely saw. `RenderTarget.kind` is REQUIRED so the compiler named all 24 call sites
+instead of one defaulting silently to channel behaviour, which is the bug itself.
+
+**Still broken, deliberately untouched:** the channel hook line renders "Milano Icecream
+Bangalore". `prettifyBrand` reconstructs a name from a caption token while the real one sits
+in `TargetAccount.displayName`, so the fix is a source-of-truth decision that would make a
+pure, tested function do a lookup. Flagged rather than half-done.
+
+### 3b. ENFORCED ON EVERYTHING: all four senders share one persona
+
+> **RESHAPED 2026-08-07, by Tabish's explicit instruction: "the persona needs to only be
+> channel name … with the contact details listed accordingly."** Messages no longer
+> introduce a person at all. The `"I'm Kapil Jain, Co-founder of …"` intro line and the
+> name/role signature lines are GONE from `renderMessage`; every message now signs off as
+> the PAGE alone:
+>
+> ```
+> Bollywood Society
+> +91 60000 189766
+> kapil@digitalsukoon.com
+> ```
+>
+> Consequences, each applied the day of the change so they cannot drift:
+> - `signatureBlock()` in render.ts is the ONE writer of that block, and the gate's
+>   `PERSONA_CHANGED_SINCE_DRAFT` probe and the quality gate both call IT — writer and
+>   probe share bytes.
+> - `personaFingerprint` (distinctness, decision 3b) narrowed to brand|phone|email,
+>   honouring its own contract ("excludes nothing that appears in the message — and
+>   includes nothing that does not"). Two accounts differing only by the now-invisible
+>   `personaName` CLASH now, where before they passed as distinct with byte-identical
+>   rendered signatures. Stricter in the right direction; tested both ways.
+> - `personaName`/`personaRole` remain as columns, validated no longer (a guard about a
+>   field no recipient sees is a guard about nothing), and the dashboard editor offers
+>   only Page name / Phone / Email.
+> - Old-format drafts PASS the staleness probe when their contact block still matches —
+>   deliberate; the stop catches a message signed as the WRONG identity, not one signed
+>   in last month's format.
+> - The retired intro-line pattern STAYS in `ENVELOPE_PATTERNS` (delivered messages carry
+>   it forever, and envelope matching errs loose).
+>
+> **The shared phone+email fingerprint is now 2 of the 3 signature lines.** The gate
+> passes because the page names differ, but the standing warning below is sharper, not
+> weaker, after this change: at scale, one phone number under every page announces one
+> operation. Raise it before volume rises.
+
+Observed 2026-07-31, blocking brand sends since 2026-08-03, and **since 2026-08-04 it
+blocks CHANNEL sends too — decision 6, taken by Tabish.**
+
+> **RELEASED 2026-08-06, and this is the entry to read carefully.** Each account was given its
+> own channel name — Bollywood Chronicle, Bollywood Society, Mad About Marketing, Demo Account —
+> so `checkPersonaDistinct` now passes on all four and this gate blocks nothing. Verified by
+> running `recheckBeforeSend` against the live database: the binding stops were `no-session` and
+> `auto-send-off`. (`auto-send-off` was DELETED on 2026-08-08 — autopilot is one switch — so
+> `no-session` is the binding stop that survives, and it still binds on two of the three
+> revenue accounts.)
+>
+> **The fingerprint it exists to prevent is still there.** All four carry the identical
+> `+91 60000 189766` and `kapil@digitalsukoon.com`, and the gate cannot see it because it
+> compares the WHOLE block and the block now differs. At four accounts that is cosmetic; at 65
+> it is one phone number under 63 pages, which is exactly the "they are one operation" signal
+> this decision was written about. **Raise it before volume rises.** A guard passing is not the
+> same as the risk being gone.
+>
+> **Never satisfy it by generating personas.** Who fronts each page is a business identity
+> question, and a plausible invented person in a real DM to a real company is worse than a
+> blocked send. Runtime flag: `personaGateChannels`, default on.
+
+**Why the reversal.** The reasoning below said halting channel outreach "would be a much
+bigger change than this guard is entitled to make on its own", and at four accounts that
+was right. At 65 it inverts: 63 pages emitting one byte-identical contact block is the
+cross-account fingerprint decision 3 exists to prevent, and **rotation sharpens it in the
+specific way that matters** — the whole point is that a recipient hears from a different
+page each time, and an identical name, phone number and email under every one announces
+they are one operation.
+
+It holds at drafting AND at delivery, and it is **not overridable** — deliberately absent
+from `OVERRIDABLE_BLOCKS`, with a test asserting the override is inert. Every stop a human
+may cross is about TIMING (too soon, nothing new to say, they already replied); this one is
+about the message being wrong for its recipient, and "I know something the agent does not"
+is not an argument that applies to a signature naming the wrong company.
+
+The original brand-only reasoning, kept because it explains the shape:
+
+**What a persona actually is, since this needs saying plainly.** It is the identity every
+message carries — the intro line and the four-line signature `renderMessage` appends:
+
+```
+I'm Kapil Jain, Co-founder of Bollywood Society.        ← intro
+...
+Kapil Jain
+Co-founder, Bollywood Society                            ← signature
++91 60000 189766
+kapil@digitalsukoon.com
+```
+
+Every `SenderAccount` carries that block **byte-identically**, `@madaboutmarketingg` and
+`@bollywoodchronicle` included. Two consequences, and the second is the worse one:
+
+1. A DM from **Mad About Marketing** introduces the co-founder of a *different company*.
+   Read as sloppiness, or as one script running several pages.
+2. If two of our pages pitch the same brand, that brand's team sees the **identical phone
+   number and email twice**. That is the cross-account repetition decision 3 exists to
+   prevent, and the bespoke bodies do not fix it: the *bodies* differ per recipient, the
+   contact block does not, and it is the part of a message most trivially fingerprinted.
+
+**Why brands FIRST, and then everything.** A brand's social team reads pitches for a
+living and checks who is writing; a publisher is a softer audience, and that outreach
+already ran this way. So `checkPersonaDistinct` in `brandGuards.ts` started by refusing
+only `kind: 'BRAND'` — and now takes a `gateChannels` flag which is on by default.
+
+`validatePersona` checks **shape**, not truthfulness or distinctness, so four identical
+blocks sail through it. Distinctness is the property that was missing, and it is now
+checked by the same function the dashboard uses to render the warning — a page computing
+this its own way could disagree with the rule actually blocking the send.
+
+**Fixable from the dashboard** ("Edit who this account is" on each account row). The moment
+one account's block differs from the others, its brand pitches release. Distinctness is
+deliberately NOT enforced on *save*: the shared state exists today and channel outreach
+runs on it, so blocking the save would force whoever is mid-edit to get all four right in
+one atomic step.
+
+This is a business identity question — who actually fronts each brand — and it is Tabish's
+to answer. **Do not "fix" this by generating personas**: a plausible invented person in a
+real DM to a real company is worse than a blocked send. `@tabishmukaddam1`, the throwaway,
+is the one place a stand-in is appropriate.
+
+**On wording.** The on-screen warning originally read *"Another account introduces itself
+with these same details, so a brand pitch from here is held back."* Accurate, and it assumed
+the reader already knew the persona was the signature — Tabish asked what it meant. It now
+shows the actual signature and names the specific mismatch. **If the person a warning is FOR
+has to ask what it means, the warning has not done its job.**
+
+### 4. Detection never uses a login
+
+`src/detection/feed.ts` hits Instagram's anonymous web feed endpoint with
+`x-ig-app-id: 936619743392459`. **Never attach a session cookie here.** Doing so
+converts an IP-level risk into an account-ban risk — the one thing this project
+must not do. The only exposure today is IP rate limiting.
+
+### 5. Detection never gates outreach
+
+If the feed endpoint breaks, a permitted message is still prepared, just without a
+specific hook. A monitoring subsystem must never be able to silence the thing it
+monitors. Correspondingly: **0 posts parsed is an alarm; 60 parsed / 0 paid is a
+quiet day.**
+
+### 6. The lifetime ceiling counts messages *in flight*
+
+`MAX_TOTAL_SENDS` counts SENT + REPLIED + SENDING + READY + QUEUED. Counting only
+delivered messages would draft every pair before the ceiling bound. The code default
+is 1; `'unlimited'` parses to `null` (no ceiling) and is the value in `.env` since
+2026-08-03. It was **6**, which had been silently consumed — the planner refused to
+prepare anything for two days while the dashboard showed no reason why.
+
+### 7. We message the CHANNEL and the BRANDS in its paid posts
+
+Scope set by Tabish 2026-08-03: *"Message channels that posted and the brands (their
+instagram channels)."* Both, not one or the other.
+
+A paid post names its buyer. `@royalcanin.india` ran a campaign with M.O.M, so they are
+a company demonstrably spending on influencer placement — exactly who Digital Sukoon's
+200-page network is for. The channel gets a partnership pitch; the brand gets a
+**different** pitch (media buying), because it is a different proposition to a
+different reader.
+
+**Where brand handles come from, and the mistake that hid them.** NOT from
+`DetectedCampaign.brands` — that column holds *display* names for message copy, and
+`extractBrands` deliberately converts `@royalcanin.india` into "RoyalCanin", throwing
+the handle away at exactly the step that needs it. Measured 2026-08-03: across 14
+CAMPAIGN posts the brands column held **1 usable handle out of 19 tokens**, while the
+CAPTIONS of those same posts held **26 real @mentions**. An earlier conclusion in this
+file that "only 20% of brands are resolvable" was measured on the wrong field and is
+wrong. `resolveBrand.ts` reads the caption.
+
+**Deduplication is free.** `TargetAccount.handle` is unique, so a brand appearing on
+both channels resolves to the SAME row, and the existing cooldown, reply-halt and
+opt-out rules cover it with no new logic. Tabish's requirement — *"if those brands are
+detected in the other channel's posts they must not be messaged again"* — needs no
+code beyond upserting on handle.
+
+---
+
+## The two channels behave completely differently
+
+| | `@madovermarketing_mom` | `@viralbhayani` |
+|---|---|---|
+| Volume | ~3 posts/day | **~62 posts/day** (measured) |
+| Discloses paid work? | **Yes — `#Collaboration`** | **Never** |
+| Detector | `mom` — deterministic regex | `semantic` — novelty filter, then a model |
+| Brand extraction | free (hashtag + @mention) | not attempted |
+
+**Do not build a rules-based classifier for `@viralbhayani`.** Measured 2026-08-03
+against 48 live posts, every structural signal is empty: `is_paid_partnership` 0/48,
+`sponsor_tags` absent, `branded_content_tag_info` absent,
+`commerce_integrity_review_decision` absent, `#ad`/`#sponsored`/`#collaboration` 0/48.
+`commerce_integrity_review_decision` looked promising and is **noise** — present on
+43/48 M.O.M posts, 33 of which are not `#Collaboration`.
+
+The dashboard says "not classified" rather than "0 paid campaigns", because a bare
+zero would read as *they do no paid work*, which is false. The metrics row now also
+carries a coverage line — *"Counted from 1 of 5 channels"* — because a number that
+silently describes one channel out of five is unreadable rather than merely incomplete.
+
+### THE CAPTION IS NOT THE POST — A PAID PLACEMENT CAN LIVE ENTIRELY IN THE VIDEO
+
+Found 2026-08-07 by Tabish, and it is the most important open limitation in detection.
+`DbtNU9UzWYU` was called ORGANIC by the model with a defensible reason ("news of a new bus,
+no promotion or brand brief") — and the model was reading the only thing it is given, the
+CAPTION. **The evidence was in the footage.** MEASURED by fetching the reel's cover frame:
+
+  * the vehicle carries **SWITCH** across the front bumper — SWITCH Mobility, Ashok
+    Leyland's EV brand. A named commercial product, centre frame.
+  * an on-screen title card reads *"THANE's First Double Decker Bus 😍 Inside View!"* —
+    supplied-creative styling, not a paparazzi grab.
+  * the caption mentions none of it and credits another creator.
+
+So caption-only classification has a blind spot that **no prompt edit can close**. It is a
+missing INPUT, not a tuning problem.
+
+**AND IT BREAKS THE MEASUREMENT, WHICH IS THE WORSE HALF.** `pnpm ig:accuracy` scored this
+post as a *correct* ORGANIC — the label it compares against is itself caption-derived, so
+the harness and the classifier agreed with each other about a post they were both wrong
+about. **98% correct / 100% recall therefore means "98% of what a caption can reveal", not
+"98% of paid posts found"**, and recall on video-only placements is not merely unmeasured
+but unmeasurable by this harness. Never quote the accuracy figure as coverage. Full
+reasoning under the warning box in "The prompt is the classifier, so it has a test".
+
+**WHAT IS REACHABLE, MEASURED (all anonymous, no session — decision 4 holds):**
+
+| | |
+|---|---|
+| `image_versions2.candidates` | **11 sizes on 12/12 posts.** A 480px thumb is ~35 KB, HTTP 200, 50-800 ms |
+| `video_versions` | 3 renditions, 720x1280, on every reel (7/12 posts were video) |
+| `accessibility_caption` | **0/12 — always absent.** Instagram's own alt-text is not an option |
+| `clips_metadata.branded_content_tag_info` | **`{"can_add_tag":false}` on every post.** No hidden disclosure; consistent with `is_paid_partnership` 0/48 |
+
+The thumbnail is the cover FRAME of the reel, which is where a wrap, signage or a product
+sits — so vision is genuinely available for about a third of a cent's bandwidth per post.
+
+**AND THE CONTROL FRAMES ARE WHY THIS MUST NOT BE BUILT NAIVELY.** Two more posts were
+fetched deliberately as controls, and both would fool a "does the frame contain a brand?"
+rule:
+
+  * `DbtMhHdTXDQ` — genuine paparazzi editorial, ORGANIC, correctly. The frame shows
+    Samantha outside a salon with **KÉRASTASE and DESSANGE PARIS signage filling the
+    background** and a branded cup in her hand. Three brand marks, zero payment.
+  * `DbstKpLqBzW` — genuine CAMPAIGN (film promo, 95%). The frame is a man in an orange
+    coat and a Hinglish title card: **no brand mark visible at all.**
+
+So brand-visible does NOT mean paid, and paid does NOT mean brand-visible — the same
+"identical syntax, only meaning separates them" result that killed a rules-based caption
+classifier, one modality over. A vision stage has to ask *is this publisher acting as this
+product's channel* (product centred and lit, supplied creative, a title card selling a
+feature) versus *is a brand incidentally in shot* (background signage at a location).
+
+**WHAT IS BUILT (2026-08-07): the CAPTURE, not the classification.** `feed.ts` now takes the
+cover-frame URL (`pickThumbnail` — smallest candidate >=480px, largest as fallback, never
+null when anything exists) plus `video_versions[0].url` and the duration, and `pipeline.ts`
+stores them in `rawPayload` and **REFRESHES them on every re-observation**. That last part is
+the point: these are CDN URLs with a lifetime, so the newest sighting holds the only ones
+still fetchable, and a post that scrolls out of the feed window can never be re-scraped.
+Capturing now is time-sensitive and costs nothing; deciding later is fine.
+VERIFIED on a live 15:00 cron pass, not by reading code: 23 new posts stored, thumbnail URL
+on 23 of the newest 40 rows, video URL on 18.
+
+**RESOLVED 2026-08-07/08 — AND WITHOUT A VISION API. Tabish refused a Gemini key, and he
+was right: a paid API was never what solved this.**
+
+**How the Thane post was actually identified: TABISH SPOTTED IT, and the frame was then
+read by eye.** No vision model was involved in finding it or in confirming it. That points
+straight at what the evidence actually is — **the decisive content of that frame is TEXT**,
+and text can be read locally, offline, for nothing. MEASURED on the real 480px cover frame
+with Apple's Vision framework, all at confidence 1.00:
+
+```
+"THANE's First Double Decker Bus ... Inside View!"   the supplied title card (79% of frame width)
+"SWITCH"                                             the advertiser, on the bumper (8% width)
+"GALE CIRCLE"                                        the LED destination board
+```
+
+**So OCR turns a vision problem into a TEXT problem, and this repo already owns a text
+classifier measured at 98% correct / 100% recall.** The frame's words become more words for
+it to read. `src/detection/ocr.ts` (Apple Vision via a Swift helper compiled once and
+cached; tesseract as a cross-platform fallback, MEASURED WORSE — it read the same title card
+and missed `SWITCH` entirely). ~0.2s a frame, no network, **no API, no key, no new cost
+line**. The only spend is the classifier call that was happening anyway.
+
+**VERIFIED END TO END on the founding case**: `DbtNU9UzWYU` moved ORGANIC -> REVIEW, reason
+*"Title presents new bus as product; likely paid promo."* The corpus backfill then found a
+SECOND one nobody had spotted — `Dbuk-oez_C0`, caption ordinary, footage reading
+`SONY | 24 AUG | FRI | SONY liv | INDIAN GAME SHOW`.
+
+**WHAT SEPARATES PAID FROM EDITORIAL IS WHAT THE TEXT SAYS — not that text or a brand is
+present.** The control frame `DbtMhHdTXDQ` is genuine paparazzi editorial and carries a
+prominent overlay too: *"The way Paps are saying / Sambhal ke Madam"* (the publisher's own
+joke) plus `DESSANGE D` and a garbled `KERAST` from salon signage. Both frames have a title
+card; only meaning separates them, which is exactly the judgement the classifier already
+makes. Verified: the salon control does NOT flag, and neither does a chess post carrying
+`adani` sponsor boards in shot.
+
+**A MISTAKE WORTH KEEPING, because it cost the founding case a whole build.** The first
+version grouped narrow text as `scene` and told the model it was *"scenery, not evidence of
+payment"*. `SWITCH` is 8% of frame width, landed there, and the model was thus instructed to
+discount the one token naming the advertiser — the Thane post stayed ORGANIC through the
+entire new pipeline. **A GEOMETRY fact was asserting a MEANING claim.** Width knows how wide
+text is; it cannot know whether a word is a hoarding behind a celebrity or a badge on the
+vehicle being shown off. The groups are now named for what they measure (`LARGE TEXT ACROSS
+THE FRAME` / `SMALLER TEXT IN THE FRAME`) and the classifier decides.
+
+**THE CAPTION IS JUDGED FIRST, ALONE — and that ordering is load-bearing.** Reading the
+frame first and passing its text into the only call was cheaper and wrong three ways, all
+found by adversarial review:
+
+1. **It failed open.** A second call established what the caption alone would have said;
+   when that call failed, the code assumed the frame had agreed — so a CAMPAIGN produced
+   entirely by frame text was asserted. A network blip was enough.
+2. **It let frame text name BRANDS, and brands become message copy.** Executed against the
+   real salon control, it produced the DM sentence *"I noticed your recent branded
+   collaboration with Dessange Paris and Kerastase"* — to a prospect, about signage behind a
+   celebrity. Brands now come from the caption-only call, always.
+3. It made the guard against a frame CLEARING a post unreachable.
+
+Caption first fixes all three by construction, and costs ~2.8 cents across the whole corpus.
+
+**THE FOOTAGE MAY ONLY RAISE A POST TO REVIEW.** `src/detection/frameSignal.ts`
+(`applyFrameSignal`, PURE, exhaustive with `never` bindings, property-tested that it can
+never demote): a frame may turn a caption ORGANIC into REVIEW so a person looks, and nothing
+else. It can never mint a CAMPAIGN, never overturn one, never clear one, never give an
+UNCLASSIFIED post a verdict. The reason is honest rather than cautious: `ig:accuracy`'s
+labels are caption-derived, so a frame-driven CAMPAIGN is measured by nothing that exists.
+
+**AND THE REVIEW QUEUE CAN NOW BE ANSWERED, which shipped in the same commit deliberately.**
+`humanLabel`/`labelledBy`/`labelledAt` had existed since the schema was written with **ZERO
+writers** and no control anywhere — 17 REVIEW rows, the oldest six days old. Escalating a
+post to REVIEW without a way to settle it converts an invisible miss into an unactionable
+one, which is worse because the queue looks handled. `labelPost` (ONE writer) plus the
+"Worth a look" section on `/paid-posts` fixes that, and a person's answer is stamped
+`verdictSource: 'human'` so it is never counted as a model's opinion. **Those answers are
+also the only possible labels for the video-only class** — `ig:accuracy` cannot measure it
+by construction, so every answer is a row in the harness that would.
+
+**THE GATE, MEASURED BOTH WAYS (and `ig:accuracy` now runs the PRODUCTION path — caption
+first, then footage, then `applyFrameSignal` — because scoring one call with frame text
+would measure a pipeline that does not exist):**
+
+| | correct | recall | precision |
+|---|---|---|---|
+| before any change | 98% | 100% | 93% (1 FP) |
+| new prompt, footage OFF (`--no-frames`) | **98%** | **100%** | **94%** (1 FP) |
+| new prompt, footage ON | 96% | **100%** | 88% (2 FPs) |
+
+The control run is the one that matters: **with frames off the new prompt matches the
+baseline**, so the prompt edit did not damage caption classification. And with caption-first
+ordering a frame move can only produce REVIEW, so frame text is *structurally* unable to
+create a false CAMPAIGN — the FP difference is model variance at n=53 (McDonald's appears in
+both runs, Miu Miu in one). The harness prints what the footage actually changed, because
+otherwise the whole feature could work or misfire with every headline figure identical.
+
+**One prompt attempt failed the gate and was reverted**, which is the loop working: a rule
+telling the model that commentary-about-marketing is usually organic dropped **recall to
+87%** — trading the one thing this project never trades. The rule that shipped is phrased
+strictly as a restriction on RAISING, so it cannot make caption judgement more conservative.
+
+**Frames are BYTES on disk now** (`src/detection/media.ts`, `~/.ds-sales-agent/frames/`),
+because the URL is what expires. MEASURED mean **47.4 KB** a frame (206 frames) and 203
+posts/day, so ~9.6 MB/day and ~3.5 GB/year — the first draft of this said 35 KB and 90/day,
+understating it threefold. 206 frames are banked including the founding case.
+
+**AND THE URL REFRESH THIS ALL RELIED ON NEVER RAN.** The previous session's docblock claimed
+media URLs were "REFRESHED on every re-observation". `persist()` is reached only from
+`for (const post of fresh)`, and `fresh` excludes every known shortcode — so a re-observed
+post was never re-persisted. MEASURED: 48 of 1,709 rows carry a thumbnail URL; 39 pre-capture
+rows re-observed across ~9 later passes gained none. It was "verified" by checking that NEW
+posts had URLs, which cannot test a claim about re-observation. Frames are now banked for
+re-observed posts in the pipeline's known-post loop, which is how the Thane frame was
+recovered at all. **Do NOT delete the `upsert` `update:` branch as dead code** — it fired 16
+times in one day: the four IST slots sit on minute 0, always a multiple of 15, so they
+collide with the 15-minute detect cron four times a day, and that branch is the reconciler.
+
+**Commands:** `pnpm ig:ocr` reads every saved frame and prints what it says — **the default
+does real work because OCR is free**, and only `--reclassify` spends. `pnpm ig:frames
+--capture` banks frames whose URLs are still alive; run it generously, judging can wait.
+`pnpm ig:detect` runs a pass on demand.
+
+**Known limitations, stated rather than buried.** OCR only sees the COVER frame, so a brand
+revealed later in a reel is still invisible (ffmpeg multi-frame extraction is feasible and
+free of API cost — MEASURED at 7.25 MB a reel, 81.7% of posts are reels, so ~453 GB/year,
+which is why it is not built). A placement with no on-screen text and no readable brand mark
+remains unreachable. `OVERLAY_MIN_WIDTH` and `OCR_CONFIDENCE_FLOOR` are measured from 156
+frames, not tuned against outcomes. And a Windows machine has no Vision framework: it gets
+tesseract if installed and an **honest refusal** otherwise, never a silent "no text found".
+
+### THE FRAME CHECK WAS BUILT AND NEVER RAN — 166 FRAMES SAVED IN A DAY, NONE READ (2026-08-08)
+
+The single most important finding of the hosting session, and it invalidates the confident
+tone of everything above until this date.
+
+`pipeline.ts` saved every new post's cover frame and then classified the **caption alone**.
+The only frame-aware code lived in `scripts/ocr.ts --reclassify`. So the Thane class of
+paid post — the entire reason the OCR work exists — was **still being missed in normal
+operation**, and `DbtNU9UzWYU` was only ever escalated because a person typed a command by
+hand. MEASURED that day: 166 posts had a frame on disk that nothing had looked at.
+
+**A feature that works only when someone runs a command is not running.**
+
+`src/detection/judge.ts` (`judgeWithFrame`) is now the ONE judging path — caption first and
+alone, then the footage, composed through `applyFrameSignal` — and all three callers use it
+(`pipeline.ts`, `scripts/classify.ts`, `scripts/ocr.ts`). This is the FOURTH time one rule
+with several callers has drifted here after `gate.ts`, `readThread.ts` and the two Connect
+buttons, so it is asserted by `tests/one-judging-path.test.ts` rather than by a comment —
+a comment claiming "one implementation, two callers" was already present and untrue in
+`readThread.ts`. That test FAILED on its first run and caught `scripts/ocr.ts` still
+holding its own copy, which is exactly its job.
+
+The frame call is gated on `optedOut` in one place (MEASURED: 64% of OCR runs were our own
+retired pages). Frames are still SAVED for them — our own channels are ground truth and the
+labelled set any future measurement needs. Backfill after the fix: 51 judged, **114
+correctly skipped**, 5 calls failed and left untouched.
+
+### OCR IS NOT macOS-ONLY ANY MORE — RapidOCR, MEASURED (2026-08-08)
+
+MEASURED across all 321 saved frames, comparing normalised CONTENT against Vision's answers:
+
+| engine | content recall | the founding case (`SWITCH` on the Thane bumper) |
+|---|---|---|
+| vision | baseline | reads it, confidence 1.00 |
+| **rapidocr** | **87.1%** | **READS IT, confidence 0.83** |
+| tesseract | 71% | **misses it entirely** |
+
+**The first attempt at that recall figure said 27.1% and was WRONG.** RapidOCR emits
+`THANE'sFirstDoubleDeckerBusInsideView!` where Vision emits the same words spaced, so
+splitting on whitespace made one engine's single token unmatchable against the other's
+seven — a FORMATTING difference reading as a reading failure. Trusting it would have
+rejected the engine that reads the decisive token. Measure the property that matters, not
+an artefact of how an engine chunks its output.
+
+**What decided it was the founding case and the CONTROLS, not the aggregate.** RapidOCR
+recovered every decisive token: `SWITCH`/`THANE`/`Double Decker`; the editorial control's
+`DESSANGE`/`Sambhal` (which must NOT flag); `SONY`/`GAME SHOW`. An engine with a good
+average that cannot read the one token the feature exists to catch is a regression with a
+good average.
+
+`scripts/rapidocr-read.py` prints the SAME JSON shape as the Swift Vision helper, so
+`parseVisionOutput` reads both — one parser, two producers. Speed: **0.61 frames/second**
+on the Linode (ONNX, no GPU) against Vision's ~5/s locally; fine for a background pass,
+not for a request. The engine that answered is recorded on every result: **never compare
+verdicts across engines without knowing which read the frame.**
+
+`framesRead` on `/paid-posts` no longer collapses **five** states into one number —
+read-with-text / read-no-text / no-frame / no-engine / failed have five different
+remedies, and a single low count cannot distinguish a clean corpus from a broken reader.
+The second is an outage wearing the costume of a quiet day.
+
+### IT IS HOSTED NOW, AND THE SERVER CANNOT SEND (2026-08-08)
+
+The dashboard, the database and detection run on the Linode (172.105.53.101). **Sending
+does not, and cannot.** Full detail in `docs/DEPLOY.md`; the parts that must not be undone:
+
+```
+LINODE                                    A USER'S OWN MAC / WINDOWS
+──────                                    ─────────────────────────
+dashboard :3100 behind nginx + TLS        pnpm agent:device
+Postgres 16  ds_sales_agent               their Chrome profiles
+detection cron, every 15 min              their Instagram sessions
+RapidOCR  /opt/ds-ocr-venv                drives the browser from THEIR IP
+
+SEND_ENABLED=false      <- hard floor     SEND_ENABLED=true
+AUTOPILOT_ENABLED=false <- hard floor
+```
+
+**`SEND_ENABLED=false` lives in `withSendLock`**, which every path that drives a browser
+passes through — the dispatcher, the dashboard's Send button, the on-demand dialog, the
+CLI. Its first version was checked only inside the device agent, which left the other four
+open on the server: the same one-rule-several-callers gap, in the guard whose entire job is
+that hosting is safe STRUCTURALLY. Verified by execution both ways — floor down, the send
+body never runs; floor up, it does.
+
+**Why the server may never send.** A send drives a Chrome profile logged in BY HAND from a
+home IP, which wrote `mid`, `ig_did`, `ig-u-rur` and a login event binding that browser to
+the account from that network. Copying it to a datacenter is a cookie transplant: `sessionid`
+is a bearer token with no channel binding, so it WORKS right up until enforcement lands
+silently. On a multi-user product it is worse — every customer behind one datacenter IP.
+
+**A powered-off device cannot send, and nothing pretends otherwise.** Tabish asked for
+sending to continue "regardless of whether they close the url or turn off their devices";
+the first half is already true (the tab was never the sender) and the second is impossible
+without the transplant above. He chose queue-and-send-on-return after the risk was stated:
+drafts stay READY, the dashboard shows when a device was last seen, and they go out on
+reconnect under the ordinary pacing rules.
+
+**Registration is invite-only and roles are enforced** — see the auth section. The random
+subdomain is NOT a security control; a URL leaks through history, referrers and CDN logs.
+
+**Postgres, not SQLite, on the server.** The WAL argument in `src/lib/db.ts` is about
+SQLITE and does not apply: Postgres MVCC snapshots are per TRANSACTION at READ COMMITTED,
+so each statement sees the latest commit — which is what makes two hosts sharing one
+database safe. Do NOT set a session-level REPEATABLE READ; that reintroduces the frozen
+snapshot through a different door.
+
+**THE GENERATED PRISMA CLIENT IS BAKED WITH ITS SCHEMA'S PROVIDER.** Choosing an adapter at
+runtime is not enough — found by running it:
+
+> `The Driver Adapter @prisma/adapter-pg ... is not compatible with the provider sqlite
+> specified in the Prisma schema.`
+
+So the switch is a BUILD step. The server runs `prisma generate --config
+prisma.postgres.config.ts` after every install; a laptop runs plain `prisma generate`. And
+`pnpm test` regenerates the SQLite client first, because the suite builds temporary `.db`
+files and points the real client at them.
+
+`prisma/schema.postgres.prisma` is GENERATED by `scripts/make-postgres-schema.sh` and never
+edited. `tests/schema-parity.test.ts` asserts a byte-identical model body and was
+mutation-tested (an injected canary model failed it; removing it passed).
+
+**Two bugs the server found that reading could not**, both worth the shape rather than the
+detail: `commandExists` searched PATH for an ABSOLUTE path and so reported a correctly
+installed RapidOCR as `engine: none`; and `rapidocr-read.py` printed line-delimited JSON
+under a docblock claiming it matched the Swift helper, which prints an ARRAY — so the
+engine ran, exited 0 with four correct observations, and the outcome was `failed`. The
+first was caught in one command ONLY because the refusal names itself instead of returning
+"no text found".
+
+### DETECTION HAS ITS OWN CLOCK, AND IT IS NOT THE SEND SCHEDULE (2026-08-07)
+
+Tabish: *"the schedule is for sending messages, not for detecting paid posts, paid posts
+must be detected as fast as possible for the channels as target."*
+
+Detection was stage 1 of `runSlot`, so it inherited 11:00/15:00/17:00/20:00 IST. Those four
+times are a decision about DM volume and recipient experience; detection is an ANONYMOUS
+public read with no session attached (decision 4) and cannot spam anyone, so nothing about
+send safety argued for pacing it. MEASURED cost of the coupling on 404 real @viralbhayani
+posts (57.7/day): the 20:00 -> 11:00 gap is **FIFTEEN HOURS**, about **20 posts a night**
+sitting undetected. A hook line is age-bounded (`HOOK_MAX_AGE_HOURS`), so a slow read can
+retire material before anything is written about it.
+
+Now: `DETECT_INTERVAL_MINUTES = 15` on its own cron (`src/detection/cadence.ts`), worst-case
+latency 15 hours -> 15 minutes, a 60x improvement. **Why not faster:** 5 watched channels x
+~4 pages is ~18-20 requests a pass, so 15 minutes is ~1,900 requests/day against an
+undocumented endpoint; 5 minutes would be ~5,700 to shave 10 minutes off an already-solved
+problem. The risk here is a 429/IP block that blinds detection completely, and the point of
+the change is to see MORE. If a 429 appears, raise the interval first.
+
+`DETECT_LOOKBACK_HOURS = 6` for a routine pass (was 36 — sized for a 15-hour slot gap, and
+absurd re-reading at 15-minute cadence), `DETECT_CATCHUP_LOOKBACK_HOURS = 36` kept for
+`runSlot` and restart catch-up, because a slot must never plan against a stale corpus.
+**Nothing about sending changed** — four slots, reply checks at 11:00/20:00, and the paced
+dispatcher are untouched. Verified by watching the cron fire on its own clock, not by
+reading the code.
+
+### THE FREE FILTER WAS SILENTLY VETOING THE CLASSIFIER — the largest source of missed paid posts
+
+Found 2026-08-07 when Tabish hand-picked five paid posts we had "missed". FOUR WERE ALREADY
+`CAMPAIGN` at 92-95%. The fifth exposed something far worse than one post.
+
+Stage 1 (`novelty.ts`) required **two or more rare hashtags** to let the model read a post.
+MEASURED on the live 592-post corpus: **76 @viralbhayani posts were filtered and never read
+by the model, and 49 of them failed for that one-rare-tag reason alone** — including
+Tabish's post (`#Thane`, one rare tag) and obvious commercial copy like
+*"#CommuneCircus, presented by Vartik T…"* and a Star Plus show launch. And the filtered
+posts were recorded as **`verdict: 'ORGANIC'`** — a positive claim that the publisher was
+NOT paid, about posts nothing had read. `/paid-posts` counted all 76 as judged-and-editorial.
+Fourth appearance of *absence of data hardening into a negative verdict*.
+
+The file's own header already argued the right principle — *"a missed paid post is invisible
+and unappealable, a wasted call costs a fraction of a cent"* — and the code shipped a
+threshold that made misses the common case.
+
+**The veto is DELETED, not lowered.** Measured `rare>=1` too: 540 of 592 pass, so it would
+still discard 9% while remaining able to veto a paid post. At the measured
+**$0.0000239/post with 94% cache hit**, reading every never-read post on every channel is
+**2.7 cents**. The economics the filter was built for do not exist. Scoring is KEPT and
+still recorded (`rareTags`, `signals`) — the measurement was valuable, the veto was the bug.
+A filtered post now returns `UNCLASSIFIED` / `verdictSource: 'none'`, never a verdict.
+
+**Result: @viralbhayani 84 -> 99 CAMPAIGN (+18%)** on the day, **101 in-window after the 13:15
+detection pass**, 689 posts classified for $0.012, and the 125 fake-ORGANIC rows (76 VB + 49
+society) were reset and re-judged. In-window unjudged is **0** on every classifying channel.
+
+### "TOO SHORT TO BE A PITCH" IS A VERDICT, NOT A FAILED CALL
+
+`classifyCaption` returns null under 15 characters, and null means *the call failed* — so 27
+posts (`#kajol`, `Om Shanti 🙏`, `RIP 💔`, two with no caption) sat in UNCLASSIFIED forever,
+holding the unjudged count above zero on a screen where unjudged means A JOB TO DO. No
+amount of re-running could clear them, because nothing was wrong. Now judged free as ORGANIC
+with `verdictSource: 'rules'` — and that source is HONEST here where the stage-1 filter's was
+not: this is a deterministic rule ABOUT THE POST (`tooShortToJudge`, `MIN_JUDGEABLE_CAPTION`,
+exported and tested), not a decision to skip reading it. A paid placement needs a product, a
+date, a link or a brief; none fit in eleven characters.
+
+**`ig:classify` had its own copy of the stages and had to be fixed too** — it reported "27
+reach the model" then classified zero. One rule, two callers, and the CLI was the wrong one
+again.
+
+### /paid-posts COUNTS THE WINDOW IT ACTUALLY JUDGES
+
+The breakdown counted the WHOLE corpus, so it reported ~370 posts as "not judged" — every one
+pre-cutoff history the classifier is deliberately never asked to read (Tabish's 1 Aug scope).
+A permanent, un-clearable backlog. Now every figure is scoped to `detectionCutoff()` and the
+page NAMES the window; the older corpus gets one quiet line saying it is kept on purpose.
+
+**The rows are NOT deleted and must not be.** `buildVocabulary` learns each channel's normal
+vocabulary from every stored caption; shrinking that baseline makes ordinary words look novel.
+The fix for a confusing number was scope, never deletion. In-window unjudged is now **0** on
+every classifying channel. `@priyanshu123321123` (a throwaway rehearsal RECIPIENT on the
+passthrough detector) was unwatched — its posts could never be judged, so it sat permanently
+"not judged" while its feed was read for nothing.
+
+### The classifier is two stages, and the first one is free
+
+`detectorKey: 'semantic'` (`detectors/semantic.ts`). Tabish's observation, verified
+against the stored corpus: **a paid post carries hashtags atypical for that channel.**
+
+Across 306 stored @viralbhayani posts there are 262 distinct hashtags, only **eight**
+used 3+ times, and 229 used exactly once. Paid posts drag in vocabulary the channel
+has never used — `#danielwellington`, `#jananayagan`, `#harrooftilara` — while
+editorial recycles celebrity names.
+
+`detectors/novelty.ts` scores that for nothing, and on the real corpus it filters
+**387 of 719 unjudged posts (54%)** while losing **zero** known campaigns (5/5 M.O.M
+survive). What it drops is unambiguously editorial ("#malaikaarora spotted with her
+mystery friend").
+
+**Novelty alone is NOT a verdict, and the same measurement proves it**: mean novelty
+is 0.86 across all posts, and `#salmankhan` scores exactly as novel as
+`#danielwellington` — the channel simply never repeats a name. What separates them is
+whether the novel token is a *brand being promoted* or a *person being reported on*,
+which is meaning. So stage 1 decides only "is this worth paying to read", and is
+biased toward yes: a missed paid post is invisible and unappealable, a wasted call
+costs a fraction of a cent. Captions with **no hashtags reach the model too** — 155 of
+306 real posts have none, so a hashtag-only gate would blindfold it on half the channel.
+
+**Cost.** `deepseek-v4-flash`, and three things are load-bearing:
+
+- **`thinking: { type: 'disabled' }`.** Thinking mode is **on by default** at effort
+  `high` and would emit a chain of thought before every one-line verdict, billing
+  output tokens to deliberate about a photo caption.
+- **The system prompt is a module-level constant and nothing is interpolated into
+  it.** DeepSeek caches automatically, but a hit needs the prefix to match in FULL,
+  and cached input is **$0.0028/1M against $0.14/1M** — 50x. Putting a date, a channel
+  name or a post count in that string would destroy the cache on every call, forever,
+  silently. Per-post content goes in the user message.
+- Flash, not pro: pro is 3x on a miss for no benefit on a task this shaped.
+
+`pnpm ig:classify` backfills stored posts. **Dry run is the default** — it is the only
+command here that spends money and the volume is unbounded by construction, so a
+mistyped handle must cost nothing. It reports exactly how many posts would reach the
+model before any of it is spent, and prints the real token split and cost after.
+
+### The prompt is the classifier, so it has a test — `pnpm ig:accuracy`
+
+@madovermarketing_mom discloses with `#Collaboration`, so its rule verdict is a
+**label, not an opinion**. The harness strips the disclosure hashtags before the model
+sees the caption, so it cannot read the answer — a genuine held-out test.
+
+> ## WHAT 98% DOES NOT MEAN — READ THIS BEFORE TRUSTING THE NUMBER
+>
+> **The harness scores CAPTIONS against CAPTION verdicts, so an entire class of miss is
+> invisible to it.** It is not a coverage measure and must never be quoted as one.
+>
+> The case that proves it, 2026-08-07: Tabish flagged `DbtNU9UzWYU` (@viralbhayani) as
+> paid. The model called it ORGANIC at 85% with a reason that is *correct on the evidence
+> it was given* — "news of a new bus, no promotion or brand brief". The caption reads
+> *"Thanekars have double reasons to celebrate! The super awesome #Thane just got its
+> first double decker bus! Credit : @thane_street_story_"*. No brand, no campaign hashtag,
+> no tagged advertiser, and it credits another creator.
+>
+> **The evidence was in the footage.** Fetching the reel's cover frame showed a **SWITCH**
+> (Ashok Leyland's EV brand) double-decker centre-frame with the name across the bumper,
+> under a supplied-looking title card: *"THANE's First Double Decker Bus 😍 Inside View!"*
+>
+> Three consequences, and the third is the one that bites:
+>
+> 1. `ig:accuracy` scored that post as a **correct ORGANIC**. The label it compares against
+>    was itself derived from the caption, so the harness agreed with the classifier about a
+>    post they were both wrong about. **A held-out test is only held out with respect to
+>    what it measures.**
+> 2. So **98% correct / 100% recall means "98% of what the caption can reveal"**, not "98%
+>    of paid posts found". Recall on video-only placements is UNMEASURED, and by
+>    construction unmeasurable by this harness.
+> 3. Therefore **do not tune the prompt against a video-only miss.** There is nothing in
+>    the text to learn from, so any edit that "catches" it is fitting noise — and this has
+>    already been tried once here at real cost: an attempt to catch a dressed-as-commentary
+>    post via "@-tags the brand's handle" cratered precision **85% → 71%**.
+>
+> What would close it is a different INPUT, not a better prompt — and that input EXISTS
+> now: the text in the video's own frame, read locally and free (see "THE CAPTION IS NOT
+> THE POST" above). It caught exactly this post, ORGANIC -> REVIEW.
+>
+> **The number below still means what it always meant.** `ig:accuracy` runs the production
+> path now, so it measures whether reading the footage HARMS caption classification — and
+> measured with footage off it is unchanged at 98%/100%/94%. What it still cannot measure
+> is recall on placements that live only in the footage, because its labels are
+> caption-derived: a post whose label came from its caption is no evidence about a post
+> whose caption says nothing. That number can only come from human answers in the "Worth a
+> look" queue on /paid-posts, and it does not exist yet. Never quote 98% as coverage.
+
+**Edited again 2026-08-07, and the harness is what made it safe to.** As M.O.M's corpus
+grew to 48 posts, recall regressed to 92% — one genuinely paid post
+(`Dbss_t4k0tk`, Amazon NOW) was called ORGANIC because it was DRESSED as commentary
+("A super creative marketing stunt to announce their new speed proposition"), the exact
+framing the editorial protections exist to protect. The catchable signal, corroborated by
+every one of Tabish's 33 known-paid posts: the brand's own campaign hashtag
+(#AmazonNOW #FastNowFaydaNow) plus announcing the brand's new offering. **The first fix
+attempt used "@-tags the brand's handle" as the signal and cratered precision 85% → 71%**
+— M.O.M's genuine commentary tags handles too ("@drink818 has got their strategy spot
+on") — which is exactly why no prompt edit ships without `pnpm ig:accuracy` before and
+after. The narrowed rule (campaign-slogan hashtag + announcement, @-tag explicitly NOT
+sufficient) measured **98% correct, 100% recall, 92% precision** — better than the
+previous best on a larger n. Recall was never traded. **That recall is over CAPTIONS** — see
+the warning box above before quoting it as coverage.
+
+Measured 2026-08-03 while tightening the prompt: **67% → 85% → 96% correct**, false
+alarms **9 → 4 → 1**, recall **100% throughout**. Without a number attached, "improving"
+prompt wording is indistinguishable from breaking it.
+
+The failure that produced those first two numbers is worth knowing: **M.O.M is a
+marketing publication, so its EDITORIAL is commentary about other brands' advertising**
+("How Uber entered football with a stroke of marketing genius"). The model read brand
+names plus marketing language and called it promotion. The fix was telling it the
+decisive question is *was this publisher paid*, not *does this mention a brand* — and
+that writing ABOUT ads is a publisher's ordinary work.
+
+**Protect recall, never trade it for precision.** A missed paid post is invisible and
+unappealable; a false alarm becomes a draft a human reads before anything sends.
+
+Verified on live @viralbhayani posts, the case no rule can reach: *"LV Man DJ
+@sumitsethiofficial spotted at Kalina Airport #LVMan #KalinaAirport"* → **CAMPAIGN**
+(Louis Vuitton menswear placement dressed as an airport spotting), while
+*"#ShikharDhawan and his wifey #SophieShine giving us relationship goals"* → **ORGANIC**.
+Identical syntax; only meaning separates them.
+
+**A failed call is never recorded as a verdict.** No API key, a network error, or
+malformed JSON all yield `UNCLASSIFIED` with `verdictSource: 'none'` — never a
+fabricated `ORGANIC`, which would be indistinguishable later from a real judgement.
+`verdictSource` (`rules` | `semantic` | `none`) exists so a `#Collaboration` fact is
+never counted alongside a model's opinion.
+
+`is_paid_partnership` is carried from the feed and overrides any heuristic. It is
+`false` for both targets (neither uses Meta's native tool) but genuinely works —
+validated 4/12 on `@bhuvan.bam22` with `sponsor_tags` populated. Free
+future-proofing.
+
+### Detection starts on 1 August 2026, in exactly two places
+
+Set by Tabish 2026-08-03: *"we do not need to go back several posts or weeks... We start
+only from 1st august posts and onwards."* It drops **381 of 746** stored posts from the
+paid backlog.
+
+`src/lib/cutoff.ts`, and it is deliberately NOT a global filter:
+
+- **The classifier** — history is never sent to the model. A skipped post stays
+  `UNCLASSIFIED`, which means *not judged* and has never meant *organic*.
+- **`unusedCampaignCount`** — an old campaign must not count as "something new to say".
+
+Where it must **not** apply, and this is the load-bearing part:
+
+- **`buildVocabulary`.** The novelty filter learns how a channel writes from EVERY stored
+  caption. Shrinking that baseline would make ordinary vocabulary look novel and degrade
+  the free stage that saves half the model spend.
+- **Storage.** Every slot still records everything. A corpus is cheap; a missing one
+  cannot be reconstructed.
+
+**The boundary is IST, not UTC** — like every other date boundary here. And a correction
+worth keeping: at `HOOK_MAX_AGE_HOURS=72` from 3 August the hook window reaches back to
+31 Jul 12:00 UTC, which is **earlier** than the cutoff (31 Jul 18:30 UTC = 1 Aug 00:00
+IST). So the cutoff is the *binding* rule today, not a redundant check — reading
+`hoursAgo(72)` and assuming otherwise is wrong by six and a half hours. `newMaterialFloor`
+takes the later of the two so neither can be loosened by the other, and the hook *lookup*
+uses the same floor as the *count*, because those two queries drifting apart has already
+caused a bug here.
+
+**`ig:classify` asks the detector now, and that fix stopped it spending money on our own
+accounts.** It iterated every `TargetAccount` and ignored `detectorKey`, so it queued
+`@bollywoodchronicle` and `@bollywoodsocietyy` — **accounts we own**, added as rehearsal
+targets, 457 stored posts between them, 59 of which would have reached the model. Real
+money, asking DeepSeek whether our own Bollywood pages run paid campaigns.
+`passthrough.readiness()` already said *"this channel has no classifier set up"* in those
+words; the script simply never asked. Third instance of this exact shape — see the
+"Ask the detector, never compare the key" note under Style.
+
+**AND THEN @bollywoodsocietyy was deliberately switched TO `semantic` on 2026-08-06**
+(simple-sender plan step 9) — a recorded reversal, not a regression. The distinction:
+**watching our own page for GROUND TRUTH is not prospecting it.** Our own pages are the
+only channel where we know which posts were actually paid, so classifying them is what a
+second accuracy harness is made of. Backlog classified the same day: 103 posts, $0.0019,
+92% cache hit, 6 campaigns. Nothing about this makes it a recipient. The audit row
+`target.detector.changed` records it.
+
+**Tabish's known-paid list is stored as `KnownPaidPost`** (33 shortcodes, 9 brands,
+2026-08-06). 0 of 33 are in the corpus and their captions cannot be fetched anonymously
+(four endpoints probed, all dead) — so they are LABELS WITHOUT TEXT until a deeper feed
+backfill of the pages that posted them. Ask Tabish which of our pages those are (one URL
+names `bollywoodpaparazzii`). Three brand handles were verified against Instagram's own
+profile data and imported as BRAND targets with pairs disabled (@crocsindia,
+@nutellaindia, @luxindia); Adidas, U.S. Polo India, Rungta Steel, KFC, Bonkers and Titan
+Eye+ could NOT be verified (Instagram's category-schema bug, mostly) and were deliberately
+not guessed.
+
+Note `readiness` is **optional** on the interface and an absent one means READY: `mom` does
+not implement it because a deterministic rule set is always able to judge. Treating absent
+as not-ready would have silently excluded the only channel with exact ground truth — the
+one `pnpm ig:accuracy` measures everything against.
+
+**Measured after the drain (2026-08-03):** 62 posts reached the model, cache hit **86%**
+(baseline, so the prompt cache is intact), total spend **~$0.0016**. Paid campaigns went
+**14 → 31**. `pnpm ig:accuracy` then read **97% correct, 100% recall, 86% precision** —
+up from the documented 96%, with recall still perfect.
+
+**The prompt was NOT edited.** One verdict looked arguable in isolation — an actor
+celebrating his own series role, called CAMPAIGN at 85%. Read against all 25 CAMPAIGN
+verdicts the pattern is clearly right: film and music promotion IS the dominant commercial
+category on this channel (trailer launches, release dates, Netflix/Zee5 titles, a brand
+ambassador announcement, a hospital's IVF event with a registration link). Studios pay
+paparazzi accounts for exactly this. Editing a 97% prompt to fix one borderline call that
+cannot be shown wrong is the "improving wording is indistinguishable from breaking it" trap
+the accuracy harness exists to prevent — and recall is never traded for precision.
+
+### No other data source helps. This was checked, not assumed
+
+Asked 2026-08-03 whether a scraper or the Meta Graph API would beat the anonymous feed
+endpoint. Both were investigated against `~/Desktop/social-scrapers` and the live docs:
+
+- **Meta Graph `business_discovery`** is ToS-compliant and reads any public
+  business/creator account — but the complete IG Media field reference contains **no
+  branded-content, paid-partnership or sponsor field of any kind**. The only
+  ad-adjacent fields (`boost_ads_list`, `boost_eligibility_info`) describe *your own*
+  paid promotion of *your own* media and are unavailable through `business_discovery`.
+  It also returns strictly LESS than we already have: caption + permalink + timestamp,
+  where our endpoint adds `is_paid_partnership`, `sponsor_tags`, `coauthor_producers`
+  and `usertags`. And it needs a Meta System-User token plus App Review.
+- **A browser scraper** returns the same captions our HTTP call already returns, while
+  adding a browser per channel per slot and — if it ever used a logged-in session —
+  converting an IP-level risk into an account-ban risk. Decision 4 forbids that.
+
+**The general point: no API will ever tell you a post was paid when the publisher did
+not disclose it.** `is_paid_partnership` reflects Meta's native Branded Content tool —
+a publisher choosing to tag a sponsor. Undisclosed is undisclosed at the source. That
+is why the answer is a classifier and not a different endpoint.
+
+**Reliability, measured.** Three consecutive full slots (4 channels x 4 pages, real
+700ms inter-page delay): **48/48 HTTP 200, zero failures**, median 1090ms, 144 posts
+per channel. The earlier PARTIAL runs were transport throws with no retry, not endpoint
+unreliability. Keep `feed/user/<handle>/username/`.
+
+### Resolving a brand has FOUR outcomes, not two
+
+`src/detection/resolveBrand.ts`. `pnpm ig:brands` walks CAMPAIGN captions, pulls their
+@mentions, and asks Instagram's anonymous profile endpoint what each one is.
+
+A film-promotion caption tags its cast, its director, and often a politician at the
+launch. Messaging those is useless and is the scattergun contact that gets accounts
+reported. The endpoint separates them:
+
+```
+@royalcanin.india   is_business_account=true   "Grocery & Convenience Stores"  ← buyer
+@elvish_yadav       is_business_account=false  "Artist"  21M followers          ← talent
+```
+
+The four outcomes exist because **two of them are different kinds of "don't know"**:
+
+| | meaning | retry helps? |
+|---|---|---|
+| `BRAND` | professional account, category is not a person-role | — |
+| `PERSON` | a person-role category, or a non-pro account WITH a category | — |
+| `UNRESOLVED` | we READ the profile and could not tell, **and the model was not confident either** | **no** — the data is not there |
+| `UNKNOWN` | we never got to look: rate-limited or network error | **yes** |
+
+The first version collapsed `UNRESOLVED` into `PERSON`, and that is the bug this table
+exists to prevent: **missing data hardening into a negative verdict.** A brand that
+simply left its category blank would have been discarded permanently with nothing on
+screen to say so. Caught 2026-08-03 when `@farhadsamji`, `@iamzahero`,
+`@jas_manchester` and `@thisisdsp` were all filed PERSON on `category: null` alone.
+
+`UNKNOWN` is cached but **never read back as an answer** — an unanswered lookup must
+never become "not a brand".
+
+**`UNRESOLVED` USED TO MEAN "a human must decide", AND SINCE 2026-08-08 THERE IS NO HUMAN
+QUEUE.** Tabish: *"The channels which are undecided must also be decided on their own. How
+can adidas not be recognized as anything? I do not want this option to select manually,
+correct it."* The manual **company / not-a-company** buttons on the brands panel are
+deleted along with `confirmBrand` and `dismissBrandCandidate`; a model answers first, and
+`UNRESOLVED` now means the endpoint could not tell **and the model would not commit
+either**. See the next section. The dashboard shows what was decided and why, rather than
+asking.
+
+**The endpoint is NOT rate-limited. It is partly broken, and that is a different
+problem with a different fix.** This corrects an earlier entry here.
+
+The original measurement — *"7 of 10 lookups returned HTTP 400 even at 2.5s spacing"* —
+was recorded as aggressive rate limiting. **Re-measured 2026-08-03 and that reading was
+wrong.** Interleaving a known-good control handle between eight lookups returned
+**HTTP 200 every single time**, so nothing was throttling. The 400s are per-handle and
+permanent, and the body says why:
+
+```
+{"message":"Asset asset://laser.provider/ig_business_category_subvertical
+  has been deleted. You cannot use this schema","status":"fail"}
+```
+
+Instagram is serialising a business-category sub-vertical whose schema Meta deleted. It
+fails for accounts that HAVE such a category — so it breaks on **precisely the accounts
+most likely to be brands**. `@netflix_in`, `@tseries.official` and `@tilara.india` are
+unreachable; a 40-follower private account resolves fine.
+
+**Why the misdiagnosis was expensive.** Any non-OK status set `rateLimited`, which halts
+the *entire run*. So one broken-schema handle stopped every remaining lookup, cached them
+`UNKNOWN`, and reported "rate-limited". **Three consecutive `pnpm ig:brands --run` passes
+made zero progress** — `not-yet-looked 10` each time — while the endpoint was healthy. A
+per-item failure escalated to a run-wide stop has unbounded blast radius from one bad
+row, and it wears the costume of the safe conservative choice. After the fix the same
+command drained the queue to `not-yet-looked 0` and found `@royalcanin.india`,
+`@amazondotin` and `@kalkifashion`.
+
+`interpretLookupFailure` now separates the three cases: the schema bug is `UNRESOLVED`
+and continues (retrying cannot help, so `UNKNOWN` would retry forever and never drain);
+**429/401/403 still halt**, because continuing after being told to stop is what turns
+throttling into an IP block; anything else retries that one handle. Both directions are
+tested.
+
+Lookups still run 6s apart. That was chosen for politeness against an undocumented
+endpoint and the diagnosis changing does not make hammering it wise.
+
+**Instagram's category taxonomy names PROFESSIONS, not just business types**, and two
+wrong prospects reached the database before this was noticed. `@bharat_reshma`
+("Fashion Designer", 938k followers) was filed **BRAND**; `@mind_shifters`
+("Advertising/Marketing") was created as a prospect — an *agency*, the other side of the
+table from a media seller, and `tests/detectors.test.ts` already asserted that exact
+handle must be dropped as "the agency" in the hook-line path. **The rule existed in one
+half of the system and not the other.**
+
+Both are `is_business_account: true`, so the fix is the check ORDER as much as the list:
+category is examined **before** account type, because a business-first test files a
+designer and an agency as buyers. `classifyProfile` and `interpretLookupFailure` were
+extracted as pure functions for this reason — the logic lived inside an `await fetch()`
+and therefore had no tests at all, which is why both misses shipped.
+
+**Never guess a handle.** Only real @mentions are resolved. A bare name like
+"RoyalCanin" is not turned into `@royalcanin` — that handle returns **HTTP 404**,
+measured. Messaging the wrong account is worse than messaging nobody.
+
+**Pairs are created live, and discovering a prospect IS now deciding to message them**
+(2026-08-08 — until then they were created DISABLED and a person flipped a chip). What
+bounds "one run could otherwise queue hundreds of strangers" is no longer a switch: the
+per-pass lookup bound (10), `MAX_NEW_BRAND_TOUCHES_PER_DAY` (2 first touches a day across
+the fleet), and the per-target and per-sender caps. That is a real bound and a thinner one;
+it is named in the exposure paragraph under "AUTOPILOT IS ONE SWITCH" rather than smoothed
+over. `src/outreach/brandTarget.ts` is the ONE place a discovered brand becomes a
+`TargetAccount`, shared by the CLI and the unattended pass, and it asks `routes.ts` which
+routes may exist rather than hand-rolling the filter.
+
+### @adidas is unreadable by rule, so a MODEL answers that one question
+
+Built 2026-08-08 on Tabish's instruction (quoted in full under "AUTOPILOT IS ONE SWITCH").
+`@adidas`, `@crocsindia` and `@bonkerscorner` all rendered as *"could not read this
+account"* with manual buttons beside them, because Meta's deleted category sub-schema
+returns HTTP 400 on precisely the accounts most likely to be brands.
+
+**No rule over the readable fields can fix that, and it was MEASURED rather than assumed:**
+`@tilara.india` (a brand) and `@adityathackeray` (a politician) are **byte-identical on
+every field we can read anonymously**. What separates them is world knowledge plus the
+sentence the handle was mentioned in — the same judgement the caption classifier already
+makes one modality over. A rule would message the politician, so he is a required fixture
+in `tests/decide-brand.test.ts`.
+
+`src/detection/decideBrand.ts` — `deepseek-v4-flash`, thinking disabled, temperature 0,
+`json_object`, and the **system prompt is a module-level constant with nothing interpolated
+into it**, exactly as `semantic.ts` requires (the cache discount is 50× and destroying it is
+silent and permanent). Brand spend is its own line on `/cost`: `'resolve'` is a fourth
+`ModelPurpose`, so it can never be mistaken for classification spend.
+
+**THE ASYMMETRY DECIDES THE DESIGN.** A wrong "company" puts a media-buying pitch in a
+private person's DMs from a revenue account; a wrong skip costs one prospect, visibly and
+retryably. So:
+
+- **`'unsure'` is honoured REGARDLESS of the confidence number.** A model claiming 99%
+  certainty that it is uncertain is still uncertain, and reading the number instead of the
+  answer would let a formatting quirk decide a prospect.
+- **`RESOLVE_CONFIDENCE_FLOOR = 90`, and a sub-floor PERSON is `UNRESOLVED`, not `PERSON`.**
+  PERSON is a cached answer that never retries, so filing a low-confidence guess there would
+  permanently discard a real prospect on evidence the model itself did not trust — *absence
+  of data hardening into a negative verdict*, one door along, for the fifth time here.
+- **A failed call decides NOTHING** — `null`, never a verdict. Same contract as
+  `classifyCaption`. `Number(x) || 0` floors a missing confidence at **zero rather than
+  NaN**, because NaN fails every `<` and would sail through the floor check as a confident
+  BRAND — the one failure mode this file exists to prevent.
+
+**Wired in through `applyModelToUnresolved`, and the ORDERING is the safety argument:**
+
+- **The ENDPOINT wins whenever it answered.** BRAND, PERSON and MISSING pass through
+  untouched. Instagram's category data is a FACT; the model's world knowledge is a
+  judgement, and a judgement does not overrule a fact.
+- **`UNKNOWN` passes through too, and that is the one nobody would notice being broken.**
+  Both UNKNOWN and UNRESOLVED read as "we do not know" on screen, but UNKNOWN means the
+  lookup NEVER HAPPENED, so it is retried. Deciding it here would swap a guess made with no
+  profile facts for a lookup about to succeed — and cache it forever.
+
+`decidedBy` (`endpoint` | `model` | null), `modelConfidence` and `modelReason` are recorded,
+so an auto-created prospect is auditable months later. The brands panel is **"Decided
+automatically"** with the model's reason in prose; confidence is carried and deliberately
+NOT rendered (no confidence scores on a page a CEO reads). It filters `decidedBy: 'model'`
+alone — endpoint-settled and historic human rows are excluded for the same reason
+`verdictSource` keeps a `#Collaboration` fact apart from a model's opinion. Anything not
+BRAND reads **"left alone"**, never "not a company": PERSON and UNRESOLVED are different
+facts and neither is proof of a negative.
+
+**AND IT RUNS AUTOMATICALLY, which is the half that would otherwise not have shipped.**
+`src/detection/autoResolve.ts` runs at the end of **every detection pass** — it walks the
+@mentions of in-window CAMPAIGN captions, skips everything already answered, and turns a
+BRAND verdict into a prospect with nobody present. Bounded at **10 lookups a pass**, and the
+bound counts **LOOKUPS ATTEMPTED, not brands created**: a pass that resolves ten people
+spends exactly as much of a scarce endpoint as one that resolves ten brands. A real throttle
+(`UNKNOWN`) stops the pass; Instagram's permanent 400 (`UNRESOLVED`) does not — reading those
+two as one thing already cost three consecutive zero-progress runs against a healthy
+endpoint. The pass **never fails a detection run** (decision 5, one layer along).
+
+Tasks 10 and 11 built the resolver and wired it into `resolveBrand`, and **nothing called it
+on the automatic path** — `@adidas` stayed unrecognised until a person ran `pnpm ig:brands
+--run`. That is the exact shape of the 166-cover-frames finding: *a feature that works only
+when someone runs a command is not running.* `tests/auto-resolve.test.ts` asserts the
+pipeline calls it, for the same reason `tests/one-judging-path.test.ts` exists.
+
+**A `settled` predicate would have looped forever without moving.** The plan treated an
+UNRESOLVED row with `modelReason === null` as "the model has not been asked yet" — but
+`resolveBrand` returns a cached UNRESOLVED *before* `applyModelToUnresolved` is reached, so
+a row the model declined and a row the model never saw are indistinguishable by that field
+(a failed call writes null too). Re-listing either would ask a cached question every fifteen
+minutes, burning the whole per-pass bound on handles that cannot move and starving the new
+mentions the pass exists to find. **The model gets one chance per handle.**
+
+### Messaging a brand is a different proposition, with two guards of its own
+
+Built 2026-08-03. Four confirmed buyers so far: `@royalcanin.india`, `@amazondotin`,
+`@kalkifashion`, `@milano_icecream_bangalore`.
+
+**The pitch inverts.** `variants.ts` offers a **partnership** to a fellow publisher — peer
+to peer, media owner to media owner. A brand is not a peer: it is a buyer that has just
+*proved it has budget* by paying a publisher. So `brandVariants.ts` offers **media buying**
+— you are already buying reach on entertainment publishers, we own that inventory. Same
+network numbers, different ask.
+
+`MessageVariant.targetKind` keeps the two pools apart, and it is load-bearing rather than
+tidy: variant selection is keyed on `senderId` alone, so without it the LRU would
+eventually hand a media-buying body to `@madovermarketing_mom` and a publisher-partnership
+pitch to Royal Canin. Nothing would report a problem — the message would simply be
+addressed to the wrong kind of reader, which is only ever discovered by reading a sent DM.
+
+**The first touch names the real placement.** `TargetAccount.discoveredFromCampaignId`
+exists for this: *"I saw Royal Canin's placement with Mad Over Marketing last week."* A
+verifiable fact about one recipient, which is what decision 3 asks for and what a template
+can never be. Tabish initially chose a generic category-level opening and switched after
+seeing both rendered side by side — the generic paragraph was identical for all four
+brands, i.e. a template with no variation aimed at people who read pitches for a living.
+
+It **degrades honestly**: no known publisher means no specific claim, so the opening drops
+to a general observation rather than inventing a placement. Recency is banded ("last week",
+"recently") not dated — a precise date reads as surveillance and is embarrassing when the
+timestamp is off by a day. Both negatives are tested.
+
+**`MAX_NEW_BRAND_TOUCHES_PER_DAY`, default 2.** Separate from `dailyCap` because they guard
+different things: `dailyCap` protects the ACCOUNT (Instagram's per-sender heuristics), this
+protects the PATTERN. Ten first-touches in one afternoon and ten across ten days are the
+same volume and look nothing alike — the first is indistinguishable from a scraped list
+being worked through. **Only first touches count**; a follow-up is a continuing
+conversation already spaced by `cooldownDays`. Counted within a run as well as from the DB,
+or every queued brand would pass the same stale check and a cap of 2 would send twenty.
+
+**The persona gate — decision 3b, enforced rather than documented.** A brand pitch is
+refused while that sender's persona is byte-identical to another sender's. All four
+accounts still carry *Kapil Jain, Co-founder, Bollywood Society*, so **every account is
+currently blocked from brand outreach** — the safe direction, and deliberately visible on
+the dashboard rather than silent. Verified in all four directions against the live
+database: blocks all four senders on brands, allows channels, releases when a persona is
+made distinct, and the cap allows at 0–1 and blocks at 2.
+
+`validatePersona` checks SHAPE and passes happily on four identical blocks; distinctness is
+the property that was missing. **Do not satisfy this gate by generating personas** — who
+fronts each brand is Tabish's to answer, and a plausible invented name in a real DM is
+worse than a blocked send. Personas are now editable on the dashboard, because the reason
+this survived weeks of use is that the persona was in every outgoing message and on no
+screen.
+
+**Two seeding gaps found, both the same shape.** `prisma/seed.ts` iterated its hardcoded
+`SENDERS` list and `addSender` copied only the channel pool — so `@tabishmukaddam1`, added
+via the dashboard and designated for brand outreach, had 12 channel variants and **zero**
+brand variants. `plan.ts` throws when the pool it needs is empty, so the first brand pair
+would have failed for the one account meant to send them. The seed now backfills every
+sender in the database, and `addSender` copies both pools.
+
+**A brand is addressed as a team.** `contactFirstName` means a PERSON's first name and we
+do not know who runs a company's Instagram account, so it is null for brands and
+`buildGreeting` produces "Hi Amazon India team,". It had been set to the company name,
+which addressed a corporation as an individual. And `greetableName` trims Instagram display
+names before "team": "Milano Ice Cream, Bangalore" produced **"Hi Milano Ice Cream,
+Bangalore team,"** — ungrammatical, in the first line a prospect reads. Both were found by
+rendering the real message to the real prospects, which the tests alone did not do.
+
+---
+
+## Layout
+
+```
+prisma/
+  schema.prisma        19 models. SQLite: no arrays/enums → JSON + string unions.
+                       `SenderAccount.fleetMember` is IDENTITY, not a switch — with the
+                       route chips gone it is what keeps the burner out of automatic
+                       outreach. `BrandLookup.decidedBy/modelConfidence/modelReason`
+                       record WHO answered "is this a company"
+  seed.ts              idempotent; renames legacy handles in place
+  bespoke.ts           4 per-recipient messages — READ THE HEADER COMMENT
+  variants.ts          12 fallback bodies — the CHANNEL pool (partnership)
+  brandVariants.ts     6 follow-up bodies — the BRAND pool (media buying). A different
+                       proposition, not reworded channel copy
+src/
+  detection/
+    feed.ts            anonymous feed endpoint — NO CREDENTIALS, EVER. Also CAPTURES the
+                       reel's cover-frame + video URLs (they EXPIRE, so a corpus without
+                       them cannot be re-examined). `pickThumbnail` is pure: smallest frame
+                       >=480px, largest as fallback, never null when anything exists
+    cadence.ts         detection's OWN clock — 15 min, NOT the send slots. Tabish, 2026-08-07
+    detectors/mom.ts   #Collaboration rules + brand extraction
+    detectors/passthrough.ts   stores, judges nothing, and SAYS so
+    detectors/novelty.ts       stage 1: hashtags atypical for THIS channel. Free, and it
+                       SCORES ONLY — the veto was deleted 2026-08-07 after it silently
+                       hid 76 posts from the model, 49 on one rare tag
+    detectors/semantic.ts      stage 2: DeepSeek reads the caption. Cached prompt
+    ocr.ts             READS THE TEXT IN THE PICTURE, locally and free — Apple Vision via
+                       a Swift helper compiled once (tesseract fallback, measured worse:
+                       it missed `SWITCH`). Groups text by SIZE and never by significance,
+                       because a geometry fact must not assert a meaning claim. Four
+                       outcomes: read / no-frame / unavailable / failed — only `read` may
+                       reach a verdict. Fences the text as quoted evidence
+    frameSignal.ts     PURE permission table. The footage may raise caption ORGANIC to
+                       REVIEW and NOTHING else — never mints, overturns, clears or demotes
+    decideBrand.ts     the model answers the ONE question Instagram's endpoint cannot:
+                       is this @mention a company or a person. `interpretDecision` is
+                       PURE. Floor 90, `'unsure'` honoured whatever the number says, a
+                       failed call decides NOTHING. The asymmetry is the design — a wrong
+                       "company" DMs a private person from a revenue account
+    autoResolve.ts     and it RUNS, at the end of every detection pass, with nobody
+                       present. Bounded at 10 LOOKUPS (not 10 brands — a pass that
+                       resolves ten people spends the same scarce endpoint). Never fails
+                       a detection run
+    media.ts           frames as BYTES on disk (~/.ds-sales-agent/frames), because the
+                       CDN URL is what expires — and the refresh the old design relied on
+                       never ran. Saved for every new post on every channel; idempotent
+    pipeline.ts        orchestration, idempotent on shortcode
+  outreach/
+    pacing.ts          PURE. When may the fleet send, and when must it STOP. Active
+                       hours, the minimum gap, the circuit breaker
+    cohorts.ts         PURE ladder + its DB reader. Phase 9: a group of accounts sends
+                       for 14 days before the next may send. ONE stored column; the soak
+                       is DERIVED, and `live` means CAN SEND (session + ACTIVE), not an
+                       arming bit. `mayArmAccount` keeps its name and is now the ladder's
+                       ONLY enforcer — gate.ts calls it at delivery. Do not delete it
+    routes.ts          PURE. The ONE definition of which sender→target routes may EXIST,
+                       since a pair row is a live route (2026-08-08). Never self-pair,
+                       never pair one of OUR OWN PAGES to another — `addTarget` on a
+                       fleet handle created exactly that. Takes HANDLES, because a sender
+                       row and a target row for one account have different ids
+    brandTarget.ts     the ONE creator of a BRAND TargetAccount, shared by the CLI and
+                       the unattended pass. Asks routes.ts; `watchEnabled: false`
+                       explicitly, against a schema default of TRUE
+    qualityGate.ts     PURE. May a GENERATED body be sent. Bounds MEASURED from the 25
+                       shipping bodies. Says out loud what it cannot check
+    generate.ts        Phase 8. The model writes the middle. CONSTANT system prompt —
+                       nothing interpolated, ever; the cache discount is 50x
+    dispatcher.ts      the paced tick, and the fleet-wide SEND LOCK. One clipboard,
+                       one send — every path that drives a browser goes through it
+    challenge.ts       markChallenged — the ONE writer of CHALLENGED + challengedAt.
+                       Four callers; a fifth forgetting the timestamp would make the
+                       breaker read "nothing was flagged"
+    sessionHealth.ts   markSessionInvalid — the ONE writer of sessionInvalidAt, the §3.5
+                       fix. A send that hits a login form records the DEAD session; the
+                       gate folds it into the existing no-session stop via sessionUsable;
+                       cleared only by an identity-verified login or a delivered send
+    importProspects.ts a pasted sheet → prospects. Parsing PURE and separate; the
+                       writing half is small on purpose. DRY RUN BY DEFAULT
+    brandGuards.ts     the two guards that exist only for brands: the new-brand daily
+                       cap, and the persona gate (decision 3b, enforced not documented)
+    brandPitch.ts      the FIRST message to a brand, from the campaign it was found in.
+                       Names the real placement; never invents one
+    governor.ts        pure safety gate — may we CREATE a message for this pair
+    gate.ts            pure re-check — may an EXISTING draft still be sent now. TEN stops
+                       since 2026-08-08 (the two switches went; every INVARIANT stayed).
+                       Shared by sendNow and deliverWaiting; they drifted TWICE — the
+                       second time deliverWaiting held on a switch the gate had dropped,
+                       and /messages said "Clear to send" over it. OVERRIDABLE_BLOCKS is
+                       now exactly [TARGET_REPLIED], typed and read via `isOverridable`
+    onDemand.ts        "send a message now": force-draft to a chosen pair, and turn
+                       every rule the governor would have refused on into a sentence
+    replyCheck.ts      automatic reply detection, 11:00 and 20:00. The only writer of
+                       repliedAt that does not need a human to remember
+    browser/readThread.ts  opening and reading a real conversation. ONE implementation,
+                       shared by ig:thread and replyCheck — which was NOT true until
+                       2026-08-05 despite the docblock saying so. Observes DURING the
+                       dwell and REPORTS whether it saw the whole thread
+    browser/pruneProfile.ts  reclaim browser cache without touching device identity.
+                       ALLOWLIST of deletable paths; asks the OS whether Chrome is open
+    render.ts          message assembly, persona validation
+    matching.ts        "is this text ours?" — pure, tested. Also the send guard
+    plan.ts            DB-driven planner. `ensureFleetPairs` creates every fleet route
+                       automatically (routes are not chosen any more). It has exactly ONE
+                       .send() call site and it is hardcoded to manualAssistSender — the
+                       planner CANNOT deliver, now asserted by tests rather than a comment
+    deliver.ts         autopilot delivery of already-waiting drafts. Re-checks only what
+                       can have MOVED since the query — never a second copy of a rule
+    browser/
+      profile.ts       one Chrome profile per account — READ THE HEADER COMMENT
+      session.ts       Patchright launch, checkpoint + wrong-account detection, and WHO
+                       THIS PROFILE IS. `identify` has three answers and `unknown` is the
+                       load-bearing one: `readIdentityResponse` is PURE and returns
+                       `no-answer` for anything that did not answer, because a dead endpoint
+                       reading as "logged out" broke Connect, every send, AND wrote a
+                       dead-session mark on a live session. Two endpoints, tried in order
+      sendDm.ts        the actual send. Highest-risk file in the repo
+    senders/manual.ts  prepares only, delivers nothing (the fallback)
+    senders/browser.ts drives the profile and delivers (the default)
+    browser/connect.ts dashboard login: open window, poll, close. Same flow as the CLI
+  detection/exists.ts  anonymous "does this handle exist?" — used before adding
+  detection/resolveBrand.ts  @mention → BRAND | PERSON | MISSING | UNRESOLVED | UNKNOWN.
+                       FIVE outcomes — two of them are different kinds of "don't know".
+                       `applyModelToUnresolved` asks decideBrand when the endpoint could
+                       not tell: the ENDPOINT WINS whenever it answered, and UNKNOWN is
+                       passed through untouched because it means the lookup never happened
+  detection/enrichHandle.ts  facts about handles Instagram's category endpoint cannot
+                       serve. Gathers, NEVER classifies — see the header for why
+  lib/cutoff.ts        1 August onwards. Applies to the CLASSIFIER and to new-material
+                       only — never to storage, never to buildVocabulary
+  lib/urls.ts          the ONLY place Instagram URLs are built
+  lib/platform.ts      the ONLY place we branch on macOS vs Windows
+  lib/password.ts      scrypt from node:crypto. NOT bcrypt/argon2 — both are native
+  lib/session.ts       dashboard sessions; tokens stored HASHED. requireUser() lives here
+  lib/session-cookie.ts  just the cookie name. Imports NOTHING — middleware runs on Edge
+  lib/safe-next.ts     sanitises ?next= . Rejects //evil.com, the case that gets missed
+  worker/scheduler.ts  the watch itself: 4 IST slots, catch-up-on-boot, heartbeat — plus
+                       DETECT-THEN-DRAFT every 15 min (2026-08-11). Drafting takes the
+                       SLOT LOCK: `noOverlap` is per TASK, and minute 0 is always a
+                       multiple of 15, so the two collide four times a day by construction
+  worker/index.ts      `pnpm worker` — the same scheduler as its own process
+  scripts/             login, send, queued, agent, audit, preview, inspect, reclassify
+    reply.ts           record a reply by hand — the only writer of repliedAt besides thread.ts
+    thread.ts          read a real conversation back: send verification + reply detection.
+                       DOM shape is OBSERVED (2026-07-31) and will drift — see --debug
+    classify.ts        `pnpm ig:classify` — backfill stored posts. DRY RUN BY DEFAULT
+    accuracy.ts        `pnpm ig:accuracy` — held-out test of the classifier prompt
+    brands.ts          `pnpm ig:brands` — captions → brand targets. DRY RUN BY DEFAULT
+    replies.ts         `pnpm ig:replies` — the scheduled reply check, on demand
+instrumentation.ts     starts the scheduler inside the dashboard (hands-free)
+src/
+  middleware.ts        the front door. DENY BY DEFAULT — lists public paths, not private
+  app/                 SEVEN pages (plus /settings) behind a sidebar, since the 2026-08-06
+                       simple-sender redesign (docs/specs/2026-08-06-simple-sender-plan.md).
+                       AUTOPILOT IS THE PRODUCT, so the landing page is Autopilot; the
+                       mechanism that keeps pages short is /rules, the destination for
+                       every rationale paragraph that used to sit beside a button. Retired
+                       routes (/messages, /conversations, /channels, /prospects, /accounts,
+                       /accounts/login) keep JSX-free redirect stubs so bookmarks land
+    nav.tsx            the SIDEBAR. `GROUPS` is the single source of the IA. It also owns
+                       SIGN-OUT, which used to render inside the amber health card
+    page.tsx           **Autopilot** (landing) — is it sending, and if not exactly what is
+                       stopping it: the switch, per-account readiness, uncertain sends,
+                       replies waiting, the pace, the queue with each draft's refusal from
+                       `recheckBeforeSend`, and manual send (the same queue, one draft
+                       earlier). The alarm card holds the dot and the sentence, nothing else
+    targets/           **Targets** — who we write to and whose posts we read; absorbed
+                       Channels and Prospects. The list is the master view; the cards
+                       answer "is reading their feed working". ONE LINE per recipient
+                       instead of a chip per route — retired, or messaged by rotation with
+                       N accounts ABLE to send. `sendersAble` is ability, so it reads zero
+                       when the fleet is signed out even with the switch on
+    senders/           **Senders** — our accounts; absorbed Accounts and Sign-ins. Three
+                       signed-in states per row, from EVIDENCE (§3.5): signed in ·
+                       needs signing in again (found logged out at X) · never signed in.
+                       Ability is a SENTENCE, not a switch, since 2026-08-08 — "Sends
+                       automatically while Autopilot is on" / "Needs a one-time sign-in";
+                       a flagged row says neither, because it carries its own remedy and
+                       "needs a sign-in" is simply wrong about it
+    paid-posts/        **Paid posts** — the verdicts as a TABLE with a link per post
+                       (`postUrl` in lib/urls.ts), and the brands panel.
+                       UNCLASSIFIED is counted separately because it means NOT JUDGED
+    rules/             **Rules** — one line per rule, values IMPORTED from the modules
+                       that enforce them (pacing.ts, env, Setting rows, gate.ts), with
+                       STOP_LABELS total over RESEND_BLOCKS so a new stop cannot be
+                       missing a sentence
+    analytics/         **Analytics** — found / sent / replied / reply rate, the coverage
+                       caveat, open conversations, the activity feed and the history
+    cost/              **Cost** — spend, calls, failures, cache hit, per channel
+    coverage.tsx       the "counted from 2 of 5 channels" caveat. ONE component, two pages —
+                       a caveat travelling with its number must not drift from it. Grouped
+                       by REASON, never merged: two problems with two fixes are two sentences
+    messages/waiting.tsx  a draft, and WHY IT CANNOT BE SENT — from `recheckBeforeSend`, the
+                       same gate that would refuse it. Never re-derived, never summarised
+    messages/remedy.ts where to fix each refusal. The gate says WHY, this says WHERE, and
+                       `href: null` is a real answer. TOTAL over RESEND_BLOCKS, enforced
+    on-demand.tsx      pick sender + channel, write, confirm what is being crossed, send.
+                       On the Autopilot page, because it is an action rather than a place
+    replies.tsx        a reply, its text, and the button that releases the halt
+    brands.tsx         companies found in paid posts. **"Decided automatically"** since
+                       2026-08-08 with the model's REASON in prose and no buttons — the
+                       manual company / not-a-company queue is gone (Tabish). Filters
+                       `decidedBy: 'model'` alone; confidence is carried and deliberately
+                       not rendered; anything not BRAND reads "left alone", never "not a
+                       company", because PERSON and UNRESOLVED are different facts
+    messages/dispatcher.tsx  the pace, the halt, and what the last tick did. A toggle
+                       that promises behaviour must show whether anything is behind it
+    messages/uncertain.tsx   sends that cleared the composer and never appeared, with
+                       the only two answers that settle one
+    auth-actions.ts    sign up / in / out — the ONLY actions that work without a session
+    auth-form.tsx      one form, two modes
+    sign-in/, sign-up/ the only two public pages
+  scripts/layout.ts    `pnpm ig:layout` — opens every page in a REAL BROWSER and asserts
+                       geometry, that every asset loads, and that the stylesheet APPLIES.
+                       Presence is not layout, and a 200 is not a stylesheet
+tests/                 1,131 tests, fixtures captured from live posts
+tests/frame-signal.test.ts  the footage's permission table both ways, a sweep proving no
+                       input combination ever demotes, and the injection payloads that
+                       survived an earlier sanitiser (including a fake JSON verdict)
+tests/one-route-rule.test.ts  a SOURCE GREP, because the failure mode is a call site nobody
+                       has written yet and no behavioural test can fail for that: no file
+                       may create a pair row unless it is a named permitted creator, every
+                       governed creator must call routes.ts, and none may re-implement the
+                       handle filter inline. Beside it, two BEHAVIOURAL tests in
+                       fleet-pairs — a grep is satisfied by `void routeAllowed()`
+tests/decide-brand.test.ts  both sides of the confidence floor, asserted against the
+                       exported constant rather than a literal, and @adityathackeray as a
+                       required fixture: a politician byte-identical to a brand on every
+                       readable field is what a rule would have messaged
+tests/cohorts-live.test.ts  the ladder's `live` derivation against a REAL temporary SQLite
+                       file — it is assembled from a Prisma `select` (a stale column name
+                       fails at RUNTIME while typecheck passes) and a filesystem read, so a
+                       pure mirror of the predicate would agree with itself either way
+tests/stopInventory.test.ts  the redesign's safety net: every stop is reachable, explains
+                       itself in prose, AND has a decided remedy. Run before and after any
+                       UI change
+tests/labels.test.ts   no view model may hand a raw `displayName` to a screen
+tests/media-capture.test.ts  which cover frame we keep, and why we keep one at all
+tests/cadence.test.ts  detection's clock is independent of the send schedule; and
+                       "too short to be a pitch" is a verdict, not a failed call
+tests/identity.test.ts "who is this profile" in both directions, from the REAL measured
+                       responses. The regression it guards: 200-with-HTML, a 200 carrying
+                       `status: fail`, and a throttle must never read as "logged out"
+docs/RUNBOOK.md        operator guide for macOS and Windows
+docs/AUDIT-2026-07-31.md  38-finding end-to-end audit, and what was done about it
+docs/HANDOFF.md        current state + how to pick this up in a new session
+docs/PIPELINE.md       the pipeline diagram: its URL, and the rule that it must be
+                       updated whenever the flow of operations changes
+docs/specs/            design docs and plans
+  2026-08-03-brand-outreach-design.md   Phase 1.5: message the BRANDS too. NOT BUILT
+  2026-08-03-linode-hosting-plan.md     detection may move to a VPS; sending may not
+```
+
+---
+
+## Commands
+
+| | |
+|---|---|
+| **dashboard → Connect** | the normal way to log an account in. `pnpm ig:login <handle>` is the same flow from a terminal |
+| ~~`pnpm burner on\|off\|status`~~ | **DELETED 2026-08-08.** Rehearsal mode is gone as a global mode: it braked by sweeping `OutreachPair.enabled`, the column routing stopped consulting the same day, and its hardcoded target `@priyanshu123321123` had already been deleted from the database, so it could only exit at its not-seeded guard. Rehearse with the **on-demand dialog** pointed at an account we own — a person pressing a button, not a mode that silently disabled every real route. The burner ACCOUNT `@tabishmukaddam1` still exists and is still the safe test recipient |
+| `pnpm local` | **run the dashboard on this Mac.** Reads the SERVER's data through the tunnel, so what you see is live and what you change is real. `pnpm local offline` uses the old SQLite snapshot instead — frozen, and it says so. It refuses if the port is busy rather than printing a URL belonging to another process, and always names WHICH database and how fresh |
+| `pnpm dev` / `pnpm start` | dashboard on **:3100** (127.0.0.1 only) — SEVEN pages behind a sidebar — sign in first. **Registration is INVITE-ONLY since 2026-08-08** (`SIGNUP_INVITE_CODE`; unset means closed), and a new account is a `viewer` until an operator approves it. The hosted copy runs the same thing on the Linode behind nginx. It was :3000 until 2026-08-04: another project on this machine binds `*:3000` on IPv6, and macOS resolves `localhost` to `::1` first, so `localhost:3000` silently served the wrong app |
+| `pnpm worker` | the scheduled watch as a separate process. NOT needed on a laptop — the dashboard runs the same scheduler itself |
+| `pnpm run:slot` | run one slot now |
+| `pnpm send` | send the next prepared message by hand (clipboard + opens profile) |
+| `pnpm queued` | every prepared message, plus what the safety gate held back |
+| `pnpm ig:audit` | cross-check every dashboard number against the DB |
+| `pnpm ig:reply <sender> <target>` | record that a target replied — halts all outreach to them. `--at <ISO>` sets or corrects the time |
+| `pnpm ig:thread <sender> <target>` | open the real conversation and read it back. `--record-reply` records a detected reply; `--debug` dumps the DOM when the layout has drifted |
+| `pnpm ig:replies` | check every open conversation for replies now — the same function the 11:00 and 20:00 slots run |
+| `pnpm ig:classify` | classify stored posts. **Dry run by default**; `--run` spends money, `--limit N` bounds it, `--channel <handle>` narrows it |
+| `pnpm ig:accuracy` | measure the classifier against M.O.M's disclosed ground truth. Run it after ANY prompt edit |
+| `pnpm ig:brands` | resolve @mentions in paid posts to messageable brand accounts. **Dry run by default.** No longer the only caller — `autoResolveBrands` does this on every detection pass, so this is the on-demand and backfill path. It no longer prints "pairs DISABLED": false since the per-route switch went, and printed at the moment an operator decides to create prospects |
+| `pnpm ig:enrich` | what we can still learn about handles Instagram will not classify. Facts only, NEVER a verdict. Dry run by default |
+| `pnpm ig:dispatch` | what the paced dispatcher would do, and why nothing has gone out. **Reports only**; `--run` delivers one message now |
+| `pnpm ig:import <file>` | import a prospect list. **Dry run by default**; `--run` creates them unwatched — but their ROUTES ARE LIVE since 2026-08-08, so importing sixty prospects is no longer inert. The dry run is the brake |
+| `pnpm ig:prune` | free disposable browser cache from the sending profiles. **Dry run by default**; never touches `Cookies` or `Local State`, refuses if Chrome is open, verifies by hash afterwards |
+| `pnpm ig:generate` | write a real message with the model and print it, with the quality gate's verdict. **Dry run by default** — `--run` spends about $0.0001 a message. Writes nothing, sends nothing |
+| `pnpm ig:detect` | one detection pass now, on demand — the same function the 15-minute clock fires. `--lookback N` reaches further back, which also banks cover frames for re-observed posts |
+| `pnpm ig:ocr` | read the text off saved cover frames and print it. **FREE and the default does real work** — Apple Vision runs locally, no API. `--reclassify` re-judges posts whose footage has text (~$0.00002 each) and may only escalate ORGANIC → REVIEW. `--shortcode X` for one post |
+| `pnpm ig:frames` | how many cover frames are on disk; `--capture` downloads the ones whose URL is still alive. Costs nothing but bandwidth — **run it generously, URLs expire and judging can wait** |
+| `pnpm agent status` | what is actually blocking each account. **Reshaped 2026-08-08**: it used to report `autopilot off` from `autoSendEnabled`, a bit no guard reads — so an operator could run the command naming that refusal, watch it succeed, and see nothing change. It now asks each stop of the thing that ENFORCES it: the fleet switch via `getSettings`, a **usable** session via `sessionUsable` (not `sessionPath` — a path in the database is not a live session), and the cohort ladder via the same `mayArmAccount` the gate calls at delivery, which was previously invisible from the CLI. `pnpm agent pause`/`resume` unchanged; **`pnpm agent autopilot on\|off` is DELETED** |
+| `pnpm ig:layout` | open every dashboard page in a real browser and assert GEOMETRY, that every asset loads, and that the stylesheet applies. Needs `DS_LAYOUT_TOKEN` set to a session cookie value. Run after ANY UI change — presence, 200s and chunk-loading all passed once on a page whose layout was destroyed |
+| `pnpm agent:device` | **the sending agent for YOUR machine.** Reads the shared database, sends from the Chrome profiles here, and reports this device's presence. Refuses to start when `SEND_ENABLED=false`, which is how the server is configured |
+| `bash scripts/install-watch.sh` | keep that agent alive across crashes and logins (`install`/`status`/`uninstall`). `DS_WATCH_MODE=worker` for a laptop-only install that also owns the schedule |
+| `bash scripts/install-tunnel.sh` | keep the SSH tunnel to the server's Postgres up. `status` asks whether the PORT answers, which is not the same question as whether launchd registered the job |
+| `pnpm worker:heartbeat` | is the watch running, and what has the downtime cost? Exits non-zero only when posts are being lost permanently |
+| `pnpm ig:copy-to-postgres` | one-off SQLite → Postgres row copy. **Dry run by default**; verifies counts AND re-reads sampled rows field by field, because a count cannot see a dropped column |
+| `pnpm ig:migrate-data` | move frames and the OCR binary out of the credential directory. **Dry run by default**; copies, hash-verifies, compares the MODE, then unlinks |
+| `pnpm test` | 1,131 tests. It regenerates the SQLite client first (the suite builds temporary `.db` files), so **it leaves the client pointed at SQLite if it fails partway** — `bash scripts/prisma-client-for-env.sh` restores it |
+| `pnpm db:studio` | full raw data the dashboard omits |
+
+---
+
+## Gotchas that have already bitten
+
+- **`skipDuplicates` IS A PROVIDER TRAP: IT EXISTS ON THE POSTGRES CLIENT AND NOT ON THE
+  SQLITE ONE.** Found 2026-08-08 by running it. `createMany({ skipDuplicates: true })`
+  appears **4 times** in the generated Postgres client and **ZERO** times in the SQLite one,
+  so every call threw `Unknown argument` — while `pnpm typecheck` was perfectly happy,
+  because typecheck runs against the Postgres schema and the suite regenerates SQLite.
+  **Production is Postgres, where it would have worked BY LUCK**, and the SQLite harness is
+  the only reason this was caught before the server. Two lessons, and the second is the
+  general one: idempotency that depends on which provider generated the client is not
+  idempotency (existing rows are subtracted instead, with the unique key as the backstop for
+  the read-then-create race); and **typecheck and the test suite here run against DIFFERENT
+  providers**, so agreement between them is not agreement about the code.
+- **NEVER RUN A BARE `pnpm prisma generate`.** It re-bakes the client for whichever provider
+  the schema config names, so running it while `DATABASE_URL` points at the server's Postgres
+  leaves the **device agent unable to reach the server at all** — the generated client is
+  baked with its schema's provider and refuses the other adapter outright
+  (*"The Driver Adapter @prisma/adapter-pg … is not compatible with the provider sqlite"*).
+  The fix is `bash scripts/prisma-client-for-env.sh`, which picks the right one from the
+  environment. `pnpm test` regenerates SQLite as its first step and restores Postgres after,
+  so a suite that dies partway leaves the client on the wrong provider — run the script,
+  do not reach for `prisma generate`.
+- **A NEW CRON ON THE SAME CLOCK AS AN OLD ONE COLLIDES BY CONSTRUCTION, AND `noOverlap`
+  CANNOT HELP.** Putting `runOutreach()` on the 15-minute detect clock (2026-08-11) landed it
+  on top of the four IST slots, because **minute 0 is always a multiple of 15** — four
+  collisions a day, guaranteed, the same arithmetic that makes the pipeline's `upsert`
+  `update:` branch fire 16 times a day. node-cron's `noOverlap` is **per TASK**, so it stops
+  a task treading on itself and does nothing between two different tasks. The cost is not
+  wasted work: two concurrent planners both read `hasPendingAttempt: false` for one pair,
+  both draft it, and **two DMs land on one prospect seconds apart** — `hasPendingAttempt` is
+  a read-then-write and cannot close that alone. The slot lock is the fix, exported from the
+  one file it lives in and reused; a held lock skips planning and is deliberately NOT logged
+  as a failure, because the slot holding it is doing the same planning anyway. **When adding
+  a scheduled task, ask which existing schedules its interval divides.**
+- **`ERR_INVALID_PACKAGE_CONFIG` FROM A `package.json` THAT LOOKS PERFECTLY VALID MEANS
+  `node_modules` IS DAMAGED, NOT YOUR CODE.** Hit 2026-08-07: every `tsx` script, `vitest`
+  AND `pnpm install` itself started failing, first pointing at
+  `zod/v4/core/package.json`. `cat` showed well-formed JSON and `JSON.parse` accepted it —
+  but the file was mode **600** where its siblings were 644, and elsewhere in the store
+  files had been truncated to **zero bytes** (75 of them; pnpm's own error was *"Unexpected
+  end of JSON input while parsing empty string"*). It also SPREAD: deleting the named
+  package moved the error to `effect`, then `sharp`.
+  **Do not debug this as a code problem.** `rm -rf node_modules && pnpm install` fixed it in
+  4 seconds. What is worth doing FIRST, and it is thirty seconds of work: confirm the damage
+  is confined — `find src prisma tests -type f -size 0` returned 0, `git status` showed only
+  expected edits, and `prisma/dev.db` was copied to /tmp before anything was deleted. Source,
+  docs and the database were untouched; only the store was. Verify that rather than assume it,
+  because the reflex when tooling breaks everywhere is to suspect the last edit.
+- **A `Date` HANDED TO A NAIVE POSTGRES COLUMN CARRIES THE CLIENT'S TIMEZONE, AND THE
+  CHECK THAT SHOULD CATCH IT AGREES WITH ITSELF.** Every timestamp column here is
+  `timestamp WITHOUT time zone` (SQLite had no tz-aware type; the generated Postgres schema
+  mirrors it on purpose). The `pg` driver serialises a JS `Date` into such a column using
+  the CLIENT's LOCAL time — so the SQLite→Postgres copy, run from UTC+05:30, stored all
+  **6,291 values 5.5 hours ahead**.
+  **It hid because the driver applies the same offset on the way BACK OUT.** A JS-to-JS
+  comparison from the copying machine round-trips perfectly: the migration's "timestamps
+  compared as instants: match" was true and meaningless, and the first corrective dry run
+  said *"6291 compared, 0 differ"* about values that were every one wrong. *A check that
+  reads a value back the same way it wrote it is not verifying storage; it is verifying its
+  own symmetry.* `::text` is the only view with nobody's timezone in it — MEASURED on one
+  row read two ways: from the Mac `05:30:45Z` (right), from the SERVER `11:00:45Z` (wrong),
+  and the server is what runs detection. **Bind timestamps as STRINGS and cast in SQL**
+  (`$n::timestamp`); a string has no timezone for a driver to apply. Found by a dashboard
+  printing "newest seen **-171 min ago**" — a negative age is impossible, which is the only
+  reason it was caught. Two plausible fixes were wrong first (a time boundary caught correct
+  server rows; `> now()` missed every row already more than 5.5 hours old); what identifies
+  a copied row is the SQLite file itself. `pnpm ig:fix-timestamps`, mutation-tested.
+- **A MODULE-LEVEL LATCH MEANS "FOREVER" THE DAY A RESIDENT PROCESS CALLS IT.** Found
+  2026-08-11 by reading the server's pm2 log two hours after deploying. `resolveBrand.ts`
+  had `let rateLimited = false`, set on a real 429 and documented as *"stop asking for the
+  rest of the run"* — correct while the only caller was `pnpm ig:brands`, where the run IS
+  the process. The 15-minute `autoResolve` cron made "the run" mean "the process lifetime".
+  MEASURED: one handle 429'd at 14:15, and every pass for the next two hours logged an
+  identical `looked=1 haltedEarly=true` while making **no request at all** — the latch
+  short-circuits before the fetch, so a permanent stop is indistinguishable from a fresh
+  throttle. Zero `purpose: 'resolve'` calls had ever run in production; the feature built
+  for `@adidas` had never once executed. **`resetBrandResolverLimit()` existed with ZERO
+  callers** — a reset nobody can trigger, this codebase's signature failure, inside the
+  code written to be careful. Now a timestamp (`RATE_LIMIT_COOLDOWN_MS`, 30 min), the
+  message names its expiry, recovery is logged, and `ig:brands --run` clears it because a
+  person typing a command has decided to try. **A control probe is what settled it**: the
+  same handle returned 400, not 429, from both the server and a laptop, so the endpoint was
+  healthy and the latch was stale — the identical diagnostic that corrected `resolveBrand`'s
+  rate-limit story in the first place.
+- **A CACHE THAT ANSWERS FIRST MEANS A NEW JUDGE NEVER SEES THE BACKLOG.** Same day. The
+  brand model was wired into `resolveBrand`'s FRESH path only, and the cache branch returned
+  `cached: no category` before reaching it. MEASURED: all 30 `UNRESOLVED` rows were cached on
+  2026-08-06 — days before the model existed — so `@adidas`, `@kfcindia` and `@nutella` were
+  structurally unreachable by the thing built to decide them. Adding a judge to a pipeline is
+  not the same act as offering it the rows that predate it. The fix distinguishes *the model
+  ruled* from *the model never ran* with `decidedBy = 'model-declined'`, so a decline is not
+  re-asked forever while a failure stays retryable, and both paths persist through ONE
+  `persistResolution`. **The backfill command's first query was `decidedBy: { notIn: [...] }`,
+  which selects NOTHING when the column is NULL** — SQL three-valued logic — so it would have
+  printed *"Nothing stuck"* about a queue it never read: a confident all-clear, exit 0.
+- **THE MODEL ANSWERED ABOUT A DIFFERENT ACCOUNT, AT 95% CONFIDENCE.** Found by READING all
+  23 real verdicts rather than the headline counts. Asked about `@crocs` it replied
+  *"instylemagazine is a publisher/media page"*; asked about `@titaneyeplus`, *"Vikas Khanna
+  is a famous Indian chef"*. Neither entity appears in that handle's enrichment or captions —
+  it substituted a subject, and both wrong rows had `(nothing gathered yet)` enrichment, so
+  **thin evidence produces confabulation rather than the `unsure` the prompt asks for**. The
+  confidence floor cannot catch this: the model is confident, just about the wrong thing.
+  Two real brands were filed PERSON, which never retries. `src/detection/reasonSubject.ts`
+  now rejects a reason whose subject is traceable to something other than the handle, and
+  degrades it to unsure. Note what makes it hard: `@iamzahero → "Sonakshi Sinha"` and
+  `@nowitsabhi → "Abhishek Banerjee"` are CORRECT — real people behind pseudonymous handles,
+  structurally identical to the mistake. Verified in production: on re-ask `@crocs` resolved
+  to company and `@titaneyeplus` **repeated the same confabulation and was caught**.
+- **A CLIENT COMPONENT THAT IMPORTS A GUARD PULLS THE DATABASE INTO THE BROWSER.** Found
+  2026-08-06. `waiting.tsx` is `'use client'` and imported `remedyFor` from a module that
+  imports `RESEND_BLOCKS` from `gate.ts`. The trace — `waiting.tsx [Client] -> remedy.ts ->
+  gate.ts -> profile.ts -> better-sqlite3` — could not resolve `fs`, which broke the client
+  chunk build and returned **HTTP 500 on every route**, including ones importing none of it.
+  `pnpm typecheck` passed throughout and `pnpm build` was not the thing that caught it. Same
+  shape as the `lib/session-cookie.ts` lesson one runtime over: a module reachable from a
+  restricted runtime must not import server-only code, and only RUNNING it tells you. The fix
+  is to resolve on the server and pass data down — which is also what this codebase already
+  says a page should do.
+- **A 200 IS NOT A STYLESHEET, and geometry checks pass happily on an unstyled page.** Found
+  while verifying `pnpm ig:layout`: `pnpm build` had been run while `pnpm start` was live — the
+  trap already recorded below — so the HTML referenced a replaced chunk and
+  `/_next/static/chunks/*.css` returned **HTTP 500 with the body "Internal Server Error"**. The
+  dashboard rendered with NO CSS AT ALL, and the geometry check passed **seven of its nine
+  assertions** on it: the rail was present, nothing overlapped, no error boundary, the heading
+  was there. Almost every geometry assertion is vacuously true without CSS, because with no rail
+  there is nothing to collide with. `ig:layout` now fetches every referenced asset AND asks the
+  browser for a computed value only our own CSS sets.
+- **AN ASSERTION ABOUT TODAY'S ARRANGEMENT IS NOT AN ASSERTION ABOUT THE PROPERTY.** Also found
+  by mutation-testing `ig:layout`: reintroducing the exact CSS that destroyed `/` —
+  `main { display: grid; grid-template-columns: 15rem 1fr }` — produced almost no failures,
+  because splitting `/` left every page rendering exactly TWO children (the rail and one
+  `div.page`), and a two-column grid with two children works. The bug had not been fixed; it had
+  gone LATENT, and it returns the day any page renders a second block. The check now APPENDS a
+  probe child and asserts *that* clears the rail, plus that `main` is not a grid or flex
+  container at all. Ask what the check would say if the arrangement changed, not whether it
+  passes now.
+- **"The content column is readable" measured `main`, which is always full width.** So it could
+  not fail. Under the grid bug the content was crushed into a 15rem column and the assertion
+  stayed green. Measure the element that carries the text, not its container.
+- **A CONTAINER THAT CHANGES COLOUR MUST CONTAIN ONLY THINGS THAT COLOUR IS ABOUT.** `/`'s
+  health card was one `.status status-{health}` box holding the dot, the headline, "Last check
+  read 168 posts", the next slot, Check-now and **Sign out**. `status-attention` is the ORDINARY
+  state whenever a draft is waiting, so the dashboard routinely rendered an amber alarm
+  containing good news and a piece of furniture. It is also invisible to a geometry check — the
+  box was laid out perfectly.
+- **`display: flex` ON RUNNING PROSE SEPARATES THE PUNCTUATION.** In a flex container every bare
+  text node becomes its own anonymous flex item, so a paragraph ending in a linked clause
+  rendered as `4 messages written and waiting.   Read them and decide   .` with the full gap
+  before the full stop. Same family as the JSX `{' '}` bug below, and found the same way — by
+  reading the text content, not by looking at the layout.
+- **A guard can succeed and still be blind, and that is not `unreadable`.** The reply check
+  read a thread, got a truthful SUBSET, and reported "no reply" — stamping verified silence.
+  Every fail-closed path was designed against a read that FAILS; this one worked. When a check
+  reads external state, ask what it would report having seen only part of it, and make
+  "partial" its own outcome rather than a quiet member of the happy path.
+- **A jitter added for behavioural realism decided a safety outcome.** `jitter(2000, 3500)` sat
+  between opening a thread and reading it, and Instagram restructures the DOM at ~2528 ms. The
+  guard's correctness was a coin flip. Randomness introduced for one purpose lands wherever it
+  lands; if a random delay sits before a measurement, the measurement inherits it.
+- **A fall-through `return { ok: true }` turns every new case into a permission.** Adding
+  `incomplete` to a union made an incomplete read allow the send — fail-open, with no type
+  error, because a fall-through return is valid code. Exhaustive `switch`/`never` on anything
+  whose default answer is "go ahead".
+- **Mutation-test the VERIFICATION, not just the logic.** The pruner's "device identity
+  intact" check could be replaced with a constant `true` and break no test: every case
+  asserted it on a happy path where it was true anyway. A check nobody can trigger is this
+  codebase's signature failure, and it had reappeared inside the code written to prevent it.
+- **A rule that matches digits does not see words.** The quality gate's figures allowlist —
+  the most important check in the file — passed "eighty million followers". Enumerate the
+  representations, not just the values.
+- **Room in an exempt bucket is not room.** New sending accounts were being assigned to
+  cohort 1 because it had space, and cohort 1 is the baseline that bypasses the soak. The
+  first account of a 61-account expansion would have skipped the entire ladder. When one
+  bucket is exempt from a rule, nothing new may be put in it.
+- **A GUARD CAN CHECK A FACT THAT HAS NOTHING TO DO WITH WHAT IS SENT.** Observed in
+  production 2026-08-05. A draft was prepared at 15:10, the account was given a new identity
+  at 15:12, Send was pressed at 15:12:28 — the persona gate CHECKED THE ACCOUNT, found it
+  distinct, and passed — and at 15:13 the message was delivered still saying *"I'm Kapil Jain,
+  Co-founder of Bollywood Society"*. The gate guards the account; the body carries the persona
+  frozen at draft time. Decision 3b exists so a recipient never gets a pitch signed by another
+  company, and a message could do exactly that while the guard reported everything fine. When a
+  guard checks live state about a message written earlier, ask what the MESSAGE says, not what
+  the record says. `RESEND_BLOCKS.PERSONA_CHANGED_SINCE_DRAFT` is the stop; it refuses rather
+  than silently re-rendering, because the stored body is what the send guards compare against
+  and an operator may have edited it by hand.
+- **A CSS layout that assumes a child count breaks exactly one page.** `main` was given
+  `grid-template-columns: 15rem 1fr` for a sidebar. Every page renders two children — except
+  `/`, which renders eleven, so children 3, 5, 7, 9 and 11 landed in column ONE underneath a
+  sticky full-height rail. A fixed rail plus padding cannot care how many children there are.
+  And it shipped because the verification asked whether the rail was PRESENT, whether a link
+  was active, whether chunks loaded and whether an error boundary showed — **all five passed on
+  a destroyed page.** Presence is not layout; assert geometry (bounding boxes must not
+  intersect) in a real browser.
+- **JSX drops the space between an expression and the next line's text.**
+  `{x ? 'it' : 'them'}` then a newline then `under Your accounts` renders **"themunder"**. Use
+  `{' '}`. It reached a live dashboard and was found in a screenshot.
+- **"Nothing happened" needs a reason at every level, not just the top one.** The dispatcher
+  recorded why the FLEET did not send (breaker, hours, gap) and, when the fleet WAS clear and
+  every individual message was then held, recorded `0 message(s) sent` with a count and no
+  reason. Its own docblock said the mechanism existed so *"autopilot is on and nothing has gone
+  out" has no explanation anywhere* — it was one level short of its own claim. When you build a
+  "why nothing happened" channel, walk down every layer that can independently say no.
+- **A wrong number is worse than no number.** `ig:prune`'s dry run printed "24.3 GB unpruned,
+  24.3 GB pruned" because the post-prune size is null in a dry run and fell back to the
+  before-size. It read as "pruning achieves nothing" in the one command arguing that it does.
+
+- **`instagram.com/<handle>/` returns HTTP 200 for an account that does not exist.** It
+  serves the SPA shell and renders "Sorry, this page isn't available" client-side.
+  `handleExists` read that status, so `'missing'` was **unreachable** and it answered
+  `'exists'` for every handle anyone could type — `addTarget` has always shown "@x does not
+  exist on Instagram" from a branch no input could reach. MEASURED 2026-08-05:
+  `@instagram` and `@qqqq_nope_nope_12345` both 200, bodies 609,393 and 609,403 bytes, ten
+  bytes apart. Exactly the `current_user` trap below, on a different path. What works is
+  **`web_profile_info`** — measured 404 for a missing handle — with the caveat that a 400
+  carrying Meta's deleted-schema message means the account EXISTS and its category cannot
+  be serialised. Throttles stay `unknown`; absence of data must never harden into a
+  negative verdict. Found by RUNNING the import, not by reading code that looked correct.
+- **A lock that grants itself to its own pid must not be re-entered.** `acquireSendLock`
+  treats a row naming our own pid as claimable — it has to, because a crash leaves one
+  behind and pids get reused. That made a NESTED `withSendLock` succeed, and the inner
+  `finally` then deleted the row while the outer call was still sending, leaving the send
+  unprotected. Nesting is refused outright now: there is one clipboard, so a process asking
+  to send while already sending is a bug upstream.
+- **"Taking over a lock left by a process that is gone" was printed for our OWN live pid.**
+  Both lock takeovers logged one message for three different situations, so a routine
+  self-reclaim reported a crash that never happened — sending anyone debugging a wedged
+  fleet after a ghost. Distinguish "unreadable row", "our own row", and "a dead holder".
+- **A bound must count what you are trying to limit.** The dispatcher's per-tick bound
+  first counted DELIVERED messages, so a run of failures drove Instagram once per waiting
+  draft with the counter stuck at zero — an unbounded burst produced by the code meant to
+  bound it. A failed send is exactly as much Instagram activity as a successful one.
+- **`/api/v1/accounts/current_user/` does not work on instagram.com web.** It looks
+  like the obvious "who am I" endpoint and it is a trap: measured 2026-07-31 against a
+  genuinely logged-in profile it returns **HTTP 200 with `text/html`** (the SPA shell),
+  because it is a mobile-API path www does not serve. `loggedInAs` was built on it, so
+  it returned null for logged-in and logged-out sessions alike — the dashboard's
+  Connect button polled forever, and `assertLoggedInAs` would have blocked every send
+  from a perfectly good account. What works: `ds_user_id` from the session cookie,
+  resolved via **`/api/v1/users/{id}/info/`**, which returns JSON with `user.username`.
+  Verified positive *and* negative (the wrong-account guard still fires).
+- **AND THEN `/api/v1/users/<id>/info/` DIED THE SAME WAY, and the check written to defend
+  against that read the dead endpoint as "you are logged out".** Found 2026-08-06 when
+  Connect on `@tabishmukaddam1` opened Chrome showing the account plainly signed in and the
+  dashboard would not accept it. MEASURED on that live profile, page title `(1) Instagram` —
+  an unread-DM badge only a signed-in session renders:
+
+  | | |
+  |---|---|
+  | `www/api/v1/users/<id>/info/` | **200 `text/html`, 627,698 bytes** — the SPA shell. Adding `x-csrftoken` and a `referer` changes nothing, so it is the PATH, not the headers |
+  | `i.instagram.com/.../info/` | 200 **JSON** with `{"status":"fail"}` and a translated "something went wrong" — a 200 carrying no answer |
+  | `www/api/v1/accounts/edit/web_form_data/` | **200 JSON, `form_data.username`** — works with and without a csrf header. Now the first endpoint tried |
+
+  The root cause is not the dead path — paths die. It is that `identify()` was
+  `if (!res.ok() || !contentType.includes('json')) return { kind: 'logged-out' }`, so **"I
+  could not ask" hardened into a positive claim about the account**, and `{kind:'unknown'}` /
+  `IdentityCheckFailedError` — which exist for exactly this — were reachable only from a
+  thrown exception, never from a bad *response*. Third appearance of that shape here, after
+  `current_user` and `resolveBrand` reading one broken handle as a run-wide throttle.
+
+  **The claim then travelled, and every consequence looked like a different bug.** Connect
+  polled "Waiting for you to log in…" for twenty minutes at an account that was already
+  logged in; every send threw `NotLoggedInError`; and §3.5 dutifully RECORDED the live
+  session as dead (`sessionInvalidAt`, 09:58), which halts the account through the gate's
+  `no-session` stop and tells the operator to perform the riskiest act in this design — a
+  re-login — on evidence nobody gathered. A mechanism working perfectly on a false input.
+
+  Fixed by giving the reading a third value that cannot become a verdict:
+  `readIdentityResponse` (PURE, tested both directions) returns `logged-in` / `logged-out` /
+  **`no-answer`**, and `logged-out` is now claimed ONLY from positive evidence — no session
+  cookie at all, a 401/`login_required`, or a rendered login form. Two endpoints are tried in
+  order, because one source of truth for identity is one point of failure for every send.
+  **Mutation-tested:** with both endpoints pointed at dead paths, a signed-in account returns
+  `unknown` with a diagnostic rather than `logged-out` — the failure above is now structurally
+  unreachable. Verified live in both directions: signed-in profile → `logged-in`,
+  session-less profile → `logged-out`.
+
+  Two things measured on the way, both worth keeping. `input[name="password"]` and
+  `form#loginForm` are **0 on Instagram's current DOM in BOTH states** — the obvious
+  selectors for "is a login form showing" would never have fired; `input[type="password"]`
+  is 1 logged-out and 0 signed-in. And the *page* is a better witness than any endpoint:
+  title `(1) Instagram` vs `Instagram`.
+- **THE SECOND CONNECT BUTTON NEVER POLLED, so a real login went unrecorded and the page
+  called a signed-in account "expired".** Found 2026-08-07 when Tabish signed in to
+  @bollywoodchronicle through the /senders row button. That button fired `connectAccount`
+  once and said "reload this page" — nothing ever asked "done yet?", so `finish()` never
+  ran, the window was never closed (**closing is what flushes cookies to disk**), nothing
+  was recorded, and the page truthfully reported no session on disk about an account
+  visibly signed in in the window next to it. The login-queue card had the correct
+  start-then-poll flow all along: one flow, two callers, one of them wrong — the exact
+  drift `gate.ts` and `readThread.ts` were extracted to stop, this time in the client.
+  Both buttons now share `useConnect` (src/app/accounts/use-connect.ts), the ONE
+  start-then-poll implementation; on `connected` the row refreshes itself. The orphaned
+  login was finalised with `pnpm ig:login` (already-signed-in branch: identity verified
+  against Instagram, then recorded).
+- **A SUCCESSFUL CONNECT WAS REPORTED AS A FAILURE, by the client, in two places.** Found in
+  the same 2026-08-06 investigation and independent of the endpoint above — so Connect would
+  still have been unusable for an already-signed-in account after that fix. `startConnect`
+  verifies identity and closes the window itself when the profile is already logged in, and
+  `queue.tsx` handled only `error` and `closed`: `connected` fell through to
+  `setState('waiting')` and started polling, `pollConnect` found no window in its Map
+  (because the connect had already finished), returned the no-window fallback *"A session is
+  already stored for this account. Press Connect to re-verify it."*, and the card rendered
+  that as an **error**. Pressing the button again reproduced it forever. `group.tsx` had the
+  mirror image: every non-error state printed *"A Chrome window is opening — sign in there"*,
+  including `connected` (the window has already closed) and **`wrong-account`** — a different
+  account holding the profile, which is safety-relevant and was hidden behind that sentence.
+  Both now answer per state. A union type is only as good as the branches that read it, and
+  `if (a || b)` on a six-member union silently lumps the other four into the else.
+- **`pnpm ig:login` had TWO writers' worth of side effects, and the dashboard's copy of the
+  same flow had already been fixed.** `recordLogin` wrote `sessionInvalidAt: null` inline
+  rather than through `clearSessionInvalid` — so a session coming back to life produced a
+  `sender.session.restored` audit row via the dashboard and NO row via the CLI, depending
+  only on which of two identical flows the operator used. It also set `status: 'ACTIVE'`,
+  which **silently released a CHALLENGED halt** while leaving `challengedAt` set — so the
+  fleet breaker stayed tripped and the account read healthy. That exact bug is documented
+  below for `checkConnect` ("CHALLENGED is never cleared as a side effect") and the CLI was
+  never switched over: the third time in this codebase that a fix landed in one caller and
+  not the other. It now routes through `clearSessionInvalid` and prints a warning instead of
+  clearing the halt.
+- **The dashboard binds `127.0.0.1` and must stay that way.** It served
+  `Send from @<revenue account>`, the Autopilot toggle, Auto-send and Remove to the
+  entire local network with no auth and no `middleware.ts` — measured: `curl` to the LAN
+  IP returned 200 with those buttons in the HTML. `actions.ts` already reasons about
+  exactly this for `AUTOPILOT_ENABLED` (*"anyone who can reach it can call this action"*)
+  and that reasoning correctly hard-floors one switch and stops. Exposing the page means
+  exposing a send button; if it must be reached remotely, tunnel (`ssh -L`), never rebind.
+  **Auth exists now (2026-08-03) and does not change this.** Registration is OPEN by
+  Tabish's explicit choice, so a signed-in stranger can send from a revenue account —
+  the bind is still the thing limiting who that can be. See the auth section above.
+- **Middleware runs in the EDGE runtime, where `node:crypto` does not exist.**
+  `src/middleware.ts` imported `SESSION_COOKIE` from `lib/session.ts`, which imports
+  `node:crypto` at module scope. `pnpm build` succeeded, `pnpm typecheck` passed, and
+  every single request then returned **HTTP 500** with `Native module not found:
+  node:crypto` — including `/sign-in`, so the dashboard was completely unreachable and
+  nobody could sign in to discover why. The cookie NAME now lives in its own
+  dependency-free module, `lib/session-cookie.ts`; keep it that way, because one import
+  there takes the whole dashboard down. Same shape as the `require()` gotcha below:
+  code that resolves in one runtime and throws in another, invisible to both build and
+  typecheck. **Only a real request finds it** — which is why auth was verified against
+  the running server and not just by the suite.
+- **`tsconfig.tsbuildinfo` caches type errors across a build.** With `incremental: true`,
+  `pnpm typecheck` kept reporting `'/sign-in' is not assignable to RouteImpl<'/sign-in'>`
+  *after* `pnpm build` had regenerated `.next/types/routes.d.ts` and `AppRoutes` visibly
+  contained `/sign-in`. The route type was correct and the error was stale. Deleting
+  `tsconfig.tsbuildinfo` cleared it. Worth knowing before "fixing" a phantom type error
+  with a cast — the cast would have been permanent and the diagnosis wrong.
+- **One gate, two callers. Never re-inline it.** `deliverWaiting` re-checked eight
+  conditions; `sendNow` checked three. The five it lacked included `optedOut` and *they
+  replied* — so `removeTarget` promised a retired channel "can never be contacted again by
+  accident" while a draft's Send button still delivered, and recording a reply halted
+  autopilot but not the button beside it. Both now call `src/outreach/gate.ts`. The
+  decision half is pure so both directions are testable; the DB half is queries only. If
+  you add an `if` to the wrapper, it belongs in the pure function with a test.
+- **A per-item failure must not halt the whole run, and this one wore a safety costume.**
+  `resolveBrand` set a module-level `rateLimited` on ANY non-OK status, stopping every
+  remaining lookup. Measured: **three consecutive `pnpm ig:brands --run` passes made zero
+  progress**, each reporting "rate-limited", against a completely healthy endpoint — one
+  permanently-broken handle blocking ten resolvable ones, indefinitely. Halting on a real
+  throttle IS correct here (hammering after being told to stop is what earns an IP block),
+  so the code read as conservative. The bug was the *inference*: one item's failure taken as
+  evidence about the shared resource. Ask explicitly which it is, and default to per-item
+  unless the response actually says otherwise. **The diagnostic that settled it was a
+  control probe** — a known-good handle interleaved between the failing ones returned HTTP
+  200 every time, which disproved a documented measurement in one minute.
+- **A check and a write in two statements is not a guard.** `sendNow`'s idempotency read
+  the status then wrote `SENDING` separately, under a comment asserting a double click
+  could not double send. It could. Use `updateMany` with the status in the `where` and
+  check `count`. This bit twice in one day: the first version of the slot lock in
+  `runSlot` made the identical mistake (`findUnique` then `upsert`) and two concurrent
+  slots both ran — caught only by running it. `create` on a primary key is the atomic
+  test-and-set.
+- **A needle taken from the greeting makes both send guards tautologies.**
+  `distinctiveSlice` excluded the greeting from its primary path but its *fallback*
+  reached for "longest line available", which for a short edited body IS the greeting —
+  and the greeting renders in the thread header whether anything was delivered or not. So
+  the post-send check could not fail and a paste that lost everything after the greeting
+  passed the composer read-back. The ends are now excluded from the fallback too, with a
+  20-character minimum, and `editAttemptBody` refuses a body the guards cannot verify. Note
+  the shape of the miss: the suite's "falls back gracefully" test used a **single-line**
+  body, so the fallback never reached the greeting and the gap was invisible.
+- **2FA is not enforcement.** `/two_factor` sat in `CHECKPOINT_PATHS`, and
+  `assertNoCheckpoint` runs five times inside one send — so a routine re-verification on a
+  2FA-enabled account marked it `CHALLENGED` and halted every pair using it, with nothing
+  retrying by design. Identical to the `/accounts/login` mistake documented right beside
+  it, whose own comment warns that CHALLENGED for routine events teaches an operator to
+  dismiss the one that matters. 2FA has its own state and is checked *before* the login
+  paths, because IG's 2FA URL sits under `/accounts/login/`.
+- **Enforcement is usually a modal, not a URL.** "Action Blocked", "We restrict certain
+  activity" — Instagram's normal response to DM activity renders on the current URL, so
+  URL-only detection missed it entirely: the send carried on, failed some later check, and
+  was filed as an ordinary retryable failure with the account left ACTIVE and eligible next
+  slot. That is retrying into a block. `assertNoEnforcement` checks the page as well, at
+  the two points where it matters. Keep the phrase list narrow — a false positive halts a
+  healthy revenue account. Verified against 1MB of real logged-in page text with no match.
+- **`CHALLENGED` is never cleared as a side effect.** `checkConnect` set `status: 'ACTIVE'`
+  whenever connect reported `connected`, and that is returned on two paths where no login
+  happens — including a fallback that read a cookie off disk with no identity check. So a
+  flagged account returned to ACTIVE on one click with nobody looking at it. Clearing is
+  `clearChallenge`, explicit. (It also did not re-arm auto-send, back when that switch
+  existed. Since 2026-08-08 ability is derived, so clearing a challenge DOES restore this
+  account to sending if its session is live and its group is cleared — that is the switch
+  removal working as specified, and it is worth knowing before clearing one.)
+- **Validated config that nothing reads is worse than absent config.**
+  `SEND_JITTER_MIN/MAX_SECONDS` were parsed, range-checked, cross-validated (`min <= max`)
+  and documented in `.env` as "delay bounds between consecutive DMs" — and read by
+  nothing. There was no delay between consecutive sends at all. At 1-2/day that is
+  academic; the danger is that raising volume is exactly when someone would rely on it.
+- **The platform branch lives in exactly one file.** `src/lib/platform.ts`. Three things
+  were macOS-only and each was a total blocker on Windows: `pbcopy`, `Meta+V` (which is
+  the *Super* key on Windows, so the paste silently did nothing), and `open`. Windows uses
+  PowerShell `Set-Clipboard`, **not `clip.exe`** — `clip.exe` encodes from the console code
+  page and corrupts `U+2014`, and the message bodies contain 48 em-dashes, so the
+  read-back would have refused intermittently depending on whether the needle line
+  happened to contain one.
+- **`REPLIED` replaces `SENT`; it does not add to it.** Any count of delivered messages
+  must be `{ in: ['SENT', 'REPLIED'] }`. `pnpm ig:audit` counted only `SENT`, so a
+  delivered message *vanished from the total the moment someone answered it* — the best
+  outcome quietly reducing the number, in the one tool whose job is cross-checking the
+  dashboard. It had always been wrong and had never been observably wrong, because until
+  replies became recordable nothing could hold status `REPLIED`.
+  **Fixed in `ig:audit` and left wrong in three other places for three days**, which is
+  why the status sets now live in `src/lib/constants.ts` as `DELIVERED_STATUSES` and
+  `IN_FLIGHT_STATUSES` rather than being spelled out at each call site. Found 2026-08-03:
+  the dashboard said "2 messages sent" when 3 had been; and the daily caps in `plan.ts`
+  and `gate.ts` counted `'SENT'` alone, so **a reply LOOSENED a guard** — the per-target
+  ones were unreachable (`TARGET_REPLIED` halts that target first) but the per-SENDER cap
+  was not, because the reply guard is per-target while the cap is per-sender. A reply
+  from target X bought that account one extra message to target Y.
+- **The dashboard must count a ceiling the way the enforcer counts it.** `view-model.ts`
+  measured `MAX_TOTAL_SENDS` against `SENT + REPLIED` while `plan.ts` measures it against
+  `IN_FLIGHT_STATUSES`. With the ceiling at 6 and 2 sent + 1 replied + 3 drafted, the
+  planner saw 6/6 and stopped preparing anything while the page saw 3/6 and rendered no
+  blocker at all. Two days passed with `queued=0` on every run, a healthy-looking
+  dashboard, and no reason given anywhere. A limit reported by a different rule than the
+  one enforcing it is worse than no limit shown: it reads as headroom.
+- **A run in progress is not a finished run.** `ScrapeRun` is created with zeros and
+  updated at the end, and the header read the newest row by `startedAt` — so for the ~60s
+  a slot takes it rendered "Last check read 0 posts". Zero parsed is defined as an ALARM
+  (60 parsed / 0 paid is a quiet day), so the one number that must never appear falsely
+  appeared four times a day. Check `finishedAt` before reporting counts.
+- **A health signal read from one sample cannot show a trend.** The "last check hit a
+  problem" blocker looked only at `lastRun`, so a channel failing at every slot for two
+  days read exactly like one unlucky fetch — and on the next success it read like nothing
+  had ever been wrong. Measured 2026-08-03: 8 of 12 consecutive slots `PARTIAL`
+  (`fetch failed` on the anonymous feed for two channels) and the page never said so.
+  Report degraded runs over a window.
+- **Closing the laptop lid silently skipped slots, and catch-up could not help.**
+  Verified 2026-07-31. Closing the *tab* is irrelevant — the scheduler lives in the
+  Next server process, and its heartbeat kept advancing with no page open. Closing the
+  *terminal* is irrelevant too — `pnpm start` ends up with `PPID 1` and no controlling
+  TTY. But **sleep** was fatal: node-cron arms a `setTimeout`, macOS suspends it, and
+  on wake `planBeat` compares how late the fire is against `missedExecutionTolerance`,
+  which defaults to **1000 ms** and was never overridden. Anything slept through is
+  filed as *missed* and emitted on `execution:missed` — a hook nothing was listening
+  to. `catchUpIfMissed` could not cover it either: it runs only at `startScheduler`,
+  and a lid-close suspends the process rather than restarting it. So the slot vanished
+  with no log line and no retry, while the dashboard still said autopilot was ON.
+  Confirmed by provoking a real late fire (a 7s synchronous stall produced three
+  `execution:missed` events with `ctx.date` set), not by reading the types. The handler
+  is now wired, reusing `CATCHUP_WINDOW_MINUTES` so waking on Wednesday cannot replay
+  Monday's 11:00, and re-checking `ScrapeRun` so it never double-runs.
+- **A liveness guard must ask the OS, not a clock.** The scheduler refused to start
+  because it saw a heartbeat under 3 minutes old and concluded another scheduler was
+  running. It was its own predecessor's: a `kill -9` restart gives the old process no
+  chance to clear the record. So every quick restart left the dashboard with autopilot
+  ON, nothing scheduled, and no retry. The pid is in the record — `process.kill(pid, 0)`
+  answers the actual question. Freshness alone is not liveness.
+- **Never `require()` in this codebase.** It is ESM. `require` exists in the Next
+  server bundle and NOT in anything run through tsx, so a lazy
+  `require('better-sqlite3')` inside `profileStatus()` threw in every CLI script and
+  in the worker, was swallowed by a fail-closed `catch`, and reported every account
+  as "not connected". The dashboard worked, so the Send button was fine while
+  autopilot could never fire — an environment-dependent silent failure on the gate
+  that decides whether unattended sending happens at all. Static `import`, always.
+- **A guard that reads the whole page can be a tautology.** The post-send check read
+  `body.textContent()` for the message — but the message sits in the composer whether
+  Enter worked or not, so it could not fail. What distinguishes sent from not-sent is
+  the composer *clearing*. Check the thing that changes, not the thing that is there
+  either way.
+- **`{{channel}}` must render the greeting name, not `displayName`.** `displayName` is
+  an internal label; a target added as "Bollywood Chronicle (test target)" put exactly
+  that into the message body.
+- **One "busy" flag cannot serve two actions.** The Save button and the Send button
+  shared one, and `editing` was in it — so opening the editor rendered Save as
+  "Saving…", disabled, before any save had been attempted. Separate flags per action:
+  a control must never report the state of something that has not started. Related:
+  a confirmation rendered *inside* a block that the success path unmounts is never
+  seen — the "Saved." message had to move outside the editor.
+- **Never name a script after a pnpm built-in.** `pnpm login` and `pnpm audit` are
+  pnpm's own commands — pnpm proxies `login`/`logout`/`whoami` to the npm registry.
+  A script with either name is silently unreachable: `pnpm login bollywoodsocietyy`
+  opened **npm's sign-in page**, an unrelated credential form, which is the worst
+  possible failure for a command whose whole job is "type your password here". And
+  `pnpm audit` ran pnpm's vulnerability scanner instead of our data check, so it
+  looked like it worked. Both are now namespaced — **`pnpm ig:login`**,
+  **`pnpm ig:audit`**. A colon can never collide, so prefix anything ambiguous. Use
+  `pnpm run <name>` if you must check whether a bare name resolves to a script.
+- **Never run `pnpm build` while `pnpm start` is running.** `next start` reads the
+  build manifest at boot; rebuilding underneath it leaves the server serving HTML
+  that references replaced chunks, and one returns HTTP 500. Symptom: `curl` gets
+  200 but the browser shows "This page couldn't load". Rebuild first, then start.
+- **Verifying a page with `curl -w "%{http_code}"` proves the server is alive, not
+  that the page works.** Extract the `/_next/static/**.js` references from the HTML
+  and request each one.
+- **Prisma 7** removed `url` from the datasource: connection config lives in
+  `prisma.config.ts`, and `PrismaClient` takes a driver adapter.
+- **TypeScript 7** is the Go compiler and does not expose the API Next.js calls —
+  `experimental.useTypeScriptCli: true` in `next.config.ts` handles it.
+- **`og:description` scraping is dead** for detection. It needed 13 requests, gave
+  day-precision dates only, and capped at 12 posts. The feed endpoint replaced it.
+- **Fixture lookups by array index are fragile.** Reference by shortcode.
+
+---
+
+## Style
+
+- Comments explain *why*, especially where a choice looks odd. Several decisions
+  here are counter-intuitive and will be "fixed" by someone who does not know the
+  research — the comment is the defence.
+- The governor and matching logic are pure functions. Keep them that way; they are
+  where a bug means spam sent to a real prospect.
+- The dashboard is for a CEO. No confidence scores, signal arrays, variant labels,
+  or detector keys on screen. Raw data belongs in Prisma Studio.
+- **Never put a shell command on the page.** The "Needs you" list did, verbatim:
+  `Send the next one: pnpm send`, `Raise the send limit (MAX_TOTAL_SENDS in .env)`,
+  `Check which channels are failing: pnpm ig:audit`. Every one was a developer
+  instruction for something the page could simply *do*, and a to-do list nothing can
+  tick off is a nag rather than information. Deleted 2026-08-03; anything a person
+  must act on renders on the thing it concerns — the account row, the channel card,
+  the reply — beside a control that resolves it.
+- **A notification that cannot be dismissed stops being read.** Whatever a banner
+  reports must have a way out, or it gets ignored precisely when it matters.
+- **A metric that covers part of the data must say which part.** "5 paid campaigns
+  spotted" described one channel of five; the coverage line under the metrics names
+  the four that are not judged.
+- **Ask the detector, never compare the key.** `unclassified` and the coverage note
+  both read `detectorKey === 'passthrough'`. Switching `@viralbhayani` to the semantic
+  detector turned that false, and the card instantly rendered **"Paid campaigns found:
+  0"** for a channel where half of ~62 posts/day are commercial — the exact misleading
+  zero the flag exists to prevent, reintroduced by a hardcoded string comparison. Both
+  now call `readiness()`, which is the detector's own statement about whether it can
+  judge. The reason string is carried through too: "no classifier set up" and "the
+  classifier has no API key" are different problems with different fixes and must
+  never render as one sentence.
+- **Render the real thing and read it.** The brand pitch had 18 passing assertions —
+  recency banding, missing-publisher fallback, placeholder substitution, paragraph spacing
+  — and one glance at a real message to a real prospect found two defects the suite could
+  not catch: `Hi Amazon India,` (a corporation addressed as an individual) and `Hi Milano
+  Ice Cream, Bangalore team,` (ungrammatical, in the first line a prospect reads). A test
+  asserts what you thought to assert; reading recruits a different faculty. Tests prevent
+  regression, reading prevents never-having-been-right, and they are not substitutes.
+- **A REFUSAL MUST SAY WHY, ON THE THING IT REFUSES.** A waiting draft rendered its body and a
+  "Send from @x" button and said nothing about whether that button would work. Measured
+  2026-08-06: all four waiting drafts would have been refused — three `no-session`, one
+  `target-replied` — so the most prominent control on the page could only produce an error, on a
+  screen whose entire design principle is that *"nothing happened" with no explanation* is the
+  failure this project keeps rediscovering. The dispatcher panel explained why the FLEET was
+  idle; nothing explained why THIS message was. The reason now comes from `recheckBeforeSend` —
+  the same function that refuses — and is rendered verbatim; only the "where to fix it" link is
+  the UI's own. Never re-derive a verdict a guard already computes.
+- **DUPLICATION IS A FAILURE OF THE SAME KIND AS SILENCE.** The redesign found the same reply on
+  `/` three times (headline, card, history row), the whole draft tray on two pages, a route
+  count twice on one row, and a reply block rendered twice on `/conversations` with two buttons
+  doing the same thing. A reader who sees a fact twice learns to skip it, and an operator who
+  presses the first of two identical buttons and sees the second still there concludes it did
+  not work.
+- **If the person a warning is FOR has to ask what it means, it has failed.** The
+  persona-gate banner was accurate and assumed the reader knew that "persona" meant the
+  signature at the bottom of every message. Tabish asked. It now shows the actual signature
+  and names the specific mismatch. Accuracy is not the bar for a warning; being understood
+  by the person who must act on it is.
+- **The pipeline diagram is part of the deliverable, not a one-off.** Tabish keeps
+  https://claude.ai/code/artifact/517b2e18-4c61-428c-a300-9b21de07d1c6 as his picture of
+  how this works. **Whenever the flow of operations changes, update it in the same session
+  and give him the link.** Re-publish by passing that URL as `url` — a conversation that did
+  not originally publish it otherwise mints a new one and he loses the bookmark. Build it
+  from the CODE: writing it the first time, reading `runSlot.ts` corrected two things the
+  docs alone would have got wrong. See `docs/PIPELINE.md`.
+- Report outcomes faithfully. If something is unverified, say it is unverified.

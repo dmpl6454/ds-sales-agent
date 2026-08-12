@@ -1,0 +1,924 @@
+/* One page, read top to bottom. Generous type, few colours, no tables.
+   Everything here is meant to be understood at a glance by someone who did not
+   build it. */
+
+:root {
+  --bg: #0c0e12;
+  --panel: #15181e;
+  --panel-2: #1b1f27;
+  --border: #262b34;
+  --text: #eceff4;
+  --muted: #98a2b3;
+  --dim: #667085;
+  --accent: #5b8dfd;
+  --good: #3fb950;
+  --warn: #e3a008;
+  --bad: #f2504b;
+}
+
+@media (prefers-color-scheme: light) {
+  :root {
+    --bg: #f7f8fa;
+    --panel: #ffffff;
+    --panel-2: #f1f3f6;
+    --border: #e0e4ea;
+    --text: #12151a;
+    --muted: #58626f;
+    --dim: #8b95a5;
+  }
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font: 15px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+main {
+  max-width: 900px;
+  margin: 0 auto;
+  padding: 28px 22px 80px;
+}
+
+a { color: inherit; }
+
+h2 {
+  font-size: 13px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--muted);
+  margin: 38px 0 14px;
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.h2-note {
+  text-transform: none;
+  letter-spacing: 0;
+  font-weight: 400;
+  font-size: 13px;
+  color: var(--dim);
+}
+
+section { margin: 0; }
+
+/* ── status header ── */
+/* THE HEALTH CARD, and since step C it holds the dot and the sentence and nothing else.
+
+   It used to be a `space-between` row carrying the headline on the left and, on the right,
+   "Last check read 168 posts", the next slot time, Check-now and SIGN OUT. `status-attention`
+   is the ordinary state whenever a draft is waiting, so all of that rendered inside an amber
+   box: neutral facts wearing an alarm's colour, and a piece of furniture inside a control whose
+   whole job is to mean something is wrong.
+
+   A container that changes colour must contain only things that colour is about. The facts moved
+   to `.page-meta` below it and sign-out moved to the rail. */
+.status {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 16px 18px;
+  background: var(--panel);
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 0.9rem;
+}
+.status-main { display: flex; align-items: center; gap: 12px; min-width: 0; }
+.headline { font-size: 17px; font-weight: 550; letter-spacing: -0.01em; }
+.status-meta {
+  display: flex; align-items: center; gap: 14px;
+  font-size: 13px; color: var(--muted); flex-wrap: wrap;
+}
+
+.dot {
+  width: 10px; height: 10px; border-radius: 50%;
+  flex: 0 0 auto; background: var(--dim);
+}
+.status-healthy  { border-color: color-mix(in srgb, var(--good) 35%, var(--border)); }
+.status-healthy  .dot { background: var(--good); box-shadow: 0 0 0 4px color-mix(in srgb, var(--good) 18%, transparent); }
+.status-attention{ border-color: color-mix(in srgb, var(--warn) 40%, var(--border)); }
+.status-attention .dot { background: var(--warn); box-shadow: 0 0 0 4px color-mix(in srgb, var(--warn) 18%, transparent); }
+.status-broken   { border-color: color-mix(in srgb, var(--bad) 45%, var(--border)); }
+.status-broken   .dot { background: var(--bad); box-shadow: 0 0 0 4px color-mix(in srgb, var(--bad) 18%, transparent); }
+
+/* ── replies ──
+   The `.todos` block that used to sit here is deleted along with the "Needs you"
+   section. Anything a person must act on now renders on the thing it concerns. */
+.replies { margin-top: 16px; display: grid; gap: 10px; }
+.reply {
+  border: 1px solid color-mix(in srgb, var(--good) 45%, var(--border));
+  background: color-mix(in srgb, var(--good) 8%, var(--panel));
+  border-radius: 12px;
+  padding: 16px 18px;
+}
+.reply-top { display: flex; justify-content: space-between; gap: 12px; font-size: 16px; }
+.reply .when { color: var(--muted); font-size: 13px; white-space: nowrap; }
+.reply .preview {
+  margin: 8px 0 10px; color: var(--text); font-size: 14px;
+  display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden;
+}
+.reply .preview.dim { color: var(--muted); font-style: italic; }
+.reply-foot {
+  color: var(--muted); font-size: 13px;
+  display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap;
+}
+.reply-actions { display: flex; gap: 8px; }
+
+/* Coverage note under the metrics. Muted on purpose: it qualifies the numbers
+   rather than competing with them, but it must never be absent when it applies. */
+.coverage {
+  margin: 10px 2px 0;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.55;
+}
+.coverage strong { color: var(--text); font-weight: 550; }
+
+/* ── metrics ── */
+.metrics {
+  margin-top: 26px;
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 1px;
+  background: var(--border);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  overflow: hidden;
+  position: relative;
+}
+.metric { background: var(--panel); padding: 22px 20px; }
+.metric .n { font-size: 40px; font-weight: 600; letter-spacing: -0.03em; line-height: 1; font-variant-numeric: tabular-nums; }
+.metric .l { color: var(--muted); font-size: 13px; margin-top: 8px; }
+.metric-note {
+  position: absolute; top: 10px; right: 14px;
+  font-size: 11px; color: var(--dim); text-transform: uppercase; letter-spacing: 0.07em;
+}
+@media (max-width: 640px) {
+  .metrics { grid-template-columns: 1fr; }
+  .metric-note { position: static; padding: 8px 20px; background: var(--panel); }
+}
+
+/* ── activity feed ── */
+.feed { border: 1px solid var(--border); border-radius: 12px; background: var(--panel); overflow: hidden; }
+.feed-day + .feed-day { border-top: 1px solid var(--border); }
+.feed-daylabel {
+  padding: 10px 18px 6px; font-size: 12px; font-weight: 600;
+  color: var(--dim); text-transform: uppercase; letter-spacing: 0.07em;
+}
+.feed-row { display: flex; gap: 14px; padding: 8px 18px; align-items: baseline; }
+.feed-row:last-child { padding-bottom: 14px; }
+.feed-time {
+  color: var(--dim); font-size: 13px; min-width: 46px;
+  font-variant-numeric: tabular-nums;
+}
+.feed-text { font-size: 14.5px; }
+.feed-row.reply .feed-text { color: var(--good); font-weight: 550; }
+
+.none { color: var(--dim); padding: 22px; text-align: center; border: 1px solid var(--border); border-radius: 12px; background: var(--panel); }
+
+/* ── cards ── */
+.cards { display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; }
+@media (max-width: 700px) { .cards { grid-template-columns: 1fr; } }
+
+.card { border: 1px solid var(--border); border-radius: 12px; background: var(--panel); padding: 16px 18px; }
+.card-top { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; font-size: 16px; font-weight: 550; }
+.card-top a { text-decoration: none; }
+.card-top a:hover { text-decoration: underline; }
+.followers { color: var(--muted); font-size: 13px; font-weight: 400; }
+
+.card dl { margin: 12px 0 0; display: grid; gap: 6px; }
+.card dl > div { display: flex; justify-content: space-between; gap: 12px; }
+.card dt { color: var(--muted); font-size: 13.5px; }
+.card dd { margin: 0; font-size: 13.5px; font-variant-numeric: tabular-nums; }
+
+.halt {
+  margin-top: 12px; padding: 7px 11px; border-radius: 8px;
+  background: color-mix(in srgb, var(--good) 12%, transparent);
+  color: var(--good); font-size: 13px; font-weight: 550;
+}
+
+/* ── accounts ── */
+.accounts { border: 1px solid var(--border); border-radius: 12px; background: var(--panel); overflow: hidden; }
+.account {
+  display: flex; align-items: center; gap: 12px;
+  padding: 13px 18px; font-size: 14px; flex-wrap: wrap;
+}
+.account + .account { border-top: 1px solid var(--border); }
+.account .dot.ready  { background: var(--good); }
+.account .dot.setup  { background: var(--dim); }
+.account .dot.broken { background: var(--bad); }
+.acc-name { font-weight: 550; }
+.acc-handle { color: var(--dim); font-size: 13px; }
+.acc-note { color: var(--muted); font-size: 13px; }
+.acc-count { margin-left: auto; color: var(--muted); font-size: 13px; white-space: nowrap; }
+
+/* ── controls ── */
+button, .btn {
+  font: inherit; font-size: 13.5px; font-weight: 550;
+  padding: 7px 14px; border-radius: 8px; cursor: pointer;
+  border: 1px solid var(--border); background: var(--panel-2); color: var(--text);
+  text-decoration: none; display: inline-block;
+}
+button:hover, .btn:hover { border-color: var(--dim); }
+button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+button.primary:hover { filter: brightness(1.08); }
+button:disabled { opacity: 0.5; cursor: not-allowed; }
+.row { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 12px; }
+.link-btn {
+  background: none; border: none; padding: 10px 0 0; color: var(--accent);
+  font-size: 13.5px; cursor: pointer;
+}
+.link-btn:hover { text-decoration: underline; border-color: transparent; }
+
+.sync { display: inline-flex; align-items: center; gap: 10px; }
+.sync-result { color: var(--muted); font-size: 13px; }
+
+pre.msg {
+  white-space: pre-wrap; word-break: break-word;
+  margin: 10px 0 0; padding: 14px;
+  background: var(--bg); border: 1px solid var(--border); border-radius: 9px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12.5px; line-height: 1.6;
+  max-height: 320px; overflow-y: auto;
+}
+
+.foot { margin-top: 44px; color: var(--dim); font-size: 12px; text-align: center; }
+
+/* ── account management ── */
+.account-block { border-bottom: 1px solid var(--border); }
+.account-block:last-child { border-bottom: none; }
+.account-block .account { border-top: none; }
+.acc-actions { margin-left: auto; display: flex; gap: 6px; flex-wrap: wrap; }
+
+.connect-strip {
+  margin: 0 18px 12px;
+  padding: 11px 14px;
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--accent) 10%, var(--panel-2));
+  border: 1px solid color-mix(in srgb, var(--accent) 30%, var(--border));
+  font-size: 13.5px; line-height: 1.55;
+}
+.connect-strip.warn {
+  background: color-mix(in srgb, var(--warn) 10%, var(--panel-2));
+  border-color: color-mix(in srgb, var(--warn) 35%, var(--border));
+}
+.connect-strip.error, .connect-strip.wrong-account {
+  background: color-mix(in srgb, var(--bad) 10%, var(--panel-2));
+  border-color: color-mix(in srgb, var(--bad) 35%, var(--border));
+}
+.connect-strip .link-btn { padding: 6px 0 0; margin-right: 14px; }
+
+.routes { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; padding: 0 18px 14px; }
+.routes-label { color: var(--dim); font-size: 12.5px; }
+.chip {
+  font-size: 12.5px; padding: 4px 10px; border-radius: 999px;
+  background: transparent; border: 1px solid var(--border); color: var(--muted);
+}
+.chip.on {
+  background: color-mix(in srgb, var(--good) 14%, transparent);
+  border-color: color-mix(in srgb, var(--good) 45%, var(--border));
+  color: var(--good);
+}
+.chip:disabled { opacity: 0.45; }
+
+.addform {
+  margin-top: 12px; padding: 16px 18px;
+  border: 1px dashed var(--border); border-radius: 12px; background: var(--panel);
+}
+.addform-row { display: flex; gap: 10px; align-items: flex-end; flex-wrap: wrap; }
+.addform label { display: flex; flex-direction: column; gap: 5px; flex: 1 1 170px; }
+.addform label span { font-size: 12.5px; color: var(--muted); }
+.addform input {
+  font: inherit; font-size: 14px; padding: 8px 11px; border-radius: 8px;
+  border: 1px solid var(--border); background: var(--bg); color: var(--text);
+  width: 100%; min-width: 0;
+}
+.addform input:focus { outline: none; border-color: var(--accent); }
+.addform .cardnote { border-top: none; padding-top: 12px; }
+
+.retired-list { margin-top: 12px; border: 1px solid var(--border); border-radius: 10px; overflow: hidden; }
+.retired-row {
+  display: flex; align-items: center; gap: 11px;
+  padding: 10px 14px; font-size: 13.5px; background: var(--panel-2); opacity: 0.75;
+}
+.retired-row + .retired-row { border-top: 1px solid var(--border); }
+
+.msg-edit {
+  width: 100%; margin-top: 10px; padding: 13px;
+  background: var(--bg); border: 1px solid var(--accent); border-radius: 9px;
+  color: var(--text); resize: vertical;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12.5px; line-height: 1.6;
+}
+.msg-edit:focus { outline: none; box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 22%, transparent); }
+
+/* ── autopilot ── */
+.autopilot { padding: 18px 20px; }
+.autopilot.live { border-color: color-mix(in srgb, var(--good) 45%, var(--border)); }
+.autopilot-top { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; flex-wrap: wrap; }
+.autopilot-title { font-size: 16px; font-weight: 550; letter-spacing: -0.01em; }
+.autopilot.live .autopilot-title { color: var(--good); }
+.autopilot-sub { color: var(--muted); font-size: 13.5px; margin-top: 5px; max-width: 62ch; }
+
+.arm-list { margin-top: 16px; border: 1px solid var(--border); border-radius: 10px; overflow: hidden; }
+.arm-row {
+  display: flex; align-items: center; gap: 11px;
+  padding: 11px 14px; font-size: 14px; flex-wrap: wrap;
+  background: var(--panel-2);
+}
+.arm-row + .arm-row { border-top: 1px solid var(--border); }
+.arm-btn { margin-left: auto; min-width: 74px; text-align: center; }
+
+.cardnote code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px; padding: 1px 5px; border-radius: 5px;
+  background: var(--bg); border: 1px solid var(--border);
+}
+
+.cardnote {
+  margin: 12px 0 0;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--muted);
+  border-top: 1px solid var(--border);
+  padding-top: 10px;
+}
+
+/* ── send a message now (on-demand) ────────────────────────────────────────
+   Warnings are styled with --warn and the refusal with --bad, matching the
+   status header: the same colour must always mean the same severity, or the
+   page teaches the reader to ignore it. */
+.ondemand-row {
+  display: flex; gap: 12px; flex-wrap: wrap; align-items: flex-end;
+  padding: 16px 18px;
+  background: var(--panel); border: 1px solid var(--border); border-radius: 12px;
+}
+.ondemand-row label { display: flex; flex-direction: column; gap: 6px; flex: 1 1 220px; }
+.ondemand-row label > span { font-size: 12.5px; color: var(--muted); font-weight: 550; }
+.ondemand-row select {
+  font: inherit; font-size: 13.5px;
+  padding: 7px 10px; border-radius: 8px;
+  border: 1px solid var(--border); background: var(--panel-2); color: var(--text);
+}
+.ondemand-row select:disabled { opacity: 0.5; }
+
+.ondemand-blocked {
+  margin-top: 12px; padding: 14px 16px; border-radius: 11px;
+  border: 1px solid color-mix(in srgb, var(--bad) 45%, var(--border));
+  background: color-mix(in srgb, var(--bad) 8%, var(--panel));
+  font-size: 13.5px; line-height: 1.55;
+}
+.ondemand-blocked ul { margin: 8px 0 0; padding-left: 20px; color: var(--muted); }
+.ondemand-blocked li { margin-top: 5px; }
+
+.ondemand-confirm {
+  margin-top: 12px; padding: 16px 18px; border-radius: 12px;
+  background: var(--panel); border: 1px solid var(--border);
+}
+.ondemand-head { font-size: 14px; color: var(--muted); }
+
+.ondemand-warn {
+  margin-top: 14px; padding: 13px 15px; border-radius: 10px;
+  border: 1px solid color-mix(in srgb, var(--warn) 42%, var(--border));
+  background: color-mix(in srgb, var(--warn) 8%, var(--panel));
+  font-size: 13.5px; line-height: 1.55;
+}
+.ondemand-warn > strong { color: var(--warn); }
+.ondemand-warn ul { margin: 8px 0 0; padding-left: 20px; color: var(--muted); }
+.ondemand-warn li { margin-top: 6px; }
+.ondemand-ack {
+  display: flex; gap: 9px; align-items: flex-start;
+  margin-top: 13px; padding-top: 12px;
+  border-top: 1px solid color-mix(in srgb, var(--warn) 25%, var(--border));
+  cursor: pointer;
+}
+.ondemand-ack input { margin-top: 2px; flex: 0 0 auto; }
+
+/* ── Auth ─────────────────────────────────────────────────────────────────────
+   The sign-in page is the first thing anyone sees, so it is deliberately plain.
+   A login page that looks unusual is one people hesitate to type a password into. */
+
+.authform {
+  max-width: 380px; margin: 12vh auto 0;
+  display: flex; flex-direction: column; gap: 16px;
+}
+.authform h1 {
+  font-size: 21px; font-weight: 600; margin: 0 0 4px; letter-spacing: -0.01em;
+}
+.authform label { display: flex; flex-direction: column; gap: 6px; }
+.authform label > span { font-size: 13px; color: var(--muted); }
+.authform label > em {
+  font-size: 12.5px; color: var(--dim); font-style: normal;
+}
+.authform input {
+  padding: 10px 12px; border-radius: 9px; font-size: 15px;
+  background: var(--panel-2); color: var(--text);
+  border: 1px solid var(--border);
+}
+.authform input:focus { outline: none; border-color: var(--accent); }
+.authform button { padding: 10px 14px; font-size: 15px; justify-content: center; }
+
+.autherr {
+  margin: 0; padding: 10px 12px; border-radius: 9px; font-size: 13.5px;
+  border: 1px solid color-mix(in srgb, var(--bad) 42%, var(--border));
+  background: color-mix(in srgb, var(--bad) 9%, var(--panel));
+}
+.authalt { margin: 2px 0 0; font-size: 13.5px; color: var(--muted); text-align: center; }
+.authalt a { color: var(--accent); text-decoration: none; }
+.authalt a:hover { text-decoration: underline; }
+
+/* The signed-in identity sits in the header BECAUSE it is what `sentBy` records —
+   someone about to press "Send from @<revenue account>" should see which identity
+   the send is attributed to without going to look for it. */
+.whoami { display: inline-flex; align-items: center; gap: 9px; }
+.whoami-email {
+  font-size: 12.5px; color: var(--dim);
+  max-width: 190px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+
+/* ── Brands ───────────────────────────────────────────────────────────────────
+   Two lists: what we know is a buyer, and what a person still has to decide.
+   Collapsing them would either hide real prospects or present a guess as a verdict. */
+
+.h2note { font-size: 12px; font-weight: 400; color: var(--dim); text-transform: none; letter-spacing: 0; }
+
+.brandcap {
+  margin: 0 0 14px; font-size: 13px; color: var(--muted);
+}
+
+.brandrow {
+  padding: 11px 14px; border-radius: 10px; margin-bottom: 8px;
+  background: var(--panel); border: 1px solid var(--border);
+}
+.brandrow.retired { opacity: 0.55; }
+.brandmain { display: flex; align-items: baseline; gap: 9px; flex-wrap: wrap; }
+.brandname { font-size: 14.5px; font-weight: 550; text-decoration: none; }
+.brandname:hover { color: var(--accent); }
+.brandhandle { font-size: 12.5px; color: var(--dim); }
+.brandmeta {
+  display: flex; gap: 14px; flex-wrap: wrap;
+  margin-top: 5px; font-size: 12.5px; color: var(--muted);
+}
+.brandmsg { margin: 7px 0 0; font-size: 12.5px; color: var(--bad); }
+
+.pill {
+  font-size: 11px; padding: 1px 7px; border-radius: 20px;
+  border: 1px solid var(--border); color: var(--dim);
+}
+.pill.off { color: var(--muted); }
+
+/* Handles Instagram itself cannot classify. Facts and a link — never a guess, because
+   the readable fields are identical for a brand and for a politician. */
+.undecided { margin-top: 22px; }
+.undecided h3 {
+  font-size: 12.5px; font-weight: 600; color: var(--muted);
+  text-transform: uppercase; letter-spacing: 0.06em; margin: 0 0 6px;
+}
+.undecided-why { margin: 0 0 12px; font-size: 13px; color: var(--dim); max-width: 62ch; line-height: 1.55; }
+
+.candrow {
+  display: flex; align-items: center; justify-content: space-between; gap: 14px;
+  padding: 9px 14px; border-radius: 10px; margin-bottom: 6px;
+  background: var(--panel-2); border: 1px solid var(--border); flex-wrap: wrap;
+}
+.candmain { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+.candfacts { font-size: 12.5px; color: var(--dim); }
+.candactions { display: flex; gap: 7px; }
+.candactions button { font-size: 12.5px; padding: 5px 10px; }
+
+/* ── Persona (decision 3b) ────────────────────────────────────────────────────
+   The persona was in every outgoing message and on no screen, which is exactly how
+   four accounts came to share one identity unnoticed. */
+
+.persona {
+  margin: 8px 0 0 26px; padding: 9px 0 0;
+  border-top: 1px solid var(--border);
+}
+.persona-head { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.persona-who { font-size: 12.5px; color: var(--muted); }
+.persona-head button { font-size: 12px; padding: 4px 9px; }
+
+.persona-warn {
+  margin: 9px 0 0; padding: 10px 12px; border-radius: 9px;
+  border: 1px solid color-mix(in srgb, var(--warn) 40%, var(--border));
+  background: color-mix(in srgb, var(--warn) 8%, var(--panel));
+  font-size: 12.5px; line-height: 1.55; max-width: 70ch;
+}
+.persona-warn strong { color: var(--warn); }
+.persona-warn p { margin: 0 0 7px; }
+.persona-warn p:last-child { margin-bottom: 0; }
+.persona-warn em { font-style: normal; color: var(--text); }
+
+.persona-form {
+  margin-top: 11px; padding: 13px 15px; border-radius: 10px;
+  background: var(--panel-2); border: 1px solid var(--border);
+  display: flex; flex-direction: column; gap: 9px; max-width: 420px;
+}
+.persona-form label { display: flex; flex-direction: column; gap: 4px; }
+.persona-form label > span { font-size: 12px; color: var(--muted); }
+.persona-form input {
+  padding: 7px 10px; border-radius: 8px; font-size: 13.5px;
+  background: var(--panel); color: var(--text); border: 1px solid var(--border);
+}
+.persona-form input:focus { outline: none; border-color: var(--accent); }
+.persona-form button { align-self: flex-start; }
+.persona-note { margin: 2px 0 0; font-size: 12px; color: var(--dim); }
+.persona-msg { margin: 7px 0 0; font-size: 12.5px; color: var(--muted); }
+
+/* ══════════════════════════════════════════════════════════════════════════
+   Phase 4 — the multi-page shell.
+   
+   There was one page and no navigation. At 65 accounts one page cannot carry
+   accounts, channels, brands, replies, the message tray and the metrics, so
+   each page now has one job and these are the pieces they share.
+   ══════════════════════════════════════════════════════════════════════════ */
+
+/* ── THE SHELL: a sidebar, since 2026-08-05 ──────────────────────────────────
+   Replaced a horizontal bar of five links. A rail has room for GROUPING (which is
+   itself information — this system has an outreach half, a fleet half, and setup)
+   and for STATE beside the destination it concerns, which is what removes the need
+   for a to-do list. See the docblock in nav.tsx.
+
+   `.shell-nav` is kept below, unused by the app, because deleting a class while
+   any page still references it is how a layout silently loses its container. */
+
+/* ── HOW THE RAIL SITS BESIDE THE CONTENT, AND WHY IT IS NOT A GRID ──────────
+   The first version was `display: grid; grid-template-columns: 15rem 1fr` on
+   `main`. That assumes EXACTLY TWO children — the rail, then the page. Every page
+   renders two... except `/`, which renders ELEVEN: a status header, the metrics, the
+   awaiting list, the panels. So children 3, 5, 7, 9 and 11 landed in column ONE,
+   underneath a sticky full-height rail, and the home page became unreadable.
+
+   It shipped because the verification asked whether the rail was PRESENT, whether a
+   link was marked active, whether chunks loaded and whether an error boundary showed.
+   All five passed on a page whose layout was destroyed. Presence is not layout.
+
+   A fixed rail plus padding on `main` cannot care how many children a page has, which
+   is the property that was missing. `tests/shell.test.ts` also pins the child-count
+   assumption out of existence, and the geometry is now checked in a real browser. */
+
+body:has(.side) main {
+  padding-left: 15rem;
+  min-height: 100vh;
+}
+
+.side {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 15rem;
+  box-sizing: border-box;
+  height: 100vh;
+  overflow-y: auto;
+  background: var(--bg, #fff);
+  z-index: 10;
+  display: flex;
+  flex-direction: column;
+  gap: 1.6rem;
+  padding: 1.4rem 1rem 1.4rem 1.4rem;
+  border-right: 1px solid var(--line, #e5e5e5);
+  font-size: 0.9rem;
+}
+
+.side-brand {
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  text-decoration: none;
+  color: inherit;
+  font-size: 0.95rem;
+}
+
+.side-group { display: flex; flex-direction: column; gap: 0.3rem; }
+
+.side-group-label {
+  margin: 0 0 0.15rem;
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  opacity: 0.45;
+  font-weight: 600;
+}
+
+.side-group ul { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 0.1rem; }
+
+.side-group a {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  padding: 0.4rem 0.6rem;
+  border-radius: 6px;
+  text-decoration: none;
+  color: inherit;
+  opacity: 0.72;
+  border-left: 2px solid transparent;
+}
+.side-group a:hover { opacity: 1; background: var(--hover, rgba(127, 127, 127, 0.09)); }
+.side-group a.active {
+  opacity: 1;
+  font-weight: 600;
+  background: var(--hover, rgba(127, 127, 127, 0.11));
+  border-left-color: currentColor;
+}
+
+/* A count is volume; a count with `.attention` is a request. Different meanings must
+   not share one appearance — state encoded in form, not only in number. */
+.side-count {
+  font-size: 0.75rem;
+  font-variant-numeric: tabular-nums;
+  opacity: 0.55;
+  padding: 0 0.35rem;
+  border-radius: 999px;
+}
+.side-count.attention {
+  opacity: 1;
+  color: #fff;
+  background: var(--bad, #cf3a35);
+  font-weight: 600;
+}
+
+.side-foot {
+  margin: auto 0 0;
+  padding-top: 1rem;
+  border-top: 1px solid var(--line, #e5e5e5);
+  font-size: 0.78rem;
+  line-height: 1.45;
+  opacity: 0.75;
+}
+
+/* Narrow screens: the rail becomes a strip above the content. */
+@media (max-width: 60rem) {
+  body:has(.side) main { padding-left: 0; }
+  .side {
+    position: static;
+    width: auto;
+    height: auto;
+    flex-direction: row;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.4rem 1rem;
+    border-right: none;
+    border-bottom: 1px solid var(--line, #e5e5e5);
+    padding: 0.8rem 1.2rem;
+  }
+  .side-group { flex-direction: row; align-items: center; gap: 0.2rem; }
+  .side-group-label { display: none; }
+  .side-group ul { flex-direction: row; gap: 0.2rem; }
+  .side-group a { border-left: none; }
+  .side-foot { margin: 0; padding-top: 0; border-top: none; flex-basis: 100%; }
+}
+
+/* ── COMPONENT VOCABULARY ────────────────────────────────────────────────────
+   Every panel used to be a bespoke arrangement of `.group`, which is most of why
+   the dashboard read as flat. These are the shapes the pages actually need. */
+
+/* A pill carries STATE. Semantic colour, separate from the accent, which must not
+   double as "fine" — the accent marks the thing under discussion, not health. */
+.pill {
+  display: inline-block;
+  font-size: 0.7rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  padding: 0.1rem 0.45rem;
+  border-radius: 999px;
+  border: 1px solid currentColor;
+  vertical-align: 1px;
+  white-space: nowrap;
+}
+.pill.good { color: var(--good, #2f8f42); }
+.pill.warn { color: var(--warn, #a97400); }
+.pill.bad  { color: var(--bad, #cf3a35); }
+.pill.idle { opacity: 0.55; }
+
+/* A reason: why something did NOT happen. The most important text on any of these
+   screens, and it had no consistent home. A left stripe so it reads as a
+   consequence of the row above rather than as more prose. */
+.reason {
+  border-left: 3px solid var(--warn, #a97400);
+  padding: 0.4rem 0 0.4rem 0.7rem;
+  margin: 0.5rem 0 0;
+  font-size: 0.86rem;
+  line-height: 1.5;
+  opacity: 0.85;
+}
+.reason.bad { border-left-color: var(--bad, #cf3a35); }
+
+/* The permitting direction needs a form of its own. A draft that is CLEAR to send and one
+   that is refused must not look alike at a glance — the whole defect this stripe fixes was
+   that a blocked draft was indistinguishable from a healthy one. Green stripe, and the
+   stripe is what carries the meaning: colour alone would say nothing to anyone who cannot
+   separate these two hues. */
+.reason.good { border-left-color: var(--good, #2f8f42); opacity: 0.75; }
+.reason strong { font-weight: 600; opacity: 1; }
+.reason a { text-decoration: underline; text-underline-offset: 2px; }
+
+/* A stat: one number with its label under it, tabular so columns line up. */
+.stat { display: flex; flex-direction: column; gap: 0.1rem; }
+.stat-n { font-size: 1.45rem; font-weight: 600; font-variant-numeric: tabular-nums; letter-spacing: -0.02em; }
+.stat-l { font-size: 0.78rem; opacity: 0.6; }
+
+.shell-nav {
+  display: flex;
+  align-items: center;
+  gap: 1.5rem;
+  padding: 0.9rem 1.5rem;
+  border-bottom: 1px solid var(--line, #e5e5e5);
+  margin-bottom: 1.5rem;
+  flex-wrap: wrap;
+}
+.shell-brand { font-weight: 600; letter-spacing: -0.01em; }
+.shell-nav ul { display: flex; gap: 1.1rem; list-style: none; margin: 0; padding: 0; }
+.shell-nav a { text-decoration: none; color: inherit; opacity: 0.6; padding-bottom: 2px; }
+.shell-nav a:hover { opacity: 1; }
+.shell-nav a.active { opacity: 1; border-bottom: 2px solid currentColor; }
+
+/* Beside a rail the content column is the page, so it no longer centres against the
+   whole viewport. A real type scale too: almost everything here was 15-16px, which is
+   the other half of why the dashboard read as flat. */
+.page { max-width: 58rem; margin: 0; padding: 1.6rem 2rem 4rem; }
+.page-head { margin-bottom: 1.5rem; }
+.page-head h1 { margin: 0 0 0.3rem; font-size: 1.75rem; line-height: 1.15; letter-spacing: -0.025em; text-wrap: balance; }
+.page h2 { font-size: 1.05rem; letter-spacing: -0.01em; }
+.page h3 { font-size: 0.95rem; }
+.page-sub { margin: 0; opacity: 0.65; font-size: 0.92rem; }
+
+/* Neutral facts. Deliberately NOT inside `.status`: see the note there. Nothing in this
+   class ever changes colour, which is what makes it safe to put good news in.
+
+   NORMAL FLOW, not flex. The first version was `display: flex; gap: 0.7rem`, and in a flex
+   container every bare text node becomes its own anonymous flex item — so a sentence ending
+   in a linked clause rendered as
+
+       4 messages written and waiting.   Read them and decide   .
+
+   with the full gap before the full stop. Same family as the JSX `{' '}` bug already in
+   CLAUDE.md: a layout mechanism applied to running prose takes the punctuation with it. Found
+   by reading the page, not by looking at it. */
+.page-meta {
+  margin: 0 0 1.4rem;
+  font-size: 0.86rem;
+  line-height: 1.6;
+  opacity: 0.7;
+}
+.page-meta .sync { margin-left: 0.6rem; }
+.page-meta strong { opacity: 1; font-weight: 600; }
+.page-meta a { text-decoration: underline; text-underline-offset: 2px; }
+
+/* Sign-out, pinned under the rail's links. `margin-top: auto` on `.side-foot` already claims
+   the slack, so this sits beneath whichever of the two is present. */
+.side-user {
+  padding-top: 0.9rem;
+  border-top: 1px solid var(--line, #e5e5e5);
+  font-size: 0.78rem;
+  opacity: 0.75;
+}
+.side-user:first-of-type { margin-top: auto; }
+.side-user .whoami { flex-wrap: wrap; gap: 0.4rem; }
+.side-user .whoami-email { max-width: 11rem; overflow: hidden; text-overflow: ellipsis; }
+
+/* Summary before detail: counts that add up to the total, so the shape of the
+   fleet is legible before a single row is read. */
+.summary-row {
+  display: flex; flex-wrap: wrap; gap: 1.75rem;
+  list-style: none; margin: 0 0 1.5rem; padding: 1rem 1.25rem;
+  border: 1px solid var(--line, #e5e5e5); border-radius: 10px;
+}
+.summary-row li { display: flex; flex-direction: column; }
+.summary-row strong { font-size: 1.5rem; font-variant-numeric: tabular-nums; line-height: 1.1; }
+.summary-row span { font-size: 0.8rem; opacity: 0.6; }
+.summary-row li.bad strong { color: #b42318; }
+
+.banner {
+  padding: 0.85rem 1.1rem; border-radius: 8px; margin-bottom: 1.25rem;
+  border: 1px solid var(--line, #e5e5e5); font-size: 0.92rem; line-height: 1.5;
+}
+.banner-warn { border-color: #f5c26b; background: rgba(245, 194, 107, 0.12); }
+
+.group { margin-bottom: 2rem; }
+.group-head {
+  display: flex; align-items: baseline; gap: 0.75rem; width: 100%;
+  background: none; border: 0; padding: 0; cursor: pointer; text-align: left; font: inherit;
+}
+.group-count { font-size: 1.25rem; font-weight: 600; font-variant-numeric: tabular-nums; min-width: 1.6rem; }
+.group-title { font-size: 1.05rem; font-weight: 600; }
+.group-toggle { margin-left: auto; opacity: 0.5; }
+.group-blurb { margin: 0.35rem 0 0.9rem; font-size: 0.87rem; opacity: 0.65; line-height: 1.5; max-width: 46rem; }
+.group-rows { display: flex; flex-direction: column; gap: 0.85rem; }
+.group-broken .group-count { color: #b42318; }
+
+.account, .message, .login-card {
+  border: 1px solid var(--line, #e5e5e5); border-radius: 10px; padding: 1rem 1.15rem;
+}
+.account-broken { border-color: #e8a29b; }
+.account-main { display: flex; justify-content: space-between; gap: 1rem; flex-wrap: wrap; }
+.account h3 { margin: 0 0 0.2rem; font-size: 1rem; }
+.account-name { font-weight: 400; opacity: 0.55; margin-left: 0.4rem; }
+.account-persona { margin: 0; font-size: 0.82rem; opacity: 0.6; }
+.account-cats { margin: 0.4rem 0 0; }
+.account-figures { display: flex; flex-direction: column; align-items: flex-end; font-size: 0.8rem; opacity: 0.6; }
+.account-todo { margin: 0.7rem 0 0; font-size: 0.88rem; line-height: 1.5; }
+.account-actions { display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center; margin-top: 0.85rem; }
+.account-message { margin: 0.6rem 0 0; font-size: 0.86rem; opacity: 0.8; }
+.account-message.bad { color: #b42318; opacity: 1; }
+
+.chip {
+  display: inline-block; font-size: 0.72rem; padding: 0.12rem 0.5rem; border-radius: 999px;
+  border: 1px solid var(--line, #e5e5e5); margin-right: 0.35rem;
+}
+.chip-soft { opacity: 0.65; margin-left: 0.4rem; }
+.chip-live { border-color: #f5c26b; }
+.link-quiet { background: none; border: 0; padding: 0; font: inherit; opacity: 0.55; cursor: pointer; text-decoration: underline; }
+.link-quiet:hover { opacity: 1; }
+.muted { opacity: 0.55; }
+.mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.8rem; }
+
+.persona-editor { margin-top: 0.9rem; padding-top: 0.9rem; border-top: 1px dashed var(--line, #e5e5e5); }
+.persona-preview-label { margin: 0 0 0.4rem; font-size: 0.8rem; opacity: 0.6; }
+.persona-preview {
+  margin: 0 0 0.9rem; padding: 0.7rem 0.9rem; border-radius: 6px; font-size: 0.8rem;
+  background: rgba(127,127,127,0.08); white-space: pre-wrap; line-height: 1.5;
+}
+.persona-fields { display: grid; grid-template-columns: repeat(auto-fit, minmax(12rem, 1fr)); gap: 0.7rem; }
+.persona-fields label { display: flex; flex-direction: column; font-size: 0.78rem; opacity: 0.75; gap: 0.25rem; }
+.persona-fields input { font: inherit; padding: 0.4rem 0.55rem; border: 1px solid var(--line, #ccc); border-radius: 6px; }
+
+.progress-block { margin-bottom: 1.25rem; }
+.progress-bar { height: 8px; border-radius: 999px; background: rgba(127,127,127,0.15); overflow: hidden; }
+.progress-bar span { display: block; height: 100%; background: currentColor; opacity: 0.6; }
+.progress-block p { margin: 0.5rem 0 0; font-size: 0.9rem; }
+
+.login-position { margin: 0 0 0.3rem; font-size: 0.75rem; opacity: 0.5; letter-spacing: 0.04em; }
+.login-card h3 { margin: 0; font-size: 1.15rem; }
+.login-note { margin: 0.6rem 0 0; font-size: 0.86rem; opacity: 0.7; line-height: 1.5; }
+
+.plain-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 0.4rem; font-size: 0.9rem; }
+
+.message-head { display: flex; justify-content: space-between; gap: 1rem; margin-bottom: 0.6rem; flex-wrap: wrap; }
+.message-body {
+  margin: 0; padding: 0.85rem 1rem; border-radius: 6px; background: rgba(127,127,127,0.06);
+  white-space: pre-wrap; font-size: 0.85rem; line-height: 1.55; font-family: inherit;
+  max-height: 22rem; overflow-y: auto;
+}
+.message-inflight { border-color: #f5c26b; }
+.message textarea { width: 100%; font: inherit; font-size: 0.85rem; line-height: 1.55; padding: 0.85rem 1rem; border-radius: 6px; border: 1px solid var(--line, #ccc); }
+.reply-text { margin: 0.4rem 0 0; padding: 0.6rem 0.9rem; border-left: 3px solid currentColor; opacity: 0.85; font-size: 0.9rem; }
+
+.sent-table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
+.sent-table th { text-align: left; font-weight: 600; opacity: 0.55; padding: 0.4rem 0.6rem 0.4rem 0; font-size: 0.75rem; letter-spacing: 0.03em; }
+.sent-table td { padding: 0.45rem 0.6rem 0.45rem 0; border-top: 1px solid var(--line, #eee); vertical-align: top; }
+.sent-table .row-replied td { background: rgba(127,127,127,0.04); }
+
+/* Wide content scrolls inside its own container; the page body never scrolls sideways. */
+.sent-table { display: block; overflow-x: auto; }
+
+.setting { margin-bottom: 1.6rem; }
+.setting label { display: block; font-weight: 600; font-size: 0.92rem; margin-bottom: 0.35rem; }
+.setting input[type='text'], .setting input:not([type]) {
+  font: inherit; padding: 0.45rem 0.6rem; border: 1px solid var(--line, #ccc); border-radius: 6px; width: 10rem;
+}
+.setting-check { display: flex; align-items: center; gap: 0.5rem; font-weight: 600; }
+.setting-why { margin: 0.5rem 0 0; font-size: 0.85rem; opacity: 0.7; line-height: 1.55; max-width: 46rem; }
+
+/* ── ROUTES, PER RECIPIENT (step E) ─────────────────────────────────────────
+   Collapsed by default. The summary carries the answer — "2 of 8 accounts may write to them" —
+   and opening it is for the one act the rotation group cannot express: stopping a named account
+   writing to a named recipient. It was a chip per sender×target route on `/accounts`, which is
+   twenty controls today and 3,900 at 65×60. */
+.routes-detail { margin: 0.6rem 0 0; font-size: 0.86rem; }
+.routes-detail > summary { cursor: pointer; opacity: 0.8; }
+.routes-detail > summary:hover { opacity: 1; }
+.routes-detail[open] > summary { margin-bottom: 0.5rem; }
+.routes-detail .routes { padding: 0; }
+
+/* ── STEP F: STATE ENCODED IN FORM, NOT ONLY IN WORDS ───────────────────────
+   The dashboard is SCANNED before it is read, and it had almost no vocabulary for state: six
+   different inline `style={{ color: msg.ok ? 'var(--good)' : 'var(--warn)' }}` for one idea,
+   and `--good/--warn/--bad` declared in `:root` and barely used while `--accent` doubled as
+   "fine". The accent marks the thing under discussion; it must not mean healthy.
+
+   Three classes, and they are the whole set. `.note-ok` / `.note-warn` / `.note-bad` replace
+   every inline colour, so an outcome message looks the same wherever it appears — and a
+   REFUSAL uses `.reason` instead, because a refusal is a different kind of thing from a
+   confirmation and had been sharing an appearance with one. */
+.note-ok   { color: var(--good); }
+.note-warn { color: var(--warn); }
+.note-bad  { color: var(--bad); }
+
+/* A state pill on an account row. Form first: the shape says "this is a state" before the
+   colour says which, so it still reads for anyone who cannot separate these hues — the same
+   reason the health card carries a dot AND a sentence. */
+.acc-pills { display: inline-flex; gap: 0.35rem; flex-wrap: wrap; margin-left: 0.5rem; }
+
+/* HOW a message was sent, in words rather than as `override(target-replied):tabishmukaddam1`.
+   The raw string is still the audit record and is still stored verbatim; this is the reading of
+   it, and an OVERRIDE must never read as though the system decided it was fine. */
+.how { font-size: 0.82rem; }
+.how-override { color: var(--warn); font-weight: 600; }
