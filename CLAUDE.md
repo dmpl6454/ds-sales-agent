@@ -1868,8 +1868,43 @@ detection cron, every 15 min              their Instagram sessions
 RapidOCR  /opt/ds-ocr-venv                drives the browser from THEIR IP
 
 SEND_ENABLED=false      <- hard floor     SEND_ENABLED=true
-AUTOPILOT_ENABLED=false <- hard floor
+AUTOPILOT_ENABLED=false <- hard floor     pnpm ig:brands  <- SEE BELOW
 ```
+
+**AND SINCE 2026-08-12 A SECOND THING MUST RUN FROM A HOME IP: BRAND LOOKUPS. MEASURED,
+with a control probe, which is the diagnostic that has now corrected this endpoint's story
+three times.** Instagram 429s the Linode on the per-handle PROFILE endpoint
+(`web_profile_info`) while the SAME handles answer from the Mac, seconds apart:
+
+| handle | from the Linode | from the home Mac |
+|---|---|---|
+| `aafiyasayed_` | **429** | 200 |
+| `aaflims.official` | **429** | 404 |
+| `royalcanin.india` | **429** | 200 |
+
+**It is a SPLIT, not an outage, and the split is the part to get right.** The anonymous
+FEED endpoint is fine on the server — `pnpm ig:detect` found a paid post in the same minute
+a lookup 429'd. Only the profile endpoint is throttled. So on the server every
+`autoResolveBrands` pass spends its first lookup on a 429 and halts, permanently, while
+detection stays healthy. Reading that as "the endpoint is down" or "the handle is bad" is
+wrong on both counts: the 400s are Meta's deleted-category-schema bug (permanent,
+per-handle, correctly `UNRESOLVED`), and a 429 at one host says nothing about another.
+
+MEASURED from the Mac: `pnpm ig:brands --run` resolved **208 handles in ~20 minutes** (6s
+spacing, deliberate politeness against an undocumented endpoint) — 99 brands, 155 people,
+47 needs-a-human, and **59 new BRAND targets created**, including Godrej, Amazon MGM
+Studios, Kama Ayurveda, Danube Properties, JioHotstar, Gulf Oil and Dharmatic. The server,
+running the identical code, had created **zero**.
+
+**Do not "fix" this with a proxy or by moving it back to the server.** This is the second
+capability pinned to a home IP and the reasoning rhymes with the first: sending must come
+from the residential IP the accounts were logged in from, and lookups now must too, because
+the datacenter IP's reputation is the thing being refused. A proxy converts a normal pattern
+into an evasion pattern — the same argument that ruled out anti-detect browsers under
+decision 1. **Run `pnpm ig:brands --run` from a home-IP machine, periodically, and let the
+server keep detecting.** The 429 also produced a livelock worth knowing about: one throttled
+handle held the entire per-pass budget every pass until ordering was changed to sort a
+just-failed handle LAST (`orderForLookup`, plus `UNKNOWN_RETRY_AFTER_MS`).
 
 **`SEND_ENABLED=false` lives in `withSendLock`**, which every path that drives a browser
 passes through — the dispatcher, the dashboard's Send button, the on-demand dialog, the
@@ -2772,7 +2807,7 @@ docs/specs/            design docs and plans
 | `pnpm ig:replies` | check every open conversation for replies now — the same function the 11:00 and 20:00 slots run |
 | `pnpm ig:classify` | classify stored posts. **Dry run by default**; `--run` spends money, `--limit N` bounds it, `--channel <handle>` narrows it |
 | `pnpm ig:accuracy` | measure the classifier against M.O.M's disclosed ground truth. Run it after ANY prompt edit |
-| `pnpm ig:brands` | resolve @mentions in paid posts to messageable brand accounts. **Dry run by default.** No longer the only caller — `autoResolveBrands` does this on every detection pass, so this is the on-demand and backfill path. It no longer prints "pairs DISABLED": false since the per-route switch went, and printed at the moment an operator decides to create prospects |
+| `pnpm ig:brands` | resolve @mentions in paid posts to messageable brand accounts. **Dry run by default.** **RUN THIS FROM A HOME-IP MACHINE, NOT THE SERVER (2026-08-12):** Instagram 429s the Linode on the profile endpoint and answers the Mac, so `autoResolveBrands` on the server halts on its first lookup every pass and creates nothing — measured, 59 targets from the Mac against 0 from the server, same code. Detection is unaffected; only this endpoint is throttled. See the hosting section. `--stuck` re-offers rows the model has never seen; `--reset <handles>` clears a bad verdict so it can be re-asked. It no longer prints "pairs DISABLED": false since the per-route switch went, and printed at the moment an operator decides to create prospects |
 | `pnpm ig:enrich` | what we can still learn about handles Instagram will not classify. Facts only, NEVER a verdict. Dry run by default |
 | `pnpm ig:dispatch` | what the paced dispatcher would do, and why nothing has gone out. **Reports only**; `--run` delivers one message now |
 | `pnpm ig:import <file>` | import a prospect list. **Dry run by default**; `--run` creates them unwatched — but their ROUTES ARE LIVE since 2026-08-08, so importing sixty prospects is no longer inert. The dry run is the brake |
