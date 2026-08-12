@@ -1,4 +1,4 @@
-import { AuthForm } from '../auth-form'
+import { AuthShell } from '../auth-shell'
 
 export const dynamic = 'force-dynamic'
 
@@ -13,5 +13,5 @@ export default async function SignInPage({
   searchParams: Promise<{ next?: string }>
 }) {
   const { next } = await searchParams
-  return <AuthForm mode="sign-in" next={next} />
+  return <AuthShell mode="sign-in" next={next} />
 }

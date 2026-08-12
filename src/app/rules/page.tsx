@@ -15,6 +15,7 @@ import {
 import { RESEND_BLOCKS, OVERRIDABLE_BLOCKS } from '@/outreach/gate'
 import { cohortSize, cohortSoakDays } from '@/outreach/cohorts'
 import { Nav } from '../nav'
+import { PageHead } from '../page-head'
 
 export const dynamic = 'force-dynamic'
 
@@ -145,21 +146,56 @@ export default async function RulesPage() {
     <>
       <Nav current="/rules" email={user.email} />
       <div className="page">
-        <header className="page-head">
-          <h1>Rules</h1>
-          <p className="page-sub">What the system will and will not do. The numbers come from the code that enforces them.</p>
-        </header>
-        {rows.map((r) => (
-          <section className="group" key={r.group}>
-            <h2>{r.group}</h2>
-            <ul className="plain-list">
-              {r.lines.map((l) => (
-                <li key={l}>{l}</li>
-              ))}
-            </ul>
-          </section>
-        ))}
+        <PageHead
+          title="Rules"
+          sub="What the system will and will not do. Every number is read from the module that enforces it."
+        />
+        {/*
+          A sticky index, because this page is long BY NECESSITY — it is where every
+          rationale paragraph in the product lives — and a reader who came here for one
+          rule should not have to scroll past nine groups to find it.
+        */}
+        <div className="settings-layout">
+          <nav className="settings-nav" aria-label="Rule groups">
+            {rows.map((r) => (
+              <a key={r.group} href={`#${slug(r.group)}`}>
+                {r.group}
+              </a>
+            ))}
+          </nav>
+
+          <div className="settings-body">
+            {rows.map((r) => (
+              <section id={slug(r.group)} key={r.group}>
+                <h2>{r.group}</h2>
+                {/*
+                  One rule per row in a bordered list rather than bullets. These are
+                  statements of what the system will refuse to do, and a bullet list reads
+                  as suggestions — the border makes each one a discrete fact.
+                */}
+                <div className="rows">
+                  {r.lines.map((l) => (
+                    <div className="rowitem" key={l}>
+                      <span className="prose">{l}</span>
+                    </div>
+                  ))}
+                </div>
+              </section>
+            ))}
+          </div>
+        </div>
       </div>
     </>
   )
+}
+
+/**
+ * A stable anchor from a group heading.
+ *
+ * Deliberately derived rather than hand-listed: the groups come from the modules that
+ * enforce the rules, so a new group appears here automatically with a working link. A
+ * hardcoded map would silently lose its anchor the day a group is renamed.
+ */
+function slug(group: string): string {
+  return group.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '')
 }

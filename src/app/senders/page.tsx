@@ -2,6 +2,7 @@ import { redirect } from 'next/navigation'
 import { currentUser } from '@/lib/session'
 import { buildAccountsPage, buildLoginQueue } from '../view-model/accounts-page'
 import { Nav } from '../nav'
+import { PageHead } from '../page-head'
 import { AccountGroupView } from '../accounts/group'
 import { LoginQueue } from '../accounts/login/queue'
 
@@ -30,14 +31,14 @@ export default async function SendersPage() {
     <>
       <Nav current="/senders" email={user.email} />
       <div className="page">
-        <header className="page-head">
-          <h1>Senders</h1>
-          <p className="page-sub">
-            {v.total} sending {v.total === 1 ? 'account' : 'accounts'}
-          </p>
-        </header>
+        <PageHead title="Senders" sub={`${v.total} sending ${v.total === 1 ? 'account' : 'accounts'}`} />
 
-        <ul className="summary-row" aria-label="Fleet summary">
+        {/*
+          A JOINED grid rather than four floating numbers: these four counts partition the
+          fleet — every account is in exactly one bucket and they sum to the total — so they
+          are one object, and hairlines between the cells say that better than gaps do.
+        */}
+        <ul className="statgrid" aria-label="Fleet summary">
           <li>
             <strong>{v.summary.ready}</strong>
             <span>sending on their own</span>
@@ -97,27 +98,46 @@ export default async function SendersPage() {
               there is nothing to switch. A blocked group is one that has not STARTED SENDING yet.
             */}
             {q.ladder.length > 1 && (
-              <ul className="plain-list">
+              <div className="ladder">
                 {q.ladder.map((c) => (
-                  <li key={c.cohort}>
-                    <strong>Group {c.cohort}</strong> — {c.total} account{c.total === 1 ? '' : 's'}, {c.connected}{' '}
-                    signed in, {c.live} sending on their own
-                    {c.soakDays !== null && (
-                      <>
-                        {' '}
-                        · sending for {c.soakDays} day{c.soakDays === 1 ? '' : 's'}
-                      </>
-                    )}
-                    {c.flagged > 0 && (
-                      <>
-                        {' '}
-                        · <strong>{c.flagged} questioned by Instagram</strong>
-                      </>
-                    )}
-                    {c.blockedBecause && <div className="muted">Not sending yet: {c.blockedBecause}</div>}
-                  </li>
+                  <div className="ladder-row" key={c.cohort}>
+                    <span className="ladder-name">Group {c.cohort}</span>
+                    <span className="ladder-counts">
+                      {c.connected} of {c.total} signed in · {c.live} sending
+                    </span>
+                    {/*
+                      The soak drawn against the required days, so "day 9 of 14" is a length
+                      rather than a sentence to parse. A group with no send history has no bar
+                      at all — an empty bar would read as "0% of the way through", which is a
+                      claim about progress that has not started.
+                    */}
+                    <div
+                      className="ladder-bar"
+                      role="img"
+                      aria-label={
+                        c.soakDays === null
+                          ? 'Has not started sending'
+                          : `Sending for ${c.soakDays} of ${q.soakDays} days`
+                      }
+                    >
+                      {c.soakDays !== null && (
+                        <span style={{ width: `${Math.min(100, Math.round((c.soakDays / q.soakDays) * 100))}%` }} />
+                      )}
+                    </div>
+                    <span className="ladder-state">
+                      {c.flagged > 0 ? (
+                        <span className="note-bad">{c.flagged} questioned by Instagram</span>
+                      ) : c.blockedBecause ? (
+                        `Not sending yet: ${c.blockedBecause}`
+                      ) : c.soakDays !== null ? (
+                        `Sending for ${c.soakDays} day${c.soakDays === 1 ? '' : 's'}`
+                      ) : (
+                        'Has not started'
+                      )}
+                    </span>
+                  </div>
                 ))}
-              </ul>
+              </div>
             )}
 
             <LoginQueue queue={q.queue} />

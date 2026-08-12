@@ -3,6 +3,7 @@ import { currentUser } from '@/lib/session'
 import { buildProspectsPage } from '../view-model/prospects-page'
 import { buildChannelsView } from '../view-model'
 import { Nav } from '../nav'
+import { PageHead } from '../page-head'
 import { ImportForm } from '../prospects/import-form'
 import { ProspectList } from '../prospects/list'
 import { ChannelsPanel } from '../channels'
@@ -29,12 +30,10 @@ export default async function TargetsPage() {
     <>
       <Nav current="/targets" email={user.email} />
       <div className="page">
-        <header className="page-head">
-          <h1>Targets</h1>
-          <p className="page-sub">
-            {v.prospects.length} in the list · {v.watched} whose posts we read
-          </p>
-        </header>
+        <PageHead
+          title="Targets"
+          sub={`${v.prospects.length} in the list · ${v.watched} whose posts we read`}
+        />
 
         {/*
           A TREND, not the last sample — a channel failing every slot for two days must not
@@ -66,7 +65,7 @@ export default async function TargetsPage() {
         */}
         <ProspectList prospects={v.prospects} sendersAble={v.sendersAble} />
 
-        <section className="group">
+        <section>
           <h2>Reading their feeds</h2>
           <p className="page-meta">
             {ch.lastCheckLabel} · {ch.nextSlotLabel}

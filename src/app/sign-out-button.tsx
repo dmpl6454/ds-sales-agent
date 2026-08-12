@@ -15,13 +15,21 @@ export function SignOutButton({ email }: { email: string }) {
   const [busy, start] = useTransition()
 
   return (
-    <span className="whoami">
-      <span className="whoami-email" title={`Sends are recorded as ${email}`}>
+    <>
+      {/* Hidden with the rest of the rail's text when collapsed — at 76px there is no room
+          for an address, and a truncated one is worse than none. The button keeps its
+          label as a `title`, so the identity is still one hover away. */}
+      <span className="rail-email rail-when-open" title={`Sends are recorded as ${email}`}>
         {email}
       </span>
-      <button type="button" onClick={() => start(async () => void (await signOut()))} disabled={busy}>
+      <button
+        type="button"
+        onClick={() => start(async () => void (await signOut()))}
+        disabled={busy}
+        title={`Signed in as ${email}`}
+      >
         {busy ? 'Signing out…' : 'Sign out'}
       </button>
-    </span>
+    </>
   )
 }

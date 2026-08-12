@@ -19,13 +19,13 @@ export function AccountGroupView({ group }: { group: AccountGroup }) {
 
   return (
     <section className={`group group-${group.key}`}>
-      <button className="group-head" onClick={() => setOpen(!open)} aria-expanded={open}>
+      <button className="group-head groupbtn" onClick={() => setOpen(!open)} aria-expanded={open}>
         <span className="group-count">{group.rows.length}</span>
         <span className="group-title">{group.title}</span>
         <span className="group-toggle">{open ? '−' : '+'}</span>
       </button>
       {open && (
-        <div className="group-rows">
+        <div className="sendergrid">
           {group.rows.map((r) => (
             <AccountRowView key={r.id} row={r} />
           ))}
@@ -163,7 +163,7 @@ function PersonaEditor({ row, onSaved }: { row: AccountRow; onSaved: (m: string)
   return (
     <div className="persona-editor">
       <p className="persona-preview-label">Every message from @{row.handle} signs off as:</p>
-      <pre className="persona-preview">{`${brand}\n${phone}\n${email}`}</pre>
+      <pre className="evidence persona-preview">{`${brand}\n${phone}\n${email}`}</pre>
       <div className="persona-fields">
         <label>
           Page name<input value={brand} onChange={(e) => setBrand(e.target.value)} />

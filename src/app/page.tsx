@@ -2,15 +2,20 @@ import { redirect } from 'next/navigation'
 import { buildTodayView } from './view-model'
 import { buildMessagesPage } from './view-model/messages-page'
 import { buildConversationsPage } from './view-model/conversations-page'
+import { buildWatchChart } from './view-model/charts'
+import { rankBlockers, blockersSummary } from './view-model/blockers'
 import { SyncButton } from './sync-button'
 import { AutopilotPanel } from './autopilot'
+import { BlockerList } from './blockers'
+import { PaceBand } from './pace'
 import { WaitingList } from './messages/waiting'
-import { DispatcherPanel } from './messages/dispatcher'
 import { UncertainList } from './messages/uncertain'
 import { RepliesPanel } from './replies'
 import { OnDemandPanel } from './on-demand'
 import { currentUser } from '@/lib/session'
 import { Nav } from './nav'
+import { PageHead } from './page-head'
+import { istHourOfDay, istTimeKey } from '@/lib/time'
 
 export const dynamic = 'force-dynamic'
 
@@ -22,29 +27,87 @@ export const dynamic = 'force-dynamic'
  * page is either the answer to that question or the control that changes it. Manual
  * send is not a separate place — it is the same queue with a button on it.
  *
- * This replaces **Today** (a neutral status page whose numbers now live on /analytics)
- * and absorbs **Messages** and the reply half of **Conversations**, because a waiting
- * reply, an uncertain send and a held draft are all "what is stopping it".
+ * ── THE READING ORDER IS THE DESIGN ─────────────────────────────────────────
+ *
+ *   the alarm        one dot, one sentence, nothing else in the coloured box
+ *   the switch       the single control, with the environment floor beside it
+ *   what is stopping it   ranked by what CANNOT BE RECOVERED, not by loudness
+ *   the pace         why "on" does not mean "now"
+ *   replies · uncertain   the two things only a person can settle
+ *   the queue        every draft, with the guard's own refusal on it
+ *
+ * The ranked list is the piece that was missing before. The page used to show the same
+ * four facts in the order the components happened to be written in, so a 21-hour watch
+ * outage losing posts permanently sat BELOW three drafts that were merely waiting — and
+ * the drafts were bigger, because they carry bodies and buttons. Loudness was inverse to
+ * urgency.
  *
  * ── THE ALARM HOLDS THE DOT AND THE SENTENCE, NOTHING ELSE ─────────────────
  * A container that changes colour must contain only things the colour is about; the
  * neutral facts sit under it in neutral type. (The old header put "Last check read 168
- * posts" and Sign out inside an amber box.)
+ * posts" and Sign out inside an amber box.) `tests/shell.test.ts` asserts this.
  */
 export default async function AutopilotPage() {
   const user = await currentUser()
   if (!user) redirect('/sign-in')
 
-  const [v, m, c] = await Promise.all([buildTodayView(), buildMessagesPage(), buildConversationsPage()])
+  const [v, m, c, watch] = await Promise.all([
+    buildTodayView(),
+    buildMessagesPage(),
+    buildConversationsPage(),
+    buildWatchChart(),
+  ])
+
+  /**
+   * The refusal shared by the most held drafts.
+   *
+   * Eleven copies of "this account has no working session" is ONE problem, so the ranked
+   * list names it once. The individual verdicts are still rendered per draft further down
+   * — this is a summary of them, not a replacement, and it is built from the same
+   * `SendVerdict` objects rather than from a second opinion.
+   */
+  const refusals = new Map<string, { detail: string; count: number; remedy: (typeof m.waiting)[number]['send']['remedy'] }>()
+  for (const w of m.waiting) {
+    if (w.send.ok || !w.send.detail) continue
+    const key = w.send.reason ?? w.send.detail
+    const seen = refusals.get(key)
+    if (seen) seen.count += 1
+    else refusals.set(key, { detail: w.send.detail, count: 1, remedy: w.send.remedy })
+  }
+  const topRefusal = [...refusals.values()].sort((a, b) => b.count - a.count)[0] ?? null
+
+  const blockers = rankBlockers({
+    watch,
+    /*
+      The breaker halts the WHOLE fleet, so it belongs in the ranked list rather than in a
+      panel below three drafts it is the reason for. Its sentence comes from `assessBreaker`
+      — the same pure function the dispatcher asks before it drives a browser.
+    */
+    breaker: m.dispatch.breaker.tripped ? { reason: m.dispatch.breaker.detail } : null,
+    pausedBy: m.pause,
+    repliesWaiting: c.replies.length,
+    uncertain: m.uncertain.length,
+    draftsWaiting: m.waiting.length,
+    topRefusal: topRefusal
+      ? { detail: topRefusal.detail, count: topRefusal.count, remedy: topRefusal.remedy }
+      : null,
+  })
+
+  const now = new Date()
+  const istMinute = Number(istTimeKey(now).slice(3, 5))
+
+  /* The dispatcher's last tick, in its own words. Null means it has genuinely never run. */
+  const lastTick = m.dispatch.state
+    ? `${m.dispatch.state.sent} sent` +
+      (m.dispatch.state.held ? `, ${m.dispatch.state.held} held` : '') +
+      (m.dispatch.state.holdReasons?.length ? ` — ${m.dispatch.state.holdReasons.join('; ')}` : '')
+    : null
 
   return (
     <>
       <Nav current="/" email={user.email} />
       <div className="page">
-        <header className="page-head">
-          <h1>Autopilot</h1>
-          <p className="page-sub">{v.nowLabel} IST</p>
-        </header>
+        <PageHead title="Autopilot" sub={`${v.nowLabel} IST`} />
 
         {/* THE ALARM, and only the alarm. */}
         <div className={`status status-${v.health}`}>
@@ -60,40 +123,54 @@ export default async function AutopilotPage() {
         {/* The switch, the scheduler behind it, and per-account readiness. */}
         <AutopilotPanel state={v.autopilot} />
 
-        {/* A send Instagram accepted that never appeared — the one thing a person must settle. */}
-        <UncertainList uncertain={m.uncertain} />
+        {/* The answer to the page's question, ranked by what cannot be undone. */}
+        <BlockerList blockers={blockers} summary={blockersSummary(blockers, v.autopilot.on)} />
 
-        {/* A reply halts every account writing to that recipient until someone takes over. */}
-        {c.replies.length > 0 && (
-          <section className="group">
-            <h2>They replied — outreach to them is on hold</h2>
-            <p className="group-blurb">
-              A reply stops <strong>every</strong> account writing to that recipient. Press “I have replied” once you
-              have taken over; the reply itself is kept.
-            </p>
-            <RepliesPanel replies={c.replies} />
-          </section>
-        )}
+        <section className="grid-2">
+          <PaceBand
+            istHour={istHourOfDay(now)}
+            istMinute={istMinute}
+            sentThisHour={m.dispatch.usage.thisHour}
+            lastTick={lastTick}
+          />
 
-        {/* The pace, and what the last tick did. */}
-        <DispatcherPanel dispatch={m.dispatch} pause={m.pause} />
+          <div className="stack">
+            {/* A reply halts every account writing to that recipient until someone takes over. */}
+            {c.replies.length > 0 && (
+              <section>
+                <h2>They replied</h2>
+                <p className="blurb">
+                  A reply stops <strong>every</strong> account writing to that recipient. It resumes on its own
+                  after a day; &ldquo;I have replied&rdquo; releases it sooner and keeps the reply.
+                </p>
+                <RepliesPanel replies={c.replies} />
+              </section>
+            )}
 
-        {/* Today's per-recipient allowance — the same count the send guard checks. */}
-        {m.todayByRecipient.length > 0 && (
-          <section className="group">
-            <h2>Today’s allowance</h2>
-            <ul className="plain-list">
-              {m.todayByRecipient.map((r) => (
-                <li key={r.handle}>
-                  @{r.handle} <span className="muted">{r.used} of today’s allowance claimed</span>
-                </li>
-              ))}
-            </ul>
-          </section>
-        )}
+            {/* A send Instagram accepted that never appeared — the one thing a person must settle. */}
+            <UncertainList uncertain={m.uncertain} />
+
+            {/* Today's per-recipient allowance — the same count the send guard checks. */}
+            {m.todayByRecipient.length > 0 && (
+              <section>
+                <h2>Today&rsquo;s allowance</h2>
+                <div className="rows">
+                  {m.todayByRecipient.map((r) => (
+                    <div className="rowitem" key={r.handle}>
+                      <span>@{r.handle}</span>
+                      <span className="muted" style={{ marginLeft: 'auto' }}>
+                        {r.used} claimed today
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              </section>
+            )}
+          </div>
+        </section>
 
         {/* The queue: each draft, why it cannot go out right now, and the button that sends it. */}
-        <WaitingList waiting={m.waiting} />
+        <WaitingList waiting={m.waiting} autopilotOn={v.autopilot.on} />
 
         {/* Manual send: the same queue, one draft earlier. It writes a draft that appears above. */}
         <OnDemandPanel accounts={m.onDemandSenders} channels={m.onDemandRecipients} />
