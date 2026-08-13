@@ -1985,6 +1985,98 @@ absurd re-reading at 15-minute cadence), `DETECT_CATCHUP_LOOKBACK_HOURS = 36` ke
 dispatcher are untouched. Verified by watching the cron fire on its own clock, not by
 reading the code.
 
+### THE 13 AUGUST AUDIT — WHAT ACTUALLY READS EACH POST, MEASURED
+
+An end-to-end audit of paid-post detection, 2026-08-13. Plan for the fixes:
+`docs/specs/2026-08-13-tags-collab-and-labelling-plan.md`. Read the numbers before changing
+anything here — several of them contradict what a reading of the code suggests.
+
+**THE ACCURACY FIGURE IS MEASURED ON THE ONE CHANNEL WHERE THE MODEL NEVER RUNS.** This is
+the finding that reframes every other number. `pnpm ig:accuracy` scores the SEMANTIC
+classifier against @madovermarketing_mom's `#Collaboration` labels — but M.O.M's production
+detector is `mom`, a deterministic hashtag rule, and `verdictSource` is **`'rules'` on 79 of
+79 M.O.M posts, going back to March. The model has never judged a single one.** Meanwhile
+@viralbhayani runs the model on every post, supplies **174 of 221** paid posts, and has **no
+ground truth at all**. So the number is measured where it is not used and used where it is
+not measured. It is not a coverage figure and never was; now it is not even a figure about
+the channel it names.
+
+**Measured 2026-08-13:** 95% correct · **100% recall (19/19)** · 83% precision, n=77. Recall
+is intact. **Precision has DEGRADED** from the documented 92-94% (1 false alarm) to 83% (4),
+and all four are M.O.M commentary about other brands' campaigns — McDonald's, Miu Miu,
+Netflix, Rare Beauty. That is the documented hard case, not a new one.
+
+**WHAT IS READ, PER CHANNEL:**
+
+| | detector | model reads it | footage read (7d) |
+|---|---|---|---|
+| `@viralbhayani` | semantic | yes | 248 of 405 |
+| `@bollywoodsocietyy` | semantic | yes | 199 of 407 |
+| `@bollywoodchronicle` | semantic | yes | 264 of 482 |
+| **`@madovermarketing_mom`** | **mom (regex)** | **NEVER — 0 of 79** | **0 of 35** |
+
+**THE BLIND SPOT: posts where NOTHING was read** — judged ORGANIC by a rule, no model, no
+frame text, since the 1 August cutoff:
+
+| | total | nothing read | share |
+|---|---|---|---|
+| `@madovermarketing_mom` | 61 | 46 | **75.4%** |
+| `@viralbhayani` | 735 | 36 | 4.9% |
+| `@bollywoodsocietyy` | 695 | 21 | 3.0% |
+
+@viralbhayani's 4.9% are one-word captions below `MIN_JUDGEABLE_CAPTION` (`Ruhanika`,
+`Eisha`, `Farhana`) — auto-ORGANIC, and several had no frame read either.
+
+**IN M.O.M's DEFENCE, THE RULE IS PERFECT ON ITS CORPUS and must not be "fixed" casually:**
+18 CAMPAIGN posts carry `#Collaboration`, **0 ORGANIC posts do**, and there is no
+`#sponsored`, `#ad`, `paid partnership`, `presented by` or `use code` anywhere in 79 posts.
+The risk is not mislabelling — it is that there is NO SECOND LOOK. An undisclosed M.O.M paid
+post is missed with certainty. Changing this is a decision with its own risk and is
+deliberately OUT OF SCOPE of the tags/collab plan.
+
+**WE FETCH TAGS AND COLLABS AND THROW THEM AWAY.** Verified against the LIVE feed, not the
+corpus: 3 of 12 @viralbhayani posts carry `usertags`; a M.O.M post carries a
+`coauthor_producer` (`@thechitthi`). `feed.ts` parses both — `taggedAccounts` and
+`collabHandles`. `pipeline.ts` then writes seven keys to `rawPayload` and **`taggedAccounts`
+is not one of them**, so it is fetched, validated and dropped. `collabHandles` IS stored and
+**no classifier reads it**. Tabish decided 2026-08-13 that we collect both.
+
+**AND THE INVERSE DOES NOT HOLD — tags are evidence, never a rule.** 7 M.O.M posts we
+correctly call ORGANIC @-mention brands (`@appletv`, `@miumiu`, `@rarebeauty`, `@drink818`):
+a marketing publication's editorial names brands constantly. Treating "@-tags the brand"
+as sufficient already cratered precision **85% → 71%** once. A collab tag is stronger than a
+caption mention — both parties opted in — and is still not proof.
+
+**DETECTION IS HEALTHY, AND RUNS ON THE SERVER.** `schedulerHeartbeat` reads
+`machine: linode-detect`; pm2 `ds-sales-agent` up 21h. The pm2 log shows `detection pass`
+firing at 08:15, 08:30, 08:45, 09:00, 09:15, 09:30, 09:45, 10:00, 10:15 IST — **every 15
+minutes, no misses.** Closing the laptop changes nothing; the Mac dashboard is a viewer.
+Median latency post→detected: **@viralbhayani 18 min, M.O.M 15 min**, floor set by the cron.
+
+**A DETECT PASS THAT FINDS NOTHING LEAVES NO RECORD, and that reads as an outage.** A first
+pass at measuring cadence from `detectedAt` spacing showed "gaps" of 45-75 minutes overnight;
+the pm2 log proves every pass fired. Rows are written only when a post is found, so the
+DATABASE CANNOT DISTINGUISH "the watch stopped" from "nobody posted" — the same shape as the
+20-hour outage nobody noticed. The heartbeat is the witness; do not read `detectedAt` spacing
+as cadence.
+
+**ZERO PAID POSTS IN A MORNING IS THE NORMAL PATTERN, not a fault.** @viralbhayani paid posts
+by IST hour over 14 days: **00:00-08:59 → 84 posts, ZERO paid.** Commercial posting starts
+~09:00, climbs from 11:00, peaks 16:00-20:00. A dashboard reading 0 paid at 10:00 IST is
+reporting a quiet morning.
+
+**BRAND DISCOVERY IS DEAD ON THE SERVER, still.** Every 15-minute pass logs
+`brand lookup rate-limited status=429 ... looked=1 unreached=13` and halts. BRAND targets
+created: **59 on 12 Aug** (the Mac run) and **0 since, by anything**. New prospects only
+appear when somebody runs `pnpm ig:brands --run` from a home IP. Unresolved; needs a decision,
+not a patch.
+
+**THE REVIEW QUEUE IS THE ONLY INSTRUMENT THAT CAN MEASURE RECALL, and it is empty of
+answers**: 20 posts, all unlabelled. Human labels are `verdictSource: 'human'` — the highest
+authority verdict in the system and the only possible ground truth for video-only placements.
+Which is why an irreversible label is a measurement risk, not a UI nicety: a wrong one is
+counted as truth by any future recall figure. Hence the undo in the plan.
+
 ### THE FREE FILTER WAS SILENTLY VETOING THE CLASSIFIER — the largest source of missed paid posts
 
 Found 2026-08-07 when Tabish hand-picked five paid posts we had "missed". FOUR WERE ALREADY
