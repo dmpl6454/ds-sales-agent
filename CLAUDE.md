@@ -201,6 +201,13 @@ coupling that made the 2026-08-08 outage invisible.
 GNU `sort` order punctuation differently, and the mismatch showed files as present in BOTH
 "only on server" and "only in repo" — acting on that output would have deleted live files.
 
+**NEVER PIPE THE BUILD INTO `tail` AND THEN `&& pm2 start`.** Done exactly once this session
+and it took the dashboard down: `pnpm build 2>&1 | tail -2 && pm2 start …` takes its exit
+status from **`tail`**, which always succeeds, so `pm2 start` fired after a failed build and
+pm2 crash-looped the app 40+ times on *"Could not find a production build in the '.next'
+directory"*. The build failure itself was transient and the next build was clean — the
+damage was entirely the masked exit code. Check `${PIPESTATUS[0]}`, or do not pipe.
+
 ### DISCARDING A DRAFT DOES NOT GIVE THE DAY'S BUDGET BACK
 
 **MEASURED at the end of this session: `created=10 delivered=1` against
