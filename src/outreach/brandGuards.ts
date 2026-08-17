@@ -1,4 +1,5 @@
 import type { RenderPersona } from './render'
+import { isPersonRoleCategory } from '@/detection/resolveBrand'
 
 /**
  * The two guards that exist ONLY for brand outreach.
@@ -31,9 +32,22 @@ import type { RenderPersona } from './render'
  * for the same slot.
  */
 export interface BrandTouchInput {
-  /** How many brands have been contacted for the first time today (IST). */
-  newBrandTouchesToday: number
-  /** The cap. */
+  /**
+   * ── TWO COUNTERS, BOTH NAMED, BECAUSE ONE OF THEM NEVER BOUND ──────────────────────
+   *
+   * This was a single `newBrandTouchesToday`, counted over DELIVERED messages. Nothing has
+   * ever been delivered by this system, so it was permanently 0 and the only thing binding
+   * was a counter reset every run — "2 a day" enforced as "2 a run", ~8 at four slots and
+   * ~192 once drafting moved onto the 15-minute clock.
+   *
+   * See `brandTouchCounts.ts` for why they are kept apart: one bounds the QUEUE, the other
+   * bounds what strangers actually receive, and today they read 6 and 0.
+   */
+  /** First touches to brands WRITTEN today (IST) — bounds the draft queue. */
+  firstTouchesCreatedToday: number
+  /** First touches to brands DELIVERED today (IST) — bounds what recipients see. */
+  firstTouchesDeliveredToday: number
+  /** The cap. Both counters are measured against it independently. */
   maxNewBrandTouchesPerDay: number
   /**
    * Is THIS a first touch? Only first touches are capped — a follow-up is a continuing
@@ -45,6 +59,7 @@ export interface BrandTouchInput {
 export const BRAND_BLOCKS = {
   NEW_BRAND_DAILY_CAP: 'new-brand-daily-cap',
   PERSONA_NOT_DISTINCT: 'persona-not-distinct',
+  RECIPIENT_IS_A_PERSON: 'recipient-is-a-person',
 } as const
 
 export type BrandGuardResult = { ok: true } | { ok: false; reason: string; detail: string }
@@ -52,11 +67,31 @@ export type BrandGuardResult = { ok: true } | { ok: false; reason: string; detai
 export function checkNewBrandTouchCap(input: BrandTouchInput): BrandGuardResult {
   if (!input.isFirstTouch) return { ok: true }
 
-  if (input.newBrandTouchesToday >= input.maxNewBrandTouchesPerDay) {
+  /**
+   * EITHER counter reaching the cap refuses, and the refusal names WHICH — not a combined
+   * number. "2 written and 0 delivered" and "0 written and 2 delivered" are different
+   * situations with different remedies, and a merged figure would describe neither.
+   *
+   * Created is checked first because it is the one that binds in practice: a delivery
+   * needs a draft, so the queue fills before the inbox does.
+   */
+  if (input.firstTouchesCreatedToday >= input.maxNewBrandTouchesPerDay) {
     return {
       ok: false,
       reason: BRAND_BLOCKS.NEW_BRAND_DAILY_CAP,
-      detail: `${input.newBrandTouchesToday} new brand(s) already contacted today (cap ${input.maxNewBrandTouchesPerDay}) — the rest of the queue waits for tomorrow`,
+      detail:
+        `${input.firstTouchesCreatedToday} first message(s) to new brands have already been written today ` +
+        `(cap ${input.maxNewBrandTouchesPerDay}) — the rest of the queue waits for tomorrow`,
+    }
+  }
+
+  if (input.firstTouchesDeliveredToday >= input.maxNewBrandTouchesPerDay) {
+    return {
+      ok: false,
+      reason: BRAND_BLOCKS.NEW_BRAND_DAILY_CAP,
+      detail:
+        `${input.firstTouchesDeliveredToday} new brand(s) have already been contacted today ` +
+        `(cap ${input.maxNewBrandTouchesPerDay}) — the rest of the queue waits for tomorrow`,
     }
   }
   return { ok: true }
@@ -132,7 +167,8 @@ export interface PersonaGateInput {
 }
 
 /**
- * The identity a recipient actually sees: which page is writing, and how to reach it.
+ * The identity a recipient actually sees: who is writing, from which page, and how to
+ * reach them.
  *
  * Deliberately EXCLUDES nothing that appears in the message — and, symmetrically,
  * INCLUDES nothing that does not. Two senders differing only in a field the recipient
@@ -140,9 +176,27 @@ export interface PersonaGateInput {
  * `personaRole` left this list on 2026-08-07, the day they stopped rendering: keeping
  * them would let two accounts pass as "distinct" while their rendered signatures were
  * byte-identical.
+ *
+ * ── AND ON 2026-08-17 THEY CAME BACK, BECAUSE THE MESSAGE CHANGED ─────────
+ *
+ * Tabish's standard message opens *"I'm Kapil Jain, Co-founder of <page>."* and signs off
+ * with the name and role above the contact block, so both fields render again and the
+ * contract above puts them back here. The rule is the contract, not the list.
+ *
+ * Note this does NOT weaken the gate, and the direction is worth stating because it looks
+ * like it might. All four accounts share the name, so adding a shared component to a
+ * concatenation cannot make two different fingerprints equal — the PAGE NAME is still what
+ * separates them, exactly as before.
+ *
+ * The standing warning is unchanged and is now sharper: all four still carry the identical
+ * `+91 60000 189766` and `kapil@digitalsukoon.com`, which is 2 of the 4 signature lines,
+ * and the gate cannot see it because it compares the whole block. At four accounts that is
+ * cosmetic; at 65 it is one phone number under 63 pages. **Raise it before volume rises.**
  */
 function personaFingerprint(p: RenderPersona): string {
-  return [p.personaBrand, p.personaPhone, p.personaEmail].map((s) => s.trim().toLowerCase()).join('|')
+  return [p.personaName, p.personaRole, p.personaBrand, p.personaPhone, p.personaEmail]
+    .map((s) => s.trim().toLowerCase())
+    .join('|')
 }
 
 export function checkPersonaDistinct(input: PersonaGateInput): BrandGuardResult {
@@ -164,4 +218,49 @@ export function checkPersonaDistinct(input: PersonaGateInput): BrandGuardResult 
     }
   }
   return { ok: true }
+}
+
+/**
+ * IS THIS "BRAND" ACTUALLY A PERSON? A third brand-only guard, added 2026-08-13.
+ *
+ * ── WHY A GUARD AND NOT JUST A CLASSIFIER FIX ─────────────────────────────
+ *
+ * `classifyProfile` compared Instagram's category against an EXACT-match set containing
+ * `'director'` and `'producer'`, while the endpoint returns `"Film Director"` and
+ * `"Film Producer"`. `isPersonRoleCategory` fixes that going forward — and fixing a
+ * classifier does not reclassify rows already written. MEASURED on the live database:
+ * **8 BRAND targets carry an unmistakable person-role category** (5 × Film Director,
+ * 2 × Creators & Celebrities, 1 × Film Producer), including a working film director and a
+ * well-known actor, and every one of them is a live recipient with a pair row.
+ *
+ * The plan for this fix said to *"report rather than auto-delete — a wrong retirement costs
+ * a real prospect"*, and that is right about the DATA. It is not enough on its own: a
+ * report nobody runs is not protection, which is the lesson of the 166 cover frames saved
+ * and never read. So the rows are left exactly as they are for a person to judge, and the
+ * PLANNER refuses to write to them meanwhile.
+ *
+ * ── NOT OVERRIDABLE, AND IT SITS BESIDE THE PERSONA GATE FOR THE SAME REASON ──
+ *
+ * It lives here rather than in `gate.ts`, so it is unreachable from the on-demand dialog's
+ * override list. Every stop a human may cross is about TIMING — too soon, nothing new to
+ * say, they already replied. This one is about the message being wrong for its recipient,
+ * and "I know something the agent does not" is a good argument about timing and no argument
+ * at all about sending a media-buying pitch to a private individual. If the category is
+ * wrong, fix the category.
+ */
+export function checkRecipientIsNotAPerson(input: {
+  targetKind: string
+  /** `TargetAccount.brandCategory` — what Instagram said this account is. */
+  brandCategory: string | null
+  handle: string
+}): BrandGuardResult {
+  if (input.targetKind !== 'BRAND') return { ok: true }
+  if (!isPersonRoleCategory(input.brandCategory)) return { ok: true }
+  return {
+    ok: false,
+    reason: BRAND_BLOCKS.RECIPIENT_IS_A_PERSON,
+    detail:
+      `Instagram lists @${input.handle} as "${input.brandCategory}", which is a profession rather than a ` +
+      `company. A media-buying pitch to a person is the wrong message, so nothing is written to them.`,
+  }
 }

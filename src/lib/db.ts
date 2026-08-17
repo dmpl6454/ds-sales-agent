@@ -3,6 +3,7 @@ import { PrismaBetterSqlite3 } from '@prisma/adapter-better-sqlite3'
 import { PrismaPg } from '@prisma/adapter-pg'
 import { PrismaClient } from '@/generated/prisma/client'
 import { env } from './env'
+import { queryCountingEnabled, markSubscribed, noteQuery } from './queryCount'
 
 /**
  * Prisma 7 requires a driver adapter — there is no built-in engine any more.
@@ -143,6 +144,15 @@ export function isPostgresUrl(url: string): boolean {
   return url.startsWith('postgres://') || url.startsWith('postgresql://')
 }
 
+/**
+ * The client's log config. Unchanged unless `DS_QUERY_COUNT=1`, which adds the `query`
+ * event `ig:layout`'s budget counts — see `src/lib/queryCount.ts`.
+ */
+function queryLog() {
+  const base: ('warn' | 'error')[] = process.env.NODE_ENV === 'development' ? ['warn', 'error'] : ['error']
+  return queryCountingEnabled() ? [...base, { emit: 'event' as const, level: 'query' as const }] : base
+}
+
 function createClient(): PrismaClient {
   /**
    * ── POSTGRES: THE WAL PROBLEM DOES NOT EXIST HERE ─────────────────────────
@@ -165,7 +175,7 @@ function createClient(): PrismaClient {
     const adapter = new PrismaPg({ connectionString: env.DATABASE_URL })
     return new PrismaClient({
       adapter,
-      log: process.env.NODE_ENV === 'development' ? ['warn', 'error'] : ['error'],
+      log: queryLog(),
     })
   }
 
@@ -178,10 +188,28 @@ function createClient(): PrismaClient {
   })
   return new PrismaClient({
     adapter,
-    log: process.env.NODE_ENV === 'development' ? ['warn', 'error'] : ['error'],
+    log: queryLog(),
   })
 }
 
 export const prisma: PrismaClient = globalForPrisma.prisma ?? createClient()
 
 if (process.env.NODE_ENV !== 'production') globalForPrisma.prisma = prisma
+
+/**
+ * ── THE QUERY COUNTER, SUBSCRIBED ONCE AND ONLY WHEN ASKED FOR ────────────────────────
+ *
+ * See `src/lib/queryCount.ts` for why this exists (a 174-query page that was invisible for
+ * months). Subscribing costs a serialised event per statement, so it happens only under
+ * `DS_QUERY_COUNT=1`, which `pnpm ig:layout` sets on the server it checks.
+ *
+ * `markSubscribed()` rather than a bare `$on`: the client above is cached on `globalThis`
+ * outside production, so a hot reload re-enters this module while the old subscription is
+ * still live. Two subscriptions count every query twice and the budget then fails with no
+ * bug behind it — a checker that cries wolf gets switched off, which is worse than none.
+ */
+if (queryCountingEnabled() && markSubscribed(prisma)) {
+  // Cast: `$on('query')` is typed against the client's declared log config, and ours is
+  // decided at runtime. The handler itself takes no argument, so nothing is being trusted.
+  ;(prisma as unknown as { $on: (e: 'query', cb: () => void) => void }).$on('query', noteQuery)
+}

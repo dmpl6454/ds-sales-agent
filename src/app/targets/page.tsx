@@ -7,6 +7,7 @@ import { PageHead } from '../page-head'
 import { ImportForm } from '../prospects/import-form'
 import { ProspectList } from '../prospects/list'
 import { ChannelsPanel } from '../channels'
+import { DETECT_INTERVAL_MINUTES } from '@/detection/cadence'
 
 export const dynamic = 'force-dynamic'
 
@@ -52,11 +53,44 @@ export default async function TargetsPage() {
 
         {/*
           The "Rotation groups" section and the per-row group input are GONE (2026-08-07,
-          Tabish: confusing). The Category machinery in `src/outreach/categories.ts` is
-          intact and behaviour is unchanged — the table has always been empty, and a
-          target in no category is considered pair-by-pair, which is what happens today.
+          Tabish: confusing). That was a fair call about a confusing control, and the note
+          left in its place — *"behaviour is unchanged — the table has always been empty, and
+          a target in no category is considered pair-by-pair, which is what happens today"* —
+          was TRUE THEN and stopped being true twice: on 2026-08-08 when pair rows became live
+          routes, and on 2026-08-12 when brand discovery created 59 recipients. Considered
+          pair-by-pair had come to mean every account writing to every recipient.
+
+          Since 2026-08-13 a recipient in no group is rotated through the FLEET, so there is
+          nothing an operator must set up and no empty table to explain. Each row below names
+          the one account that writes next.
         */}
         <ImportForm />
+
+        {/*
+          WHAT WATCHING COSTS, PER DAY.
+
+          `requestsPerSlot` was computed by the view model and rendered nowhere, while
+          CLAUDE.md claimed this page showed it. Per-slot is also the wrong unit: detection
+          moved to its own 15-minute clock on 2026-08-07, so a slot figure understates the
+          real load 24×. The risk this number exists to make visible is a 429 that blinds
+          detection entirely, and that is a function of requests per day.
+        */}
+        {/*
+          `{' '}` after the number is load-bearing and was MEASURED, not guessed. Without it
+          the served HTML reads `768<!-- -->requests a day` — the space between the expression
+          and the word vanishes, even though the source has one and they sit on the SAME line.
+          What decides it is that the text node CONTINUES onto the next line: a single-line
+          text node keeps its edges (`costs about ` survives), a multi-line one loses its
+          leading space. CLAUDE.md records this trap as "an expression and the NEXT line's
+          text"; this instance is narrower and easier to miss, and the same paragraph already
+          used `{' '}` correctly two words later. Read the rendered bytes, not the JSX.
+        */}
+        <p className="page-meta">
+          Reading {v.watched} feed{v.watched === 1 ? '' : 's'} costs about {v.requestsPerDay.toLocaleString()}{' '}
+          requests a day against Instagram&rsquo;s anonymous endpoint ({v.requestsPerSlot} per check, every{' '}
+          {DETECT_INTERVAL_MINUTES} minutes). Nothing here is logged in; the only risk is being rate-limited, and a
+          rate limit stops detection finding anything at all.
+        </p>
         {/*
           `sendersAble` is resolved HERE, on the server, and passed down. `list.tsx` is
           `'use client'`, and the count needs `profileStatus` (a credential-directory read) and

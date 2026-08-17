@@ -12,6 +12,16 @@ import { operatorName } from '@/outreach/render'
  * point of this import.
  */
 import { recheckBeforeSend } from '@/outreach/gate'
+import { describeRing, whoseTurnForMany, type WhoseTurnResult } from '@/outreach/categories'
+import { readSenderAvailability } from '@/outreach/availability'
+import { getSettings } from '@/lib/settings'
+/**
+ * The SAME counters `checkNewBrandTouchCap` reads in the planner. Not recomputed here —
+ * a page reporting a cap by a different rule than the one enforcing it reads as headroom
+ * that does not exist, which this codebase has now done twice (`MAX_TOTAL_SENDS`, and the
+ * new-brand cap itself).
+ */
+import { readNewBrandTouchCounts } from '@/outreach/brandTouchCounts'
 // WHERE to fix a refusal. The gate says why; this says where. See the docblock in remedy.ts.
 import { asSentence, remedyFor, withoutShellCommand, type Remedy } from '../messages/remedy'
 import type { OnDemandRecipient, OnDemandSender } from '../on-demand'
@@ -113,6 +123,28 @@ export interface WaitingMessage {
    * `null` means "not asked", which is NOT the same as "yes" and must not render as one.
    */
   auto: SendVerdict | null
+  /**
+   * Whose turn it is to write to THIS recipient, from `whoseTurn` — the same function the
+   * planner asks, never re-derived here.
+   *
+   * Until 2026-08-13 this page implied rotation was happening and it was not: `whoseTurn`
+   * returned null for every recipient, so every sender drafted to every one of them. A
+   * reader could see three near-identical drafts to one company and had nothing on screen
+   * saying whether that was the design.
+   */
+  rotation: RotationNote
+}
+
+export interface RotationNote {
+  /** One sentence, already written. The page renders it and adds nothing. */
+  sentence: string
+  /**
+   * Is this draft's sender the one rotation would choose right now?
+   *
+   * False on a draft written before the fix, or on one whose sender has since been signed
+   * out — both are worth seeing, and neither is an error.
+   */
+  isTurn: boolean
 }
 
 export interface SentMessage {
@@ -159,6 +191,15 @@ export interface UncertainMessage {
 
 export interface MessagesPageView {
   waiting: WaitingMessage[]
+  /**
+   * How many are waiting IN TOTAL, which `waiting.length` no longer is.
+   *
+   * The list is capped so the per-draft gate loop cannot make the page's query count grow
+   * with the queue (see `WAITING_SHOWN`). A capped list with no total is how a screen comes
+   * to under-report quietly as the system succeeds, which is the failure the coverage
+   * caveat and the posts table's "showing the newest 100 of 223" both exist to prevent.
+   */
+  waitingTotal: number
   uncertain: UncertainMessage[]
   recent: SentMessage[]
   /** What the paced dispatcher last did, and what is holding it. */
@@ -187,6 +228,22 @@ export interface MessagesPageView {
    */
   todayByRecipient: { handle: string; used: number }[]
   /**
+   * TODAY'S NEW-COMPANY ALLOWANCE — the cap that actually governs how many strangers hear
+   * from us, and until 2026-08-17 it appeared on no screen an operator looks at.
+   *
+   * MEASURED that day: 61 of 77 companies had never been contacted, the cap was 2, and the
+   * fleet's own pacing permits 33 a day — so the binding limit was 16x tighter than the
+   * machinery around it and nothing said so. Tabish asked for it to be raised "or make it
+   * more apparent in the UI"; it is now both.
+   *
+   * BOTH counters, never merged into one number. They answer different questions —
+   * `created` bounds the draft backlog, `delivered` is how many strangers actually heard
+   * from us — and they diverge. Read from `readNewBrandTouchCounts`, the same function the
+   * planner asks, so the page cannot report the cap by a different rule than the one
+   * enforcing it.
+   */
+  newCompanies: { cap: number; created: number; delivered: number; neverContacted: number }
+  /**
    * Who "Send a message now" may pick from.
    *
    * On this page since step C: the on-demand send is an ACTION, not a place, and it belongs
@@ -200,11 +257,34 @@ export interface MessagesPageView {
   onDemandRecipients: OnDemandRecipient[]
 }
 
+/**
+ * How many waiting drafts the page renders at once.
+ *
+ * Not a display preference: each rendered draft costs a real `recheckBeforeSend` — about
+ * seven queries — so this number IS the page's query budget. 20 keeps `/` well inside the
+ * ceiling `pnpm ig:layout` asserts while showing more than anyone works through in a
+ * sitting, and the total is always printed beside it so a bounded list can never read as an
+ * empty queue.
+ */
+const WAITING_SHOWN = 20
+
 export async function buildMessagesPage(): Promise<MessagesPageView> {
   const weekStart = daysAgo(7)
   const today = istDateKey()
 
-  const [waitingRaw, uncertainRaw, recentRaw, sentThisWeek, reservations, dispatch, pause, coverage, sendersRaw, recipientsRaw] = await Promise.all([
+  const [
+    waitingRaw,
+    waitingTotal,
+    uncertainRaw,
+    recentRaw,
+    sentThisWeek,
+    reservations,
+    dispatch,
+    pause,
+    coverage,
+    sendersRaw,
+    recipientsRaw,
+  ] = await Promise.all([
     prisma.outreachAttempt.findMany({
       // SENDING included, so a send interrupted by a crash stays visible rather than
       // vanishing from the tray with no way to reach it.
@@ -216,7 +296,30 @@ export async function buildMessagesPage(): Promise<MessagesPageView> {
        */
       include: { sender: { select: { handle: true } }, target: true, pair: { include: { sender: true, target: true } } },
       orderBy: { queuedAt: 'asc' },
+      /**
+       * ── BOUNDED, AND THE GATE LOOP BELOW IS WHY ───────────────────────────────────
+       *
+       * FOUND BY THE QUERY BUDGET on its first real run (repair plan 3.4): `/` issued
+       * **559 queries** to render, measured twice at 1,577 ms. `buildBrandsPanel`'s N+1
+       * was killed this week and the page still had one — the per-draft gate loop below,
+       * ~7 queries each, sequential, over every waiting draft there is. At the 26 drafts
+       * live today that is most of the page.
+       *
+       * The loop itself is correct and must not be summarised: every draft states why it
+       * cannot be sent, from the gate that would refuse it, never re-derived. What was
+       * wrong is that the list had no bound, and its comment claimed one — *"the list is
+       * small by construction, `maxUnansweredTouches` and the daily caps bound it"*. Those
+       * bound SENDS. Nothing bounded DRAFTS, and removing the autopilot gate on
+       * `detectThenDraft` the same day takes drafting from 4 passes a day to 96.
+       *
+       * So the fix is the one this codebase already uses for the posts table and for the
+       * brands panel: take a page, show the total beside it. That makes the query count a
+       * property of the LIMIT rather than of the queue, which is exactly the property the
+       * budget in `ig:layout` is asserting.
+       */
+      take: WAITING_SHOWN,
     }),
+    prisma.outreachAttempt.count({ where: { status: { in: ['READY', 'QUEUED', 'SENDING'] } } }),
     /**
      * Sends we cannot account for. BOTH conditions, not either.
      *
@@ -255,11 +358,32 @@ export async function buildMessagesPage(): Promise<MessagesPageView> {
      * survive every other feature, and a retired channel should not reach a dropdown at all.
      */
     prisma.senderAccount.findMany({ orderBy: { handle: 'asc' }, select: { handle: true, displayName: true, status: true } }),
+    /**
+     * WATCHED PAGES ARE NOT OFFERED, and this is the third of the three places the two
+     * target types have to be enforced.
+     *
+     * `prepareOnDemandSend` is deliberately EXEMPT from `routes.ts` — a person picking both
+     * ends and being shown every rule they cross is a different act from a route appearing
+     * because a brand was discovered — and it CREATES the pair it needs. So neither the
+     * route rule nor the pair table can keep a competitor out of this dropdown; only not
+     * offering it can, backed by `TARGET_IS_WATCH_ONLY` at the gate for anything that gets
+     * past the UI.
+     */
     prisma.targetAccount.findMany({
-      where: { optedOut: false },
+      where: { optedOut: false, role: { not: 'WATCH' } },
       orderBy: [{ kind: 'asc' }, { handle: 'asc' }],
       select: { handle: true, displayName: true, optedOut: true },
     }),
+  ])
+
+  /**
+   * Today's new-company allowance, from the planner's own counters, plus how many companies
+   * are still waiting. Three cheap reads against a page that is already query-budgeted.
+   */
+  const [settings, newTouchCounts, neverContacted] = await Promise.all([
+    getSettings(),
+    readNewBrandTouchCounts(),
+    prisma.targetAccount.count({ where: { role: 'PROSPECT', attempts: { none: {} } } }),
   ])
 
   const targetHandles = new Map(
@@ -299,7 +423,53 @@ export async function buildMessagesPage(): Promise<MessagesPageView> {
     verdicts.set(a.id, { send, auto })
   }
 
+  /**
+   * Whose turn it is, ONCE PER RECIPIENT.
+   *
+   * `whoseTurn` is a function of the target, so asking it per draft would repeat the same
+   * three queries for every sender holding one — and the duplicate drafts this page exists
+   * to make visible are precisely the case where several drafts share a target. The batch
+   * loader answers for all of them in four queries.
+   *
+   * The availability map is the SHARED reader the planner uses. A page that computed its own
+   * could name an account the planner will never choose, which is the drift `gate.ts` was
+   * extracted to stop.
+   */
+  let rotationByTarget = new Map<string, WhoseTurnResult>()
+  if (waitingRaw.length > 0) {
+    rotationByTarget = await whoseTurnForMany(
+      waitingRaw.map((a) => a.targetId),
+      await readSenderAvailability(),
+    )
+  }
+
+  /** The sentence a person reads. Written here so the client component adds no logic. */
+  function rotationNote(targetId: string, senderHandle: string): RotationNote {
+    const turn = rotationByTarget.get(targetId)
+    if (turn === undefined) {
+      // Not asked. Says so, rather than implying this sender is the chosen one.
+      return { sentence: 'Whose turn it is could not be read.', isTurn: false }
+    }
+    if (!turn.choice.ok) {
+      return {
+        sentence:
+          turn.choice.reason === 'empty-ring'
+            ? 'No account is in the rotation for this recipient.'
+            : `No account can write to this recipient right now — ${turn.choice.detail}`,
+        isTurn: false,
+      }
+    }
+    const isTurn = turn.choice.handle === senderHandle
+    return {
+      sentence: isTurn
+        ? `@${turn.choice.handle} is next for this recipient, in ${describeRing(turn)}.`
+        : `@${turn.choice.handle} is next for this recipient in ${describeRing(turn)}, not @${senderHandle}.`,
+      isTurn,
+    }
+  }
+
   return {
+    waitingTotal,
     waiting: waitingRaw.map((a) => ({
       id: a.id,
       senderHandle: a.sender.handle,
@@ -319,6 +489,7 @@ export async function buildMessagesPage(): Promise<MessagesPageView> {
       // deliberately the REFUSING shape — a missing verdict must never render as permission.
       send: verdicts.get(a.id)?.send ?? { ok: false, reason: null, detail: 'The send checks could not be read.', remedy: null },
       auto: verdicts.get(a.id)?.auto ?? null,
+      rotation: rotationNote(a.targetId, a.sender.handle),
     })),
     uncertain: uncertainRaw.map((a) => ({
       id: a.id,
@@ -354,5 +525,11 @@ export async function buildMessagesPage(): Promise<MessagesPageView> {
     todayByRecipient: reservations
       .map((r) => ({ handle: targetHandles.get(r.subjectId) ?? r.subjectId, used: r._count._all }))
       .sort((a, b) => b.used - a.used),
+    newCompanies: {
+      cap: settings.maxNewBrandTouchesPerDay,
+      created: newTouchCounts.created,
+      delivered: newTouchCounts.delivered,
+      neverContacted,
+    },
   }
 }

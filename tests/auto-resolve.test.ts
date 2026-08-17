@@ -68,6 +68,7 @@ bootstrap.exec(`
     "displayName" TEXT NOT NULL,
     "contactFirstName" TEXT,
     "kind" TEXT NOT NULL DEFAULT 'CHANNEL',
+    "role" TEXT NOT NULL DEFAULT 'PROSPECT',
     "detectorKey" TEXT NOT NULL DEFAULT 'passthrough',
     "optedOut" BOOLEAN NOT NULL DEFAULT false,
     "watchEnabled" BOOLEAN NOT NULL DEFAULT true,
@@ -181,6 +182,11 @@ vi.mock('@/detection/resolveBrand', async (importOriginal) => {
 
 const { autoResolveBrands, MODEL_RETRY_AFTER_MS, UNKNOWN_RETRY_AFTER_MS, orderForLookup } =
   await import('@/detection/autoResolve')
+/**
+ * The REAL `taggedHandlesIn` — it is pure, and it is the thing under test. The module is
+ * mocked above only for `resolveBrand` itself (the network call).
+ */
+const { taggedHandlesIn } = await import('@/detection/resolveBrand')
 const { prisma } = await import('@/lib/db')
 const { log } = await import('@/lib/logger')
 
@@ -286,8 +292,19 @@ describe('a BRAND becomes a prospect with routes', () => {
 
     const out = await autoResolveBrands()
 
-    // It was LOOKED UP (the endpoint does not know it is ours) and then refused.
-    expect(out.looked).toBe(1)
+    /**
+     * NOT LOOKED UP AT ALL since 2026-08-17, where this used to assert `looked: 1`.
+     *
+     * It was previously refused at target creation, AFTER spending one of the ten lookups a
+     * pass gets — which was harmless while captions were the only candidate source. Media
+     * tags are a source now, and @viralbhayani and @bollywoodpap appear in their OWN posts'
+     * tags, so self-tags would have burned the scarce endpoint on handles that could never
+     * become prospects. Excluded before the budget, not after it.
+     *
+     * The safety assertions below are UNCHANGED and are what the test is really for: no
+     * target row, no route, no audit row. Only the cost changed.
+     */
+    expect(out.looked).toBe(0)
     expect(out.decided).toBe(0)
     expect(await prisma.targetAccount.findUnique({ where: { handle: 'bollywoodsocietyy' } })).toBeNull()
     expect(await prisma.outreachPair.count()).toBe(0)
@@ -295,24 +312,31 @@ describe('a BRAND becomes a prospect with routes', () => {
   })
 
   /**
-   * THE ROUTE RULE IS ASKED, NOT RE-DERIVED — and this is the case that can tell the
-   * difference behaviourally.
+   * ── REVERSED DELIBERATELY, 2026-08-13 (repair plan phase 4.3) ──────────────────────
    *
-   * The plan for this task proposed `senderAccount.findMany({ where: { fleetMember: true } })`
-   * as the pair source. That is not the same rule as `routeAllowed`, and the burner is where
-   * they diverge: `@tabishmukaddam1` is `fleetMember: false` and is deliberately still a
-   * usable SENDER for rehearsal — every end-to-end send this project has ever proven went
-   * from it. `routeAllowed` excludes our own FLEET PAGES as TARGETS and says nothing about
-   * which senders may exist, so it pairs the burner; a `fleetMember: true` query silently
-   * drops it.
+   * This test used to assert the OPPOSITE — that discovering a brand also paired the
+   * non-fleet burner — and its reasoning was that `@tabishmukaddam1` "is deliberately still
+   * a usable SENDER for rehearsal". The first half of that is true and the conclusion did
+   * not follow, which is why the reversal is recorded here rather than done quietly.
    *
-   * Without this test, a hand-rolled fleet filter passes every other assertion here, because
-   * every other test uses fleet senders only. `tests/one-route-rule.test.ts` greps for the
-   * string and a `void routeAllowed` would satisfy it — a source grep fails on ADDITION of a
-   * new creator, not on a creator quietly changing its filter, so the behaviour needs its own
-   * assertion.
+   * WHAT WAS MEASURED. On the live database the burner held **72** `OutreachPair` rows —
+   * every discovered BRAND target, plus both channels — created exactly this way by three
+   * creators that all read `senderAccount.findMany()` unfiltered. Since 2026-08-08 a pair
+   * row IS a live route; what kept those 72 inert was `runOutreach` scoping its query to
+   * `fleetMember: true`, which is one query away from being routes to real companies from
+   * the one account that must never do outreach.
+   *
+   * WHY REHEARSAL IS UNHARMED, and this is the part the old reasoning missed:
+   * `prepareOnDemandSend` CREATES the pair it needs when a person picks a sender and a
+   * recipient (`prisma.outreachPair.create` on the `findUnique ?? create` path — it is the
+   * documented exempt creator in `tests/one-route-rule.test.ts`). So the pre-made rows
+   * bought nothing that choosing to rehearse does not already provide.
+   *
+   * The rule now lives in `routes.ts` with every other exclusion instead of in one query's
+   * `where`, and it reports `sender-not-in-fleet`. The burner remains MESSAGEABLE as a
+   * TARGET — a separate fact, asserted directly below and in `tests/route-rule.test.ts`.
    */
-  it('pairs a non-fleet sender too — routeAllowed governs targets, not senders', async () => {
+  it('does NOT pair a non-fleet sender — an account outside the rotation gets no route', async () => {
     await addSender('madaboutmarketingg')
     await addSender('tabishmukaddam1', false)
     await addCampaign('MMM', 'Launch with @kalkifashion', channelId)
@@ -321,7 +345,10 @@ describe('a BRAND becomes a prospect with routes', () => {
     await autoResolveBrands()
 
     const pairs = await prisma.outreachPair.findMany({ include: { sender: true } })
-    expect(pairs.map((p) => p.sender.handle).sort()).toEqual(['madaboutmarketingg', 'tabishmukaddam1'])
+    expect(pairs.map((p) => p.sender.handle).sort()).toEqual(['madaboutmarketingg'])
+    // And the prospect WAS created — the refusal is about the route, not about the brand.
+    // Without this the assertion above passes just as well on a pass that discovered nothing.
+    expect(await prisma.targetAccount.findUnique({ where: { handle: 'kalkifashion' } })).not.toBeNull()
   })
 
   /**
@@ -1067,4 +1094,58 @@ describe('one place creates a brand target', () => {
       ).toBe(false)
     },
   )
+})
+
+/**
+ * ── THE HANDLES INSTAGRAM ALREADY GAVE US, WHICH DISCOVERY NEVER READ ──────
+ *
+ * MEASURED 2026-08-17: **135 of 286 in-window CAMPAIGN posts (47%) carry no caption
+ * @mention at all**, and 134 of those name a brand. Discovery read @mentions and nothing
+ * else, so nearly half of every paid post it found produced no prospect.
+ *
+ * The obvious fix — take the extracted brand NAME and construct a handle — was probed live
+ * and is unsafe: there is no anonymous name→handle search (401/404, while the per-handle
+ * verifier answers 200 in the same run), and constructing a handle was wrong 4 times in 10
+ * with **3 of the 4 wrong handles EXISTING**, so an existence check passes on the wrong
+ * account. `@philips` is the global HQ; `@philipsindia` ran the campaign.
+ *
+ * So this reads `taggedAccounts` and `collabHandles` — facts Instagram asserts about the
+ * post, stored since the beginning and read by nothing in discovery.
+ */
+describe('media tags are a discovery source, ordered behind caption mentions', () => {
+  it('extracts tagged accounts and co-authors, and ignores a malformed column', () => {
+    expect(taggedHandlesIn('["@philipsindia","sonytvofficial"]', null)).toEqual(['philipsindia', 'sonytvofficial'])
+    expect(taggedHandlesIn('[]', '{"collabHandles":["redchilliesent"]}')).toEqual(['redchilliesent'])
+    // Both sources, de-duplicated, with Instagram furniture dropped.
+    expect(taggedHandlesIn('["instagram","zee5"]', '{"collabHandles":["zee5","tseries.official"]}')).toEqual([
+      'zee5',
+      'tseries.official',
+    ])
+    // A malformed column must never fail a detection pass (decision 5, one layer on).
+    expect(taggedHandlesIn('not json', 'also not json')).toEqual([])
+    expect(taggedHandlesIn('', null)).toEqual([])
+  })
+
+  /**
+   * The bound is a LOOKUP budget, so a weaker candidate taking a slot is a stronger one not
+   * taken. A tag is weaker than a caption mention — @bollywoodchronicle tags someone in
+   * 46.3% of ORGANIC posts against 20.0% of CAMPAIGN posts, so the correlation inverts —
+   * and must therefore be asked about second.
+   */
+  it('asks about caption mentions before media tags', () => {
+    const ordered = orderForLookup([
+      { handle: 'fromtag', checkedAt: null, source: 'tag' as const },
+      { handle: 'zzz_frommention', checkedAt: null, source: 'mention' as const },
+    ])
+    expect(ordered.map((c) => c.handle)).toEqual(['zzz_frommention', 'fromtag'])
+  })
+
+  /** A candidate with no source sorts as a mention — the direction that favours the budget. */
+  it('treats an unsourced candidate as a mention', () => {
+    const ordered = orderForLookup([
+      { handle: 'aaa_tag', checkedAt: null, source: 'tag' as const },
+      { handle: 'zzz_unsourced', checkedAt: null },
+    ])
+    expect(ordered.map((c) => c.handle)).toEqual(['zzz_unsourced', 'aaa_tag'])
+  })
 })

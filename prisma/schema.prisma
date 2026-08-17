@@ -129,6 +129,43 @@ model TargetAccount {
 
   /// CHANNEL | BRAND
   kind      String  @default("CHANNEL")
+
+  /// WATCH | PROSPECT — the two kinds of target, and the ONE thing that decides
+  /// whether a message may ever be addressed to this row.
+  ///
+  /// WATCH    we read their feed forever to find paid posts, and we NEVER message them.
+  ///          @viralbhayani and @madovermarketing_mom are competitors; the whole point of
+  ///          watching them is to find the BRANDS buying placement, and those brands are
+  ///          who we write to.
+  /// PROSPECT we message them. Discovered from a WATCH channel's paid post, or imported.
+  ///
+  /// ── WHY THIS IS NOT DERIVED FROM `kind`, WHICH IS THE OBVIOUS MOVE ────────
+  ///
+  /// `kind: 'CHANNEL'` is NOT a synonym for "watched publisher" and never was.
+  /// `importProspects.ts` creates messageable prospects with `kind: 'CHANNEL'` — that is
+  /// the documented shape, because "worth messaging" and "worth reading four times a day"
+  /// are separate decisions (Phase 7). So a rule keyed on kind would have silently stopped
+  /// messaging every imported prospect, which is a sending outage that looks like a quiet
+  /// day.
+  ///
+  /// ── AND WHY IT IS NOT `optedOut`, WHICH IS WORSE ──────────────────────────
+  ///
+  /// `judge.ts` short-circuits the FOOTAGE call for an opted-out target. Setting
+  /// `optedOut: true` on @viralbhayani to stop messaging it would have left caption
+  /// detection running and silently killed OCR-driven detection on the channel that
+  /// supplies most of the paid posts this system finds — a half-broken pipeline reporting
+  /// itself healthy. `optedOut` means "retired, never contact again" and is about a
+  /// recipient we USED to write to. This column is about what a row IS.
+  ///
+  /// ── THE DEFAULT, AND WHY IT LEANS THIS WAY ────────────────────────────────
+  ///
+  /// PROSPECT, because 77 of the 81 live rows are prospects and because the DB-level
+  /// default is what an older client on the other host writes when it inserts a row it
+  /// does not know this column exists on. Defaulting to WATCH would make such a row
+  /// permanently unmessageable with nothing on screen to say why — drafting stopping
+  /// fleet-wide, silently, which is the failure this project keeps rediscovering.
+  /// Every creator sets it EXPLICITLY, so the default is a backstop and not the mechanism.
+  role      String  @default("PROSPECT")
   /// Which ChannelDetector handles this target: "mom" | "semantic" | "passthrough".
   ///
   /// `semantic` was missing from this comment AND from DETECTOR_KEYS while
@@ -176,6 +213,8 @@ model TargetAccount {
   @@index([kind])
   /// What the detection pipeline asks every slot, once this table is 60 rows not four.
   @@index([kind, watchEnabled])
+  /// What the planner asks on every pass: which rows may be written to at all.
+  @@index([role])
 }
 
 /// The routing matrix, stored as data. Phase 1 seeds exactly 4 rows.

@@ -158,11 +158,42 @@ export async function detectThenDraft(
       log.info('detection pass', { newPosts: d.newPosts, paid: d.detected })
     }
 
-    if ((await settings()).autopilotEnabled) {
-      await lock('detect-draft', plan).catch((e) =>
-        log.warn('outreach planning after detect failed', { error: String(e) }),
-      )
-    }
+    /**
+     * ── THE AUTOPILOT GATE IS GONE FROM DRAFTING (2026-08-13, repair plan 4.1) ────────
+     *
+     * It read `if ((await settings()).autopilotEnabled)`, and autopilot is OFF, so this
+     * branch had NEVER FIRED. MEASURED on the server's pm2 log: 23 detection passes to 1
+     * outreach pass in the same window, and every waiting draft written at :30/:31 UTC —
+     * the four IST slots. The 2026-08-11 note claiming drafting had joined the detect clock
+     * described something that has never happened.
+     *
+     * The gate was wrong because `runSlot` calls `runOutreach()` UNCONDITIONALLY, so the
+     * two paths disagreed about whether drafting needs autopilot, and the slot path is the
+     * one that matches the product: *a draft with Autopilot off is the intended state* —
+     * "prepared and waits for a click" is what every stop in this system promises. Gating
+     * the fast path meant the promise held four times a day and the fast clock was decor.
+     *
+     * WHAT THIS DOES NOT CHANGE. Drafting writes rows and contacts nobody: `plan.ts` has
+     * exactly one `.send()` call site, hardcoded to `manualAssistSender`, which logs and
+     * returns `{ status: 'READY' }`. Delivery is still `dispatchTick` on its own paced
+     * cron, inside active hours, under the fleet lock, re-asking every rule at `gate.ts`.
+     *
+     * WHAT BOUNDS THE QUEUE, which is the whole reason this could not ship alone. 4×/day
+     * to 96×/day is a 24× increase in how often the planner runs, and the new-brand cap was
+     * the only thing shaped to bound the result — it counted DELIVERED messages, of which
+     * there have never been any, so it was inert and "2 a day" was really "2 a run". Both
+     * halves land together: `checkNewBrandTouchCap` now also counts first touches WRITTEN
+     * today (`brandTouchCounts.ts`), so the cap binds on creation. Per pair, a pending
+     * attempt still blocks a second draft and `cooldownDays` still spaces follow-ups.
+     *
+     * And every draft is a frozen body with a decaying claim, which is not free even
+     * unsent — `HOOK_STALE_SINCE_DRAFT` refuses one at the gate rather than sending a
+     * stale recency claim. That makes a larger queue safer than it was this morning; it
+     * does not make it free.
+     */
+    await lock('detect-draft', plan).catch((e) =>
+      log.warn('outreach planning after detect failed', { error: String(e) }),
+    )
   } catch (err) {
     log.alarm('detection pass threw at top level', {
       error: err instanceof Error ? err.message : String(err),

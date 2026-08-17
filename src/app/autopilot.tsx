@@ -125,8 +125,22 @@ export function AutopilotPanel({ state }: { state: AutopilotState }) {
         {state.scheduler.running ? (
           <p className="cardnote">
             <span className="pill good">watch running</span>{' '}
-            {state.scheduler.host === 'dashboard' ? 'inside this dashboard' : 'in a separate worker'} — last heartbeat{' '}
-            {state.scheduler.lastBeatLabel}. Slots will fire on their own.
+            {/*
+              WHERE, not just WHAT. This read `host === 'dashboard'` and said "inside this
+              dashboard" — true of the machine that is beating, and the reader is usually
+              somewhere else. The hosted deployment beats `host: 'dashboard'` from the
+              Linode, so a Mac dashboard (which correctly declines to schedule anything)
+              told its reader the watch was inside it. Someone deciding whether they may
+              close this window got the wrong answer, on the one card that exists because
+              a watch stopped for twenty hours and nothing said so.
+            */}
+            {!state.scheduler.here
+              ? `on another machine${state.scheduler.machine ? ` (${state.scheduler.machine})` : ''}, not this one`
+              : state.scheduler.host === 'dashboard'
+                ? 'inside this dashboard'
+                : 'in a separate worker on this machine'}{' '}
+            — last heartbeat {state.scheduler.lastBeatLabel}. Slots will fire on their own
+            {state.scheduler.here ? '' : ' whether or not this window is open'}.
           </p>
         ) : (
           /*

@@ -1,6 +1,6 @@
 import { readFrameText, frameTextSummaryLine } from './ocr'
 import { applyFrameSignal } from './frameSignal'
-import { classifyCaption } from './detectors/semantic'
+import { modelVerdictToStored, classifyCaption } from './detectors/semantic'
 import type { Verdict } from '@/lib/constants'
 
 /**
@@ -72,6 +72,23 @@ export interface JudgeInput {
   optedOut: boolean
   /** Only the semantic detector's channels can be re-judged; a rule detector's verdict is a LABEL. */
   frameJudgingSupported: boolean
+  /**
+   * The post's tags and co-authors, ALREADY FENCED by `tagsForPrompt`, exactly as the
+   * caption verdict was reached with.
+   *
+   * ── WHY THIS IS PASSED IN RATHER THAN BUILT HERE ───────────────────────────
+   *
+   * `captionOnly` was produced by a call that had this block. The call below adds the
+   * FRAME, and `applyFrameSignal` then attributes any difference between the two verdicts
+   * to the footage. If this call saw different tags — or none — a tag-driven disagreement
+   * would be recorded as `frame:disagreed-higher`, which is the single number saying
+   * whether reading video earns its keep. So the caller supplies the same string it used,
+   * rather than a second construction of it that could drift.
+   *
+   * Optional, because a backfill over stored rows may genuinely not have it, and absent
+   * must stay distinguishable from empty.
+   */
+  tagText?: string | null
 }
 
 export type JudgeReason =
@@ -138,7 +155,7 @@ export async function judgeWithFrame(
    * `applyFrameSignal` would refuse to move anything else, so calling the model for a
    * CAMPAIGN is spending money to be told no.
    */
-  if (captionOnly !== 'ORGANIC' && captionOnly !== 'REVIEW') {
+  if (captionOnly !== 'ORGANIC') {
     return { ...base, reason: 'caption-decisive' }
   }
 
@@ -163,7 +180,7 @@ export async function judgeWithFrame(
     return { ...base, verdict: outcome.verdict, signals: outcome.signals, engine }
   }
 
-  const withFrameCall = await classifyCaption(input.caption, input.shortcode, frame.prompt)
+  const withFrameCall = await classifyCaption(input.caption, input.shortcode, frame.prompt, input.tagText ?? null)
 
   /**
    * A FAILED CALL IS NOT A VERDICT. Without an answer we cannot know what the classifier
@@ -184,13 +201,12 @@ export async function judgeWithFrame(
   }
 
   /**
-   * A low-confidence CAMPAIGN becomes REVIEW before the permission table sees it, exactly
-   * as the reclassify path does. The threshold lives with the caller of the model rather
-   * than inside `applyFrameSignal`, which is a table about PERMISSION, not about how much
-   * to trust a number.
+   * The model's answer as a stored verdict. `REVIEW` — the model's word for "genuinely
+   * ambiguous" — becomes CAMPAIGN, because there is no ambiguous state any more and a paid
+   * post filed as ordinary is the one error this project refuses to make. The confidence
+   * downgrade that used to sit here is gone with REVIEW; see `modelVerdictToStored`.
    */
-  const withFrame: Verdict =
-    withFrameCall.verdict === 'CAMPAIGN' && withFrameCall.confidence < 70 ? 'REVIEW' : withFrameCall.verdict
+  const withFrame: Verdict = modelVerdictToStored(withFrameCall.verdict)
 
   const outcome = applyFrameSignal(captionOnly, withFrame, frame.evidence)
 

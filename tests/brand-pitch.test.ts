@@ -33,6 +33,8 @@ describe('describeRecency', () => {
 describe('brandFirstTouch', () => {
   const full = {
     brandName: 'Royal Canin',
+    // The handle travels with the name so the guard can compare them. See `usableName.ts`.
+    handle: 'royalcanin.india',
     publisherName: 'Mad Over Marketing',
     postedAt: new Date('2026-07-28T12:00:00Z'),
     now: NOW,
@@ -47,7 +49,7 @@ describe('brandFirstTouch', () => {
 
   it('is genuinely different per recipient — the whole point of decision 3', () => {
     const a = brandFirstTouch(full)
-    const b = brandFirstTouch({ ...full, brandName: 'Amazon', publisherName: 'Viral Bhayani' })
+    const b = brandFirstTouch({ ...full, brandName: 'Amazon', handle: 'amazondotin', publisherName: 'Viral Bhayani' })
     expect(a).not.toBe(b)
     // Not merely a substituted token: the observable claim differs.
     expect(a).not.toContain('Amazon')

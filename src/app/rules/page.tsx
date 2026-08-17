@@ -13,6 +13,8 @@ import {
   CHALLENGE_WINDOW_HOURS,
 } from '@/outreach/pacing'
 import { RESEND_BLOCKS, OVERRIDABLE_BLOCKS } from '@/outreach/gate'
+import { CROSSABLE_RULES, type CrossableRule } from '@/outreach/onDemand'
+import { readNewBrandTouchCounts } from '@/outreach/brandTouchCounts'
 import { cohortSize, cohortSoakDays } from '@/outreach/cohorts'
 import { Nav } from '../nav'
 import { PageHead } from '../page-head'
@@ -43,7 +45,10 @@ const STOP_LABELS: Record<(typeof RESEND_BLOCKS)[keyof typeof RESEND_BLOCKS], st
   [RESEND_BLOCKS.NOT_WAITING]: 'the message is not waiting any more (already sent, or being sent)',
   [RESEND_BLOCKS.SENDER_NOT_ACTIVE]: 'Instagram flagged the account',
   [RESEND_BLOCKS.TARGET_OPTED_OUT]: 'the recipient is retired — never contacted again',
+  [RESEND_BLOCKS.TARGET_IS_WATCH_ONLY]: 'this is a page we watch for paid posts, not a company we message',
   [RESEND_BLOCKS.TARGET_REPLIED]: 'they replied — paused for a day, then resumes',
+  [RESEND_BLOCKS.HOOK_STALE_SINCE_DRAFT]:
+    'the message says when we saw their placement, and it has waited long enough that the timing is no longer right',
   [RESEND_BLOCKS.NO_SESSION]: 'the account is not signed in',
   [RESEND_BLOCKS.TARGET_DAILY_CAP]: 'the recipient reached today’s cap',
   [RESEND_BLOCKS.SENDER_DAILY_CAP]: 'the account reached today’s cap',
@@ -52,6 +57,35 @@ const STOP_LABELS: Record<(typeof RESEND_BLOCKS)[keyof typeof RESEND_BLOCKS], st
   [RESEND_BLOCKS.PERSONA_CHANGED_SINCE_DRAFT]: 'the account’s identity changed after the message was written',
 }
 
+/**
+ * And the same treatment for the OTHER list, which did not have it.
+ *
+ * "You may cross" was one hand-written sentence and it named **the route being off** — a
+ * stop deleted on 2026-08-08 with the per-route chip. A page that says a reader may cross
+ * a rule which no longer exists is worse than one that stays quiet, and this page opens by
+ * promising that every value on it comes from the module that enforces it. TOTAL over
+ * `CROSSABLE_RULES`, exactly like `STOP_LABELS` above, so a warning added to `onDemand.ts`
+ * without a sentence here is a compile error rather than a line nobody notices is missing.
+ */
+const CROSSABLE_LABELS: Record<CrossableRule, string> = {
+  [CROSSABLE_RULES.TARGET_REPLIED]: 'they replied — and the dialog shows the reply itself first',
+  [CROSSABLE_RULES.COOLDOWN_ACTIVE]: 'spacing — it is sooner than the 7 days between messages to one recipient',
+  [CROSSABLE_RULES.NO_NEW_MATERIAL]: 'nothing new to say — no paid post has been found since the last message',
+  [CROSSABLE_RULES.UNANSWERED_TOUCH_LIMIT]: 'the unanswered-message cap is reached',
+  [CROSSABLE_RULES.PENDING_ATTEMPT_EXISTS]: 'a message to them is already written and waiting',
+  [CROSSABLE_RULES.LIFETIME_SEND_CAP_REACHED]: 'the overall send limit is reached, where one is set',
+}
+
+/** The dialog's own order: the most consequential thing a person can cross is first. */
+const CROSSABLE_ORDER: CrossableRule[] = [
+  CROSSABLE_RULES.TARGET_REPLIED,
+  CROSSABLE_RULES.COOLDOWN_ACTIVE,
+  CROSSABLE_RULES.NO_NEW_MATERIAL,
+  CROSSABLE_RULES.UNANSWERED_TOUCH_LIMIT,
+  CROSSABLE_RULES.PENDING_ATTEMPT_EXISTS,
+  CROSSABLE_RULES.LIFETIME_SEND_CAP_REACHED,
+]
+
 export default async function RulesPage() {
   const user = await currentUser()
   if (!user) redirect('/sign-in')
@@ -59,6 +93,7 @@ export default async function RulesPage() {
   const settings = await getSettings()
   const [groupSize, soakDays] = await Promise.all([cohortSize(), cohortSoakDays()])
   const caps = await prisma.senderAccount.aggregate({ _min: { dailyCap: true }, _max: { dailyCap: true } })
+  const brandTouches = await readNewBrandTouchCounts()
   const capMin = caps._min.dailyCap ?? 5
   const capMax = caps._max.dailyCap ?? 5
   const perAccount = capMin === capMax ? `${capMax}` : `${capMin}–${capMax}`
@@ -89,6 +124,22 @@ export default async function RulesPage() {
         env.MAX_TOTAL_SENDS === null
           ? 'No lifetime ceiling — chosen deliberately.'
           : `${env.MAX_TOTAL_SENDS} messages lifetime, counting ones still waiting.`,
+        /*
+          TWO NUMBERS, NEVER ONE. The cap on opening conversations with new brands is
+          measured twice — messages WRITTEN today and messages DELIVERED today — and either
+          reaching the cap stops the rest. They are shown separately because they answer
+          different questions and today they read 6 and 0: merging them would report the
+          smaller and hide the one actually binding.
+
+          Both come from `readNewBrandTouchCounts`, the same function the planner asks. This
+          page promises at the top that every number on it is read from the module that
+          enforces it, and this rule is exactly where that promise had failed: the cap
+          counted DELIVERED messages only, nothing has ever been delivered, so "2 a day" was
+          enforced as "2 a run" — and a page reporting a limit by a different rule than the
+          one enforcing it reads as headroom.
+        */
+        `${settings.maxNewBrandTouchesPerDay} brands contacted for the first time per day, across all accounts — ` +
+          `${brandTouches.created} written so far today, ${brandTouches.delivered} delivered.`,
       ],
     },
     {
@@ -133,7 +184,8 @@ export default async function RulesPage() {
     {
       group: 'You may cross, with a reason shown',
       lines: [
-        'Send-now can cross timing rules after showing what is being crossed: spacing, nothing new to say, a draft already waiting, the unanswered-message cap, the route being off — and “they replied”, which shows the reply itself first.',
+        'Send-now can cross these after showing what is being crossed, one sentence each:',
+        ...CROSSABLE_ORDER.map((code) => `${CROSSABLE_LABELS[code]}.`),
       ],
     },
     {

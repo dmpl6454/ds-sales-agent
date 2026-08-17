@@ -113,3 +113,38 @@ export async function clearSessionInvalid(senderId: string, proof: string): Prom
 export function sessionUsable(s: { hasSessionOnDisk: boolean; sessionInvalidAt: Date | null }): boolean {
   return s.hasSessionOnDisk && s.sessionInvalidAt === null
 }
+
+/**
+ * The MACHINE-INDEPENDENT half of the same question, for code that runs where the Chrome
+ * profiles are not. PURE.
+ *
+ * ── WHY THIS IS NOT `sessionUsable`, AND WHY THE DIFFERENCE IS LOAD-BEARING ────────
+ *
+ * `sessionUsable` asks the FILESYSTEM (`profileStatus().hasSession`). That is the right
+ * question at the moment of delivery, because the send drives a real Chrome profile on the
+ * machine doing the sending — `gate.ts`, the dispatcher and every /senders row ask it, and
+ * they must keep asking it.
+ *
+ * It is the WRONG question for anything that merely decides what to WRITE, because the
+ * planner does not run on a sending machine. MEASURED 2026-08-13: `schedulerHeartbeat`
+ * reads `machine: linode-detect`, every waiting draft was created at :30/:31 UTC by the
+ * slot path on that host, and the Linode has **no `~/.ds-sales-agent` directory at all** —
+ * profiles live on each operator's own device by design, and the server may never send
+ * (`SEND_ENABLED=false`, verified in its `.env`). So `profileStatus(h).hasSession` is
+ * `false` for EVERY account on the one machine that drafts.
+ *
+ * That is why rotation asks this instead. Feeding the filesystem answer into a binding
+ * rotation would have made every recipient resolve to `all-unavailable` on the server and
+ * stopped drafting fleet-wide — silently, and looking exactly like a planner that ran and
+ * found nothing to do. The fix for one inert guard would have installed a worse one.
+ *
+ * What this can honestly claim is weaker, and that is the point: `sessionPath` records that
+ * a hand login once happened, and `sessionInvalidAt` records that something later PROVED it
+ * dead. A path in the database is not a live session (§3.5) — so this decides only whose
+ * turn it is to be written to, never whether a message may go out. The send is re-checked
+ * by `gate.ts` on the device that actually sends, which is strictly better than deciding it
+ * when the draft was written.
+ */
+export function sessionRecorded(s: { sessionPath: string | null; sessionInvalidAt: Date | null }): boolean {
+  return s.sessionPath !== null && s.sessionInvalidAt === null
+}

@@ -132,21 +132,43 @@ describe('renderMessage', () => {
   })
 
   /**
-   * Tabish, 2026-08-07: the persona is ONLY the channel name. No person is introduced and
-   * no name or role is signed — both directions asserted, because "we removed the line"
-   * is only true if nothing else still emits it.
+   * ── A RECORDED REVERSAL, NOT A REGRESSION ────────────────────────────────
+   *
+   * Tabish, 2026-08-07: *"the persona needs to only be channel name"* — the intro line and
+   * the name/role signature lines were removed, and this test asserted their ABSENCE in
+   * both directions.
+   *
+   * Tabish, 2026-08-17: the standard message he supplied opens *"I'm Kapil Jain, Co-founder
+   * of <page>."* and signs off with the name and role above the contacts. So the assertion
+   * inverts, and it is kept pointing the other way rather than deleted — the property that
+   * matters is unchanged, which is that the identity a recipient reads is stated in exactly
+   * one place and comes from exactly one writer.
    */
-  it('renders NO intro line and NO personal name or role anywhere', () => {
+  it('introduces the person and signs with their name and role', () => {
     const { body } = renderMessage({ persona: PERSONA, target: MOM, variantBody: variant, hook: null })
-    expect(body).not.toContain("I'm Kapil Jain")
-    expect(body).not.toContain('Kapil Jain')
-    expect(body).not.toContain('Co-founder')
+    expect(body).toContain("I'm Kapil Jain, Co-founder of Bollywood Society.")
+    expect(body).toContain('Kapil Jain')
+    expect(body).toContain('Co-founder')
+  })
+
+  /** The introduction runs INTO the greeting — a bare "Hi X," is all Instagram previews. */
+  it('opens with the greeting and the introduction on one line', () => {
+    const { body } = renderMessage({ persona: PERSONA, target: MOM, variantBody: variant, hook: null })
+    const first = body.split('\n')[0] ?? ''
+    expect(first).toContain('Hi ')
+    expect(first).toContain("I'm Kapil Jain")
+    expect(first.endsWith(',')).toBe(false)
   })
 
   it('ends with the signature block in order', () => {
     const { body } = renderMessage({ persona: PERSONA, target: MOM, variantBody: variant, hook: null })
-    const tail = body.trimEnd().split('\n').slice(-3)
-    expect(tail).toEqual(['Bollywood Society', '+91 60000 189766', 'kapil@digitalsukoon.com'])
+    const tail = body.trimEnd().split('\n').slice(-4)
+    expect(tail).toEqual([
+      'Kapil Jain',
+      'Co-founder, Bollywood Society',
+      '+91 60000 189766',
+      'kapil@digitalsukoon.com',
+    ])
   })
 
   it('includes the hook line when a campaign was detected', () => {

@@ -108,7 +108,47 @@ describe('planning on the detect clock', () => {
    */
   const grantLock = (async <T,>(_label: string, fn: () => Promise<T>) => fn()) as never
 
-  it('plans drafts when the switch is ON', async () => {
+  /**
+   * ── REVERSED DELIBERATELY, 2026-08-13 (repair plan 4.1) ────────────────────────────
+   *
+   * This pair of tests used to assert that drafting was GATED on the autopilot switch, and
+   * they passed while asserting something that had never once happened in production:
+   * autopilot is off, so the ON case existed only in this file. MEASURED on the server's
+   * pm2 log — 23 detection passes to 1 outreach pass, and every waiting draft written at
+   * :30/:31 UTC, which is the four IST slots and not the 15-minute clock.
+   *
+   * The gate was wrong on its own terms: `runSlot` calls `runOutreach()` unconditionally,
+   * so the two paths disagreed, and the slot path is the one that matches the product —
+   * a draft with autopilot off is the INTENDED state, "prepared and waits for a click".
+   *
+   * The old assertion's stated worry was "the queue must not grow behind an operator with
+   * the switch off". That worry is answered, but by a bound rather than by a gate: the
+   * new-brand cap now counts first touches WRITTEN today and not only delivered ones
+   * (`brandTouchCounts.ts`), which is why 4.1 and 4.2 had to ship together. Drafting
+   * contacts nobody — `plan.ts` has one `.send()` call site and it is `manualAssistSender`.
+   */
+  it('plans drafts on EVERY pass, whatever the switch says', async () => {
+    for (const autopilotEnabled of [true, false]) {
+      let planned = 0
+      await detectThenDraft({
+        detect: async () => pass,
+        plan: async () => {
+          planned++
+          return {} as never
+        },
+        settings: async () => ({ autopilotEnabled }) as never,
+        lock: grantLock,
+      })
+      expect(planned, `drafting must run with autopilot ${autopilotEnabled}`).toBe(1)
+    }
+  })
+
+  /**
+   * AND THE SWITCH IS NOT CONSULTED AT ALL, which is a stronger claim than "it plans with
+   * the switch off" and is the one that would catch a re-gating. A `settings` reader that
+   * throws proves the branch is gone rather than merely taking the other arm.
+   */
+  it('does not ask about the switch to decide whether to draft', async () => {
     let planned = 0
     await detectThenDraft({
       detect: async () => pass,
@@ -116,24 +156,12 @@ describe('planning on the detect clock', () => {
         planned++
         return {} as never
       },
-      settings: async () => ({ autopilotEnabled: true }) as never,
+      settings: (() => {
+        throw new Error('detectThenDraft must not read settings to decide whether to draft')
+      }) as never,
       lock: grantLock,
     })
     expect(planned).toBe(1)
-  })
-
-  it('plans NOTHING when the switch is OFF', async () => {
-    let planned = 0
-    await detectThenDraft({
-      detect: async () => pass,
-      plan: async () => {
-        planned++
-        return {} as never
-      },
-      settings: async () => ({ autopilotEnabled: false }) as never,
-      lock: grantLock,
-    })
-    expect(planned, 'the queue must not grow behind an operator with the switch off').toBe(0)
   })
 
   /**

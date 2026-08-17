@@ -101,7 +101,42 @@ beforeEach(() => {
     Promise.resolve(args?.select?.variantId ? usedVariantRows() : usedCampaignRows()),
   )
   variantFindMany.mockReset().mockResolvedValue(poolOf(3))
-  settingRows.mockReset().mockReturnValue([])
+  /**
+   * ── singleTemplate IS THE DEFAULT SINCE 2026-08-17, AND THESE TESTS TURN IT OFF ──
+   *
+   * Tabish asked for one standard message, so `singleTemplate` now defaults TRUE and
+   * `composeForPair` returns that template before it reaches the bespoke body, the brand
+   * first touch or the variant COPY. The paths below still exist and are still reachable by
+   * one Setting row, so they are still tested — but they have to say which configuration
+   * they describe rather than inheriting it from a default that has now moved twice.
+   *
+   * The default path has its own file: `tests/single-template.test.ts`.
+   */
+  settingRows.mockReset().mockReturnValue([{ key: 'singleTemplate', value: 'false' }])
+})
+
+describe('the standard template is what composing returns by default', () => {
+  /**
+   * Guards the guard. Every other test in this file turns the template OFF, so without this
+   * one the whole file would describe a configuration production does not run — the
+   * "a harness whose default disagrees with production measures a pipeline that does not
+   * exist" mistake, one layer down.
+   */
+  it('returns the standard message, with no hook line and no bespoke body', async () => {
+    settingRows.mockReturnValue([])
+    const r = await composeForPair({
+      pair: pair({ bespokeBody: 'A hand-written first touch that must NOT be used.' }),
+      senderHandle: 'bollywoodsocietyy',
+      touchNumber: 1,
+    })
+    expect(r.body).toContain("I'm Kapil Jain, Co-founder of")
+    expect(r.body).toContain('30 crore (300M)')
+    expect(r.body).not.toContain('hand-written first touch')
+    expect(r.hookLine).toBeNull()
+    expect(r.usedBespoke).toBe(false)
+    // The variant is still CLAIMED, so the per-pair exclusion keeps advancing.
+    expect(r.variantId).toBeTruthy()
+  })
 })
 
 describe('the variant pool is scoped to the target kind', () => {

@@ -1,8 +1,9 @@
 import { prisma } from '@/lib/db'
 import { writeStringArray } from '@/lib/json'
 import { buildVocabulary, noveltyScore } from '@/detection/detectors/novelty'
-import { classifyCaption, semanticReadiness, tooShortToJudge } from '@/detection/detectors/semantic'
+import { modelVerdictToStored, classifyCaption, semanticReadiness, tooShortToJudge } from '@/detection/detectors/semantic'
 import { judgeWithFrame } from '@/detection/judge'
+import { tagsForStoredPost } from '@/detection/tagEvidence'
 import { detectionCutoff } from '@/lib/cutoff'
 import { getDetector } from '@/detection/detectors'
 
@@ -182,7 +183,14 @@ async function main(): Promise<void> {
     }
 
     for (const post of survivors) {
-      const judged = await classifyCaption(post.caption, post.shortcode)
+      /**
+       * Built ONCE and given to both the caption call and the frame call inside
+       * `judgeWithFrame`. Two constructions would be two chances to differ, and a
+       * difference between those two calls is attributed to the FOOTAGE by
+       * `applyFrameSignal` — so it would land as a false frame-driven escalation.
+       */
+      const tagText = await tagsForStoredPost(post)
+      const judged = await classifyCaption(post.caption, post.shortcode, null, tagText)
       if (!judged) {
         // No verdict is left as no verdict. A failed call must not be recorded as
         // ORGANIC — that would be a fabricated judgement, indistinguishable later
@@ -190,7 +198,13 @@ async function main(): Promise<void> {
         continue
       }
 
-      const captionVerdict = judged.verdict === 'CAMPAIGN' && judged.confidence < 70 ? 'REVIEW' : judged.verdict
+      /**
+       * The model's answer as a stored verdict — one mapping, shared with the production
+       * path, so this command cannot judge by a different rule than the pipeline it
+       * backfills. That drift is exactly what `tests/one-judging-path.test.ts` exists for,
+       * and it caught this file holding its own copy once already.
+       */
+      const captionVerdict = modelVerdictToStored(judged.verdict)
 
       /**
        * AND THEN READ THE FOOTAGE, through the same `judgeWithFrame` the pipeline and the
@@ -213,6 +227,7 @@ async function main(): Promise<void> {
           caption: post.caption,
           optedOut: target.optedOut,
           frameJudgingSupported: true, // only semantic channels reach this loop
+          tagText,
         },
         captionVerdict,
       )

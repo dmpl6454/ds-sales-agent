@@ -46,8 +46,16 @@ export function BrandsPanelView({ brands }: { brands: BrandsPanel }) {
     <section>
       <h2>
         Brands
+        {/*
+          THE TOTAL, whenever the list is truncated. The panel is bounded now (it was the
+          unbounded read behind 145 of the page's 174 queries), and a shortened list with no
+          total reads as the whole set — trading a slow page for a quietly wrong one.
+          Same shape as the posts table's "showing the newest 100 of 223".
+        */}
         <span className="h2note">
-          {brands.confirmed.length} confirmed
+          {brands.confirmedTotal > brands.confirmed.length
+            ? `newest ${brands.confirmed.length} of ${brands.confirmedTotal} confirmed`
+            : `${brands.confirmed.length} confirmed`}
           {brands.autoDecided.length > 0 ? ` · ${brands.autoDecided.length} decided automatically` : ''}
         </span>
       </h2>

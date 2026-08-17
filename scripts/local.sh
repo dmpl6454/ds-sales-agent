@@ -135,11 +135,48 @@ fi
 PROBE="$(mktemp -t dsprobe).ts"
 cat > "$PROBE" <<'PROBE_EOF'
 import { prisma } from '@/lib/db'
+
 const n = await prisma.detectedCampaign.count()
 const newest = await prisma.detectedCampaign.findFirst({ orderBy: { detectedAt: 'desc' }, select: { detectedAt: true } })
 const mins = newest ? Math.round((Date.now() - newest.detectedAt.getTime()) / 60000) : null
 const age = mins === null ? 'never' : mins < 90 ? `${mins} min ago` : `${Math.round(mins / 60)} h ago`
 console.log(`  posts: ${n}, newest seen ${age}`)
+
+/**
+ * ── HOW FAR AWAY IS THAT DATABASE? (repair plan 3.5) ─────────────────────────
+ *
+ * "The dashboard is slow" was diagnosed once, and it took a profiler and a day: an N+1 in
+ * `buildBrandsPanel` cost 0.2 s on local SQLite and ten seconds through the SSH tunnel,
+ * because neither cause is sufficient alone. Latency is half of that product and it is
+ * invisible unless something prints it.
+ *
+ * THE MEDIAN OF SEVERAL, NOT ONE SAMPLE. The first query on a fresh client pays for the
+ * connection handshake — measured at roughly ten times the steady-state cost — so a single
+ * timing reports the handshake and calls it latency. The count above has already warmed it.
+ *
+ * The multiplication is printed rather than left to the reader, because that product is the
+ * whole diagnostic: a page issuing 450 queries at 30 ms is 13 seconds and at 3 ms is one.
+ */
+const SAMPLES = 7
+const times: number[] = []
+for (let i = 0; i < SAMPLES; i++) {
+  const t0 = performance.now()
+  await prisma.$queryRaw`SELECT 1`
+  times.push(performance.now() - t0)
+}
+times.sort((a, b) => a - b)
+const median = times[Math.floor(times.length / 2)]!
+
+// The dashboard's heaviest page, from the budget `pnpm ig:layout` asserts. Named rather
+// than hardcoded as a mystery number, and deliberately the WORST page: the useful question
+// is "how bad does this get", not "how fast is the best case".
+const HEAVIEST_PAGE_QUERIES = 450
+const worst = (median * HEAVIEST_PAGE_QUERIES) / 1000
+const verdict = median < 5 ? 'close' : median < 15 ? 'a normal tunnel' : 'FAR — this is what makes a busy page slow'
+console.log(
+  `  round trip: ${median.toFixed(1)} ms (median of ${SAMPLES}) — ${verdict}.` +
+    ` The busiest page issues about ${HEAVIEST_PAGE_QUERIES} queries, so roughly ${worst.toFixed(1)}s of waiting.`,
+)
 process.exit(0)
 PROBE_EOF
 cp "$PROBE" src/scripts/_local_probe.ts

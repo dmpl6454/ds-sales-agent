@@ -128,6 +128,95 @@ const PERSON_CATEGORIES = new Set([
  * verdict; it is never messaged and never resurfaces. The category is recorded, so the
  * audit trail still says what it actually was.
  */
+/**
+ * PERSON-ROLE WORDS, matched on WORD BOUNDARIES rather than by exact category string.
+ *
+ * ── THE DEFECT THIS FIXES, MEASURED ───────────────────────────────────────
+ *
+ * `PERSON_CATEGORIES` is a `Set` compared with `.has(catLower)` — EXACT equality. It
+ * contains `'director'`, `'producer'` and `'artist'`. Instagram's taxonomy returns
+ * `"Film Director"`, `"Film Producer"` and `"Creators & Celebrities"`, none of which equal
+ * any member, so none of them ever matched.
+ *
+ * MEASURED on the live 68 BRAND targets, 2026-08-13 — every one of these is a human being
+ * currently queued to receive a media-buying pitch from a revenue account:
+ *
+ *     Film Director            5   @ksubbaraj (Karthik Subbaraj), @devrukhkar.vishal,
+ *                                  @kamalchandraofficial, @apoorvsinghkarki01,
+ *                                  @faisal_miya__photuwale
+ *     Creators & Celebrities   2   @rahuldevofficial (the actor), @shalini.passi
+ *     Film Producer            1   @fragrantnaturefilmcreationsofc
+ *
+ * The set was written from guesses about the taxonomy rather than from the strings the
+ * endpoint actually returns, and it read as thorough — forty entries, with a comment
+ * recording the @bharat_reshma fashion-designer bug it was extended for. That fix worked
+ * because "Fashion Designer" happens to be exactly one of Instagram's labels; "Film
+ * Director" is not, and nothing distinguished the two cases from inside the code.
+ *
+ * ── WHY WORDS AND NOT SUBSTRINGS ──────────────────────────────────────────
+ *
+ * A bare `includes` would file "Broadcasting & media production company" as a person on
+ * "production", and "Modeling agency" on "model". Word boundaries keep "producer" from
+ * matching "production" and let the specific multi-word entries below carry the rest.
+ * Checked against every category string on the live rows in `tests/person-category.test.ts`,
+ * in both directions — the companies that must survive are the half that carries the weight.
+ *
+ * THE ASYMMETRY IS THE DESIGN, exactly as it is for `decideBrand`: a wrong PERSON costs one
+ * prospect, visibly and retryably; a wrong BRAND puts a media-buying pitch in a private
+ * person's DMs from a revenue account.
+ */
+const PERSON_ROLE_WORDS: readonly string[] = [
+  'actor',
+  'actress',
+  'artist',
+  'athlete',
+  'author',
+  'blogger',
+  'celebrities',
+  'celebrity',
+  'chef',
+  'coach',
+  'comedian',
+  'creator',
+  'creators',
+  'dancer',
+  'designer',
+  'director',
+  'doctor',
+  'entrepreneur',
+  'filmmaker',
+  'gamer',
+  'influencer',
+  'journalist',
+  'lawyer',
+  'model',
+  'musician',
+  'photographer',
+  'politician',
+  'producer',
+  'singer',
+  'teacher',
+  'writer',
+]
+
+/**
+ * Does this category name a PROFESSION rather than a business? PURE.
+ *
+ * Exported because the planner asks it too: 8 rows were filed BRAND before this rule was
+ * fixed, and a classification change does not retroactively repair rows already in the
+ * database. `brandGuards.ts` refuses to draft to them, so the fix protects the recipients
+ * who are already in the list and not only the ones discovered next.
+ */
+export function isPersonRoleCategory(category: string | null | undefined): boolean {
+  const c = (category ?? '').toLowerCase().trim()
+  if (c === '') return false
+  if (PERSON_CATEGORIES.has(c)) return true
+  // Split on anything that is not a letter, so "Creators & Celebrities" and
+  // "Musician/Band" both yield clean words.
+  const words = new Set(c.split(/[^a-z]+/).filter(Boolean))
+  return PERSON_ROLE_WORDS.some((w) => words.has(w))
+}
+
 const NOT_A_PROSPECT_CATEGORIES = new Set([
   'advertising/marketing',
   'advertising agency',
@@ -220,7 +309,7 @@ export function classifyProfile(input: {
    * categorised "Artist" with 21M followers and is emphatically not a media buyer. The
    * category separates the buyer from the talent.
    */
-  if (PERSON_CATEGORIES.has(catLower) || NOT_A_PROSPECT_CATEGORIES.has(catLower)) {
+  if (isPersonRoleCategory(category) || NOT_A_PROSPECT_CATEGORIES.has(catLower)) {
     /**
      * Checked BEFORE the business test, and the order is the whole point: an agency and a
      * fashion designer are both `is_business_account: true`, so a business-first check
@@ -499,6 +588,77 @@ export function resetBrandResolverLimit(): void {
     })
   }
   rateLimitedUntil = null
+}
+
+/**
+ * The handles INSTAGRAM ITSELF asserts about a post: accounts tagged in the media, and
+ * co-authors. PURE.
+ *
+ * ── WHY THIS EXISTS, AND WHY IT IS NOT "GUESS THE HANDLE FROM THE NAME" ───
+ *
+ * MEASURED 2026-08-17: **135 of 286 in-window CAMPAIGN posts (47%) carry no caption
+ * @mention at all**, and 134 of those 135 name a brand in `brands[]`. So discovery — which
+ * reads @mentions and nothing else — was blind to nearly half the paid posts it finds. On
+ * @viralbhayani, the channel supplying most paid posts, 44% are untagged; on
+ * @madovermarketing_mom it is 0%, which is exactly why the gap was invisible from the one
+ * channel with ground truth.
+ *
+ * The obvious fix is to take the brand NAME the classifier already extracted and construct a
+ * handle from it. **That was probed live and it is not safe.** Two measurements kill it:
+ *
+ *  1. **There is no anonymous name→handle search.** `web/search/topsearch` returns HTTP 401
+ *     and `fbsearch/topsearch` returns the SPA shell, while the per-handle verifier answered
+ *     200 in the same run. There is nothing to look a name up in.
+ *  2. **Existence is not identity.** Constructing a handle from a name was wrong 4 times in
+ *     10, and **3 of those 4 wrong handles EXIST** — so verifying existence passes on the
+ *     wrong account. `@philips` is the global HQ (268k); `@philipsindia` (200k) ran the
+ *     campaign. `@jitopremierleague` has 354 followers; the real `@jito.premierleague` has
+ *     6,828 — and was already sitting in that post's tags.
+ *
+ * A guessed handle that exists is the *"never guess a handle"* rule failing in the one way a
+ * check cannot catch, and it puts a media-buying pitch in a stranger's inbox from a revenue
+ * account.
+ *
+ * So this reads what Instagram already told us instead. These handles are FACTS about the
+ * post, stored by `pipeline.ts` since the beginning and refreshed by `evidence.ts` — and
+ * **nothing in discovery has ever read them.** They go through the same
+ * `resolveBrand` → `decideBrand` → `createBrandTarget` chain as a caption mention, so the
+ * BRAND-vs-PERSON judgement, the confidence floor and `'unsure'` are all unchanged. Probed
+ * live in both directions: `@redchilliesent` and `@sonytvofficial` resolve BRAND;
+ * `@aasthagill` ("Artist") is correctly refused as a PERSON.
+ *
+ * **A TAG IS WEAKER EVIDENCE THAN A CAPTION MENTION AND IS ORDERED AFTER ONE.**
+ * @bollywoodchronicle tags the celebrity in 46.3% of its ORGANIC posts against 20.0% of its
+ * CAMPAIGN posts — the correlation INVERTS there. The bound is a LOOKUP budget, so a weaker
+ * candidate taking a slot is a stronger one not taken.
+ */
+export function taggedHandlesIn(taggedAccounts: string, rawPayload: string | null): string[] {
+  const out = new Set<string>()
+
+  const add = (raw: unknown) => {
+    if (typeof raw !== 'string') return
+    const h = raw.trim().replace(/^@/, '').replace(/\.$/, '').toLowerCase()
+    if (h.length >= 2 && !NEVER_A_PROSPECT.has(h)) out.add(h)
+  }
+
+  try {
+    const tags: unknown = JSON.parse(taggedAccounts || '[]')
+    if (Array.isArray(tags)) tags.forEach(add)
+  } catch {
+    // A malformed column is not a reason to fail a detection pass (decision 5, one layer on).
+  }
+
+  try {
+    const payload: unknown = JSON.parse(rawPayload || '{}')
+    if (payload && typeof payload === 'object' && 'collabHandles' in payload) {
+      const collabs = (payload as { collabHandles?: unknown }).collabHandles
+      if (Array.isArray(collabs)) collabs.forEach(add)
+    }
+  } catch {
+    /* same */
+  }
+
+  return [...out]
 }
 
 /** Pull every @mention out of a caption, normalised. */

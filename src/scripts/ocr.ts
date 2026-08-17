@@ -31,6 +31,7 @@ import { getDetector } from '@/detection/detectors'
 import { framePathFor } from '@/detection/media'
 import { readImageText, describeFrameText, frameTextForPrompt } from '@/detection/ocr'
 import { judgeWithFrame } from '@/detection/judge'
+import { tagsForStoredPost } from '@/detection/tagEvidence'
 import { classifyCaption, semanticReadiness } from '@/detection/detectors/semantic'
 import { ocrEngineCommand } from '@/lib/platform'
 import type { Verdict } from '@/lib/constants'
@@ -79,6 +80,8 @@ interface Candidate {
   signals: string[]
   prompt: string
   summary: string
+  /** The post's tags, fenced exactly as the live pipeline fences them. */
+  tagText: string | null
 }
 
 let noFrame = 0
@@ -119,6 +122,7 @@ for (const row of rows) {
     signals: readStringArray(row.signals),
     prompt,
     summary: parts.join(' — '),
+    tagText: await tagsForStoredPost(row),
   })
 }
 
@@ -194,6 +198,10 @@ for (const c of worthJudging) {
       caption: c.caption,
       optedOut: optedOutTargets.has(c.targetId),
       frameJudgingSupported: semanticIds.has(c.targetId),
+      // The same tags the pipeline would have given this post. Without them a re-judge
+      // here would see less than the live path does and could disagree with it for a
+      // reason that has nothing to do with the footage it is testing.
+      tagText: c.tagText,
     },
     c.verdict as Verdict,
   )

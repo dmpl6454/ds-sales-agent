@@ -1,7 +1,7 @@
 import { prisma } from '@/lib/db'
 import { log } from '@/lib/logger'
 import { detectionCutoff } from '@/lib/cutoff'
-import { mentionsIn, modelHasRun, resolveBrand } from './resolveBrand'
+import { mentionsIn, taggedHandlesIn, modelHasRun, resolveBrand } from './resolveBrand'
 import { createBrandTarget } from '@/outreach/brandTarget'
 
 /**
@@ -169,10 +169,29 @@ function classifyCached(
  * the backlog and then hands the head back to the unlucky handle once it is the only one left.
  * `UNKNOWN_RETRY_AFTER_MS` is the other half. Both were simulated before either was written.
  */
-export function orderForLookup<T extends { handle: string; checkedAt: Date | null }>(
+export function orderForLookup<T extends { handle: string; checkedAt: Date | null; source?: 'mention' | 'tag' }>(
   candidates: readonly T[],
 ): T[] {
+  /**
+   * A CAPTION MENTION OUTRANKS A MEDIA TAG, ahead of everything else.
+   *
+   * The bound is a LOOKUP budget (10 a pass), so a weaker candidate taking a slot is a
+   * stronger one not taken. The paying brand @mentions the post; a tag is Instagram saying
+   * an account appears in the media, which is true of the celebrity as often as the
+   * advertiser — MEASURED, @bollywoodchronicle tags someone in 46.3% of its ORGANIC posts
+   * against 20.0% of its CAMPAIGN posts, so on that channel the correlation INVERTS.
+   *
+   * Tags still earn their place: 47% of paid posts carry no caption mention at all, so
+   * without them nearly half of what detection finds produces no prospect. They just go
+   * second. `source` is optional so the existing pure tests, which pass neither, are
+   * unaffected — and a candidate with no source sorts as a mention, which is the direction
+   * that spends the budget on the stronger evidence.
+   */
+  const rank = (c: T) => (c.source === 'tag' ? 1 : 0)
+
   return [...candidates].sort((a, b) => {
+    const R = rank(a) - rank(b)
+    if (R !== 0) return R
     const A = a.checkedAt?.getTime() ?? null
     const B = b.checkedAt?.getTime() ?? null
     if (A === null && B === null) return a.handle.localeCompare(b.handle)
@@ -295,7 +314,7 @@ export async function autoResolveBrands(
   const posts = await prisma.detectedCampaign.findMany({
     where: { verdict: 'CAMPAIGN', postedAt: { gte: detectionCutoff() } },
     orderBy: { postedAt: 'desc' },
-    select: { id: true, caption: true, shortcode: true },
+    select: { id: true, caption: true, shortcode: true, taggedAccounts: true, rawPayload: true },
   })
 
   const out: AutoResolveSummary = {
@@ -343,12 +362,51 @@ export async function autoResolveBrands(
     caption: string | null
     postId: string
     shortcode: string
+    /**
+     * WHERE this handle came from, and it decides the order.
+     *
+     * `mention` — the caption names them. The paying brand @mentions the post; this is the
+     *   evidence the whole discovery path was built on.
+     * `tag`     — Instagram says they are tagged in the media or co-authored it. A FACT
+     *   about the post, and the source that closes the 47% of paid posts carrying no caption
+     *   mention at all. Weaker: @bollywoodchronicle tags the celebrity in 46.3% of its
+     *   ORGANIC posts against 20.0% of its CAMPAIGN posts, so the correlation inverts there.
+     *
+     * The bound is a LOOKUP budget, so a weaker candidate taking a slot is a stronger one
+     * not taken — which is why this is ordered and not merged.
+     */
+    source: 'mention' | 'tag'
   }
   const candidates: Candidate[] = []
 
+  /**
+   * Handles that must never cost a lookup: our own fleet pages, and every publisher we
+   * WATCH. @viralbhayani and @bollywoodpap appear in their own posts' media tags, and a
+   * watched publisher is a competitor rather than a prospect — `routes.ts` would refuse the
+   * route anyway, but only after the endpoint had been spent on it.
+   */
+  const neverAProspect = new Set(
+    (
+      await prisma.targetAccount.findMany({
+        where: { role: 'WATCH' },
+        select: { handle: true },
+      })
+    ).map((t) => t.handle.toLowerCase()),
+  )
+  for (const h of (await prisma.senderAccount.findMany({ select: { handle: true } })).map((x) => x.handle)) {
+    neverAProspect.add(h.toLowerCase())
+  }
+
   for (const post of posts) {
-    for (const mention of mentionsIn(post.caption ?? '')) {
+    const fromCaption = mentionsIn(post.caption ?? '').map((h: string) => ({ h, source: 'mention' as const }))
+    const fromTags = taggedHandlesIn(post.taggedAccounts, post.rawPayload).map((h: string) => ({
+      h,
+      source: 'tag' as const,
+    }))
+
+    for (const { h: mention, source } of [...fromCaption, ...fromTags]) {
       const handle = mention.toLowerCase()
+      if (neverAProspect.has(handle)) continue
       if (seen.has(handle)) continue
       seen.add(handle)
 
@@ -376,6 +434,7 @@ export async function autoResolveBrands(
         caption: post.caption,
         postId: post.id,
         shortcode: post.shortcode,
+        source,
       })
     }
   }

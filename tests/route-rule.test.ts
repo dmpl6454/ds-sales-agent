@@ -60,6 +60,7 @@ bootstrap.exec(`
     "displayName" TEXT NOT NULL,
     "contactFirstName" TEXT,
     "kind" TEXT NOT NULL DEFAULT 'CHANNEL',
+    "role" TEXT NOT NULL DEFAULT 'PROSPECT',
     "detectorKey" TEXT NOT NULL DEFAULT 'passthrough',
     "optedOut" BOOLEAN NOT NULL DEFAULT false,
     "watchEnabled" BOOLEAN NOT NULL DEFAULT true,
@@ -218,11 +219,69 @@ afterAll(async () => {
 describe('mayRouteExist — the one definition of which routes may exist', () => {
   const ours = new Set(['madaboutmarketingg', 'bollywoodsocietyy', 'bollywoodchronicle'])
 
-  const ask = (senderHandle: string, targetHandle: string, targetOptedOut = false) =>
-    mayRouteExist({ senderHandle, targetHandle, ourHandles: ours, targetOptedOut })
+  const ask = (senderHandle: string, targetHandle: string, targetOptedOut = false, targetIsWatchOnly = false) =>
+    mayRouteExist({
+      senderHandle,
+      targetHandle,
+      ourHandles: ours,
+      senderIsFleetMember: true,
+      targetOptedOut,
+      targetIsWatchOnly,
+    })
 
   it('permits an ordinary prospect', () => {
-    expect(ask('madaboutmarketingg', 'madovermarketing_mom')).toEqual({ allowed: true })
+    expect(ask('madaboutmarketingg', 'crocsindia')).toEqual({ allowed: true })
+  })
+
+  /**
+   * ── THE COMPETITOR CLAUSE ─────────────────────────────────────────────────
+   *
+   * @viralbhayani and @madovermarketing_mom are WATCHED publishers: we read their feeds to
+   * find the brands buying placement from them, and those brands are who we write to. They
+   * are competitors and must never receive a message.
+   *
+   * MEASURED the day this shipped, which is why it is a test and not a comment: each of
+   * them held **13 attempts and 4 pairs**, and **6 drafts to them were waiting to send**.
+   * Nothing in this file refused them — the four refusals were all about the SENDER, about
+   * our own pages, or about retirement.
+   *
+   * Note the handle in the second assertion. Until today this exact pair was the fixture
+   * for *"permits an ordinary prospect"*, which is how thoroughly the old model had the two
+   * kinds of target confused.
+   */
+  it('refuses a WATCHED publisher, whoever is writing', () => {
+    for (const sender of ['madaboutmarketingg', 'bollywoodsocietyy', 'bollywoodchronicle']) {
+      expect(ask(sender, 'viralbhayani', false, true), `@${sender} must not reach a competitor`).toEqual({
+        allowed: false,
+        refusal: 'target-is-watch-only',
+      })
+    }
+    expect(ask('madaboutmarketingg', 'madovermarketing_mom', false, true)).toEqual({
+      allowed: false,
+      refusal: 'target-is-watch-only',
+    })
+  })
+
+  /**
+   * The direction that makes the rule falsifiable: the SAME handle is permitted the moment
+   * it is a prospect. If this ever fails, the predicate has started refusing on something
+   * other than the column — the `kind`-based rule that would have refused every imported
+   * prospect is exactly what this catches.
+   */
+  it('permits the same recipient when it is a PROSPECT', () => {
+    expect(ask('madaboutmarketingg', 'somebrand', false, false)).toEqual({ allowed: true })
+  })
+
+  /**
+   * A retired WATCH row reports `target-retired`, not `target-is-watch-only`. Order matters
+   * only for which reason a refusal names, and retirement is the fact an operator can act
+   * on — it is the promise `removeTarget` made to somebody.
+   */
+  it('reports retirement ahead of watch-only when a row is both', () => {
+    expect(ask('madaboutmarketingg', 'viralbhayani', true, true)).toEqual({
+      allowed: false,
+      refusal: 'target-retired',
+    })
   })
 
   it('refuses a sender paired to ITSELF', () => {
@@ -270,14 +329,64 @@ describe('mayRouteExist — the one definition of which routes may exist', () =>
         senderHandle: 'madaboutmarketingg',
         targetHandle: 'tabishmukaddam1',
         ourHandles: ours, // the burner is NOT a fleet member, so not in this set
+        senderIsFleetMember: true, // the SENDER here is a fleet page; the burner is the recipient
         targetOptedOut: false,
+        targetIsWatchOnly: false, // the burner is a rehearsal RECIPIENT, never a watched publisher
       }),
     ).toEqual({ allowed: true })
   })
 
+  /**
+   * ── AND THE SAME ACCOUNT IN THE OTHER ROLE, WHICH IS THE 4.3 FIX ───────────────────
+   *
+   * The two facts are independent and this pair of assertions is what says so. A non-fleet
+   * account may RECEIVE (above) and may not automatically SEND (here). Until 2026-08-13
+   * only the query in `runOutreach` said the second, so the ROWS existed: MEASURED, 72 of
+   * them for `@tabishmukaddam1`, created by three creators that all read
+   * `senderAccount.findMany()` unfiltered. A pair row IS a live route since the chips went,
+   * so "one query happens not to read it" is not the same claim as "it does not exist".
+   *
+   * Reported as `sender-not-in-fleet` rather than as any fact about the recipient, because
+   * an account outside the rotation has no automatic route to ANYONE — nothing about who
+   * the recipient is can make one allowable.
+   */
+  it('refuses a sender OUTSIDE the fleet, whoever the recipient is', () => {
+    for (const target of ['madovermarketing_mom', 'amazondotin', 'crocsindia']) {
+      expect(
+        mayRouteExist({
+          senderHandle: 'tabishmukaddam1',
+          targetHandle: target,
+          ourHandles: ours,
+          senderIsFleetMember: false,
+          targetOptedOut: false,
+          targetIsWatchOnly: false,
+        }),
+        `@tabishmukaddam1 must have no automatic route to @${target}`,
+      ).toEqual({ allowed: false, refusal: 'sender-not-in-fleet' })
+    }
+  })
+
   it('routeAllowed is the same answer as a boolean', () => {
-    expect(routeAllowed({ senderHandle: 'a', targetHandle: 'b', ourHandles: ours, targetOptedOut: false })).toBe(true)
-    expect(routeAllowed({ senderHandle: 'a', targetHandle: 'a', ourHandles: ours, targetOptedOut: false })).toBe(false)
+    expect(
+      routeAllowed({
+        senderHandle: 'a',
+        targetHandle: 'b',
+        ourHandles: ours,
+        senderIsFleetMember: true,
+        targetOptedOut: false,
+        targetIsWatchOnly: false,
+      }),
+    ).toBe(true)
+    expect(
+      routeAllowed({
+        senderHandle: 'a',
+        targetHandle: 'a',
+        ourHandles: ours,
+        senderIsFleetMember: true,
+        targetOptedOut: false,
+        targetIsWatchOnly: false,
+      }),
+    ).toBe(false)
   })
 })
 
@@ -299,7 +408,7 @@ describe('addTarget never creates a route the fleet rule forbids', () => {
     await seedSender('bollywoodsocietyy')
     await seedSender('bollywoodchronicle')
 
-    const result = await addTarget('bollywoodsocietyy', 'Bollywood Society', 'Bollywood Society')
+    const result = await addTarget('bollywoodsocietyy', 'Bollywood Society', 'Bollywood Society', 'WATCH')
     expect(result.ok).toBe(true)
 
     // The target row is right and wanted — we watch our own pages for ground truth.
@@ -313,7 +422,7 @@ describe('addTarget never creates a route the fleet rule forbids', () => {
     await seedSender('madaboutmarketingg')
     await seedSender('bollywoodsocietyy')
 
-    await addTarget('royalcanin.india', 'Royal Canin India', 'Royal Canin')
+    await addTarget('royalcanin.india', 'Royal Canin India', 'Royal Canin', 'PROSPECT')
 
     expect(await routes()).toEqual([
       'bollywoodsocietyy→royalcanin.india',
@@ -321,9 +430,46 @@ describe('addTarget never creates a route the fleet rule forbids', () => {
     ])
   })
 
+  /**
+   * ── THE SAME FORM, THE OTHER KIND, AND NO ROUTE AT ALL ────────────────────
+   *
+   * The pair of assertions that says the two target types are genuinely different acts.
+   * Adding @viralbhayani is how you start WATCHING a competitor for the brands buying
+   * placement from them; it must not also make them a recipient.
+   *
+   * This is what was broken: `addTarget` created a row and then paired it to every sender,
+   * so watching a competitor and cold-pitching one were the same click.
+   */
+  it('adding a page to WATCH creates no route to it', async () => {
+    await seedSender('madaboutmarketingg')
+    await seedSender('bollywoodsocietyy')
+
+    const r = await addTarget('viralbhayani', 'Viral Bhayani', 'Viral Bhayani', 'WATCH')
+    expect(r.ok).toBe(true)
+
+    const row = await prisma.targetAccount.findUnique({ where: { handle: 'viralbhayani' } })
+    expect(row?.role).toBe('WATCH')
+    // Watched, judged by the real classifier, and never written to.
+    expect(row?.watchEnabled).toBe(true)
+    expect(row?.detectorKey).toBe('semantic')
+    expect(await routes()).toEqual([])
+  })
+
+  /** And the prospect direction of the same two columns: written to, never read. */
+  it('a company added to message is not enrolled into detection', async () => {
+    await seedSender('madaboutmarketingg')
+    await addTarget('crocsindia', 'Crocs India', 'Crocs India', 'PROSPECT')
+
+    const row = await prisma.targetAccount.findUnique({ where: { handle: 'crocsindia' } })
+    expect(row?.role).toBe('PROSPECT')
+    expect(row?.watchEnabled).toBe(false)
+    expect(row?.detectorKey).toBe('passthrough')
+    expect(await routes()).toEqual(['madaboutmarketingg→crocsindia'])
+  })
+
   it('never pairs a target with a sender of the same handle', async () => {
     await seedSender('madovermarketing_mom')
-    await addTarget('madovermarketing_mom', 'M.O.M', 'M.O.M')
+    await addTarget('madovermarketing_mom', 'M.O.M', 'M.O.M', 'PROSPECT')
     expect(await routes()).toEqual([])
   })
 })
@@ -381,7 +527,7 @@ describe('every creator agrees with ensureFleetPairs', () => {
     await seedSender('bollywoodsocietyy')
     await seedTarget('bollywoodsocietyy')
 
-    await addTarget('royalcanin.india', 'Royal Canin India', 'Royal Canin')
+    await addTarget('royalcanin.india', 'Royal Canin India', 'Royal Canin', 'PROSPECT')
     const afterAdd = await routes()
 
     const { created } = await ensureFleetPairs()

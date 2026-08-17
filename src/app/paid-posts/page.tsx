@@ -5,7 +5,7 @@ import { Nav } from '../nav'
 import { PageHead } from '../page-head'
 import { BrandsPanelView } from '../brands'
 import { CoverageNote } from '../coverage'
-import { ReviewQueue } from './review'
+import { DismissButton } from './dismiss'
 
 export const dynamic = 'force-dynamic'
 
@@ -97,7 +97,8 @@ export default async function PaidPostsPage() {
           */}
           {v.storedBeforeCutoff > 0 && (
             <p className="muted">
-              {v.storedBeforeCutoff} older posts are also stored. They are not judged by design — they are what the
+              {v.storedBeforeCutoff}{' '}
+              older posts are also stored. They are not judged by design — they are what the
               classifier learns each channel&rsquo;s normal vocabulary from.
             </p>
           )}
@@ -114,7 +115,8 @@ export default async function PaidPostsPage() {
             broken reader, and the second is an outage wearing the costume of a quiet day.
           */}
           <p className="muted">
-            {v.framesRead} posts had the text in their video read as well as their caption &mdash; a paid placement can
+            {v.framesRead}{' '}
+            posts had the text in their video read as well as their caption &mdash; a paid placement can
             sit in the footage under an ordinary caption
             {v.frameFlagged > 0 ? (
               <>
@@ -152,8 +154,17 @@ export default async function PaidPostsPage() {
           ) : null}
         </section>
 
-        <ReviewQueue rows={v.review} />
+        {/*
+          THE QUEUE AND THE SETTLED LIST ARE BOTH GONE (2026-08-17).
 
+          There were three lists here — "Worth a look", "Answers you have given", and the
+          posts table — and a reader who sees the same post on two of them learns to skip
+          both. Tabish: *"no more indecisiveness … no in between or borderline or worth a
+          look or manual."*
+
+          One table now. Every post the system calls paid, plus the ones a person has
+          crossed off so the cross can be undone, with the control on the row itself.
+        */}
         <section>
           <h2>The posts</h2>
           {v.posts.length === 0 ? (
@@ -171,17 +182,42 @@ export default async function PaidPostsPage() {
               <table className="table">
                 <thead>
                   <tr>
-                    <th>Date</th>
+                    {/* "Posted", not "Date" — the column now carries the hour, and the
+                        hour is the half that decides whether a verdict looks plausible. */}
+                    <th>Posted</th>
                     <th>Channel</th>
                     <th>Brand</th>
                     <th>Post</th>
                     <th>Verdict</th>
+                    {/* The only labelling control in the system. See dismiss.tsx. */}
+                    <th></th>
                   </tr>
                 </thead>
                 <tbody>
                   {v.posts.map((p) => (
                     <tr key={p.shortcode}>
-                      <td className="muted">{p.dayLabel}</td>
+                      {/*
+                        Date AND hour. A bare date could not separate a post published in
+                        the commercial window from one at 3am, and that distinction is
+                        measured rather than assumed: over 14 days @viralbhayani published
+                        84 posts before 09:00 IST and not one was paid.
+
+                        `lateness` renders only when detection was far behind publication —
+                        on the measured data that means the watch had a GAP, and a post that
+                        scrolls out of the 48-post window during one can never be re-scraped.
+                        Silent on the common path, because a number on every row is furniture.
+                      */}
+                      <td className="muted" title={p.postedExact}>
+                        {p.postedLabel}
+                        {/*
+                          Muted, not dressed as an alarm. This is information about ONE
+                          post; whether the watch itself is healthy is `assessWatch`'s job
+                          and has its own card. A per-row warning colour for something that
+                          is not the operator's to act on is how a page teaches people to
+                          ignore its colours.
+                        */}
+                        {p.lateness ? <div>{p.lateness}</div> : null}
+                      </td>
                       <td>@{p.channelHandle}</td>
                       <td>{p.brands.length > 0 ? p.brands.join(', ') : <span className="muted">—</span>}</td>
                       <td>
@@ -192,10 +228,14 @@ export default async function PaidPostsPage() {
                       <td>
                         {verdictLabel(p.verdict)}
                         {/*
-                          What the model SAW, because "worth a look" without saying at what
-                          is a nag. The caption called this post ordinary; the frame did not.
+                          What the model SAW. The caption called this post ordinary and the
+                          FOOTAGE disagreed — which since 2026-08-17 is enough to call it
+                          paid, so saying what was read is no longer a nicety.
                         */}
                         {p.frameEvidence ? <span className="muted"> — from the footage: {p.frameEvidence}</span> : null}
+                      </td>
+                      <td>
+                        <DismissButton shortcode={p.shortcode} dismissed={p.dismissed} />
                       </td>
                     </tr>
                   ))}
@@ -225,6 +265,13 @@ export default async function PaidPostsPage() {
                 ) : (
                   <span className="muted">{c.campaignsThisWeek} paid this week</span>
                 )}
+                {/*
+                  WHETHER THE JUDGING HAS EVER BEEN CHECKED, per channel. The 98% this
+                  project quotes belongs to @madovermarketing_mom and is measured on the one
+                  channel where the classifier never runs. @bollywoodchronicle has 0 labels
+                  across 937 posts, and without this line a reader has no way to know that.
+                */}
+                <div className="muted">{c.accuracyNote}</div>
               </li>
             ))}
           </ul>
@@ -243,8 +290,13 @@ export default async function PaidPostsPage() {
 /**
  * Plain words for the stored verdict strings.
  *
- * `REVIEW` in particular must not render as its own name: it means the classifier was not
- * confident, which is a third answer and not a synonym for either of the other two.
+ * `REVIEW` used to be here and read *"borderline — worth a look"*. It is gone with the
+ * third state (Tabish, 2026-08-17).
+ *
+ * `UNCLASSIFIED` stays and is NOT a third verdict wearing a different hat. It means NOT
+ * JUDGED — a failed call, no API key, a caption too short to be a pitch — and it has never
+ * meant ordinary. Rendering it as "ordinary" would be absence of data hardening into a
+ * negative verdict, on the one page whose job is telling the truth about the numbers.
  */
 function verdictLabel(verdict: string): string {
   switch (verdict) {
@@ -252,8 +304,6 @@ function verdictLabel(verdict: string): string {
       return 'paid'
     case 'ORGANIC':
       return 'ordinary posts'
-    case 'REVIEW':
-      return 'borderline — worth a look'
     case 'UNCLASSIFIED':
       return 'not judged'
     default:

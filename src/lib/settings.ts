@@ -29,6 +29,7 @@ export const SETTING_KEYS = {
   maxSendsPerTick: 'maxSendsPerTick',
   generateMessages: 'generateMessages',
   singleTemplate: 'singleTemplate',
+  tagsAsEvidence: 'tagsAsEvidence',
   replyResumeHours: 'replyResumeHours',
 } as const
 
@@ -119,24 +120,79 @@ export interface RuntimeSettings {
   generateMessages: boolean
 
   /**
-   * ── THE SINGLE TEMPLATE (simple-sender plan step 10) ──────────────────
+   * ── THE SINGLE TEMPLATE — NOW THE DEFAULT (2026-08-17, Tabish) ─────────
    *
-   * Defaults FALSE, and turning it on is TABISH'S DECISION to make on a day he chose,
-   * because it partially reverses decision 3: Meta's written spam policy penalises
-   * repetition, and templates with merge fields do not count as variation — measured
-   * research found an aged account blocked after ~20 spintax-varied messages. At today's
-   * volume (1-2/day) the risk is genuinely low; at 65 accounts it is not, because
-   * rotation means one recipient hears the same template from a different page each time.
+   * *"The drafts sent today are undesired, no custom message is required whatsoever. Same
+   * standard template message to be sent to them … The custom part must only be the target
+   * name being mentioned."*
    *
-   * When ON, every body is ONE template with ONE variable line — the paid post we
-   * actually saw (omitted when we have none, never invented). That line is also what
-   * keeps the send guards working: a body byte-identical across touches to the same
-   * recipient would break `distinctiveSlice` / `bodyAppearedSince`.
+   * Defaults TRUE since 2026-08-17. It was built in the simple-sender plan and left off for
+   * Tabish to decide; he has decided. Turning it on knowingly reverses part of decision 3 —
+   * Meta's written spam policy penalises REPETITION and merge-field templates do not count
+   * as variation. **That risk is real and is stated rather than smoothed over:** at 1-2
+   * messages a day it is small; at 65 accounts writing one template to overlapping
+   * recipients it is the cross-account fingerprint decision 3 exists to prevent. Raise it
+   * again before volume rises.
    *
-   * With it OFF, composing behaves byte-for-byte as before — the same shipping shape as
-   * Phase 3 and Phase 8.
+   * When ON, every body is ONE template. Exactly two things vary: the recipient's name and
+   * the sending page's name.
+   *
+   * THE OBSERVATION LINE WAS REMOVED IN THE SAME CHANGE. It named the paid post we saw, and
+   * "the custom part must only be the target name" excludes it. Its docblock also claimed
+   * that line was "what keeps the send guards working" — that was **false**, and measured
+   * so: the hook line is matched by `ENVELOPE_PATTERNS` and can never be the needle, so the
+   * guards never depended on it. What they actually depend on is the template having at
+   * least two prose paragraphs, which `tests/single-template.test.ts` now asserts.
+   *
+   * With it OFF, composing behaves byte-for-byte as it did before the flag existed.
    */
   singleTemplate: boolean
+
+  /**
+   * ── TAGS AND CO-AUTHORS AS CLASSIFIER EVIDENCE — BUILT, MEASURED, OFF ──
+   *
+   * Defaults FALSE, and it is off because the harness said so, not because it is
+   * unfinished. Turning it on is Tabish's decision and should be recorded as his.
+   *
+   * MEASURED 2026-08-13 with `pnpm ig:accuracy`, three runs on the same 77 posts:
+   *
+   *   | run                          | correct | recall | precision | false alarms |
+   *   |------------------------------|---------|--------|-----------|--------------|
+   *   | baseline, before any change  | 96%     | 100%   | 86%       | 3            |
+   *   | new prompt, tags OFF         | 97%     | 100%   | 90%       | 2            |
+   *   | new prompt, tags ON          | 95%     | 100%   | 83%       | 4            |
+   *
+   * RECALL NEVER MOVED — the one thing this project does not trade. What moved was
+   * PRECISION, and it moved the WRONG WAY: 90% to 83% against the identical prompt, which
+   * makes the tag INPUT the cause rather than the prompt edit. The mechanism is visible in
+   * the model's own reasons for the two extra false alarms — *"American Eagle tagged"* and
+   * *"co-authored by brand"*. That is the documented failure mode reproducing: treating
+   * "@-tags the brand" as sufficient once cratered precision 85% to 71%, and it is smaller
+   * here only because the prompt now explicitly forbids it.
+   *
+   * A false CAMPAIGN is not free. It becomes the hook of a real message to a real
+   * prospect — "saw your X campaign" about something that was never a campaign — so this
+   * failed the goal it was built for, which was to IMPROVE precision.
+   *
+   * ── WHY IT IS KEPT RATHER THAN DELETED ────────────────────────────────
+   *
+   * The measurement is on @madovermarketing_mom, the only channel with ground truth — and
+   * `verdictSource` is `'rules'` on 79 of 79 of its posts, so THE MODEL NEVER RUNS THERE
+   * IN PRODUCTION. The channels this input would actually affect are the semantic ones,
+   * where tagging correlates with paid posts on two (@viralbhayani 21% of CAMPAIGN against
+   * 6.9% of ORGANIC) and INVERTS on the third (@bollywoodchronicle 20% against 46.3%) —
+   * and where there is no ground truth to measure any of it.
+   *
+   * So the honest position is: measured harm on a proxy, unmeasured effect where it would
+   * run. Off is the conservative reading of that, and the code, the tests and the
+   * `--tags` control on the harness stay so the question can be re-asked in one row rather
+   * than re-implemented.
+   *
+   * With it OFF the user message is BYTE-IDENTICAL to what it was before any of this
+   * existed, so nothing about classification changes — the same shipping shape as
+   * `generateMessages` and `singleTemplate`.
+   */
+  tagsAsEvidence: boolean
 }
 
 function defaults(): RuntimeSettings {
@@ -160,7 +216,10 @@ function defaults(): RuntimeSettings {
     generateMessages: false,
     // OFF. One template for every recipient reverses decision 3, so switching it on is
     // Tabish's call — recorded as his when he makes it.
-    singleTemplate: false,
+    singleTemplate: true,
+    // OFF, because the harness measured precision falling 90% -> 83% with it on while
+    // recall held. See the interface comment for all three runs and why it is kept.
+    tagsAsEvidence: false,
     // One day. Tabish's decision, 2026-08-07 — see the interface comment.
     replyResumeHours: REPLY_RESUME_HOURS_DEFAULT,
   }
@@ -279,6 +338,7 @@ export async function getSettings(): Promise<RuntimeSettings> {
     personaGateChannels: bool(SETTING_KEYS.personaGateChannels, d.personaGateChannels),
     generateMessages: bool(SETTING_KEYS.generateMessages, d.generateMessages),
     singleTemplate: bool(SETTING_KEYS.singleTemplate, d.singleTemplate),
+    tagsAsEvidence: bool(SETTING_KEYS.tagsAsEvidence, d.tagsAsEvidence),
     /**
      * Both fleet ceilings accept "unlimited", and for opposite reasons.
      *

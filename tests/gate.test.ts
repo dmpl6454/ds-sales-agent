@@ -13,12 +13,14 @@ function ok(): ResendInput {
     senderHasSession: true,
     senderDailyCap: 5,
     targetOptedOut: false,
+  targetIsWatchOnly: false,
     targetRepliedAt: null,
     targetSentTodayCount: 0,
     senderSentTodayCount: 0,
     maxPerTargetPerDay: 2,
     personaSharedWithAnotherSender: false,
   draftPersonaStale: false,
+    draftHookStale: false,
   }
 }
 

@@ -4,7 +4,32 @@
  * them so a typo becomes a compile error instead of a silently invalid row.
  */
 
-export const VERDICTS = ['CAMPAIGN', 'REVIEW', 'ORGANIC', 'UNCLASSIFIED'] as const
+/**
+ * ── A POST IS PAID OR IT IS ORDINARY. THERE IS NO IN BETWEEN (2026-08-17) ──
+ *
+ * Tabish: *"no more indecisiveness, either a post is paid or unpaid/ordinary, no in between
+ * or borderline or worth a look or manual."*
+ *
+ * `REVIEW` is GONE. It meant "a person should look at this", and it had two producers:
+ *
+ *   the confidence floor      a CAMPAIGN under 70% was downgraded. MEASURED: **0 rows** in
+ *                             the entire corpus ever carried `downgraded:confidence-below-70`.
+ *                             The band never fired once.
+ *   the footage               `applyFrameSignal` raised a caption ORGANIC to REVIEW when the
+ *                             video's text disagreed. **18 of the 26 live REVIEW rows.**
+ *
+ * So removing it forces a real decision about the second one, and the decision is Tabish's:
+ * **footage-flagged posts become CAMPAIGN.** That trades precision for recall, which is the
+ * direction this project always chooses — *a missed paid post is invisible and unappealable,
+ * a false alarm becomes a row a person crosses off in one click.* The cross on `/paid-posts`
+ * is that corrective, and it is the only labelling control that now exists.
+ *
+ * `UNCLASSIFIED` survives and is NOT a third verdict. It means NOT JUDGED — a failed call, no
+ * API key, a caption too short to be a pitch — and it has never meant "ordinary". Collapsing
+ * it into ORGANIC would be *absence of data hardening into a negative verdict*, which is the
+ * failure this codebase has now produced five times.
+ */
+export const VERDICTS = ['CAMPAIGN', 'ORGANIC', 'UNCLASSIFIED'] as const
 export type Verdict = (typeof VERDICTS)[number]
 
 export const ATTEMPT_STATUSES = [

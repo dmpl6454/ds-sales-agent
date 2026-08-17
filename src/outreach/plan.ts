@@ -9,8 +9,10 @@ import { evaluatePair, type GovernorDecision } from './governor'
 import { routeAllowed } from './routes'
 import { validatePersona } from './render'
 import { composeForPair, usedCampaignIds } from './compose'
-import { whoseTurn } from './categories'
-import { checkNewBrandTouchCap, checkPersonaDistinct } from './brandGuards'
+import { describeRing, whoseTurn, type WhoseTurnResult } from './categories'
+import { fleetRingOrder } from './rotation'
+import { checkNewBrandTouchCap, checkPersonaDistinct, checkRecipientIsNotAPerson } from './brandGuards'
+import { readNewBrandTouchCounts } from './brandTouchCounts'
 /**
  * The ONLY sender this file imports, since Phase 5. `browserSender` was here too and is
  * deliberately not any more: the planner prepares and `dispatchTick` delivers, so a second
@@ -19,6 +21,7 @@ import { checkNewBrandTouchCap, checkPersonaDistinct } from './brandGuards'
 import { manualAssistSender } from './senders/manual'
 import { profileStatus } from '@/outreach/browser/profile'
 import { sessionUsable } from './sessionHealth'
+import { readSenderAvailability } from './availability'
 import { replyHaltFloor } from './replyHalt'
 import type { SendOutcome } from './senders/types'
 
@@ -105,8 +108,11 @@ export interface PlanSummary {
  */
 export async function ensureFleetPairs(): Promise<{ created: number }> {
   const [fleet, messageable, existing] = await Promise.all([
-    prisma.senderAccount.findMany({ where: { fleetMember: true }, select: { id: true, handle: true } }),
-    prisma.targetAccount.findMany({ where: { optedOut: false }, select: { id: true, handle: true } }),
+    prisma.senderAccount.findMany({
+      where: { fleetMember: true },
+      select: { id: true, handle: true, fleetMember: true },
+    }),
+    prisma.targetAccount.findMany({ where: { optedOut: false }, select: { id: true, handle: true, role: true } }),
     prisma.outreachPair.findMany({ select: { senderId: true, targetId: true } }),
   ])
 
@@ -125,9 +131,19 @@ export async function ensureFleetPairs(): Promise<{ created: number }> {
           senderHandle: s.handle,
           targetHandle: t.handle,
           ourHandles,
+          // Read from the ROW, not written as `true` beside a query that says so. The
+          // query and the literal are two statements of one fact and they drift; this
+          // selects the column instead, so the predicate cannot disagree with the filter.
+          senderIsFleetMember: s.fleetMember,
           // Already excluded by the query above; passed explicitly so the predicate is
           // asked the whole question rather than a convenient subset of it.
           targetOptedOut: false,
+          // Read from the ROW for the same reason as `senderIsFleetMember` above. NOT
+          // filtered in the query deliberately: a route that must not exist should be
+          // REFUSED by the one predicate that defines routes, not quietly absent because
+          // a `where` happened to exclude it. The 2026-08-13 lesson — excluding at the
+          // query leaves the row and one query that happens not to read it.
+          targetIsWatchOnly: t.role === 'WATCH',
         }),
       )
       .filter((t) => !already.has(`${s.id} ${t.id}`))
@@ -218,20 +234,14 @@ export async function runOutreach(): Promise<PlanSummary> {
    */
 
   /**
-   * How many brands were contacted for the FIRST time today, across every sender.
-   *
-   * Counted by `touchNumber: 1` on a BRAND target rather than by "distinct targets",
-   * because that is exactly what the cap is about: opening a new conversation with a
-   * stranger. A follow-up carries touchNumber > 1 and is never counted.
+   * How many brands were opened for the FIRST time today — WRITTEN and DELIVERED, kept
+   * apart. `brandTouchCounts.ts` holds both queries and the reasoning; the short version is
+   * that this used to be one number counted over deliveries, nothing has ever been
+   * delivered, so it was permanently 0 and only the per-run counter below bound. That made
+   * "2 a day" mean "2 a run" — and once drafting joined the 15-minute clock it would have
+   * meant ~192 a day.
    */
-  const newBrandTouchesToday = await prisma.outreachAttempt.count({
-    where: {
-      touchNumber: 1,
-      status: { in: [...DELIVERED_STATUSES] },
-      sentAt: { gte: dayStart },
-      pair: { target: { kind: 'BRAND' } },
-    },
-  })
+  const newBrandTouches = await readNewBrandTouchCounts(dayStart)
   /** ...and within this run, or every queued brand would pass the same stale check. */
   let brandFirstTouchesThisRun = 0
 
@@ -258,23 +268,59 @@ export async function runOutreach(): Promise<PlanSummary> {
    *
    * Built once per run and passed into the ring rather than re-derived inside it, so
    * `rotation.ts` stays pure. The reasons are carried as text because a refusal that
-   * says "every sender in this category is unavailable — alpha: flagged; bravo: not
-   * connected" is actionable and "nothing happened" is not.
+   * says "every sender is unavailable — alpha: flagged; bravo: never signed in" is
+   * actionable and "nothing happened" is not.
    *
-   * `challengedThisRun` is added to this as the run proceeds, so an account flagged
-   * mid-slot stops being offered a turn immediately.
+   * ── EVERY FACT HERE IS MACHINE-INDEPENDENT, AND THAT IS DELIBERATE ──────
+   *
+   * This map used to end with `!profileStatus(s.handle).hasSession` — a FILESYSTEM check
+   * for a Chrome profile. It was harmless only because rotation was inert: `whoseTurn`
+   * returned null for a target in no group, `Category` has always had 0 rows, and both
+   * branches below read `if (turn && …)`, so the map was computed and never consulted.
+   *
+   * MEASURED 2026-08-13, before making rotation binding: the planner runs on the LINODE
+   * (`schedulerHeartbeat` reads `machine: linode-detect`; every waiting draft was written
+   * at :30/:31 UTC by the slot path there) and that host has **no `~/.ds-sales-agent`
+   * directory at all** — profiles live on each operator's own device and the server may
+   * never send. So the filesystem answer is `false` for EVERY account on the one machine
+   * that drafts, and feeding it into a now-binding rotation would have returned
+   * `all-unavailable` for every recipient and stopped drafting fleet-wide — silently, and
+   * looking exactly like a planner that ran and found nothing to do.
+   *
+   * `readSenderAvailability` is the honest replacement, and it is SHARED with the dashboard
+   * and with `ig:dedupe-drafts` so a page can never name a different account than the
+   * planner will actually use. It asks only whether a hand login was once RECORDED
+   * (`sessionPath`) and nothing has since PROVED it dead (`sessionInvalidAt`) — weaker than
+   * `sessionUsable` on purpose, because it decides only whose turn it is to be WRITTEN to.
+   * Whether a message may go OUT is re-asked at delivery by `gate.ts`, on the device that
+   * actually sends, which is where it belongs.
    */
-  const unavailableSenders = new Map<string, string>()
-  for (const s of await prisma.senderAccount.findMany({
-    select: { id: true, handle: true, status: true, sessionInvalidAt: true },
-  })) {
-    if (s.status === 'CHALLENGED') unavailableSenders.set(s.id, 'flagged by Instagram')
-    else if (s.status !== 'ACTIVE') unavailableSenders.set(s.id, s.status.toLowerCase())
-    // §3.5: two different facts, two different fixes, so two different sentences. A dead
-    // session was PROVED dead by a real send; "not connected" means no login ever happened.
-    else if (s.sessionInvalidAt !== null) unavailableSenders.set(s.id, 'logged out — needs signing in again')
-    else if (!profileStatus(s.handle).hasSession) unavailableSenders.set(s.id, 'not connected')
+  const unavailableSenders = await readSenderAvailability()
+
+  /**
+   * The fleet ring per recipient, from the routes that ALREADY EXIST.
+   *
+   * `pairs` is scoped to `fleetMember: true` above, so grouping it is exactly the set of
+   * senders allowed to write to each target — the `routes.ts` exclusions are already
+   * applied to it. Building the ring any other way risks electing a sender with no route,
+   * which would skip every real pair and write nothing while reporting a turn taken.
+   *
+   * Assembled once rather than per pair. `whoseTurn` is a function of the TARGET, so at 4
+   * senders × 70 targets it would otherwise ask the same question 280 times to get 70
+   * answers — and each one is three queries across an SSH tunnel at ~30 ms.
+   */
+  const fleetRingByTarget = new Map<string, ReturnType<typeof fleetRingOrder>>()
+  {
+    const sendersByTarget = new Map<string, { id: string; handle: string; cohort: number }[]>()
+    for (const p of pairs) {
+      const list = sendersByTarget.get(p.targetId) ?? []
+      list.push({ id: p.sender.id, handle: p.sender.handle, cohort: p.sender.cohort })
+      sendersByTarget.set(p.targetId, list)
+    }
+    for (const [targetId, rows] of sendersByTarget) fleetRingByTarget.set(targetId, fleetRingOrder(rows))
   }
+  /** One answer per target, reused across that target's pairs. See above. */
+  const turnByTarget = new Map<string, WhoseTurnResult>()
 
   for (const pair of pairs) {
     const pairKey = `${pair.sender.handle}→${pair.target.handle}`
@@ -401,21 +447,36 @@ export async function runOutreach(): Promise<PlanSummary> {
      * the lifetime ceiling has already been refused above, and rotation must not be
      * able to resurrect it.
      *
-     * A target in NO category behaves exactly as before — every enabled pair is
-     * considered independently. That is what makes this phase shippable: nothing
-     * changes for anyone until a human puts a target in a category.
+     * A target in NO category IS NOW ROTATED THROUGH THE FLEET — since 2026-08-13 this is
+     * the normal path, not the exemption. The sentence that stood here said "a target in NO
+     * category behaves exactly as before — every enabled pair is considered independently",
+     * offered as what made the phase shippable. `Category` never gained a row, so that
+     * exemption was the only behaviour there had ever been, and what it produced was
+     * measured: 8 recipients holding a draft from more than one sender, 7 of them from all
+     * three, near-identical bodies under one phone number and one email.
+     *
+     * `whoseTurn` cannot return null any more, so there is no branch left that means
+     * "everybody writes".
      */
-    const turn = await whoseTurn({ targetId: pair.targetId, unavailable: unavailableSenders })
-    if (turn && turn.choice.ok && turn.choice.senderId !== pair.senderId) {
+    let turn = turnByTarget.get(pair.targetId)
+    if (turn === undefined) {
+      turn = await whoseTurn({
+        targetId: pair.targetId,
+        unavailable: unavailableSenders,
+        fleet: fleetRingByTarget.get(pair.targetId) ?? [],
+      })
+      turnByTarget.set(pair.targetId, turn)
+    }
+    if (turn.choice.ok && turn.choice.senderId !== pair.senderId) {
       outcomes.push({
         pairKey,
         eligible: false,
         skipReason: 'not-this-senders-turn',
-        skipDetail: `@${turn.choice.handle} is next in ${turn.categoryName}`,
+        skipDetail: `@${turn.choice.handle} is next in ${describeRing(turn)}`,
       })
       continue
     }
-    if (turn && !turn.choice.ok) {
+    if (!turn.choice.ok) {
       outcomes.push({
         pairKey,
         eligible: false,
@@ -477,13 +538,38 @@ export async function runOutreach(): Promise<PlanSummary> {
 
     if (pair.target.kind === 'BRAND') {
       /**
+       * IS THIS RECIPIENT A PERSON? Asked FIRST of the three brand guards, because the
+       * others are about timing and volume and this one is about the message being wrong
+       * for whoever receives it. A refusal should name the real problem.
+       *
+       * 8 live BRAND rows carry a person-role category — see `checkRecipientIsNotAPerson`.
+       */
+      const personGate = checkRecipientIsNotAPerson({
+        targetKind: pair.target.kind,
+        brandCategory: pair.target.brandCategory,
+        handle: pair.target.handle,
+      })
+      if (!personGate.ok) {
+        log.step('held — this recipient looks like a person, not a company', {
+          target: pair.target.handle,
+          category: pair.target.brandCategory,
+        })
+        outcomes.push({ pairKey, eligible: false, skipReason: personGate.reason, skipDetail: personGate.detail })
+        continue
+      }
+
+      /**
        * Protects the PATTERN rather than the account: `dailyCap` is Instagram's per-sender
        * concern, this is that ten first-touches in one afternoon look like a scraped list
        * being worked through, whatever the volume. Only first touches count — a follow-up
        * is a continuing conversation already spaced by cooldown.
        */
       const capGate = checkNewBrandTouchCap({
-        newBrandTouchesToday: newBrandTouchesToday + brandFirstTouchesThisRun,
+        // The run's own first touches are added to the CREATED counter only: they are rows
+        // this loop has written, and it delivers nothing (`manualAssistSender`), so adding
+        // them to the delivered figure would claim messages nobody received.
+        firstTouchesCreatedToday: newBrandTouches.created + brandFirstTouchesThisRun,
+        firstTouchesDeliveredToday: newBrandTouches.delivered,
         maxNewBrandTouchesPerDay: settings.maxNewBrandTouchesPerDay,
         isFirstTouch: decision.touchNumber === 1,
       })

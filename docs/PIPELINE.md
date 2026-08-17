@@ -1,11 +1,64 @@
 # The pipeline diagram
 
-> ## OWED, NOT YET REBUILT — 2026-08-11 (the one-switch session). READ THIS FIRST.
+https://claude.ai/code/artifact/517b2e18-4c61-428c-a300-9b21de07d1c6
+
+> ## REBUILT 2026-08-13 EVENING, and the debt above is CLEARED. Title: **Three Clocks**.
 >
-> **The diagram on that URL is now WRONG in the way this file exists to prevent**, and the
-> docs half of the work landed before the rebuild. Whoever republishes: this section is the
-> source of truth for what to draw. Do not build it from the old page — build it from the
-> code, as the rule below says.
+> Same URL, same 🔁 favicon, `force: true`. Rebuilt from the code and the live database, not
+> from the old page.
+>
+> **THE "KNOWN WRONG" SECTION IS GONE, BECAUSE ALL FIVE OF ITS ITEMS ARE NOW FIXED.** That is
+> the trigger for this rebuild: a stale "known wrong" list is worse than none, since it is the
+> part a reader trusts to be current. Rotation, the handle-in-prose defect and the ten-second
+> dashboard were fixed in the afternoon; **drafting gated on Autopilot** and **the new-brand cap
+> counting deliveries** were fixed in the evening, together, as the plan required.
+>
+> What replaces it is a section naming what is ACTUALLY wrong now, all three measured:
+>
+> 1. the accuracy figure is measured on the one channel where the classifier never runs;
+> 2. **21 of the 24 human answers were written by a script in one second on 8 August**, including
+>    both founding cases of the footage feature — Tabish's decision, surfaced not rewritten;
+> 3. finding new companies does not work from the server (Instagram refuses the datacenter IP).
+>
+> **What is drawn.** Two figures, because the flow genuinely has two shapes worth a picture.
+> *The three clocks* is now three LANES rather than a spine — look/judge/decide-who-paid/write
+> on the 15-minute clock, ask-eleven-questions/send on the 10:00-21:00 clock, read-the-
+> conversations at 11:00 and 20:00 — because the thing a reader most needs is which stage sits
+> on which clock, and the two fifteens are the same number for unrelated reasons. *Who a message
+> is written to* draws the brand decision with its two REFUSING arms given equal weight: **not
+> sure — left alone** and **a profession — left alone** (8 of the 71 are people).
+>
+> The eleven gate questions are a numbered list rather than a figure, with the one crossable
+> stop chipped. Eleven, not ten: `HOOK_STALE_SINCE_DRAFT` joined them.
+>
+> Figures re-measured the same evening: 2,382 posts since 1 Aug, 238 judged paid, 1,050 with the
+> video read, 19 awaiting an answer, 71 companies found (8 of them people), 26 written and
+> waiting, **0 delivered ever**, $0.12 across 4,776 questions, **1 page able to send**.
+>
+> **Verified before publishing**, and the checker was MUTATION-TESTED: an em-dash injected into
+> a `<text>`, a box shifted 80px into its neighbour, and a label pushed past the frame each made
+> it fail. It also checks both themes are defined at token level and that `body` paints its own
+> ground. Then both themes were rendered in a real browser at 2x and READ — which is what caught
+> an arm label crowding the box beside it in dark, invisible to every geometry assertion.
+>
+> ---
+>
+> ---
+>
+> ## REBUILT 2026-08-13, from the code and the live database. The debt below is CLEARED.
+>
+> The page was owed a rebuild from the 2026-08-11 one-switch session and did not get one for
+> two days. It has now been rebuilt from source rather than from the old page, and it carries
+> a **"Known wrong"** section naming the five things CLAUDE.md asserts that the running system
+> does not do — rotation never running, drafting gated on Autopilot, the new-brand cap
+> counting deliveries, six drafts addressing a company by its username, and the ten-second
+> dashboard. A diagram that hides those would be worse than no diagram.
+>
+> Three figures, each carrying one claim: the **three cadences** (and which gate stops which),
+> **rotation intended against rotation as it happens**, and the **judging permission table**.
+>
+> **The historical spec below is kept because it explains the shape of the 2026-08-08 change.**
+> Read it as history now, not as a to-do list.
 >
 > **The trigger is the biggest kind: a whole class of control was DELETED from the flow, and
 > a new automatic stage was added.** Tabish, 2026-08-08: *"The moment autopilot is turned on
@@ -18,9 +71,13 @@
 > ### What the CURRENT flow is
 >
 > ```
->   every 15 MINUTES, all day  ─┬─  1. LOOK      anonymous feed read; cover frames saved
->   (detection's own clock,     │   2. JUDGE     caption first and ALONE, then the words on
->    NOT the send schedule)     │               the video; the video may only raise a post
+>   every 15 MINUTES, all day  ─┬─  1. LOOK      anonymous feed read; cover frames saved.
+>   (detection's own clock,     │               A post we ALREADY have is re-checked too:
+>    NOT the send schedule)     │               a publisher can add a brand tag or a
+>                               │               co-author AFTER posting, and until
+>                               │               2026-08-13 that edit was invisible forever
+>                               │   2. JUDGE     caption first and ALONE, then the words on
+>                               │               the video; the video may only raise a post
 >                               │               to "worth a look"
 >                               ├─  3. DECIDE WHO THE BRANDS ARE   ← NEW, and automatic
 >                               │               @mentions in paid captions → is this a
@@ -39,6 +96,22 @@
 >   at 11:00 and 20:00 only
 >       6. READ THE CONVERSATIONS   for replies. Unchanged.
 > ```
+>
+> ### STILL OWED, and now with a second session's delta on top (2026-08-13)
+>
+> The rebuild below was owed from 2026-08-11 and did not happen. The tags/collabs session
+> adds one small thing to draw and nothing that contradicts the above:
+>
+> - **Stage 1 now re-checks posts it already has.** One line in reader words: *"we look
+>   again at posts we already saved, because a publisher can tag a brand after posting."*
+>   It is not a new stage and does not deserve its own box — it is a property of LOOK.
+> - **Nothing else in the flow moved.** The tag evidence built this session is switched
+>   OFF (`tagsAsEvidence`, measured: precision 90% -> 83%), so the JUDGE box is unchanged.
+>   Do not draw it.
+> - **The "worth a look" box gains a way back.** Answering a post now waits five seconds
+>   before it is written, and an answer already given can be changed — which matters
+>   because 21 posts, including the Thane bus, are currently recorded as "not paid" by a
+>   bulk script and were reachable from no screen.
 >
 > ### What must change ON THE PAGE
 >

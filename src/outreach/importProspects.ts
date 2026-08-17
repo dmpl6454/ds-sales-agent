@@ -282,7 +282,7 @@ export async function importProspects(
   const existingHandles = new Set(
     (await prisma.targetAccount.findMany({ select: { handle: true } })).map((t) => t.handle),
   )
-  const senders = await prisma.senderAccount.findMany({ select: { id: true, handle: true } })
+  const senders = await prisma.senderAccount.findMany({ select: { id: true, handle: true, fleetMember: true } })
   /** Every account we own — used for the "this is also one of ours" NOTE on the preview. */
   const senderHandles = new Set(senders.map((s) => s.handle))
   /**
@@ -330,6 +330,12 @@ export async function importProspects(
         displayName: p.displayName,
         contactFirstName: p.greeting,
         kind: 'CHANNEL',
+        /**
+         * A pasted list is a list of people to WRITE TO, whatever `kind` says. This is the
+         * call site that proves `kind` could never have carried this meaning: these rows
+         * are CHANNEL and messageable at the same time, which is exactly why `role` exists.
+         */
+        role: 'PROSPECT',
         // `passthrough` stores and judges nothing, and SAYS so. `mom` is a hand-written
         // rule set for one publisher's #Collaboration convention; applying it to an
         // arbitrary channel would silently mislabel posts.
@@ -357,7 +363,13 @@ export async function importProspects(
             senderHandle: s.handle,
             targetHandle: p.handle,
             ourHandles: fleetSenderHandles,
+            senderIsFleetMember: s.fleetMember,
             targetOptedOut: target.optedOut,
+            // An imported row is a PROSPECT by definition — a pasted list is a list of
+            // people to write to. This is also the call site that makes deriving the rule
+            // from `kind` unusable: these rows are created `kind: 'CHANNEL'`, so a
+            // kind-based invariant would refuse every one of them.
+            targetIsWatchOnly: target.role === 'WATCH',
           }),
         )
         .map((s) => ({

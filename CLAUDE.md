@@ -5,6 +5,276 @@ changing anything that touches sending.
 
 ---
 
+## THE 17 AUGUST RESTRUCTURE — TWO TARGET TYPES, ONE MESSAGE, TWO VERDICTS
+
+**Read this before anything below it. It changes the target model, the message copy, the
+verdict set and the labelling control, and it corrects six figures this file states.**
+
+### THE TARGETS ARE TWO KINDS NOW, AND THE COLUMN IS `TargetAccount.role`
+
+`WATCH` — we read their feed forever to find paid posts and **never message them**.
+`PROSPECT` — the companies found IN those paid posts. They are who we write to.
+
+@viralbhayani and @madovermarketing_mom are **COMPETITORS**. Watching them is how we find
+the brands buying placement; messaging them was never intended and was happening.
+**MEASURED the day this shipped: 26 attempts and 8 pairs to the two of them, with 6 drafts
+still waiting to send.** Zero had ever been delivered, which is the only reason deleting
+them was safe — `pnpm ig:purge-watch-drafts` refuses outright if it finds a delivered one.
+
+**BOTH OBVIOUS MECHANISMS ARE TRAPS AND WERE MEASURED TO BE:**
+
+- **`kind === 'CHANNEL'` is not "watched publisher".** `importProspects.ts` creates
+  messageable prospects as CHANNEL. A rule keyed on kind stops messaging every imported
+  prospect — a sending outage that looks like a quiet day.
+- **`optedOut: true` is worse.** `judge.ts` short-circuits the FOOTAGE call for an
+  opted-out target, so retiring @viralbhayani to stop messaging it would have silently
+  killed OCR-driven detection on the channel supplying most paid posts, while leaving
+  caption detection running.
+
+Enforced in **THREE** places, because `routes.ts` alone is provably insufficient:
+`routes.ts` (`target-is-watch-only`), `gate.ts` (`TARGET_IS_WATCH_ONLY`, non-overridable —
+it catches drafts written *before* the rule), and the on-demand dropdown, which is
+**deliberately exempt from `routes.ts`** and creates its own pair. Verified by executing
+`recheckBeforeSend` against all 6 live drafts, plus the negative direction and an inert
+override.
+
+### ONE STANDARD MESSAGE, AND THE GREETING RUNS INTO IT
+
+Tabish: *"no custom message is required whatsoever … no space and new line after hi this
+ruins it."* `singleTemplate` now defaults **TRUE**. Exactly two things vary across every
+message: the recipient's name and the sending page's name.
+
+**THE BLANK LINE WAS ONE ARRAY ELEMENT.** `render.ts` built
+`[greeting, '', body, …].join('\n')`, and Instagram's inbox previews only the FIRST line —
+so every recipient's preview read `Hi Crocs India team,` and nothing else. The greeting and
+the introduction are now one line.
+
+**AND THE COPY HAS A MECHANICAL FLOOR THAT IS NOT EDITORIAL.** `proseLines` drops line 1 BY
+POSITION — now the merged opener — and `distinctiveSlice` needs a survivor of 40+
+characters or it returns null, **and null refuses every send in the system**. MEASURED, and
+it corrects the obvious guess: the property is LENGTH, not paragraph count.
+
+```
+three paragraphs (shipping)  prose=3  needle ok
+one LONG paragraph           prose=1  needle ok
+one SHORT paragraph          prose=1  NULL — every send refused
+two SHORT paragraphs         prose=2  NULL — every send refused
+```
+
+So the hazard is **shortening** the copy, which is the direction "make it shorter" pushes.
+`tests/single-template.test.ts` asserts it against the real exported constant.
+
+**THE REPLY GUARD HAD TO BE FIXED IN THE SAME CHANGE.** `assessRead` counted MEMBERSHIP per
+body, and membership is a property of the whole thread — so with byte-identical messages
+ONE visible bubble answered for all N, `complete` came back true, and the caller stamped
+**verified silence over a conversation it had not seen.** Latent while bodies differed; the
+standard template makes it the common case. Each sent body now claims its own bubble.
+Mutation-tested: the old code reports `foundOurs: 3` from one message.
+
+`bodyAppearedSince` is SAFE with identical bodies — it is an occurrence-count DELTA — which
+is the opposite of the intuitive worry and was verified in both directions.
+
+**The persona name and role are BACK** (they render again, so `personaFingerprint` and
+`validatePersona` take them back — the contract is "includes exactly what appears in the
+message"). A recorded reversal of the 2026-08-07 decision, not a regression.
+
+### A POST IS PAID OR ORDINARY. `REVIEW` IS GONE
+
+Tabish: *"no more indecisiveness … no in between or borderline or worth a look or manual."*
+
+`VERDICTS` is `['CAMPAIGN', 'ORGANIC', 'UNCLASSIFIED']`. `UNCLASSIFIED` is **not** a third
+verdict — it means NOT JUDGED and has never meant ordinary.
+
+REVIEW had two producers and removing it forced a real decision about one of them:
+
+| producer | measured | now |
+|---|---|---|
+| the confidence floor (<70 CAMPAIGN) | **0 rows in the entire corpus.** Never fired once | no downgrade; recall is not traded |
+| the FOOTAGE | **18 of the 26 live REVIEW rows** | escalates to **CAMPAIGN** |
+
+**So `applyFrameSignal` now MINTS a paid post from video text, which that table was written
+to forbid.** Three things make it a trade rather than a loosening, and all three must hold
+if anyone tightens it back: it is the recall-protecting direction; the **cross shipped with
+it**; and the evidence is real — both founding cases (the Thane bus reading `SWITCH`, the
+Sony game-show card) came from this path. `frame:escalated-to-campaign` marks every such
+row, because `ig:accuracy`'s labels are caption-derived and **a frame-driven CAMPAIGN is
+still measured by no harness.**
+
+**The model's prompt was NOT edited.** It still offers `REVIEW` for a genuinely ambiguous
+post, and `modelVerdictToStored` maps it to CAMPAIGN at the boundary. Editing the prompt
+would invalidate a 50× cache discount permanently and would be a classification change
+requiring `ig:accuracy` before and after — mapping means the model's behaviour is *provably*
+unchanged rather than measured unchanged.
+
+**ONE CONTROL: a cross on each paid post.** `src/app/paid-posts/dismiss.tsx`. The "Worth a
+look" queue, the two buttons and the separate "Answers you have given" list are all deleted —
+three lists showing the same posts taught a reader to skip all three. The table now carries
+dismissed rows too, so the cross is **undoable**, which is the release the 8 August bulk
+write proved was necessary.
+
+**AND THE CASCADE, which setting the verdict does not complete.** Flipping to ORGANIC reaches
+five consumers free (they all query `verdict: 'CAMPAIGN'`). It does **not** reach
+`discoveredFromCampaignId` — so a company was a live prospect because of a post a person had
+just called ordinary. `labelPost` now also retires any prospect whose only provenance was
+that post **and** which has never been written to.
+
+**`ig:accuracy`'s `pred` changed to `final === 'CAMPAIGN'`.** Frame escalations now count as
+positive predictions, so **the headline numbers will move — that is the harness becoming
+correct.** Do not compare a run after this against any figure recorded above it.
+
+### OUR OWN PAGES ARE OFF EVERY SCREEN — EXCLUDED, NOT DELETED
+
+**Not one `DetectedCampaign` dashboard query filtered by channel.** MEASURED: their 1,555
+in-window posts were **59.6% of every figure on `/paid-posts`**, 37 rendered as paid
+findings, and **5 of the 26 open review rows were @bollywoodsocietyy** — the dashboard
+asking Tabish to judge a page he owns, which is what he actually noticed.
+
+`src/detection/visibleChannels.ts` is the one predicate, folded into `inWindow` so a query
+added later inherits it, with a **source grep** (`tests/visible-channels.test.ts`) because
+the failure mode is a query nobody has written yet. It caught two real gaps on its first run.
+
+**DO NOT DELETE THE ROWS.** It cascades away **1,739 `DetectedCampaign` rows that can never
+be re-scraped** (48-post window), destroys the ground truth those pages exist to provide,
+and the same handles are `SenderAccount` rows with different ids — deleting the wrong one
+takes out the accounts that send plus 158 attempts of real history.
+
+Detection, storage, `buildVocabulary` and `ig:accuracy` still read every channel. **This is
+a rule about a SCREEN, not about the corpus.**
+
+### THE 21 POISONED LABELS ARE CLEARED
+
+`pnpm ig:clear-bulk-labels`. All 21 shared one millisecond, including both founding cases —
+and one reading `MARUTI SUZUKI | NEXA` in its footage, labelled not-paid. Cleared, not
+re-decided: each falls back to its classifier verdict, because asserting the opposite would
+be minting ground truth from a docblock. **5 genuine one-at-a-time labels remain.**
+
+### THE CAP WAS 2 A DAY AND IS 10 — BUT IT IS NOT WHAT IS STOPPING YOU
+
+| cap | value | ceiling |
+|---|---|---|
+| `MAX_SENDS_PER_TICK` × 15-min ticks, 11 active hours | 1 | 44/day |
+| **`FLEET_MAX_PER_HOUR`** | 3 | **33/day — binds first of the pacing rules** |
+| **`maxNewBrandTouchesPerDay`** | **2 → 10** | the one that governed throughput |
+
+**CORRECTION TO THE OBVIOUS READING:** the new-brand cap bounds **draft creation** in the
+planner — it is absent from `gate.ts`'s `RESEND_BLOCKS`. And today the binding constraint is
+not a cap at all: **autopilot is OFF and only @bollywoodchronicle holds a session.** Raising
+the cap alone changes nothing and will look like the change failed.
+
+`MAX_PER_TARGET_PER_DAY` was NOT raised: it is the only rule that sees a recipient's total
+across all senders, and `env.ts` is `intish(1, 1, 10)` — **setting it above 10 in `.env`
+throws at startup and takes the dashboard down.**
+
+### FIGURES IN THIS FILE THAT WERE MEASURED FALSE ON 17 AUGUST
+
+| this file said | measured |
+|---|---|
+| "nothing has ever been delivered" | **1 delivered** — @bollywoodchronicle → @crocsindia, 10:42 IST. The delivered counter binds for the first time |
+| 68 BRAND targets | **77** |
+| 22-26 waiting drafts | **52** |
+| 65 in-window `frame:call-failed` | **83** |
+| 98% correct / 100% recall as the headline | measured on the channel where the model **NEVER RUNS** — see below |
+
+### THE ACCURACY FIGURE WAS MEASURED ON THE WRONG CHANNEL, AND THE REAL ONE IS 78.6%
+
+@viralbhayani had **4 labels across 1,005 posts**. Ground truth was built for the first
+time: 60 posts, 11 days, four independent judging passes including one told to HUNT for
+missed paid posts and one told to hunt for false alarms.
+
+| pass | paid rate |
+|---|---|
+| the live system | 21.7% |
+| independent judges | 23.3% |
+| adversarial — hunting missed paid | 22.0% |
+| adversarial — hunting false alarms | 23.3% |
+
+Consensus: 13 unanimously paid, 46 unanimously ordinary, **1 split**. Against it the
+classifier scores **78.6% recall (11/14)** and **84.6% precision (11/13)** — real
+performance with room to improve, and nothing like the 98%/100% this file has been quoting.
+
+**AND THE "100+ PAID POSTS A DAY" CLAIM IS ARITHMETICALLY IMPOSSIBLE.** Live feed fetched
+and compared shortcode by shortcode: Instagram showed **144 posts over 69 hours (50.1/day)**,
+we had stored **154** for those days, **0 missing** — capture is complete. @viralbhayani
+publishes ~50 posts a day IN TOTAL, and 21.7-23.3% of them are paid, i.e. **11-12 a day**.
+There is no sibling publishing account (`viralbhayani2` has 19 posts).
+
+**STORIES ARE THE LIKELY SOURCE OF THE CLAIM AND ARE UNREACHABLE:**
+`GET /api/v1/feed/reels_media/?reel_ids=…` returns `{"reels":{},"status":"ok"}` — HTTP 200
+carrying nothing. Reading them needs a session, which decision 4 forbids.
+
+**REAL RECALL HOLES FOUND, none explaining a 10× gap:** 54% of posts judged on caption alone
+with no footage read · 13% (119) auto-ORGANIC by the short-caption rule, 84 of them with
+unread footage text · 83 posts `frame:call-failed` · and the model **never hedges** — 0 of
+518 ORGANIC verdicts below 80% confidence.
+
+### BRANDS ARE FOUND IN POSTS THAT TAG NOBODY NOW — AND THE OBVIOUS FIX WAS MEASURED UNSAFE
+
+**MEASURED: 161 of 315 in-window CAMPAIGN posts (51%) carry no usable caption @mention**, and
+134 of 135 in the earlier sample named a brand anyway. Discovery read @mentions and NOTHING
+else, so half of every paid post it found produced no prospect. Per channel: @viralbhayani
+44% untagged, @bollywoodchronicle 100%, **@madovermarketing_mom 0%** — which is exactly why
+the gap was invisible from the one channel with ground truth.
+
+**THE APPROACH TABISH CHOSE WAS "extract the name, then VERIFY the handle", AND IT WAS PROBED
+LIVE AND REJECTED.** Two measurements kill it, and anyone reaching for it again should read
+these first:
+
+1. **There is no anonymous name→handle search.** `web/search/topsearch` → HTTP 401,
+   `fbsearch/topsearch` → the SPA shell, while the per-handle verifier answered 200 in the
+   same run. There is nothing to look a name up in.
+2. **EXISTENCE IS NOT IDENTITY.** Constructing a handle from a name was wrong **4 times in
+   10, and 3 of those 4 wrong handles EXIST** — so verifying existence passes on the wrong
+   company. `@philips` is the global HQ (268k); `@philipsindia` (200k) ran the campaign.
+   `@jitopremierleague` has 354 followers; the real `@jito.premierleague` has 6,828 — and was
+   already sitting in that post's tags.
+
+A guessed handle that exists is *"never guess a handle"* failing in the one way a check
+cannot catch, and it puts a media-buying pitch in a stranger's inbox from a revenue account.
+
+**WHAT SHIPPED INSTEAD: the handles Instagram itself asserts about the post.**
+`taggedAccounts` and `collabHandles` have been stored by `pipeline.ts` since the beginning,
+are refreshed by `evidence.ts`, and **nothing in discovery had ever read them.**
+`taggedHandlesIn` (PURE, `resolveBrand.ts`) feeds them into the SAME
+`resolveBrand → decideBrand → createBrandTarget` chain as a caption mention, so the
+BRAND-vs-PERSON judgement, the confidence floor and `'unsure'` are unchanged.
+
+**VERIFIED against live data: 26 new candidates from media tags against 9 from captions** — a
+3.9x widening — including Red Chillies Entertainment, Sony TV and Philips India. Probed live
+in both directions: `@redchilliesent`/`@sonytvofficial` resolve BRAND, `@aasthagill`
+("Artist") is correctly refused as a PERSON.
+
+**TWO THINGS THAT MUST NOT BE UNDONE HERE:**
+
+- **A CAPTION MENTION IS ORDERED BEFORE A TAG.** The bound is a LOOKUP budget (10/pass), so a
+  weaker candidate taking a slot is a stronger one not taken. A tag is Instagram saying an
+  account appears in the media, which is true of the celebrity as often as the advertiser —
+  @bollywoodchronicle tags someone in **46.3% of ORGANIC posts against 20.0% of CAMPAIGN**,
+  so the correlation INVERTS there. `orderForLookup` ranks `source` first.
+- **OUR OWN PAGES AND WATCHED PUBLISHERS ARE EXCLUDED BEFORE THE BUDGET, NOT AFTER IT.**
+  @viralbhayani and @bollywoodpap appear in their own posts' tags. `tests/auto-resolve.test.ts`
+  used to assert `looked: 1` for one of our own senders (refused at creation, after spending
+  a lookup); it now asserts **`looked: 0`**, and the safety assertions are unchanged.
+
+Still true and still unmeasured: **there is no accuracy harness for brand resolution.** 39 of
+77 live BRAND targets were decided by a model with no measured precision. Lookups still only
+work from a home IP.
+
+### VERIFIED
+
+typecheck clean · **1,490 tests, 74 files** · every new guard mutation-tested · the
+watch-only stop verified by executing `recheckBeforeSend` on live drafts in all three
+directions · dashboard scoping verified against live counts (1,555 rows hidden) · the tag
+source verified against live data (26 new candidates).
+
+**NOT DONE, and the order matters:** nothing is committed or deployed. The **46 waiting
+drafts still carry the OLD copy** — every one is already blocked (`no-session` 31,
+`persona-changed-since-draft` 15, which is the gate correctly catching the signature
+change), and discarding them before the deploy is undone by the server's next slot, which is
+the same ordering trap `ig:dedupe-drafts` documents. **Discard them AFTER deploying.**
+The broader dashboard simplification is largely untouched — see the handoff doc.
+
+---
+
 ## Read this before you "fix" anything
 
 Four things here are counter-intuitive enough that a competent person will undo them.
@@ -118,6 +388,479 @@ written up in full where the code lives:
 
 ---
 
+## THE LEARNING LOOP — WHAT WAS BUILT, AND THE TWO PARTS THAT ARE BLOCKED BY DATA
+
+**6.4 — EVIDENCE THAT WAS READ AND NEVER REACHED A VERDICT.** MEASURED: **65 in-window posts
+carry `frame:call-failed`** — the footage was read, the words extracted, and the classifier
+call that would have folded them in failed. Correct at the time (*a failed call is never a
+verdict*) and wrong forever after, because nothing tried again. `rejudgeUnusedEvidence` runs
+at the end of every detect pass, bounded at 10, only through `judgeWithFrame` so the
+permission table still applies, never touching a human answer, never able to fail a run.
+
+Note what the measurement CORRECTED: the obvious query — *frame text stored but no `frame:`
+signal* — returns **0**, and so does *judged with no frame but a frame on disk now*. Both
+were the wrong question. The population that exists is only visible by counting the signals.
+
+**AND THE FIRST VERSION WROTE A LOCAL ABSENCE AS A FACT ABOUT A POST.** Frames live on the
+host that detected them; this pass writes to a database BOTH hosts share. Run from the Mac,
+`readFrameText` truthfully said "no frame saved" about posts whose frames are on the server,
+and the loop wrote it down: **4 posts moved from `frame:call-failed` to `frame:not-saved`**,
+retiring them from the retry queue on the evidence of a laptop's disk. That is the
+`profileStatus` trap exactly. Fixed — a re-judge may only record what it actually READ — the
+4 rows were restored with an audit row, and `tests/rejudge.test.ts` pins it (mutation-tested;
+removing the guard fails two assertions). On the host that HAS the frames every one of those
+assertions passes vacuously, which is why it is a test and not a comment.
+
+**6.5 — THE DISAGREEMENT QUEUE, AND ITS HEADLINE NUMBER IS ABOUT THE BULK WRITE.** 18 of the
+24 settled posts contradict what the classifier concluded — and **16 of those 18 are inside
+the 8 August bulk write**, which is the strongest evidence yet that those 21 answers were
+never judgements about their posts. Marked and sorted first inside the EXISTING "Answers you
+have given" list rather than given a second list: a reader who sees the same post twice on
+one page learns to skip both. **2 usable disagreements remain**, both stable across runs.
+
+**6.7 — EVERY RUN IS STORED, so accuracy has a trend.** A `Setting` row (`accuracyHistory`,
+bounded at 30) rather than a new table: this machine cannot deploy a migration to the server,
+and a schema change applied to a live database from a host that cannot ship the code using it
+is a split-brain window for no gain. `ig:accuracy` prints per-channel recall over the last 8
+runs.
+
+**5.4 — EVERY CHANNEL SAYS WHETHER ITS JUDGING HAS EVER BEEN CHECKED.** No accuracy figure
+was ever rendered on the dashboard, so the "borrowed number" risk was not realised — the gap
+was that nothing said a channel had *no* number. `/paid-posts` now reads, per channel:
+*"Never checked for accuracy"* (@bollywoodchronicle, **0 labels across 937 posts**),
+*"checked against only 4 of 1005 posts, so the figure is thin"* (@viralbhayani), *"checked
+against 86 posts, which is most of them"* (M.O.M). Deliberately quotes no percentage: a
+single run is a sample.
+
+### 6.3 IS BLOCKED BY DATA, AND THAT IS NOW MEASURED RATHER THAN ASSERTED
+
+The 33 `KnownPaidPost` shortcodes would roughly triple the paid ground truth. They are not
+reachable, and the reason is specific:
+
+- their shortcodes are `C4…`, `C8…`, `C-…` — **2024 posts**;
+- the stored corpus for @viralbhayani reaches back only to **2026-07-29**, and the anonymous
+  feed is a **48-deep window**, so no backfill can reach 2024;
+- **32 of the 33 URLs name no page at all** (`/p/…` and `/reels/…` permalinks carry no
+  author). The one that does names `@bollywoodpaparazzii`, which is not a watched channel.
+
+So the blocker is not an unrun command. Unblocking it needs Tabish to supply either the
+captions or the posting page AND a source that reaches 2024 — neither of which this system
+has. `ig:accuracy` reports the 33 as unscorable on every run rather than staying silent.
+
+### 6.6 WAS DELIBERATELY NOT BUILT, AND THE REASON IS ITS INPUT
+
+Curated exemplars are the plan's own "single most dangerous thing that could be built here".
+Its input is the disagreement queue, and that queue currently holds **2 usable rows** — the
+other 16 are the poisoned bulk write. Drawing few-shot exemplars from two examples is not a
+learning loop; and its promotion gate ("recall must not fall on any channel") cannot be
+evaluated while recall itself swings 95-100% between identical runs. Both blockers clear the
+same way: settle Phase 7, then let the review queue accumulate real answers.
+
+---
+
+## THE CLASSIFIER IS NOT DETERMINISTIC, AND "100% RECALL" WAS ALWAYS ONE SAMPLE
+
+**READ THIS BEFORE QUOTING ANY ACCURACY FIGURE IN THIS FILE, INCLUDING THE ONES ADDED TODAY.**
+
+MEASURED 2026-08-13, three runs of `pnpm ig:accuracy` against an unchanged corpus, an
+unchanged prompt and unchanged code:
+
+```
+@madovermarketing_mom   recall 95%   ·   recall 100%   ·   recall 95%
+                        correct 95%-98%   precision 88%-92%
+```
+
+**2 of 89 posts change verdict between identical runs** (`C0f7E7Jyu3l`, `Db-pCbEE8El`), and
+at 22 paid posts one flip is 4.5% of recall. Every figure this file records — 98%, 100%
+recall, 92% precision — is a SINGLE RUN quoted to the percentage point.
+
+The consequence is not academic. This project's standing gate is *"revert rather than tune
+if recall moves off 100%"*, and **that gate fires on noise**: a run showing 95% after a
+change that did nothing is the common case, not the exception. It fails the other way too —
+a real regression of one post is indistinguishable from an unlucky run.
+
+`pnpm ig:accuracy --repeat 3` reports the RANGE and names the unstable posts. Use it before
+and after any prompt change; a single run is a sample, and the harness now says so.
+
+## ACCURACY IS PER CHANNEL NOW, AND @viralbhayani DOES DISCLOSE — TWICE
+
+`ig:accuracy` scored one channel and one source. It now reads `src/detection/labels.ts`:
+three sources with provenance on every row, a block per channel, and **UNMEASURED** where a
+channel has no labels rather than a number borrowed from somewhere else.
+
+| channel | detector | labels / stored | correct | recall | precision |
+|---|---|---|---|---|---|
+| `@madovermarketing_mom` | mom | **84 / 86 (98%)** | 95-98% | **95-100%** | 88-92% |
+| `@viralbhayani` | semantic | **4 / 1,005 (0%)** | 75% | **67% (2/3), stable** | 100% |
+| `@bollywoodsocietyy` | semantic | 1 / 802 | — | n/a | n/a |
+| `@bollywoodchronicle` | semantic | **0 / 937** | **UNMEASURED** | — | — |
+
+**THIS FILE SAYS @viralbhayani *"Never"* DISCLOSES, AND THAT IS NOW FALSE.** The `0/48`
+measurement was true of the 48 posts it read. Across the **1,005** now stored there are
+**2** `#Ad` posts — `Dbxvk4cKm-y` and `DbzyBNZThnu`, both Vivo — and **the classifier gets
+both right**. Two labels is not many, and they are the only fact-grade ground truth that has
+ever existed for the channel supplying most of the paid posts this system finds.
+
+**THE ASYMMETRY THAT MAKES THE VIRAL FIGURE HONEST.** A disclosure hashtag PRESENT is a label
+on any channel. A hashtag ABSENT is a label only where the publisher discloses reliably —
+which is exactly what `detectorKey: 'mom'` asserts. On @viralbhayani absence means nothing,
+so treating it as a negative would mint **1,003 fake ORGANIC labels against 2 real
+positives** and report ~99% for a channel it had barely measured. That is *absence of data
+hardening into a negative verdict* arriving in the one place whose whole job is telling the
+truth about the numbers.
+
+**AND 15 OF VIRAL'S 24 HUMAN LABELS ARE INSIDE THE POISONED BULK WRITE.** `findBulkWrites`
+(PURE) separates labels sharing a byte-identical `labelledAt` — 21 of them, one script, one
+second, 8 August. They are EXCLUDED by default and NAMED on every run, never rewritten;
+`--include-bulk` shows the effect. Of 24 human answers, **3** are usable. The rule is about
+the WRITE, not the answer: a label stamped in the same millisecond as twenty others was not
+a judgement about that post.
+
+**@viralbhayani's one miss is STABLE across all three runs** — `DbxpLGsCmBz`, a post a person
+marked paid that the classifier calls ORGANIC at 85% ("editorial commentary on actor's look").
+That is a reproducible error with a known correct answer, which is the highest-value row in
+the system and the seed of the disagreement queue (plan 6.5).
+
+**The footage RESCUED a labelled-paid post for the first time** (`Db-pCbEE8El`) — the first
+time that counter has been non-zero in any recorded run.
+
+### AND TWO MORE PLAN NUMBERS MEASURED FALSE
+
+- **Phase 3.3's premise.** *"Five `signals LIKE '%frame:…%'` scans at 223 ms each"* measures
+  **42 ms for all five** on the live Postgres — 8 ms each against 6 ms for a plain count.
+  That was a SQLite figure. **3.3 was not done**: its stated justification does not exist,
+  and the remaining benefit (making the five states explicit) does not justify a schema
+  migration applied to a live database from a machine that cannot deploy the code using it.
+- **The tunnel round trip.** This file says 28-37 ms. `pnpm local` now measures and prints it
+  on every run (plan 3.5): **4.3 ms, median of 7**, with the multiplication spelled out —
+  *"the busiest page issues about 450 queries, so roughly 1.9s of waiting"*.
+
+---
+
+## THE 13 AUGUST EVENING SESSION — THE CADENCE, THE CAP, AND FOUR THINGS READING FOUND
+
+Read this before the section below it: it FINISHES the repair plan's phases 4.1, 4.2, 4.3 and
+3.4, and it **re-measures numbers that were already stale a few hours after being written.**
+
+**EVERY DOCUMENTED FIGURE THAT WAS RE-MEASURED HAD MOVED.** Not by much, and that is the point
+— these were written the same day:
+
+| CLAUDE.md / the plan said | measured against live Postgres |
+|---|---|
+| the burner holds **70** pair rows | **72** |
+| **22** waiting drafts, 15 surplus | **26** waiting, 17 surplus |
+| **68** BRAND targets | **70**, then **71** after one detect pass |
+| **23** human labels | **24** |
+| `ig:accuracy` 96% correct, 87% precision, 20/20 | **98% correct, 91% precision, 21/21 (n=80)** |
+
+**RECALL IS STILL 100%.** Nothing in this session touches the classifier; the corpus grew.
+
+### 1. DRAFTING IS ON THE 15-MINUTE CLOCK NOW, AND THE CAP THAT BOUNDS IT BINDS (4.1 + 4.2)
+
+Shipped together, as the plan required. `detectThenDraft` no longer asks
+`settings().autopilotEnabled` before planning — the branch had **never fired**, and `runSlot`
+called `runOutreach()` unconditionally, so the two paths disagreed and the slot path is the one
+that matches the product. Drafting contacts nobody: `plan.ts` has one `.send()` call site and
+it is `manualAssistSender`.
+
+**The cap it needed is `brandTouchCounts.ts`, and the old one could not bind at all.**
+`checkNewBrandTouchCap` was asked ONE number, counted over DELIVERED messages — and **nothing
+has ever been delivered**, so it was permanently 0 and the only thing binding was a counter
+reset every run. "2 a day" was enforced as "2 a run": ~8 at four slots, and **~192 once drafting
+moved to 96 passes a day.** It now takes TWO counters, both named and both measured against the
+cap independently: first touches **written** today and first touches **delivered** today.
+VERIFIED against live data in both directions — `created=6 delivered=0 cap=2` refuses now, where
+the old rule said ALLOW. `/rules` renders both from the same function the planner asks.
+
+Do not merge them. They answer different questions and today they read 6 and 0.
+
+### 2. AN ACCOUNT OUTSIDE THE ROTATION NOW GETS NO ROUTE (4.3), AND THE RULE IS IN routes.ts
+
+`@tabishmukaddam1` is `fleetMember: false` and held **72** pair rows. This file used to say the
+burner's routes were "excluded at the query rather than here" — true, and it left the rows in
+place, when the whole content of the 2026-08-08 change is that **a pair row IS a live route**.
+Not one of the three creators (`addTarget`, `brandTarget`, `importProspects`) filtered on fleet
+membership; `addTarget`'s own comment DEFENDED that, to protect "the burner's rehearsal routes".
+
+**Rehearsal never used them.** `prepareOnDemandSend` CREATES the pair it needs when a person
+picks both ends — it is the documented exempt creator. So `RouteQuestion` gained
+`senderIsFleetMember` and `mayRouteExist` refuses `sender-not-in-fleet`; the compiler named all
+five call sites. **VERIFIED IN PRODUCTION, not by a test**: a real detect pass discovered
+`@googlegeminiindia` and gave it three fleet routes and none for the burner (fleet 72 → 73,
+burner unchanged).
+
+`pnpm ig:prune-pairs` removes what already exists. **DRY RUN BY DEFAULT, and NOT YET RUN** — it
+must follow the deploy, exactly like `ig:dedupe-drafts`, or the server recreates the rows.
+
+**THE CASCADE TRAP, GUARDED AND MEASURED.** `OutreachAttempt.pairId` is `ON DELETE CASCADE`, so
+a pair delete erases the record of messages real people received — which spacing, the
+unanswered-touch cap and the new-material rule are all derived from. `mayPrunePair` (PURE)
+refuses any pair carrying an attempt of ANY status, and the delete carries the condition itself
+(`attempts: { none: {} }`) so check and write are one statement. **0 of the 72 carry an attempt,
+so the refusing branch cannot execute against live data** — `tests/prune-pairs-live.test.ts`
+constructs it against a real database, and asserts in the same file that removing the guard DOES
+erase the attempts, or the test would pass on a harness where the cascade never fires.
+
+### 3. THE QUERY BUDGET (3.4) FOUND A 559-QUERY DASHBOARD ON ITS FIRST RUN
+
+`pnpm ig:layout` now asserts a per-page query count, read from `/api/query-count`. It is the
+only item in the plan that prevents recurrence, and it earned its keep immediately: **`/` issued
+559 queries, measured twice, 1,577 ms — after `buildBrandsPanel`'s N+1 was killed this week.**
+
+The cause was the per-draft gate loop in `buildMessagesPage`, whose own comment claimed the list
+was "small by construction — `maxUnansweredTouches` and the daily caps bound it". **Those bound
+SENDS. Nothing bounded DRAFTS**, and 4.1 takes drafting to 96 passes a day. The list is capped
+at `WAITING_SHOWN` (20) with the total shown beside it, which took `/` to 454. The remaining
+count is the deliberate design — every draft states why it cannot be sent, from the gate that
+would refuse it — and reducing it means batching the gate's own reads, which is **outstanding
+work, not a solved problem.** Budgets are ceilings over a BOUNDED design; raising one to make
+the check pass is the one thing not to do.
+
+**GETTING THE COUNTER RIGHT TOOK TWO WRONG ANSWERS, BOTH OF WHICH PASSED.** A module-level
+counter gave every page exactly **2**; moving it to `globalThis` gave every page **0**. In
+production `db.ts` deliberately does NOT cache the client on `globalThis`, so each Next route
+bundle builds its OWN PrismaClient — the counter must be global and the SUBSCRIPTION per client.
+Both wrong versions printed a green tick. Only the printed NUMBER gave them away: 0 queries to
+render `/` is not plausible. **A checker must show its working.**
+
+### 4. READING THE RENDERED PAGES FOUND FOUR DEFECTS A PASSING SUITE AND A GREEN GEOMETRY CHECK BOTH MISSED
+
+| | |
+|---|---|
+| `/` said **"watch running INSIDE THIS DASHBOARD"** on a Mac, while the watch runs on the Linode. `host` is `'dashboard'` for the hosted deployment too; only `machine` distinguishes them. `SchedulerState` now carries `machine` and `here`, and the sentence names the other machine and says slots fire "whether or not this window is open" |
+| `/targets` rendered **"about 768requests a day"**. The source has a space and the words are on the SAME line — the space vanishes because the text node CONTINUES onto the next line. Narrower than the gotcha already recorded here, and the same paragraph used `{' '}` correctly two words later. **Three more instances were then found by scanning the served HTML for `[a-z0-9]<!-- -->[a-z]`** — `387older posts`, `747posts had`, `19 postsnobody`, `24 postssettled` |
+| `/targets` promised **"Next message comes from @bollywoodchronicle"** for all 8 BRAND rows that are PEOPLE, which `checkRecipientIsNotAPerson` refuses in the planner. The mirror of "never claim a halt the gate is not enforcing", and worse: those rows were left for a person to JUDGE, and this was the one screen where someone would notice they are people |
+| `/rules` listed **"the route being off"** among the rules a person may cross — `PAIR_DISABLED`, deleted 2026-08-08. The page promises every value on it comes from the module that enforces it, and that half was hand-written prose. `CROSSABLE_RULES` is now declared in `onDemand.ts` and the page is TOTAL over it, like `STOP_LABELS` |
+
+**VERIFIED:** typecheck clean · **1,446 tests** (from 1,426), 71 files · `pnpm build` clean ·
+`pnpm ig:layout` all green including the new budgets · `pnpm ig:accuracy` **100% recall
+(21/21)**, 98% correct, 91% precision · `pnpm ig:detect` one clean pass, brand resolution
+working from the home IP. Every new guard was mutation-tested.
+
+**STILL OUTSTANDING, and the order is unchanged:** nothing is committed or deployed;
+`ig:prune-pairs --run` and `ig:dedupe-drafts --run` both wait on the deploy; `/`'s 454 queries;
+**Phase 7 is Tabish's decision and Phase 6.2 must not ship until it is settled** — a harness
+built on 21 known-wrong labels measures against poison.
+
+---
+
+## THE 13 AUGUST REPAIR — WHAT WAS FIXED, AND THE TRAP THE FIX ALMOST SET
+
+The five findings below were worked through against `docs/specs/2026-08-13-repair-and-learning-plan.md`.
+Read this first: it corrects three of the plan's own numbers and records one near-miss that
+matters more than any of the fixes.
+
+**1. ROTATION IS LIVE. A recipient in no group is now rotated through the FLEET.**
+`whoseTurn` cannot return null any more, so there is no branch left meaning *everybody
+writes*. A recipient in a group keeps that group's ring; the fleet ring is ordered `cohort`
+then handle and is built **from the pair rows that already exist**, so it can never elect a
+sender with no route. `/messages` names the account on every draft and `/targets` names it
+per recipient, both from `whoseTurn` itself. `pnpm ig:dedupe-drafts` (dry run by default)
+clears the 15 surplus drafts already queued.
+
+**AND THE FIX ALMOST STOPPED DRAFTING FLEET-WIDE, SILENTLY.** `plan.ts` built its
+`unavailableSenders` map from `profileStatus(handle).hasSession` — a FILESYSTEM check. That
+was harmless only while rotation was inert. MEASURED before making it binding: the planner
+runs on the **Linode** (`schedulerHeartbeat` → `machine: linode-detect`, every waiting draft
+written at :30/:31 UTC by the slot path there), and that host has **no `~/.ds-sales-agent`
+directory at all** — profiles live on each operator's own device and the server may never
+send. So the filesystem answer is `false` for every account on the one machine that drafts,
+and a binding rotation fed that map returns `all-unavailable` for every recipient. Drafting
+stops everywhere, looking exactly like a planner that ran and found nothing to do.
+
+`readSenderAvailability` (`src/outreach/availability.ts`) is the one reader now, shared by
+the planner, the dashboard and `ig:dedupe-drafts`, and every fact in it is
+MACHINE-INDEPENDENT: status, `sessionInvalidAt`, and `sessionRecorded` (a hand login was
+once recorded and nothing has since proved it dead). Weaker than `sessionUsable` on purpose
+— it decides only whose turn it is to be WRITTEN to. Whether a message may go OUT is still
+`gate.ts`, on the device that actually sends. **The general rule: a database shared between
+hosts plus per-host filesystem state is not one system, and any guard that mixes them gives
+a different answer depending on where it ran.**
+
+**2. THE MESSAGE FIXES, and reading the bodies found one more than the audit did.** The
+handle appears **three** times in an affected pitch, not twice — greeting, placement claim,
+and the "For X that would mean" line. `usableBrandName` (PURE) refuses a display name only
+when it normalises to the handle AND has no whitespace AND is all lower case; the obvious
+normalise-and-compare rule matches **47 of the 68 live BRAND rows**, including *Amazon MGM
+Studios*, *Crocs India* and *Royal Canin India*, so it would have degraded 47 pitches to fix
+21. Asked inside `brandFirstTouch`, not at the call site. The greeting falls back to
+"Hi there," rather than inventing a company name.
+
+**`HOOK_STALE_SINCE_DRAFT`** is an eleventh gate stop (`RESEND_BLOCKS` 10 → 11), not
+overridable, beside `PERSONA_CHANGED_SINCE_DRAFT` and for the same reason. It reads the band
+the STORED body asserts (`assertedRecency`) and compares it against the band that campaign's
+age would produce now — reading the body, because an operator may have edited it and the
+stored bytes are what the send guards compare against. Verified against the live Amazon
+draft: posted 2 August, currently **10.96 days** old, so it says "last week" truthfully for
+about another hour and is `stale=true` at +2h. Brand first touches carry `campaignId: null`
+and get their date from `discoveredFromCampaignId`; reading only `attempt.campaign` would
+have left the stop unreachable on exactly the drafts that have it wrong.
+
+**3. A PERSON IS NOT A COMPANY, AND THE CAUSE WAS NOT A NAME HEURISTIC.**
+`PERSON_CATEGORIES` was a `Set` compared with **exact equality** containing `'director'`,
+`'producer'` and `'artist'`, while Instagram returns `"Film Director"`, `"Film Producer"` and
+`"Creators & Celebrities"`. None ever matched. MEASURED: **8 of 68 BRAND targets are human
+beings** — five film directors including Karthik Subbaraj, the actor Rahul Dev, Shalini
+Passi. `isPersonRoleCategory` matches on WORD boundaries (a bare `includes` would file
+"Broadcasting & media production company" as a person on "production"). A classifier fix does
+not reclassify existing rows, so `checkRecipientIsNotAPerson` is a third brand-only guard in
+`brandGuards.ts` — the planner refuses to write to them, because *a report nobody runs is not
+protection*. The rows are left for a person to judge, exactly as the plan asked.
+
+**4. THE DASHBOARD IS 19× FASTER, MEASURED.** `buildCeoView` **9.9 s → 508 ms** against the
+same live Postgres over the same SSH tunnel. `buildBrandsPanel` is three queries regardless
+of brand count (rows, one `groupBy`, one `findMany`) and is bounded at 40 with the total
+shown beside it, the way the posts table already does it. `tests/labels.test.ts` caught the
+refactor holding a raw `displayName` in a map — that grep earning its keep.
+
+**5. FRAME RECOVERY: THE PLAN'S 804 IS A MAC NUMBER AND THE REAL ONE IS ZERO.** Frame stores
+are **per machine**: the Mac holds 446, the server 1,057, and the server is where detection,
+OCR and judging run. Measured there: 2,375 in-window posts, **1,048 with a frame**, 85 with a
+URL worth trying — and `--capture` saved **0 of the 85**, all HTTP 403. Those URLs are gone.
+What matters is that the preventive half already works: **100% frame capture every day since
+9 August** (119/119, 167/167, 206/206, 188/188, 69/69). Nothing to build; the backlog is
+unrecoverable. **Note the consequence: `/paid-posts` frame counts differ by 2.4× depending on
+whether the Mac or the server rendered the page.**
+
+**AND TWO MORE PROSE CLAIMS IN THIS FILE WERE FALSE.** `requestsPerSlot` was computed by
+`buildProspectsPage` and rendered **nowhere**, while this file said "/targets shows what
+watching currently costs in requests per slot". It does now, per DAY — a per-slot figure
+understates the real load 24× since detection got its own 15-minute clock. And `addTarget`'s
+docblock still promised "Pairs start DISABLED", three months after the chip was deleted, on
+the one action that creates a recipient.
+
+**VERIFIED:** typecheck clean · **1,426 tests** (from 1,281) · `pnpm ig:accuracy` **100%
+recall** (20/20), 96% correct, 87% precision · `pnpm ig:detect` one clean pass, brand
+resolution working from the home IP (`looked=10 created=2 haltedEarly=false`). Every new
+guard was mutation-tested; one attempt passed against a deleted sort until the fixtures were
+inserted in the OPPOSITE order to the answer they expect, which is the test being fixed
+rather than the code.
+
+### WHAT IS STILL OUTSTANDING, AND THE ORDER TO DO IT IN
+
+**Nothing from this session is committed, and nothing is deployed to the Linode.**
+
+**THE ORDERING TRAP, before anything else.** `pnpm ig:dedupe-drafts --run` must NOT be run
+until the rotation fix is deployed to the machine that DRAFTS (the Linode). Until then the
+next slot recreates all 15 duplicates and the only lasting effect is 15 audit rows. The
+command prints this warning itself and the dry run is the default.
+
+| | why it was left |
+|---|---|
+| `pnpm build`, `pnpm ig:layout` | Something was listening on **:3100** and the standing rule is never to build while it is. Stop the dashboard, then run both. `ig:layout` needs `DS_LAYOUT_TOKEN` set to a session cookie value — mint a row, revoke it after |
+| **the diagram** | Its **"Known wrong"** section names five defects and three are now fixed, so that section has become the stale part — worse than none, because it is what a reader trusts to be current. The exact delta is written into `docs/PIPELINE.md`. Re-publish by passing the existing URL as `url`, or Tabish loses the bookmark |
+| **Phase 4.3** — the burner's 70 pair rows | `OutreachAttempt.pairId` is **`ON DELETE CASCADE`**: a delete path that reaches a pair with history erases the record of messages real people received, which is what spacing, the unanswered-touch cap and the new-material rule are derived from. 0 of the 70 carry attempts *today*, so a delete is safe today and a delete PATH is not. The exclusion is asserted twice instead — `runOutreach` and `fleetRingFor` both scope to `fleetMember`, each with a test |
+| **Phase 4.1 + 4.2** | Must ship **together or not at all**, and the plan says so: removing the `autopilotEnabled` gate on `detectThenDraft` takes drafting from 4×/day to 96×/day, and 4.2's cap is the only thing that would bound the resulting queue. Every draft is a frozen body with a decaying claim — `HOOK_STALE_SINCE_DRAFT` now catches that at the gate, which makes 4.1 safer than it was this morning but does not make it free |
+| **Phase 3.3–3.5** | The five `signals LIKE '%frame:…%'` scans at 223 ms each; the query budget in `ig:layout` (**the only item here that prevents recurrence** — the N+1 went unnoticed for months); round-trip reporting in `pnpm local` |
+| **Phase 6** | The learning loop, untouched. **6.2 must not ship before Phase 7 is settled** — 21 human labels are known-wrong, including both founding cases of the footage feature, so a harness built on them measures against poison |
+| **Phase 7** | Tabish's decision, not a code change. The 21 answers are visible and one click from correct on `/paid-posts` → "Answers you have given" |
+
+---
+
+## THE 13 AUGUST FINDINGS — FIVE THINGS THE DOCS AND THE UI BOTH GET WRONG
+
+**FINDINGS 1, 4 AND 5 ARE FIXED — see the section directly above. Findings 2 and 3 are still
+live.** The text below is kept as the measurement that justified each fix.
+
+Found by answering six questions Tabish asked after reading the real dashboard. Every one was
+measured against the live system, and every one contradicts something written down.
+
+**1. ROTATION HAS NEVER RUN. NOT ONCE.** MEASURED: `Category` **0 rows**, `CategorySender`
+**0**, `CategoryTarget` **0**, and 0 of 72 targets in a group. `plan.ts` asks `whoseTurn()`
+per pair; it returns **null** for a target in no category, and both guards are
+`if (turn && …)`, so null means *no rotation at all*. The planner says so itself: *"A target
+in NO category behaves exactly as before — every enabled pair is considered independently."*
+
+So **every sender drafts to every recipient.** MEASURED: 8 recipients hold drafts from
+multiple senders, **6 of them from THREE senders each** — @amazondotin, @agoracitycentre,
+@absolutejk, @crocsindia, @viralbhayani, @madovermarketing_mom. The three bodies are
+near-identical and carry the **same phone number and email**, differing only in the page
+name. That is precisely the cross-account fingerprint decision 3b exists to prevent, and
+`MAX_PER_TARGET_PER_DAY=2` means two of the three could reach one inbox on one day the
+moment Autopilot goes on.
+
+**The mechanism is not wrong — nothing feeds it.** `nextSender` does exactly what Tabish
+described: start after the last sender who wrote, walk the ring, skip whoever cannot send.
+It is pure and tested. What is missing is any way to put a target in a group: the "Rotation
+groups" UI was deleted 2026-08-07 (Tabish: confusing) and the note left behind says
+*"behaviour is unchanged — the table has always been empty"*. TRUE THEN, at four senders and
+a handful of targets. It stopped being true on 2026-08-08 when pair rows became live routes,
+and again on 2026-08-12 when brand discovery created 59 BRAND targets. `setTargetCategory`
+still exists in `actions.ts`, is called by nothing, and revalidates `/prospects` — a retired
+redirect stub.
+
+**2. THE 15-MINUTE DRAFTING CLOCK DOES NOT RUN, because it is gated on Autopilot.**
+`scheduler.ts`, `detectThenDraft`:
+
+```ts
+if ((await settings()).autopilotEnabled) {
+  await lock('detect-draft', plan)      // ← never fires while Autopilot is OFF
+}
+```
+
+MEASURED on the server's pm2 log: **23 detection passes, 1 outreach pass** in the same
+window, and every waiting draft was created at :30/:31 UTC — exactly 11:00/15:00/17:00/20:00
+IST. `runSlot` calls `runOutreach()` **unconditionally**, so the two paths disagree about
+whether drafting needs Autopilot, and the slot path is the one that matches the product: a
+draft with Autopilot off is the intended state ("prepared and waits for a click"). The
+2026-08-11 entry claiming drafting joined the detect clock describes something that has never
+happened with Autopilot off, which is the normal state.
+
+**3. "2 NEW BRANDS A DAY" IS ACTUALLY "2 PER RUN", AND THE PERSISTENT HALF NEVER BINDS.**
+`checkNewBrandTouchCap` reads `newBrandTouchesToday`, and `plan.ts` counts that over
+**DELIVERED_STATUSES** with `sentAt >= dayStart`. **Nothing has ever been delivered**, so it
+is permanently 0 and only `brandFirstTouchesThisRun` binds — reset every run. Four slots a
+day × 2 = ~8 brand first touches a day. That, with finding 2, is the whole answer to *"why
+only 22 drafts when 100+ paid posts were found"*: MEASURED 22 waiting drafts, **62 of 68
+brands never drafted**, and at this rate ~25 days to reach the brands already discovered.
+Same shape as the `MAX_TOTAL_SENDS` bug — a limit whose reported meaning and enforced meaning
+are different rules.
+
+**4. THE DASHBOARD IS SLOW BECAUSE OF AN UNBOUNDED N+1 OVER A TUNNEL.** MEASURED: `/`,
+`/paid-posts`, `/targets` and `/analytics` each take **9-15 seconds**, second request no
+faster. `buildCeoView` alone is **9.9 s** and issues **174 queries**.
+
+- `buildBrandsPanel` reads every `kind: 'BRAND'` target with **no `take`**, then per brand
+  runs **two serial awaits** — 145 of the 174 queries.
+- Raw ping to the Linode is **4.4 ms**; a `select 1` through the SSH tunnel is **28-37 ms**,
+  and 20 concurrent queries on a pool of 10 take 305 ms, because SSH multiplexes every
+  channel over ONE TCP stream. Concurrency barely helps.
+
+Neither cause is sufficient alone: on SQLite at ~1 ms a query the N+1 cost 0.2 s and was
+invisible. **Hosting turned a latent design flaw into a ten-second page, and brand discovery
+finally working on 2026-08-12 is what tripped it** — 9 brands became 68. It grows linearly;
+at 500 brands the page is a minute. Minor and separate: five `signals LIKE '%frame:…%'`
+substring scans on `/paid-posts` at **223 ms each**, unindexed.
+
+**5. `brandName` IS DOCUMENTED "never a handle" AND IS A HANDLE.** The contract is a comment
+with nothing enforcing it. MEASURED by reading the real stored bodies:
+
+| target | `displayName` | what the DM would say |
+|---|---|---|
+| `@agoracitycentre` | `agoracitycentre` | *"I saw agoracitycentre's placement with Viral Bhayani…"*, twice |
+| `@ahambysenco` | `ahambysenco` | the same |
+| `@absolutejk` | `Jignesh N Khatiwala` | ***"Hi Jignesh N Khatiwala team,"*** |
+
+`brandTarget.ts` writes the handle into `displayName` when Instagram returns no full name, and
+`brandPitch` reads it straight into prose. 6 of 16 brand drafts carry a raw handle. The third
+row is worse than cosmetic: a person's name greeted as a team is the *wrong-"company"* risk
+realised, and the confidence floor cannot catch it because the model was confident.
+
+**WHAT IS ACCURATE, checked rather than assumed.** The Amazon pitch's claim — *"I saw Amazon
+India's placement with Mad Over Marketing last week"* — is **TRUE**: `DbiT2rHk2w6` carries
+**`#Collaboration`**, M.O.M's own disclosure, `verdictSource: 'rules'`, confidence 100. My
+first reading was that this looked like M.O.M's editorial ABOUT Amazon's campaign, which is
+the documented false-positive class; the disclosure hashtag settles it the other way. The
+recency band is `days <= 10 → "last week"` and the campaign was 9 days old when drafted — at
+the edge, and **the body is frozen at draft time**, so a draft that waits keeps a recency
+claim that decays. `crocsindia` has no provenance and correctly makes no claim at all.
+
+**AND THE SPEND IS NOT A CONCERN.** MEASURED: **$0.117 total, ever**, across 4,496 model
+calls; **$0.019 today** over 691 calls; classifier cache hit **93.7%**. Roughly two cents a
+day. Nothing in detection or drafting is token-intensive.
+
+---
+
 ## The one rule that overrides everything
 
 **Account safety outranks throughput, always.**
@@ -169,9 +912,11 @@ Sending happens three ways, one code path underneath:
   by hand     → pnpm send, or the "send it by hand" fallback on each card
 ```
 
-**Detection and DRAFTING both run on their own 15-minute clock** (drafting joined it
-2026-08-11), so the four IST slots above are about reply checks and catch-up, not about
-when a paid post is noticed or written about. See "AUTOPILOT IS ONE SWITCH".
+**Detection runs on its own 15-minute clock. DRAFTING WAS MEANT TO AND DOES NOT** — it is
+gated on `autopilotEnabled` in `detectThenDraft`, which is OFF, so drafting still happens
+only at the four IST slots. MEASURED 2026-08-13: 23 detect passes to 1 outreach pass. See
+finding 2 at the top of this file; do not read the 2026-08-11 entry below as describing
+production.
 
 ### How the send actually works
 
@@ -356,7 +1101,9 @@ every 15 minutes, 10:00-21:00 IST
                                           fleet-wide send lock, every invariant re-asked
 ```
 
-**Drafting moved onto the detect clock on 2026-08-11** (it was stage 4 of the four IST
+**Drafting was WIRED onto the detect clock on 2026-08-11 and it has never fired: the branch
+is gated on `autopilotEnabled`, which is off. Read finding 2 at the top of this file — the
+problem this paragraph describes is still live.** (it was stage 4 of the four IST
 slots). A paid post found at 11:20 waited until 15:00 before anything was written about
 it, and a hook line is age-bounded by `HOOK_MAX_AGE_HOURS`, so a slow draft could retire
 the very material it was going to reference. Same lesson as the 166 cover frames saved in
@@ -2034,18 +2781,114 @@ The risk is not mislabelling — it is that there is NO SECOND LOOK. An undisclo
 post is missed with certainty. Changing this is a decision with its own risk and is
 deliberately OUT OF SCOPE of the tags/collab plan.
 
-**WE FETCH TAGS AND COLLABS AND THROW THEM AWAY.** Verified against the LIVE feed, not the
-corpus: 3 of 12 @viralbhayani posts carry `usertags`; a M.O.M post carries a
-`coauthor_producer` (`@thechitthi`). `feed.ts` parses both — `taggedAccounts` and
-`collabHandles`. `pipeline.ts` then writes seven keys to `rawPayload` and **`taggedAccounts`
-is not one of them**, so it is fetched, validated and dropped. `collabHandles` IS stored and
-**no classifier reads it**. Tabish decided 2026-08-13 that we collect both.
+**~~WE FETCH TAGS AND COLLABS AND THROW THEM AWAY.~~ CORRECTED THE SAME DAY BY
+RE-MEASURING — TAGS WERE NEVER DROPPED.** The audit read `pipeline.ts`'s seven `rawPayload`
+keys, saw `taggedAccounts` was not among them, and concluded it was "fetched, validated and
+dropped". **It has a COLUMN, and the pipeline has always written it.** MEASURED on the live
+database: **460 of 2,713 rows carry tags**, including posts detected that morning —
+@bollywoodchronicle 373 of 813, @viralbhayani 76 of 737. Looking at one store and drawing a
+conclusion about another is the same shape as the findings the audit was making at the time,
+which is why *"where CLAUDE.md states a measurement, re-measure"* is the standing rule.
+
+**WHAT WAS GENUINELY MISSING WAS THE OTHER HALF: the evidence was captured at FIRST SIGHTING
+and never refreshed.** `persist()` is reached only from `for (const post of fresh)`, and
+`fresh` excludes every known shortcode — the identical structure that made the old "media
+URLs are refreshed on every re-observation" claim false for a month. Tags and collaborators
+can be EDITED after posting, so a brand tag added an hour later was invisible to us forever.
+
+Fixed 2026-08-13: `src/detection/evidence.ts` (`evidenceRefresh`, PURE) compares the stored
+evidence against what the feed now reports and returns **null when nothing moved**, which is
+nearly always — without that comparison the known-post loop would write ~18,000 rows a day
+to record that nothing had happened. `buildRawPayload` is the ONE writer of that JSON shape,
+shared by the create and the refresh, because two builders of one shape is how the seven
+keys and the column drifted apart to begin with. `taggedAccounts` also joined the upsert's
+`update:` branch, which had been the one captured field the reconciler left behind.
+
+**VERIFIED BY RUNNING IT, not by reading it.** A stored row's tags were deliberately set
+wrong, and one real `pnpm ig:detect` pass corrected them. The same pass found **three
+genuine divergences nobody had touched** — two @viralbhayani posts that had gained a
+`@bollywoodpap` tag since we stored them, and a pinned M.O.M post whose `@thechitthi`
+co-author had never been captured at all. A counter that only ever reads zero is not
+evidence that a write path works.
+
+`collabHandles` IS stored (in `rawPayload`) and **no classifier reads it** — see the tag
+-evidence entry below for what happened when one was allowed to. Tabish decided 2026-08-13
+that we collect both.
 
 **AND THE INVERSE DOES NOT HOLD — tags are evidence, never a rule.** 7 M.O.M posts we
 correctly call ORGANIC @-mention brands (`@appletv`, `@miumiu`, `@rarebeauty`, `@drink818`):
 a marketing publication's editorial names brands constantly. Treating "@-tags the brand"
 as sufficient already cratered precision **85% → 71%** once. A collab tag is stronger than a
 caption mention — both parties opted in — and is still not proof.
+
+### GIVING THE CLASSIFIER THE TAGS WAS BUILT, MEASURED, AND SWITCHED OFF (2026-08-13)
+
+`tagsAsEvidence`, default **false**. Turning it on is Tabish's decision and should be
+recorded as his. It is off because the harness said so, not because it is unfinished.
+
+Three `pnpm ig:accuracy` runs over the same 77 posts, changing one input at a time:
+
+| run | correct | recall | precision | false alarms |
+|---|---|---|---|---|
+| baseline, before any change | 96% | **100%** | 86% | 3 |
+| new prompt, tags OFF | **97%** | **100%** | **90%** | 2 |
+| new prompt, tags ON | 95% | **100%** | 83% | 4 |
+
+**RECALL NEVER MOVED**, which is the one thing this project does not trade. What moved was
+PRECISION, and it moved the WRONG WAY against the identical prompt — so the tag INPUT is the
+cause, not the prompt edit. The mechanism is visible in the model's own reasons for the two
+extra false alarms: *"American Eagle tagged"* and *"co-authored by brand"*. That is the
+documented failure reproducing, smaller only because the prompt now forbids it explicitly.
+A false CAMPAIGN is not free — it becomes the hook of a real message to a real prospect —
+so the change failed the goal it was built for, which was to IMPROVE precision.
+
+**WHY THE CODE IS KEPT RATHER THAN DELETED, stated honestly.** The measurement is on
+@madovermarketing_mom, the only channel with ground truth — and `verdictSource` is `'rules'`
+on 79 of 79 of its posts, so **the model never runs there in production**. Worse, only
+**4 of 79** of its posts carry any tags, so the harness is very nearly blind to this input
+by construction. The channels it would actually affect are the semantic ones, where the
+correlation is real on two and INVERTS on the third:
+
+| channel | tagged, of CAMPAIGN | tagged, of ORGANIC |
+|---|---|---|
+| `@viralbhayani` | 21.3% | 6.9% |
+| `@bollywoodsocietyy` | 17.6% | 0.7% |
+| `@bollywoodchronicle` | 20.0% | **46.3%** |
+
+@bollywoodchronicle tags the celebrity in every paparazzi photograph, so a rule built on the
+first two rows would be confidently wrong on the third. **Measured harm on a proxy,
+unmeasured effect where it would run** — off is the conservative reading of that, and the
+`--tags` control on the harness means the question can be re-asked in one `Setting` row
+rather than re-implemented.
+
+**With it OFF the user message is BYTE-IDENTICAL to before**, so classification is provably
+unchanged rather than measured unchanged: `tagsForPrompt` returns null when there is nothing
+to report, and `tagsForPost` returns null when the switch is off. Verified in both
+directions by execution. `pnpm ig:accuracy` now defaults to tags OFF **to match production**
+— a harness whose default disagrees with production measures a pipeline that does not exist.
+
+**THE ORDERING CONSTRAINT, if this is ever switched on.** A post is judged twice — caption
+alone, then with frame text — and `applyFrameSignal` attributes any difference between those
+two verdicts to THE FOOTAGE. Tags belong to the post, not the frame, so they must reach
+**every** `classifyCaption` call about a post or none: passing them to one call only would
+record a tag-driven disagreement as `frame:disagreed-higher`, corrupting the single number
+that says whether reading video earns its keep. `tests/rotation-fleet.test.ts  the PRODUCER of a ring, against a real database — `rotation.test.ts`
+                       covers `nextSender` thoroughly and is handed a ring as a fixture, so the
+                       whole suite asserted what rotation DOES with one and nothing asserted
+                       that anything ever BUILDS one. Nothing did. Mutation-tested: deleting the
+                       cohort+handle sort left all 19 green until the fixtures were inserted in
+                       the OPPOSITE order to the answer they expect
+tests/usable-name.test.ts  both tables are the REAL live display names, and the second — the
+                       names that must SURVIVE — is the half carrying the weight: the naive rule
+                       fails 15 of these
+tests/person-category.test.ts  every category string is one Instagram actually returned. "Film
+                       Director" never matched a set containing 'director'
+tests/hook-staleness.test.ts  a frozen body's dated claim, in both directions, including the one
+                       that must fail closed: a claim we can no longer date is STALE, not safe
+tests/tag-evidence.test.ts` is a SOURCE
+GREP over the call sites for exactly this, because the failure mode is a call site nobody
+has written yet. It was mutation-tested in both directions, and its first version was
+silently matching ZERO calls in `judge.ts` — a grep that matches nothing reports success.
 
 **DETECTION IS HEALTHY, AND RUNS ON THE SERVER.** `schedulerHeartbeat` reads
 `machine: linode-detect`; pm2 `ds-sales-agent` up 21h. The pm2 log shows `detection pass`
@@ -2076,6 +2919,47 @@ answers**: 20 posts, all unlabelled. Human labels are `verdictSource: 'human'` �
 authority verdict in the system and the only possible ground truth for video-only placements.
 Which is why an irreversible label is a measurement risk, not a UI nicety: a wrong one is
 counted as truth by any future recall figure. Hence the undo in the plan.
+
+### THE GROUND TRUTH IS POISONED, AND BOTH FOUNDING CASES ARE IN IT (found 2026-08-13)
+
+**READ THIS BEFORE QUOTING ANY RECALL FIGURE BUILT FROM HUMAN LABELS.**
+
+23 posts carry a human label. **21 of them share a byte-identical `labelledAt`** —
+`2026-08-08 11:04:04.042` — with a single `AuditLog` row, action **`post.labelled.bulk`**,
+actor `cli:Tabish`, detail *"paid=false x21 (review queue cleared on Tabish's instruction)"*.
+That was not 21 people-clicks, and **the script that wrote it does not exist in this repo**;
+`labelPost` was never the only writer of `humanLabel`, whatever its docblock said.
+
+Two of those 21 are the founding cases of the entire footage-reading feature:
+
+| | | |
+|---|---|---|
+| `DbtNU9UzWYU` | the **Thane bus** | frame reads `THANE's First Double Decker Bus Inside View!` + **`SWITCH`** on the bumper |
+| `Dbuk-oez_C0` | the second case | frame reads `SONY \| 24 AUG \| FRI \| SONY liv \| INDIAN GAME SHOW` |
+
+CLAUDE.md documents both, at length, as **genuinely paid**. Both now read
+`humanLabel: false`, `verdict: ORGANIC`, `verdictSource: 'human'` — the highest-authority
+verdict in the system, asserting that the two posts this capability exists to catch were not
+paid. Any future recall figure built from these labels would count them as correct misses.
+
+**AND ALL 21 WERE UNREACHABLE FROM EVERY SCREEN.** The review queue filters
+`humanLabel: null`; the posts table renders CAMPAIGN and REVIEW only. A post labelled
+"ordinary" therefore vanished from the dashboard the instant it was answered, permanently,
+with no control anywhere to revisit it. *A hard stop with no release is a bug wearing a
+safety feature's clothes* — the sentence already in this file about the reply halt was true
+here too.
+
+**Fixed by shipping the release alongside the undo**, because a five-second window is
+worthless if the only escape after it is editing the database: `/paid-posts` now has
+**"Answers you have given"** (`src/app/paid-posts/settled.tsx`), listing every human answer
+newest-first with the caption, what the classifier had said, and — unconditionally, unlike
+the review queue — **what the footage said**, because that is the evidence most likely to
+show an answer was wrong. Changing one goes through `labelPost`, still the one writer,
+and leaves an honest audit row: a person looked again and decided differently.
+
+**These 21 labels are NOT rewritten by this work, deliberately.** Labelling is Tabish's act,
+not a model's, and silently "correcting" his ground truth would be the same category of
+mistake as creating it. They are now visible and one click from correct.
 
 ### THE FREE FILTER WAS SILENTLY VETOING THE CLASSIFIER — the largest source of missed paid posts
 
@@ -2670,6 +3554,17 @@ src/
                        present. Bounded at 10 LOOKUPS (not 10 brands — a pass that
                        resolves ten people spends the same scarce endpoint). Never fails
                        a detection run
+    evidence.ts        the captured evidence about a post, built in ONE place and
+                       REFRESHED when a publisher edits it. `evidenceRefresh` is PURE and
+                       returns null when nothing moved — without that comparison the
+                       known-post loop would write ~18,000 rows a day to say nothing had
+                       happened. Media URLs are deliberately excluded from the comparison:
+                       they rotate constantly and the BYTES on disk are the evidence
+    tagEvidence.ts     who a post TAGS, as fenced evidence for the classifier. PURE
+                       formatter, allowlisted handles, and a block that is OMITTED
+                       ENTIRELY when there is nothing to say — so an untagged post's
+                       prompt is byte-identical to before this existed. **OFF**
+                       (`tagsAsEvidence`): measured precision 90% -> 83% with it on
     media.ts           frames as BYTES on disk (~/.ds-sales-agent/frames), because the
                        CDN URL is what expires — and the refresh the old design relied on
                        never ran. Saved for every new post on every channel; idempotent
@@ -2677,11 +3572,32 @@ src/
   outreach/
     pacing.ts          PURE. When may the fleet send, and when must it STOP. Active
                        hours, the minimum gap, the circuit breaker
+    rotation.ts        PURE ring. `fleetRingOrder` is the ring for a recipient in NO group —
+                       the normal case, since `Category` has never had a row. Ordered cohort
+                       then handle, and every member enabled: ability is the caller's
+                       `unavailable` map, re-asked at delivery by gate.ts
     cohorts.ts         PURE ladder + its DB reader. Phase 9: a group of accounts sends
                        for 14 days before the next may send. ONE stored column; the soak
                        is DERIVED, and `live` means CAN SEND (session + ACTIVE), not an
                        arming bit. `mayArmAccount` keeps its name and is now the ladder's
                        ONLY enforcer — gate.ts calls it at delivery. Do not delete it
+    availability.ts    WHICH ACCOUNTS ROTATION MUST SKIP — one reader, three callers (planner,
+                       dashboard, ig:dedupe-drafts), so a page can never name an account the
+                       planner will not use. Every fact is MACHINE-INDEPENDENT: there is no
+                       `profileStatus` read, because the host that drafts has no Chrome
+                       profiles at all and a filesystem answer there stops drafting fleet-wide
+    usableName.ts      PURE. May this stored displayName be put in front of a prospect? The
+                       obvious normalise-and-compare rule matches 47 of 68 live BRAND rows
+                       including "Amazon MGM Studios" — this one refuses only a name with no
+                       whitespace, all lower case, that normalises to the handle
+    duplicateDrafts.ts PURE. Which of several drafts to one recipient survives. Reuses
+                       `nextSender` on a ring narrowed to the senders that actually hold a
+                       draft, so the keeper is always a draft that exists. NEVER discards the
+                       last one — including when no account can send today
+    discard.ts         `discardAttempt` — the ONE writer that turns a waiting draft into
+                       SKIPPED. Extracted from the `skipAttempt` server action, which a
+                       terminal cannot reach. What must not drift is the status guard INSIDE
+                       the update: applied to a SENT row it would erase send history
     routes.ts          PURE. The ONE definition of which sender→target routes may EXIST,
                        since a pair row is a live route (2026-08-08). Never self-pair,
                        never pair one of OUR OWN PAGES to another — `addTarget` on a
@@ -2763,7 +3679,10 @@ src/
   lib/session-cookie.ts  just the cookie name. Imports NOTHING — middleware runs on Edge
   lib/safe-next.ts     sanitises ?next= . Rejects //evil.com, the case that gets missed
   worker/scheduler.ts  the watch itself: 4 IST slots, catch-up-on-boot, heartbeat — plus
-                       DETECT-THEN-DRAFT every 15 min (2026-08-11). Drafting takes the
+                       DETECT-then-DRAFT every 15 min (2026-08-11) — except the DRAFT half
+                       is gated on `autopilotEnabled` and therefore NEVER RUNS today, while
+                       `runSlot` drafts unconditionally. The two paths disagree; see
+                       finding 2 at the top of CLAUDE.md. Drafting takes the
                        SLOT LOCK: `noOverlap` is per TASK, and minute 0 is always a
                        multiple of 15, so the two collide four times a day by construction
   worker/index.ts      `pnpm worker` — the same scheduler as its own process
@@ -2807,7 +3726,26 @@ src/
                        "needs a sign-in" is simply wrong about it
     paid-posts/        **Paid posts** — the verdicts as a TABLE with a link per post
                        (`postUrl` in lib/urls.ts), and the brands panel.
-                       UNCLASSIFIED is counted separately because it means NOT JUDGED
+                       UNCLASSIFIED is counted separately because it means NOT JUDGED.
+                       The Posted column carries the IST HOUR — `12 Aug (16:42)` — because
+                       @viralbhayani published 84 posts before 09:00 IST over 14 days and
+                       ZERO were paid, so the hour is half the judgement. A post found far
+                       behind publication says "found 15h later", and ONLY past an hour:
+                       the measured split is bimodal (p50 8.2 min, and every outlier over
+                       12h), so lateness means the WATCH had a gap, not a slow pass
+    paid-posts/review.tsx    the queue, and a FIVE-SECOND window before a label is written
+                       at all. The write is DEFERRED, never written-then-reversed — a
+                       compensating delete would leave an audit trail saying a person
+                       labelled and unlabelled a post, which is not what happened. It
+                       flushes on unmount and on `pagehide`, because a label silently lost
+                       because someone changed page is worse than one that lands. Verified
+                       in a real browser in all three directions, with the writes
+                       intercepted so no test could mint a `verdictSource: 'human'` verdict
+    paid-posts/settled.tsx   **the release**, and the undo is worthless without it: every
+                       human answer, with the footage shown UNCONDITIONALLY, and one
+                       control to change it. 21 posts — including both founding cases —
+                       were labelled `paid=false` by a bulk CLI in August and were
+                       reachable from no screen at all
     rules/             **Rules** — one line per rule, values IMPORTED from the modules
                        that enforce them (pacing.ts, env, Setting rows, gate.ts), with
                        STOP_LABELS total over RESEND_BLOCKS so a new stop cannot be
@@ -2841,7 +3779,32 @@ src/
   scripts/layout.ts    `pnpm ig:layout` — opens every page in a REAL BROWSER and asserts
                        geometry, that every asset loads, and that the stylesheet APPLIES.
                        Presence is not layout, and a 200 is not a stylesheet
-tests/                 1,131 tests, fixtures captured from live posts
+tests/                 1,281 tests, fixtures captured from live posts
+tests/rotation-fleet.test.ts  the PRODUCER of a ring, against a real database — `rotation.test.ts`
+                       covers `nextSender` thoroughly and is handed a ring as a fixture, so the
+                       whole suite asserted what rotation DOES with one and nothing asserted
+                       that anything ever BUILDS one. Nothing did. Mutation-tested: deleting the
+                       cohort+handle sort left all 19 green until the fixtures were inserted in
+                       the OPPOSITE order to the answer they expect
+tests/usable-name.test.ts  both tables are the REAL live display names, and the second — the
+                       names that must SURVIVE — is the half carrying the weight: the naive rule
+                       fails 15 of these
+tests/person-category.test.ts  every category string is one Instagram actually returned. "Film
+                       Director" never matched a set containing 'director'
+tests/hook-staleness.test.ts  a frozen body's dated claim, in both directions, including the one
+                       that must fail closed: a claim we can no longer date is STALE, not safe
+tests/tag-evidence.test.ts  the tag block both ways, the injection payloads a handle could
+                       carry, and a SOURCE GREP asserting every `classifyCaption` call
+                       passes tags and every `judgeWithFrame` gets the same ones — because
+                       the failure mode is a call site nobody has written yet, and because
+                       tags reaching one of the two calls would be blamed on the FOOTAGE.
+                       Mutation-tested both ways; its first version matched ZERO calls in
+                       `judge.ts` and passed vacuously, which is why it counts them now
+tests/evidence-refresh.test.ts  a re-observation that changes nothing must write NOTHING —
+                       the negative direction carries the weight here, because this runs
+                       over every post in the window every 15 minutes
+tests/posted-label.test.ts  the IST hour, and `null` rather than a number for the 14 live
+                       rows whose `detectedAt` PRECEDES their `postedAt`
 tests/frame-signal.test.ts  the footage's permission table both ways, a sweep proving no
                        input combination ever demotes, and the injection payloads that
                        survived an earlier sanitiser (including a fake JSON verdict)
@@ -2872,6 +3835,9 @@ tests/identity.test.ts "who is this profile" in both directions, from the REAL m
 docs/RUNBOOK.md        operator guide for macOS and Windows
 docs/AUDIT-2026-07-31.md  38-finding end-to-end audit, and what was done about it
 docs/HANDOFF.md        current state + how to pick this up in a new session
+docs/specs/2026-08-13-handoff.md  what the 13 Aug repair session finished, what it left, the
+                       ORDER to do the rest in, and the prompt for the next session. Read it
+                       with the plan beside it — it corrects three of the plan's numbers
 docs/PIPELINE.md       the pipeline diagram: its URL, and the rule that it must be
                        updated whenever the flow of operations changes
 docs/specs/            design docs and plans
@@ -2898,10 +3864,12 @@ docs/specs/            design docs and plans
 | `pnpm ig:thread <sender> <target>` | open the real conversation and read it back. `--record-reply` records a detected reply; `--debug` dumps the DOM when the layout has drifted |
 | `pnpm ig:replies` | check every open conversation for replies now — the same function the 11:00 and 20:00 slots run |
 | `pnpm ig:classify` | classify stored posts. **Dry run by default**; `--run` spends money, `--limit N` bounds it, `--channel <handle>` narrows it |
-| `pnpm ig:accuracy` | measure the classifier against M.O.M's disclosed ground truth. Run it after ANY prompt edit |
+| `pnpm ig:accuracy` | measure the classifier against EVERY label the system holds, PER CHANNEL, saying **unmeasured** where a channel has none. Run it after ANY prompt edit — and with **`--repeat 3`**, because the classifier is not deterministic and one run swings recall 95-100%. `--no-frames` and `--tags` are the two input controls; **both default to production** (frames on, tags off), because a harness whose default disagrees with production measures a pipeline that does not exist. It now prints how many posts carried tags at all — 4 of 79, which BOUNDS what it can say about that input |
 | `pnpm ig:brands` | resolve @mentions in paid posts to messageable brand accounts. **Dry run by default.** **RUN THIS FROM A HOME-IP MACHINE, NOT THE SERVER (2026-08-12):** Instagram 429s the Linode on the profile endpoint and answers the Mac, so `autoResolveBrands` on the server halts on its first lookup every pass and creates nothing — measured, 59 targets from the Mac against 0 from the server, same code. Detection is unaffected; only this endpoint is throttled. See the hosting section. `--stuck` re-offers rows the model has never seen; `--reset <handles>` clears a bad verdict so it can be re-asked. It no longer prints "pairs DISABLED": false since the per-route switch went, and printed at the moment an operator decides to create prospects |
 | `pnpm ig:enrich` | what we can still learn about handles Instagram will not classify. Facts only, NEVER a verdict. Dry run by default |
 | `pnpm ig:dispatch` | what the paced dispatcher would do, and why nothing has gone out. **Reports only**; `--run` delivers one message now |
+| `pnpm ig:prune-pairs` | remove routes belonging to accounts outside the rotation. **Dry run by default.** `mayPrunePair` refuses any pair carrying an attempt of ANY status, and the delete carries that condition itself — `OutreachAttempt.pairId` is `ON DELETE CASCADE`, so a bad delete erases the record of messages real people received. MEASURED: 72 such routes, 0 with history. **RUN IT ONLY AFTER THE routes.ts FIX IS DEPLOYED**, or the server's next brand discovery recreates them |
+| `pnpm ig:dedupe-drafts` | one waiting draft per recipient, keeping whichever sender rotation would choose. **Dry run by default.** Discards through `discardAttempt` — the ONE writer, whose status guard is inside the update — so each removal is audited and a SENT row can never be touched. RUN IT ONLY AFTER THE ROTATION FIX IS DEPLOYED TO THE MACHINE THAT DRAFTS, or the next slot recreates every duplicate and the only lasting effect is the audit trail |
 | `pnpm ig:import <file>` | import a prospect list. **Dry run by default**; `--run` creates them unwatched — but their ROUTES ARE LIVE since 2026-08-08, so importing sixty prospects is no longer inert. The dry run is the brake |
 | `pnpm ig:prune` | free disposable browser cache from the sending profiles. **Dry run by default**; never touches `Cookies` or `Local State`, refuses if Chrome is open, verifies by hash afterwards |
 | `pnpm ig:generate` | write a real message with the model and print it, with the quality gate's verdict. **Dry run by default** — `--run` spends about $0.0001 a message. Writes nothing, sends nothing |
@@ -2909,7 +3877,7 @@ docs/specs/            design docs and plans
 | `pnpm ig:ocr` | read the text off saved cover frames and print it. **FREE and the default does real work** — Apple Vision runs locally, no API. `--reclassify` re-judges posts whose footage has text (~$0.00002 each) and may only escalate ORGANIC → REVIEW. `--shortcode X` for one post |
 | `pnpm ig:frames` | how many cover frames are on disk; `--capture` downloads the ones whose URL is still alive. Costs nothing but bandwidth — **run it generously, URLs expire and judging can wait** |
 | `pnpm agent status` | what is actually blocking each account. **Reshaped 2026-08-08**: it used to report `autopilot off` from `autoSendEnabled`, a bit no guard reads — so an operator could run the command naming that refusal, watch it succeed, and see nothing change. It now asks each stop of the thing that ENFORCES it: the fleet switch via `getSettings`, a **usable** session via `sessionUsable` (not `sessionPath` — a path in the database is not a live session), and the cohort ladder via the same `mayArmAccount` the gate calls at delivery, which was previously invisible from the CLI. `pnpm agent pause`/`resume` unchanged; **`pnpm agent autopilot on\|off` is DELETED** |
-| `pnpm ig:layout` | open every dashboard page in a real browser and assert GEOMETRY, that every asset loads, and that the stylesheet applies. Needs `DS_LAYOUT_TOKEN` set to a session cookie value. Run after ANY UI change — presence, 200s and chunk-loading all passed once on a page whose layout was destroyed |
+| `pnpm ig:layout` | open every dashboard page in a real browser and assert GEOMETRY, that every asset loads, that the stylesheet applies, and — since 2026-08-13 — a **QUERY BUDGET** per page (start the server with `DS_QUERY_COUNT=1`; the check FAILS rather than skips if counting is off). It found `/` issuing 559 queries on its first run. Needs `DS_LAYOUT_TOKEN` set to a session cookie value. Run after ANY UI change — presence, 200s and chunk-loading all passed once on a page whose layout was destroyed |
 | `pnpm agent:device` | **the sending agent for YOUR machine.** Reads the shared database, sends from the Chrome profiles here, and reports this device's presence. Refuses to start when `SEND_ENABLED=false`, which is how the server is configured |
 | `bash scripts/install-watch.sh` | keep that agent alive across crashes and logins (`install`/`status`/`uninstall`). `DS_WATCH_MODE=worker` for a laptop-only install that also owns the schedule |
 | `bash scripts/install-tunnel.sh` | keep the SSH tunnel to the server's Postgres up. `status` asks whether the PORT answers, which is not the same question as whether launchd registered the job |

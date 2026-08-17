@@ -64,6 +64,27 @@ export interface Classification {
 }
 
 /**
+ * Structural facts about a post, beyond its words — who it TAGS and who co-authored it.
+ *
+ * Declared here rather than taking `FeedPost` directly, because `feed.ts` imports this
+ * module for `EnrichedPost` and pointing the dependency back the other way would be a
+ * cycle. `FeedPost` satisfies this structurally, so the pipeline passes one unchanged.
+ *
+ * Every field is OPTIONAL, and that is the honest shape: a detector may be handed a post
+ * from a source that never carried tags (the classify backfill reads stored rows), and
+ * "we do not have this" must stay distinguishable from "there were none". `tagsForPrompt`
+ * treats both as nothing to report, which is the same answer for a different reason.
+ */
+export interface PostTagFacts {
+  /** Accounts tagged IN the media, not mentioned in the caption. */
+  taggedAccounts?: readonly string[]
+  /** Co-authors of a "collab" post — both parties opted in. */
+  collabHandles?: readonly string[]
+  /** Instagram's own Paid Partnership label. */
+  isPaidPartnership?: boolean
+}
+
+/**
  * One detector per target channel, because the two channels behave completely
  * differently: MOM discloses paid posts with #Collaboration, Viral Bhayani never
  * discloses at all. A single shared ruleset would either miss MOM's signal or
@@ -79,7 +100,7 @@ export interface ChannelDetector {
    * detectors simply return; the cost of the wider signature is one `await` at the
    * single call site in `pipeline.ts`.
    */
-  classify(post: EnrichedPost): Promise<Classification> | Classification
+  classify(post: EnrichedPost & PostTagFacts): Promise<Classification> | Classification
 
   /**
    * Is this detector actually able to do its job right now?

@@ -25,6 +25,7 @@ import { withSendLock, DISPATCH_PAUSE_KEY, dispatchTick } from '@/outreach/dispa
 import { importProspects, type ImportOutcome } from '@/outreach/importProspects'
 import { routeAllowed, fleetHandles } from '@/outreach/routes'
 import { ensureCategory, addTargetToCategory } from '@/outreach/categories'
+import { discardAttempt } from '@/outreach/discard'
 import { log } from '@/lib/logger'
 import { validatePersona } from '@/outreach/render'
 import { requireOperator } from '@/lib/session'
@@ -496,13 +497,63 @@ export async function labelPost(shortcode: string, wasPaid: boolean): Promise<Mu
       verdictSource: 'human',
     },
   })
+  /**
+   * ── AND THE CASCADE, WHICH SETTING THE VERDICT DOES NOT COMPLETE ─────────
+   *
+   * Flipping `verdict` to ORGANIC reaches five consumers automatically, because every one of
+   * them queries `verdict: 'CAMPAIGN'` — `unusedCampaignCount`, `pickHook`, `autoResolve`,
+   * the hook renderer and the nav badge. That is the easy half and it needs no code.
+   *
+   * What it does NOT reach is `TargetAccount.discoveredFromCampaignId`. A company becomes a
+   * prospect BECAUSE of a paid post, and saying "this post was ordinary" says the reason
+   * that company is in our database was wrong — but the row sits there, messageable, and
+   * nothing looks back at the post that created it.
+   *
+   * So a dismissal also retires any prospect whose ONLY provenance was this post AND which
+   * has never been written to. Both conditions matter:
+   *
+   *   never written to   a company that already received a message stays, because
+   *                      `optedOut` is about future contact and the send history is the
+   *                      record of what a real person actually got.
+   *   only provenance    `discoveredFromCampaignId` holds ONE id, so a company found in
+   *                      this post is a company found here and nowhere else. If that ever
+   *                      becomes a list, this has to count the survivors instead.
+   *
+   * Retired rather than deleted, for the reason `removeTarget` documents: retirement is a
+   * flag on the target that `governor.ts` and `gate.ts` both check, and a promise carried by
+   * a deleted row would survive exactly one pass of `ensureFleetPairs`.
+   */
+  let retired = 0
+  if (!wasPaid) {
+    const orphaned = await prisma.targetAccount.findMany({
+      where: { discoveredFromCampaignId: post.id, optedOut: false, attempts: { none: {} } },
+      select: { id: true, handle: true },
+    })
+    if (orphaned.length > 0) {
+      const r = await prisma.targetAccount.updateMany({
+        where: { id: { in: orphaned.map((o) => o.id) } },
+        data: { optedOut: true },
+      })
+      retired = r.count
+      await audit(
+        user.email,
+        'target.retired.with.post',
+        `TargetAccount:${orphaned.map((o) => o.handle).join(',')}`,
+        `the post they were found in (${shortcode}) was marked ordinary`,
+      )
+    }
+  }
+
   await audit(user.email, 'post.labelled', `DetectedCampaign:${shortcode}`, `paid=${wasPaid} @${post.target.handle}`)
   revalidatePath('/paid-posts')
+  revalidatePath('/targets')
   return {
     ok: true,
     message: wasPaid
       ? `Recorded as paid. @${post.target.handle} is a live prospect for this placement.`
-      : `Recorded as an ordinary post. It will not come back to this queue.`,
+      : retired > 0
+        ? `Marked ordinary, and ${retired} company${retired === 1 ? '' : 'ies'} found only in this post will not be messaged.`
+        : `Marked ordinary.`,
   }
 }
 
@@ -898,7 +949,14 @@ export async function addSender(handleRaw: string, displayNameRaw: string): Prom
       senderHandle: handle,
       targetHandle: t.handle,
       ourHandles,
+      // From the row this action just created, never a literal: `addSender` sets
+      // `fleetMember: true`, and a hardcoded `true` here would keep creating routes on the
+      // day that default changes.
+      senderIsFleetMember: sender.fleetMember,
       targetOptedOut: t.optedOut,
+      // A new sender gets a route to every PROSPECT and to no watched publisher. Without
+      // this a fresh account is wired to both competitors on the day it is added.
+      targetIsWatchOnly: t.role === 'WATCH',
     }),
   )
   await prisma.outreachPair.createMany({
@@ -981,18 +1039,33 @@ export async function removeSender(handle: string): Promise<MutationResult> {
 /**
  * Add a channel to watch.
  *
- * `passthrough` is the only honest default detector: `mom` is a hand-written rule
- * set for one specific publisher's `#Collaboration` convention, and applying it to
- * an arbitrary channel would silently mislabel posts. Passthrough records every post
- * and classifies nothing, which is what we can actually stand behind.
+ * The detector is `semantic` — see the note at the `create` below for why that changed on
+ * 2026-08-13 and why `passthrough` was right until it wasn't.
  *
- * Pairs start DISABLED, for the same reason as a new sender: adding something must
- * never be the same act as starting to message it.
+ * PAIRS ARE CREATED LIVE, NOT DISABLED. This docblock said the opposite until 2026-08-13,
+ * three months after the per-route chip was deleted: *"Pairs start DISABLED, for the same
+ * reason as a new sender: adding something must never be the same act as starting to
+ * message it."* Since 2026-08-08 a pair row IS a live route, so that sentence described a
+ * brake that no longer exists — on the one action that creates a recipient.
+ *
+ * The promise it made is still kept, by different machinery: Autopilot (one switch, off),
+ * the recipient-side caps, the 7-day cooldown and the cohort ladder. What is NOT kept any
+ * more is per-row inertness, and anyone reading this should know which of the two they have.
  */
 export async function addTarget(
   handleRaw: string,
   displayNameRaw: string,
   greetingRaw: string,
+  /**
+   * WHICH KIND OF TARGET — and it is REQUIRED, with no default, on purpose.
+   *
+   * The two kinds do opposite things: a WATCH row has its feed read forever and is never
+   * written to; a PROSPECT is written to and never read. Defaulting either way makes one of
+   * them the thing you get by not choosing, and this action is the one place a person adds
+   * a recipient by hand. `RenderTarget.kind` was made required for exactly this reason and
+   * the compiler then named all 24 call sites.
+   */
+  role: 'WATCH' | 'PROSPECT',
 ): Promise<MutationResult> {
   const user = await requireOperator()
   const handle = handleRaw.trim().replace(/^@/, '').toLowerCase()
@@ -1012,8 +1085,49 @@ export async function addTarget(
   const exists = await handleExists(handle)
   if (exists === 'missing') return { ok: false, message: `@${handle} does not exist on Instagram.` }
 
+  /**
+   * A NEW CHANNEL IS JUDGED BY `semantic`, NOT `passthrough` — changed 2026-08-13.
+   *
+   * `passthrough` stores posts and judges NONE of them, and says so honestly
+   * (`readiness()`: "this channel has no classifier set up"). It was the right default when
+   * the only alternative was `mom`, a hand-written rule set for ONE publisher's
+   * `#Collaboration` convention — applying that to an arbitrary channel would silently
+   * mislabel posts, which is worse than judging nothing.
+   *
+   * It is the wrong default now, because `semantic` is general and measured: 95-97% correct
+   * at 100% recall on the one channel with ground truth. What `passthrough` actually
+   * produced was a channel added through this form storing posts forever, finding zero paid
+   * campaigns, and rendering a card that says "not classified" — the failure the operator
+   * would read as "they do no paid work".
+   *
+   * Cost is a fraction of a cent a post: MEASURED $0.0000239 with a 94% prompt-cache hit,
+   * and 2.7 cents to classify the entire corpus. The add form says so rather than leaving
+   * a spend to be discovered.
+   *
+   * `passthrough` stays reachable and is still the right answer for a channel we own and do
+   * not want judged — it is simply no longer what you get by not choosing.
+   */
   const target = await prisma.targetAccount.create({
-    data: { handle, displayName, contactFirstName: greeting, kind: 'CHANNEL', detectorKey: 'passthrough' },
+    data: {
+      handle,
+      displayName,
+      contactFirstName: greeting,
+      kind: 'CHANNEL',
+      role,
+      /**
+       * A WATCH row is added to be judged, so it gets the real classifier. A PROSPECT is
+       * never read at all, so pointing one at a detector would fetch a feed every pass
+       * forever for a row nobody classifies — the same reasoning as `brandTarget.ts`.
+       */
+      detectorKey: role === 'WATCH' ? 'semantic' : 'passthrough',
+      /**
+       * And the other half of the same decision: watching is what a WATCH row is FOR, and a
+       * prospect's feed is not read. Explicit against a schema default of TRUE, because a
+       * hand-added prospect quietly enrolling itself into detection is how a 60-row list
+       * becomes a thousand requests a day.
+       */
+      watchEnabled: role === 'WATCH',
+    },
   })
 
   /**
@@ -1029,7 +1143,13 @@ export async function addTarget(
    *
    * Filtered rather than delegated to `ensureFleetPairs()`: this creates rows for ONE new
    * target across every sender, where `ensureFleetPairs` is scoped to `fleetMember: true`.
-   * Calling it here would silently stop creating the burner's rehearsal routes.
+   *
+   * THIS COMMENT USED TO END *"Calling it here would silently stop creating the burner's
+   * rehearsal routes"*, defending an unfiltered read as deliberate. It was, and it was
+   * wrong: MEASURED 2026-08-13, the burner held **72** pair rows created exactly this way,
+   * and rehearsal never needed them — `prepareOnDemandSend` creates the one pair it wants
+   * when a person picks both ends. The fleet question is now asked of `routes.ts` like
+   * every other exclusion, so the read stays unfiltered and the RULE does the filtering.
    */
   const senders = await prisma.senderAccount.findMany()
   const ourHandles = await fleetHandles(prisma)
@@ -1038,7 +1158,11 @@ export async function addTarget(
       senderHandle: s.handle,
       targetHandle: handle,
       ourHandles,
+      senderIsFleetMember: s.fleetMember,
       targetOptedOut: target.optedOut,
+      // A channel added to be WATCHED is never a recipient. `addTarget` is the one action
+      // that creates a watched publisher, so this is where the two types are decided.
+      targetIsWatchOnly: target.role === 'WATCH',
     }),
   )
   await prisma.outreachPair.createMany({
@@ -1131,44 +1255,24 @@ export async function removeTarget(handle: string): Promise<MutationResult> {
  * `OutreachPair.enabled` survives in the schema and is still read; nothing on a page sets it.
  */
 
-/** Discard a queued message without sending. Does not start the cooldown. */
+/**
+ * Discard a queued message without sending. Does not start the cooldown.
+ *
+ * The claim, the status guard and the audit row live in `src/outreach/discard.ts` —
+ * ONE writer, shared with `pnpm ig:dedupe-drafts`, which had to discard 15 rows from a
+ * terminal and cannot reach a server action. What must not drift between the two is the
+ * status guard inside the update; the docblock there says why.
+ */
 export async function skipAttempt(attemptId: string, reason: string): Promise<MutationResult> {
   const user = await requireOperator()
-  /**
-   * Only a message that is still waiting may be discarded.
-   *
-   * This had no status check at all. Applied to a SENT attempt it erased the record of
-   * a message a real person received — and that record is what `touchesSoFar`, the
-   * spacing rule and the new-material rule are computed from, so the system would then
-   * be free to write to someone it had already written to. That is exactly the outcome
-   * the "removal never deletes send history" rule exists to prevent, reachable in one
-   * call. Applied to a SENDING attempt it corrupted the state of a live browser send.
-   *
-   * Conditional updateMany rather than read-then-write, for the same reason `sendNow`
-   * needed it: a check and a write in separate statements is not a guard.
-   */
-  const claimed = await prisma.outreachAttempt.updateMany({
-    where: { id: attemptId, status: { in: ['READY', 'QUEUED'] } },
-    data: { status: 'SKIPPED', error: reason || 'skipped by operator' },
+  const result = await discardAttempt({
+    attemptId,
+    reason: reason || 'skipped by operator',
+    actor: user.email,
   })
-
-  if (claimed.count === 0) {
-    const now = await prisma.outreachAttempt.findUnique({
-      where: { id: attemptId },
-      select: { status: true },
-    })
-    return {
-      ok: false,
-      message:
-        now?.status === 'SENDING'
-          ? 'That message is being sent right now — too late to discard.'
-          : `That message is already ${(now?.status ?? 'gone').toLowerCase()} and cannot be discarded.`,
-    }
-  }
-
-  await audit(user.email, 'attempt.skipped', `OutreachAttempt:${attemptId}`, reason)
+  if (!result.ok) return result
   revalidatePath('/')
-  return { ok: true, message: 'Discarded.' }
+  return result
 }
 
 /**
@@ -1500,11 +1604,38 @@ export async function setTargetCategory(handle: string, categoryName: string): P
   if (name === '') {
     await prisma.categoryTarget.deleteMany({ where: { targetId: target.id } })
     await audit(user.email, 'target.category.cleared', `TargetAccount:${handle}`)
-    revalidatePath('/prospects')
-    return { ok: true, message: `@${handle} is no longer in a rotation group.` }
+    revalidatePath('/targets')
+    return {
+      ok: true,
+      message: `@${handle} is no longer in a rotation group — the whole fleet takes turns writing to them again.`,
+    }
   }
 
   const cat = await ensureCategory(name)
+
+  /**
+   * A GROUP WITH NO SENDERS SILENCES THIS RECIPIENT, so it is refused.
+   *
+   * Since 2026-08-13 a recipient in NO group is rotated through the fleet; a recipient in a
+   * group uses that group's ring, and an EMPTY ring returns `empty-ring` — nothing is ever
+   * written to them again. That is a real footgun and it is new: before the fleet fallback,
+   * naming an empty group changed nothing at all, because rotation was inert either way.
+   *
+   * Refusing is right rather than clever. The whole reason the group is being set is to
+   * NARROW who writes; narrowing to nobody is never what was meant, and the failure would be
+   * invisible — a recipient that quietly stops receiving drafts looks exactly like a
+   * recipient the spacing rules are holding back.
+   */
+  const ringSize = await prisma.categorySender.count({ where: { categoryId: cat.id, enabled: true } })
+  if (ringSize === 0) {
+    return {
+      ok: false,
+      message:
+        `${name} has no sending accounts in it, so putting @${handle} there would stop anything ` +
+        `being written to them at all. Add accounts to the group first.`,
+    }
+  }
+
   /**
    * One category per target, so replacing means clearing first.
    *
@@ -1516,6 +1647,9 @@ export async function setTargetCategory(handle: string, categoryName: string): P
   await prisma.categoryTarget.deleteMany({ where: { targetId: target.id } })
   await addTargetToCategory(cat.id, target.id)
   await audit(user.email, 'target.category.set', `TargetAccount:${handle}`, name)
-  revalidatePath('/prospects')
-  return { ok: true, message: `@${handle} is in ${name}. Nothing is switched on by that on its own.` }
+  revalidatePath('/targets')
+  return {
+    ok: true,
+    message: `@${handle} is in ${name}. Only that group's ${ringSize} account${ringSize === 1 ? '' : 's'} will write to them now.`,
+  }
 }

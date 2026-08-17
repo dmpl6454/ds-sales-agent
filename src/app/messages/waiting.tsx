@@ -28,7 +28,21 @@ import type { SendVerdict, WaitingMessage } from '../view-model/messages-page'
  * reached the database once that eighteen passing assertions missed, and one glance at a
  * rendered message caught both.
  */
-export function WaitingList({ waiting, autopilotOn }: { waiting: WaitingMessage[]; autopilotOn: boolean }) {
+export function WaitingList({
+  waiting,
+  total,
+  autopilotOn,
+}: {
+  waiting: WaitingMessage[]
+  /**
+   * How many are waiting altogether. The list is capped — each rendered draft costs a real
+   * gate call — so `waiting.length` is a page size, not a queue size, and a heading built
+   * from it would under-report as the queue grew. That is the "counted from 1 of 5
+   * channels" failure in a different place.
+   */
+  total: number
+  autopilotOn: boolean
+}) {
   if (waiting.length === 0) {
     return (
       <section className="group">
@@ -43,7 +57,13 @@ export function WaitingList({ waiting, autopilotOn }: { waiting: WaitingMessage[
 
   return (
     <section className="group">
-      <h2>Waiting for you ({waiting.length})</h2>
+      <h2>Waiting for you ({total})</h2>
+      {total > waiting.length ? (
+        <p className="group-blurb">
+          Showing the {waiting.length} that have waited longest. Each one is checked against the real send rules as the
+          page loads, so the list is capped rather than letting the page slow down as the queue grows.
+        </p>
+      ) : null}
       <div className="group-rows">
         {waiting.map((m) => (
           <WaitingCard key={m.id} m={m} autopilotOn={autopilotOn} />
@@ -192,6 +212,16 @@ function WaitingCard({ m, autopilotOn }: { m: WaitingMessage; autopilotOn: boole
         The sentence is the GATE'S OWN. Only the link is ours. See `remedy.ts`.
       */}
       {!m.inFlight && <Refusal send={m.send} auto={m.auto} autopilotOn={autopilotOn} />}
+
+      {/*
+        WHOSE TURN IT IS. The sentence comes from `whoseTurn` in the view model — the same
+        function the planner asks — so this can never name an account the planner will not use.
+
+        It is shown on EVERY draft, not only the ones out of turn, because the thing that went
+        unnoticed for weeks was rotation not happening at all. A line that appears only when
+        something is wrong cannot tell you that the mechanism is working.
+      */}
+      <p className={m.rotation.isTurn ? 'reason' : 'reason bad'}>{m.rotation.sentence}</p>
 
       {editing ? (
         <>

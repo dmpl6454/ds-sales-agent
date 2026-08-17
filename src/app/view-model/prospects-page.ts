@@ -16,6 +16,14 @@ import { operatorName } from '@/outreach/render'
  */
 import { profileStatus } from '@/outreach/browser/profile'
 import { sessionUsable } from '@/outreach/sessionHealth'
+import { describeRing, whoseTurnForMany } from '@/outreach/categories'
+import { readSenderAvailability } from '@/outreach/availability'
+// PURE, and the same function `plan.ts` asks. Imported rather than mirrored: a page that
+// re-derives a guard its own way is how a dashboard comes to disagree with the enforcer.
+import { checkRecipientIsNotAPerson } from '@/outreach/brandGuards'
+import { getDetector } from '@/detection/detectors'
+import { fleetHandles } from '@/outreach/routes'
+import { DETECT_INTERVAL_MINUTES } from '@/detection/cadence'
 
 /**
  * The `/prospects` page: everyone we might write to, and what is actually switched on.
@@ -45,8 +53,50 @@ export interface ProspectRow {
   kind: string
   /** Are their posts read four times a day? Separate from whether they may be messaged. */
   watchEnabled: boolean
-  /** The rotation group whose senders take turns writing to them. */
+  /** The rotation group whose senders take turns writing to them. Null means the fleet ring. */
   category: string | null
+  /**
+   * WHICH ACCOUNT WRITES TO THEM NEXT — one sentence, from `whoseTurn`.
+   *
+   * The row used to read *"Messaged automatically by rotation while Autopilot is on (N
+   * accounts able to send)"*, and every word of that was true except the one that mattered:
+   * rotation was not happening. `whoseTurn` returned null for every recipient, so all N
+   * accounts wrote, not one in turn. A count of accounts ABLE to send reads as a measure of
+   * capacity; what a reader needs is the name of the account that will actually write.
+   *
+   * Composed in the view model from the same function the planner asks, so this row cannot
+   * name an account the planner will not use.
+   */
+  nextSenderSentence: string
+  /**
+   * Will a message to them actually be written?
+   *
+   * The row appends "N accounts in the fleet can send right now" after the sentence, and
+   * that suffix is only meaningful when something IS going to be written. For the 8 BRAND
+   * rows that are people, the sentence is the planner's refusal and a fleet-capacity figure
+   * beside it would put the promise straight back.
+   */
+  nextSenderWillWrite: boolean
+  /**
+   * NOTHING IS JUDGING THIS CHANNEL'S POSTS — from the detector's own `readiness()`.
+   *
+   * Never a `detectorKey === 'passthrough'` comparison. CLAUDE.md records that exact
+   * shortcut rendering "Paid campaigns found: 0" for @viralbhayani the day its detector
+   * changed, which is the misleading zero the flag exists to prevent. The detector states
+   * whether it can judge; this asks it.
+   *
+   * Null when the channel is judged, or when it is not a channel at all.
+   */
+  unjudgedNote: string | null
+  /**
+   * ONE OF OUR OWN PAGES — the only posts where we know what was actually paid for.
+   *
+   * Watching for both was switched off on 2026-08-13 at 13:41 IST. That is a legitimate cost
+   * saving and it has a consequence worth CHOOSING rather than discovering: these are the
+   * only channels that can produce ground truth beyond M.O.M's `#Collaboration` hashtag, and
+   * with reading off that labelled set stops growing. Surfaced here so it is a decision.
+   */
+  groundTruthNote: string | null
   /*
    * `totalPairs` went with the chips. It existed only as the denominator of "2 of 8 routes on",
    * and once nothing can change the numerator the pair count is not a fact about this prospect
@@ -93,6 +143,17 @@ export interface ProspectsPageView {
    * a prospect list lands, against an anonymous endpoint whose only risk is rate limiting.
    */
   requestsPerSlot: number
+  /**
+   * THE SAME COST AT THE CADENCE THAT ACTUALLY RUNS.
+   *
+   * `requestsPerSlot` was computed here and rendered NOWHERE — CLAUDE.md claims "/targets
+   * shows what watching currently costs in requests per slot" and it did not. A per-slot
+   * figure is also the wrong unit now: detection left the four IST slots for its own
+   * 15-minute clock on 2026-08-07, so "16 requests a slot" understates the real load 24×.
+   * The risk being managed is a 429 that blinds detection entirely, and that risk is a
+   * function of requests per DAY against an undocumented anonymous endpoint.
+   */
+  requestsPerDay: number
 }
 
 /** Pages the detection pipeline reads per channel per slot. Mirrors `MAX_PAGES` there. */
@@ -162,17 +223,123 @@ export async function buildProspectsPage(): Promise<ProspectsPageView> {
   const deliveredBy = new Map(deliveredRows.map((r) => [r.targetId, r._count._all]))
   const repliedSet = new Set(repliedRows.map((r) => r.targetId))
 
-  const prospects: ProspectRow[] = targets.map((t) => ({
+  /**
+   * Whose turn it is, for every recipient at once.
+   *
+   * The batch loader, not `whoseTurn` in a loop: at 72 targets that would be 216 queries at
+   * ~30 ms across the tunnel, which is the unbounded N+1 that made `buildBrandsPanel` a
+   * ten-second page. Four queries here regardless of the count.
+   */
+  const turns = await whoseTurnForMany(
+    targets.map((t) => t.id),
+    await readSenderAvailability(),
+  )
+
+  /** Which handles are our own sending pages — the ground-truth set. */
+  const ourHandles = await fleetHandles(prisma)
+
+  /**
+   * The sentence. Written HERE so `list.tsx` — a `'use client'` module — renders a string
+   * and imports nothing: a value import reaching `categories.ts` would pull `@/lib/db` into
+   * the browser bundle, which is the trace that once returned HTTP 500 on every route.
+   *
+   * Retired is not handled here; the row states that first and absolutely, because
+   * `optedOut` is the one promise this UI has to keep through every other feature.
+   */
+  function nextSenderSentence(t: {
+    id: string
+    kind: string
+    handle: string
+    brandCategory: string | null
+  }): { sentence: string; willWrite: boolean } {
+    /**
+     * ── THE PLANNER'S OWN REFUSAL COMES FIRST, OR THIS ROW PROMISES A MESSAGE THAT
+     *    WILL NEVER BE WRITTEN ────────────────────────────────────────────────────────
+     *
+     * MEASURED 2026-08-13 on the live database: **8 of the 70 BRAND rows are human
+     * beings** — five film directors including Karthik Subbaraj, the actor Rahul Dev,
+     * Shalini Passi — and `checkRecipientIsNotAPerson` refuses every one of them in
+     * `plan.ts`. It works: 0 of the 8 hold a draft. And this page said of each of them
+     * *"Next message comes from @bollywoodchronicle, while Autopilot is on."*
+     *
+     * CLAUDE.md's rule is that the UI must never claim a halt the gate is not enforcing.
+     * This is the mirror image and it is the worse direction: claiming a SEND that a
+     * guard is refusing. It also defeats the reason those rows were deliberately LEFT for
+     * a person to judge — the page was the one place someone would notice they are people,
+     * and it was saying the opposite.
+     *
+     * Asked of the guard itself, never re-derived. `checkRecipientIsNotAPerson` is pure,
+     * so importing it here costs nothing and cannot drift from what the planner asks.
+     */
+    const person = checkRecipientIsNotAPerson({
+      targetKind: t.kind,
+      brandCategory: t.brandCategory,
+      handle: t.handle,
+    })
+    if (!person.ok) return { sentence: person.detail ?? 'Nothing is written to them.', willWrite: false }
+
+    const turn = turns.get(t.id)
+    if (turn === undefined) return { sentence: 'Whose turn it is could not be read.', willWrite: false }
+    if (!turn.choice.ok) {
+      return {
+        sentence:
+          turn.choice.reason === 'empty-ring'
+            ? 'No account is in the rotation for them, so nothing will be written.'
+            : `Nothing will be written — ${turn.choice.detail}`,
+        willWrite: false,
+      }
+    }
+    const where = turn.ring === 'group' ? ` (${describeRing(turn)})` : ''
+    return {
+      sentence: `Next message comes from @${turn.choice.handle}${where}, while Autopilot is on. One account writes, not all of them.`,
+      willWrite: true,
+    }
+  }
+
+  /**
+   * A WATCHED CHANNEL THAT NOTHING JUDGES IS THE FAILURE THIS SAYS OUT LOUD.
+   *
+   * Reading a feed and classifying none of it stores posts forever, finds zero paid
+   * campaigns, and renders a card saying "not classified" — which an operator reads as
+   * "they do no paid work". Asked of the detector, never of the key.
+   */
+  function unjudgedNote(kind: string, detectorKey: string, watchEnabled: boolean): string | null {
+    if (kind !== 'CHANNEL' || !watchEnabled) return null
+    const r = getDetector(detectorKey).readiness?.() ?? { ready: true }
+    if (r.ready) return null
+    return `Their posts are being read but nothing is judging them — ${r.reason ?? 'no classifier is set up'}. No paid post here can be found until that changes.`
+  }
+
+  function groundTruthNote(
+    kind: string,
+    handle: string,
+    watchEnabled: boolean,
+    ours: ReadonlySet<string>,
+  ): string | null {
+    if (kind !== 'CHANNEL' || !ours.has(handle)) return null
+    return watchEnabled
+      ? 'One of our own pages. These are the only posts where we know what was actually paid for, which is what the accuracy check is measured against.'
+      : 'One of our own pages, and reading it is off. That is a real saving, and it is also the only source of new ground truth we have besides M.O.M\u2019s disclosure hashtag \u2014 while it is off, that record stops growing.'
+  }
+
+  const prospects: ProspectRow[] = targets.map((t) => {
+    const next = nextSenderSentence(t)
+    return {
     handle: t.handle,
     displayName: operatorName(t.displayName),
     kind: t.kind,
     watchEnabled: t.watchEnabled,
     category: t.categories.find((c) => c.enabled)?.category.name ?? null,
+    nextSenderSentence: next.sentence,
+    nextSenderWillWrite: next.willWrite,
+    unjudgedNote: unjudgedNote(t.kind, t.detectorKey, t.watchEnabled),
+    groundTruthNote: groundTruthNote(t.kind, t.handle, t.watchEnabled, ourHandles),
     retired: t.optedOut,
     delivered: deliveredBy.get(t.id) ?? 0,
     replied: repliedSet.has(t.id),
     importNote: t.importNote,
-  }))
+    }
+  })
 
   const watched = prospects.filter((p) => p.watchEnabled && p.kind === 'CHANNEL' && !p.retired).length
 
@@ -186,5 +353,6 @@ export async function buildProspectsPage(): Promise<ProspectsPageView> {
     sendersAble,
     watched,
     requestsPerSlot: watched * PAGES_PER_CHANNEL,
+    requestsPerDay: watched * PAGES_PER_CHANNEL * Math.round((24 * 60) / DETECT_INTERVAL_MINUTES),
   }
 }

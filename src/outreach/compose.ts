@@ -131,6 +131,7 @@ async function buildBrandFirstTouch(target: ComposablePair['target']): Promise<s
   if (!target.discoveredFromCampaignId) {
     return brandFirstTouch({
       brandName: greetableName(target.displayName),
+      handle: target.handle,
       publisherName: null,
       postedAt: null,
       now: new Date(),
@@ -144,6 +145,9 @@ async function buildBrandFirstTouch(target: ComposablePair['target']): Promise<s
     // greetableName, not displayName: "Milano Ice Cream, Bangalore" must not appear
     // mid-sentence any more than it may appear in the greeting.
     brandName: greetableName(target.displayName),
+    // The handle goes WITH the name so `brandFirstTouch` can check one against the other
+    // itself. 21 of 68 live BRAND rows store their handle as the display name.
+    handle: target.handle,
     publisherName: publisherDisplayName(campaign?.target.handle),
     postedAt: campaign?.postedAt ?? null,
     now: new Date(),
@@ -273,18 +277,33 @@ export async function composeForPair(args: {
    * means the line is OMITTED, never invented.
    */
   if (settings.singleTemplate) {
-    const brandLine = pair.target.kind === 'BRAND' ? await brandObservationLine(pair.target, now) : null
-    const { body, hookLine } = renderMessage({
+    /**
+     * NO HOOK LINE AND NO OBSERVATION LINE (2026-08-17). *"The custom part must only be the
+     * target name being mentioned."* Both of those are extra custom sentences about the
+     * recipient, so both are gone: `hook: null` rather than passing `hook` through.
+     *
+     * This also retires a claim that was never true. The old comment here said the variable
+     * line "keeps the send guards working … a body byte-identical across touches would break
+     * `distinctiveSlice` / `bodyAppearedSince`". MEASURED: the hook line matches
+     * `ENVELOPE_PATTERNS`, so `proseLines` strips it and it could never have been the needle;
+     * and `bodyAppearedSince` is an occurrence-count DELTA, which an identical body satisfies
+     * correctly. The guards depend on the template having two prose paragraphs, nothing more.
+     */
+    const { body } = renderMessage({
       persona: pair.sender,
       target: pair.target,
-      variantBody: brandLine ? `${brandLine}\n\n${SINGLE_TEMPLATE_MIDDLE}` : SINGLE_TEMPLATE_MIDDLE,
-      // Channels only — renderMessage refuses hook lines for brands by construction.
-      hook,
+      variantBody: SINGLE_TEMPLATE_MIDDLE,
+      hook: null,
     })
     return {
       body,
-      hookLine: hookLine ?? brandLine,
+      hookLine: null,
       variantId: variant.id,
+      /**
+       * The campaign is still RECORDED even though the body never mentions it. It is what
+       * `unusedCampaignCount` and the new-material rule are derived from, and dropping it
+       * here would quietly let one recipient be written to about nothing new.
+       */
       campaignId: hook?.id ?? null,
       usedBespoke: false,
       generated: false,
@@ -409,16 +428,46 @@ export async function observationFor(
  * inventing one.
  */
 /**
- * The single template's FIXED middle (step 10). `renderMessage` supplies the greeting,
- * the "I'm <name>, <title>." line, the hook line, the closing line and the signature,
- * so none of those appear here — same contract as `brandFirstTouch`.
+ * THE STANDARD MESSAGE (2026-08-17, Tabish's copy).
  *
- * Every figure is in `APPROVED_FIGURES` in qualityGate.ts (200 · 169.2M · 300M / 30
- * crore) — no new number was invented for this, by design.
+ * *"No custom message is required whatsoever. Same standard template message to be sent to
+ * them … The custom part must only be the target name being mentioned."*
+ *
+ * `renderMessage` supplies the greeting — which now runs INTO the first line rather than
+ * sitting above a blank one — plus the closing line and the signature. Only two things vary
+ * across every message this system sends: the recipient's name and the sending page's name.
+ *
+ * ── THE CONSTRAINT THAT SHAPES THIS COPY, AND IT IS NOT EDITORIAL ─────────
+ *
+ * `proseLines` drops the FIRST line by POSITION — which, now the greeting and the
+ * introduction are merged, is the opener — and strips the closing line and the signature.
+ * `distinctiveSlice` then needs a SURVIVING LINE OF AT LEAST 40 CHARACTERS
+ * (`MIN_NEEDLE_CHARS`) to build the needle both send guards search for. If none survives it
+ * returns null, and null means every send is refused.
+ *
+ * MEASURED, and the result corrects the obvious guess. It is about paragraph LENGTH, not
+ * paragraph COUNT:
+ *
+ *     three paragraphs (this copy)   prose=3   needle ok
+ *     one LONG paragraph             prose=1   needle ok
+ *     one SHORT paragraph            prose=1   NULL — every send refused
+ *     two SHORT paragraphs           prose=2   NULL — every send refused
+ *
+ * So the rule to preserve when editing this copy is: **at least one paragraph must stay
+ * comfortably over 40 characters.** Anyone shortening it toward a couple of terse lines —
+ * which is exactly the direction "make it shorter" pushes — takes the fleet down, and it
+ * presents as a sending outage rather than a copy change. `tests/single-template.test.ts`
+ * asserts it against this exact constant rather than a fixture that could drift from it.
+ *
+ * Every figure is in `APPROVED_FIGURES` in qualityGate.ts (30 crore / 300M) — no new number
+ * was invented for this, by design. Tabish's draft was longer and he invited it to be
+ * shorter ("can be wayyy shorter"), so it is.
  */
-export const SINGLE_TEMPLATE_MIDDLE = `We run a network of 200 entertainment and lifestyle pages with 169.2M followers combined and around 30 crore (300M) views a day, and we place brand campaigns across them.
+export const SINGLE_TEMPLATE_MIDDLE = `We're a Bollywood and paparazzi network doing over 30 crore (300M) views a day, and we work with film studios and entertainment brands on year-round visibility rather than one-off campaigns.
 
-I'd like to see whether there is something worth doing together.`
+I'd like to explore an annual collaboration covering your releases, trailers, music launches and celebrity moments across our owned pages.
+
+Could we find 20 minutes for me to walk you through a plan?`
 
 /**
  * The single template's variable line for a BRAND: the placement we discovered them in,
