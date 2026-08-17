@@ -1,11 +1,4 @@
-import {
-  ACTIVE_FROM_HOUR,
-  ACTIVE_TO_HOUR,
-  FLEET_MIN_GAP_MINUTES,
-  FLEET_MAX_PER_HOUR,
-  MAX_SENDS_PER_TICK,
-  DISPATCH_INTERVAL_MINUTES,
-} from '@/outreach/pacing'
+import { ACTIVE_FROM_HOUR, ACTIVE_TO_HOUR, FLEET_MAX_PER_HOUR } from '@/outreach/pacing'
 
 /**
  * THE PACE — drawn, because the numbers alone do not answer the question people ask.
@@ -59,8 +52,7 @@ export function PaceBand({
       <figcaption>
         <h3>The pace</h3>
         <p className="page-sub">
-          Why &ldquo;on&rdquo; does not mean &ldquo;now&rdquo;. Every value below is read from the module that
-          enforces it.
+          Why &ldquo;on&rdquo; does not mean &ldquo;now&rdquo;. <a href="/rules">The rules behind it</a>.
         </p>
       </figcaption>
 
@@ -95,20 +87,20 @@ export function PaceBand({
         </span>
       </div>
 
-      <div className="pace-figures">
-        <div className="stat">
-          <span className="stat-n">{DISPATCH_INTERVAL_MINUTES} min</span>
-          <span className="stat-l">between dispatcher ticks</span>
-        </div>
-        <div className="stat">
-          <span className="stat-n">{FLEET_MIN_GAP_MINUTES} min</span>
-          <span className="stat-l">minimum gap between sends</span>
-        </div>
-        <div className="stat">
-          <span className="stat-n">{MAX_SENDS_PER_TICK}</span>
-          <span className="stat-l">message per tick, at most</span>
-        </div>
-      </div>
+      {/*
+        ── THE THREE CONSTANTS MOVED TO /rules (2026-08-17) ──────────────────────
+        `DISPATCH_INTERVAL_MINUTES`, `FLEET_MIN_GAP_MINUTES` and `MAX_SENDS_PER_TICK` were
+        drawn here as three stats — six numerals, no control — and `/rules` already states
+        all three from the same imports, as rules, with the reason attached. They were a
+        DUPLICATE, and duplication is a failure of the same kind as silence: a reader who
+        sees a fact twice learns to skip it, so the copy on the busiest page was costing the
+        copy that explains itself.
+
+        MOVED, not deleted — the distinction the simplification brief insists on. The link in
+        the caption above is the click, and what stays here is the part that is not a
+        constant: WHERE NOW SITS in the window, how much of this hour's allowance is gone,
+        and what the last tick actually did.
+      */}
 
       {/*
         WHAT THE LAST TICK DID, always. "Nothing happened" with no explanation is the
