@@ -413,6 +413,82 @@ describe('{{brand}} resolves per pool, not per hook', () => {
     expect(body).not.toContain('Kalki')
   })
 
+  /**
+   * ── THE HANDLE MUST NOT REACH THE BODY EITHER (2026-08-17) ────────────────
+   *
+   * FOUND BY RENDERING THE REAL MESSAGE to @agoracitycentre after the queue was rebuilt.
+   * `usableBrandName` was applied to `buildGreeting` and to `brandFirstTouch` and NOT to the
+   * `{{brand}}` token, so the greeting degraded correctly to "Hi there," while the body still
+   * read *"an annual plan for agoracitycentre rather than another one-off"*.
+   *
+   * That is the worse half of a half-applied rule: the part a reader checks was repaired, so
+   * the defect looks fixed from the one place it is visible.
+   */
+  const RAW_HANDLE_BRAND = {
+    handle: 'agoracitycentre',
+    displayName: 'agoracitycentre', // brandTarget.ts stores the handle when IG returns no name
+    contactFirstName: null,
+    kind: 'BRAND',
+  }
+
+  it('never puts a raw handle in the body of a brand pitch', () => {
+    const { body } = renderMessage({
+      persona: PERSONA,
+      target: RAW_HANDLE_BRAND,
+      variantBody: 'I would like to propose an annual plan for {{brand}} rather than another one-off.',
+      hook: null,
+    })
+
+    expect(body).not.toContain('agoracitycentre')
+    expect(body).toContain('an annual plan for your brand rather than another one-off.')
+  })
+
+  /**
+   * Every `{{brand}}` context that exists in `prisma/brandVariants.ts`, because the fallback
+   * has to be grammatical in all of them — and one is POSSESSIVE, which is why the token is
+   * "your brand" and not "you".
+   */
+  it('the fallback reads grammatically in every live {{brand}} context', () => {
+    const contexts = [
+      'Could I send a short plan with indicative numbers for {{brand}}?',
+      'I would like to propose an annual plan for {{brand}} rather than another one-off.',
+      "Happy to share a plan built around {{brand}}'s next few months if that is useful.",
+      'If {{brand}} is spending on entertainment placement with any regularity, a direct buy is cheaper.',
+      'For {{brand}} that would mean a rolling calendar across our network.',
+      'If placement is part of how {{brand}} goes to market, there is a straightforward case here.',
+    ]
+
+    for (const variantBody of contexts) {
+      const { body } = renderMessage({ persona: PERSONA, target: RAW_HANDLE_BRAND, variantBody, hook: null })
+      expect(body, variantBody).not.toContain('agoracitycentre')
+      expect(body, variantBody).toContain('your brand')
+      expect(body, variantBody).not.toContain("you's")
+    }
+  })
+
+  /**
+   * THE NEGATIVE DIRECTION, and the one that stops the fix over-firing: a real typed name
+   * must still be used. `usableBrandName` refuses only a lower-case, whitespace-free string
+   * that normalises to the handle — the naive normalise-and-compare rule would have matched
+   * 47 of 68 live BRAND rows, "Amazon MGM Studios" and "Crocs India" among them.
+   */
+  it('still names a real company, including one that normalises to its handle', () => {
+    for (const t of [
+      { handle: 'royalcanin.india', displayName: 'Royal Canin India' },
+      { handle: 'crocsindia', displayName: 'Crocs India' },
+      { handle: 'amazonmgmstudios', displayName: 'Amazon MGM Studios' },
+    ]) {
+      const { body } = renderMessage({
+        persona: PERSONA,
+        target: { ...t, contactFirstName: null, kind: 'BRAND' },
+        variantBody: 'An annual plan for {{brand}}.',
+        hook: null,
+      })
+      expect(body, t.displayName).toContain(`An annual plan for ${t.displayName}.`)
+      expect(body, t.displayName).not.toContain('your brand')
+    }
+  })
+
   /** The permitting direction: a CHANNEL pitch still names the sponsor we detected. */
   it('still names the detected sponsor in a channel pitch', () => {
     const { body } = renderMessage({
