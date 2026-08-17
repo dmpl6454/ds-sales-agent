@@ -245,7 +245,27 @@ function WaitingCard({ m, autopilotOn }: { m: WaitingMessage; autopilotOn: boole
           </div>
         </>
       ) : (
-        <pre className="message-body">{m.body}</pre>
+        /*
+          ── THE BODY COLLAPSES; THE REFUSAL DOES NOT (2026-08-17) ─────────────────
+          MEASURED on the rendered page with a full queue: 20 draft cards each printing a
+          ~570-character body took `/` to **196 numerals, 3,458 words and 12,253px**. My own
+          earlier measurement said 35 numerals and 1,349px — taken while the queue was EMPTY,
+          which understated it fivefold. Density here is proportional to queue depth.
+
+          The simplification brief's hard constraint is that each draft keeps its refusal
+          sentence on the COLLAPSED row, and it does: the recipient, the sender, the rotation
+          sentence, the refusal from `recheckBeforeSend` and every button stay exactly where
+          they were. Only the message text — the part that is the same standard template on
+          every card now — moves behind one click.
+
+          `<details>` rather than React state on purpose: it works before hydration, it is
+          keyboard-operable for nothing, and a body a person opened stays open while the page
+          revalidates around it.
+        */
+        <details className="message-reveal">
+          <summary>Read the message ({m.body.length} characters)</summary>
+          <pre className="message-body">{m.body}</pre>
+        </details>
       )}
 
       {/* Outside the editor, so a success message is not unmounted by the save. */}

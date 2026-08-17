@@ -35,24 +35,76 @@ export function ProspectList({ prospects, sendersAble }: { prospects: ProspectRo
     )
   }
 
-  const channels = prospects.filter((p) => p.kind === 'CHANNEL')
-  const brands = prospects.filter((p) => p.kind === 'BRAND')
+  /**
+   * ── GROUPED BY `role`, NOT BY `kind` (2026-08-17) ──────────────────────────
+   *
+   * This split on `kind` — CHANNEL against BRAND — and CLAUDE.md says in as many words why
+   * that is a trap: **`kind === 'CHANNEL'` is NOT "a page we watch"**. `importProspects`
+   * creates messageable prospects as CHANNEL, so the first list anyone imported would have
+   * appeared under the heading for pages we never write to.
+   *
+   * The two columns agree on all 99 rows today, which is exactly why reading the page could
+   * not catch it. `role` is the column the 17 August restructure made authoritative, and it
+   * is the one that decides whether a message may be sent.
+   */
+  /**
+   * ── THE HEADINGS COUNT WHAT THEY CLAIM, AND RETIRED IS NOT IT ─────────────
+   *
+   * FOUND BY AUDITING THE RENDERED PAGE AGAINST THE DATABASE, 2026-08-17: the heading read
+   * "Companies we message (95)" while **13 of those 95 are retired and can never be
+   * messaged by any sender**, and "Pages we watch (4)" while 2 of the 4 are retired. A
+   * heading that states a capability must count the rows that have it.
+   *
+   * Retired rows are still LISTED — they are not deleted, and hiding them would make a
+   * retirement invisible — but they are counted separately and named, so the number beside
+   * the claim is the number the claim is true of.
+   */
+  const watched = prospects.filter((p) => p.role === 'WATCH')
+  const messaged = prospects.filter((p) => p.role !== 'WATCH')
 
   return (
     <>
-      <Group title="Channels" rows={channels} sendersAble={sendersAble} />
-      {brands.length > 0 && <Group title="Brands found in paid posts" rows={brands} sendersAble={sendersAble} />}
+      <Group
+        title="Pages we watch"
+        note="We read their feed to find paid posts. They are never messaged — several are competitors."
+        rows={watched}
+        sendersAble={sendersAble}
+      />
+      <Group
+        title="Companies we message"
+        note="Found inside those paid posts, or added by hand. Their posts are not read; we only write to them."
+        rows={messaged}
+        sendersAble={sendersAble}
+      />
     </>
   )
 }
 
-function Group({ title, rows, sendersAble }: { title: string; rows: ProspectRow[]; sendersAble: number }) {
+function Group({
+  title,
+  note,
+  rows,
+  sendersAble,
+}: {
+  title: string
+  note: string
+  rows: ProspectRow[]
+  sendersAble: number
+}) {
   if (rows.length === 0) return null
+  /* The heading counts what the heading CLAIMS — a retired row is not one we message. */
+  const retired = rows.filter((r) => r.retired).length
+  const live = rows.length - retired
   return (
     <section className="group">
       <h2>
-        {title} ({rows.length})
+        {title} ({live})
       </h2>
+      {/* Which of the two kinds this is, said once per group rather than once per row. */}
+      <p className="group-blurb">
+        {note}
+        {retired > 0 ? ` ${retired} more ${retired === 1 ? 'is' : 'are'} retired and listed below, never contacted again.` : ''}
+      </p>
       <div className="group-rows">
         {rows.map((p) => (
           <Row key={p.handle} p={p} sendersAble={sendersAble} />
@@ -167,13 +219,26 @@ function Row({ p, sendersAble }: { p: ProspectRow; sendersAble: number }) {
           Category table is empty) read as something the operator ought to understand.
           `setTargetCategory` and the rotation code are untouched.
         */}
-        <button className="link-quiet" type="button" onClick={flipWatch} disabled={busy !== null}>
-          {busy === 'watch'
-            ? 'Saving…'
-            : p.watchEnabled
-              ? 'stop reading their posts'
-              : 'read their posts every check'}
-        </button>
+        {/*
+          ── ONLY A WATCHED PAGE HAS POSTS WE READ (2026-08-17, Tabish) ───────────
+          *"there is no need for 'read their posts every check' for the other type of targets
+          that only need messages to be sent, no post tracking."*
+
+          He is right, and it was worse than clutter: the control was OFFERED on 95 company
+          rows, where turning it on would spend four feed requests per pass on an account
+          whose posts nothing classifies — `pipeline.ts` reads `kind: 'CHANNEL'`, so a BRAND
+          row with watching on is pure cost for no verdict. A control that does nothing is
+          worse than an absent one, because someone will press it and believe it worked.
+        */}
+        {p.role === 'WATCH' ? (
+          <button className="link-quiet" type="button" onClick={flipWatch} disabled={busy !== null}>
+            {busy === 'watch'
+              ? 'Saving…'
+              : p.watchEnabled
+                ? 'stop reading their posts'
+                : 'read their posts every check'}
+          </button>
+        ) : null}
       </div>
 
       {msg && <p className="account-message">{msg}</p>}

@@ -1231,3 +1231,18 @@ label { display: block; }
   gap: 10px;
 }
 .groupbtn:hover { border-color: transparent; }
+
+/* A draft's message text, behind one click. The refusal and every control stay on the
+   collapsed row — see the note in messages/waiting.tsx for the measurement that forced
+   this: 20 cards printing full bodies took the landing page to 12,253px. */
+.message-reveal > summary {
+  cursor: pointer;
+  font-size: 12.5px;
+  color: var(--tx-1);
+  padding: 6px 0;
+  list-style: none;
+}
+.message-reveal > summary::-webkit-details-marker { display: none; }
+.message-reveal > summary::before { content: '▸ '; color: var(--tx-2); }
+.message-reveal[open] > summary::before { content: '▾ '; }
+.message-reveal > summary:hover { color: var(--tx-0); }

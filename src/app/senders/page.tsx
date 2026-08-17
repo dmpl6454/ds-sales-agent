@@ -5,6 +5,7 @@ import { Nav } from '../nav'
 import { PageHead } from '../page-head'
 import { AccountGroupView } from '../accounts/group'
 import { LoginQueue } from '../accounts/login/queue'
+import { AddSenderForm } from './add-form'
 
 export const dynamic = 'force-dynamic'
 
@@ -147,6 +148,17 @@ export default async function SendersPage() {
         {v.groups.map((g) => (
           <AccountGroupView key={g.key} group={g} />
         ))}
+
+        {/*
+          ADDING AN ACCOUNT HAD NO UI AT ALL until 2026-08-17. `addSender` existed in
+          actions.ts — validated, audited, creating routes — and nothing in `src/app`
+          imported it, so the only way in was writing to the database by hand. `/targets`
+          had its form the whole time, which is why the pair looked symmetrical.
+
+          Last on the page deliberately: the question this page answers is "can my accounts
+          send", and adding one is the rarer act.
+        */}
+        <AddSenderForm />
       </div>
     </>
   )

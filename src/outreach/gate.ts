@@ -281,7 +281,16 @@ export function evaluateResend(input: ResendInput): ResendResult {
   }
 
   if (input.targetOptedOut) {
-    return { ok: false, reason: RESEND_BLOCKS.TARGET_OPTED_OUT, detail: 'channel is retired' }
+    /**
+     * "recipient", not "channel". MEASURED 2026-08-17 from a real draft on screen: a pitch to
+     * @azmishabana18 — a BRAND row, and a person — was refused with *"Channel is retired. This
+     * channel is retired."* Ninety-five of the 99 targets are companies, not channels, so the
+     * word was wrong for almost every row it can appear on.
+     *
+     * The gate cannot see `kind` and should not need to: retirement means the same thing for
+     * both, so the honest fix is a word that is true of both rather than a branch.
+     */
+    return { ok: false, reason: RESEND_BLOCKS.TARGET_OPTED_OUT, detail: 'this recipient is retired' }
   }
 
   /**

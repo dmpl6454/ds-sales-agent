@@ -51,6 +51,18 @@ export interface ProspectRow {
   handle: string
   displayName: string
   kind: string
+  /**
+   * WATCH or PROSPECT — the authoritative answer to "may we message them", and the thing the
+   * list groups by since 2026-08-17.
+   *
+   * It used to group by `kind`, and CLAUDE.md says in as many words why that is a trap:
+   * `kind === 'CHANNEL'` is NOT "a page we watch". `importProspects` creates messageable
+   * prospects as CHANNEL, so the first imported list would have been filed under "pages we
+   * watch" — the exact confusion the WATCH/PROSPECT column was introduced to end. The two
+   * columns happen to agree on all 99 rows today, which is precisely why a reader would not
+   * catch it.
+   */
+  role: string
   /** Are their posts read four times a day? Separate from whether they may be messaged. */
   watchEnabled: boolean
   /** The rotation group whose senders take turns writing to them. Null means the fleet ring. */
@@ -164,7 +176,7 @@ export async function buildProspectsPage(): Promise<ProspectsPageView> {
   const settings = await getSettings()
   const [targets, categoryRows, fleetSenders] = await Promise.all([
     prisma.targetAccount.findMany({
-      orderBy: [{ kind: 'asc' }, { handle: 'asc' }],
+      orderBy: [{ role: 'asc' }, { handle: 'asc' }],
       include: {
         // The joined `pairs` (one row per sender, with its display name) went with the chips —
         // one switch, 2026-08-08. Nothing renders a sender name per prospect any more, and at
@@ -328,6 +340,7 @@ export async function buildProspectsPage(): Promise<ProspectsPageView> {
     handle: t.handle,
     displayName: operatorName(t.displayName),
     kind: t.kind,
+    role: t.role,
     watchEnabled: t.watchEnabled,
     category: t.categories.find((c) => c.enabled)?.category.name ?? null,
     nextSenderSentence: next.sentence,
