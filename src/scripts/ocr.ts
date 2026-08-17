@@ -197,7 +197,10 @@ for (const c of worthJudging) {
       shortcode: c.shortcode,
       caption: c.caption,
       optedOut: optedOutTargets.has(c.targetId),
-      frameJudgingSupported: semanticIds.has(c.targetId),
+      // 'passthrough' for anything non-semantic ON PURPOSE: this command re-reads
+      // FRAMES, and giving it 'mom' would spend a semantic call per rule-negative —
+      // that is `pnpm ig:second-look`'s job, bounded and dry-run by default.
+      detectorKey: semanticIds.has(c.targetId) ? 'semantic' : 'passthrough',
       // The same tags the pipeline would have given this post. Without them a re-judge
       // here would see less than the live path does and could disagree with it for a
       // reason that has nothing to do with the footage it is testing.

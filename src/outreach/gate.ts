@@ -93,6 +93,14 @@ export interface ResendInput {
   maxPerTargetPerDay: number
 
   /**
+   * The most recent DELIVERY to this recipient from ANY of our pages, when it falls
+   * inside the spacing window — null outside it, so the pure half needs no clock.
+   * Sender-blind on purpose: the incident this guards against is two different pages
+   * in one inbox, which no per-pair fact can see.
+   */
+  targetRecentContact: { fromHandle: string; hoursAgo: number } | null
+
+  /**
    * Does this account share its persona with another sending account?
    *
    * Checked at DELIVERY as well as at drafting, and that is the point of putting it
@@ -165,6 +173,29 @@ export const RESEND_BLOCKS = {
   TARGET_IS_WATCH_ONLY: 'target-is-watch-only',
   TARGET_REPLIED: 'target-replied',
   NO_SESSION: 'no-session',
+  /**
+   * ── ONE RECIPIENT, ONE CONVERSATION AT A TIME (2026-08-17) ─────────────────────────
+   *
+   * MEASURED the evening rotation went live with three recorded senders: @absolutejk
+   * heard from @bollywoodchronicle at 17:44 and from @bollywoodsocietyy at 18:13 —
+   * twenty-nine minutes apart, near-identical template bodies, different page names.
+   * Tabish spotted it from the dashboard before any code did.
+   *
+   * Every spacing rule was PER PAIR — the 7-day cooldown, the first-touch exemption
+   * from new-material — so a second page writing to a fresh recipient was a "first
+   * touch" with no history, and the only cross-sender rule (2/recipient/day) PERMITS
+   * exactly one duplicate a day. Rotation then deliberately elects the NEXT page for
+   * the next touch. Nothing anywhere asked "has anyone written to this person lately?"
+   *
+   * Now something does, at delivery, where it cannot be drafted around: a recipient
+   * with a DELIVERED message from ANY of our pages inside the spacing window refuses
+   * every page. A blocked sender never locks a recipient — nothing was delivered — so
+   * the fallback Tabish described ("another page only if the first was blocked") still
+   * works by construction. Absolute like the daily caps: recipient protection is not a
+   * matter of operator judgement, and two of our pages in one inbox in one afternoon
+   * is the cross-account fingerprint half this design exists to avoid.
+   */
+  TARGET_RECENTLY_CONTACTED: 'target-recently-contacted',
   TARGET_DAILY_CAP: 'target-daily-cap',
   SENDER_DAILY_CAP: 'sender-daily-cap',
   PERSONA_NOT_DISTINCT: 'persona-not-distinct',
@@ -369,6 +400,16 @@ export function evaluateResend(input: ResendInput): ResendResult {
     }
   }
 
+  if (input.targetRecentContact != null) {
+    const { fromHandle, hoursAgo } = input.targetRecentContact
+    const when = hoursAgo < 24 ? `${Math.max(1, Math.round(hoursAgo))}h ago` : `${Math.round(hoursAgo / 24)} day(s) ago`
+    return {
+      ok: false,
+      reason: RESEND_BLOCKS.TARGET_RECENTLY_CONTACTED,
+      detail: `this recipient heard from @${fromHandle} ${when} — spacing applies across every page, not per account`,
+    }
+  }
+
   if (input.targetSentTodayCount >= input.maxPerTargetPerDay) {
     return {
       ok: false,
@@ -419,7 +460,7 @@ export async function recheckBeforeSend(
   const { sender, target, senderId, targetId } = attempt.pair
   const targetKindOf = target.kind ?? 'CHANNEL'
 
-  const [replied, targetToday, senderToday, personaShared, ladder, draft, senderRow] = await Promise.all([
+  const [replied, targetToday, targetRecent, senderToday, personaShared, ladder, draft, senderRow] = await Promise.all([
     prisma.outreachAttempt.findFirst({
       /**
        * `gte: replyHaltFloor(...)` rather than `not: null` since 2026-08-07: a reply
@@ -439,6 +480,19 @@ export async function recheckBeforeSend(
     // *lower* a daily count and so buy an extra send. See the note there.
     prisma.outreachAttempt.count({
       where: { pair: { targetId }, status: { in: [...DELIVERED_STATUSES] }, sentAt: { gte: dayStart } },
+    }),
+    /**
+     * The newest delivery to this RECIPIENT from any page, inside the spacing window.
+     * Sender-blind, unlike every other spacing fact here — see TARGET_RECENTLY_CONTACTED.
+     */
+    prisma.outreachAttempt.findFirst({
+      where: {
+        pair: { targetId },
+        status: { in: [...DELIVERED_STATUSES] },
+        sentAt: { gte: new Date(Date.now() - settings.defaultCooldownDays * 24 * 60 * 60 * 1000) },
+      },
+      orderBy: { sentAt: 'desc' },
+      select: { sentAt: true, pair: { select: { sender: { select: { handle: true } } } } },
     }),
     prisma.outreachAttempt.count({
       where: { pair: { senderId }, status: { in: [...DELIVERED_STATUSES] }, sentAt: { gte: dayStart } },
@@ -550,6 +604,13 @@ export async function recheckBeforeSend(
     targetIsWatchOnly: target.role === 'WATCH',
     targetRepliedAt: replied?.repliedAt ?? null,
     targetSentTodayCount: targetToday,
+    targetRecentContact:
+      targetRecent?.sentAt != null
+        ? {
+            fromHandle: targetRecent.pair.sender.handle,
+            hoursAgo: (Date.now() - targetRecent.sentAt.getTime()) / 3_600_000,
+          }
+        : null,
     senderSentTodayCount: senderToday,
     maxPerTargetPerDay: settings.maxPerTargetPerDay,
     personaSharedWithAnotherSender: personaShared,

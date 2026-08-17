@@ -340,7 +340,7 @@ export async function runOutreach(): Promise<PlanSummary> {
      */
     const alreadyUsedIds = await usedCampaignIds(pair.id)
 
-    const [lastSent, touches, replied, targetToday, senderToday, pending, unusedCampaignCount] = await Promise.all([
+    const [lastSent, targetLastDelivered, touches, replied, targetToday, senderToday, pending, unusedCampaignCount] = await Promise.all([
       /**
        * All three of these count DELIVERED_STATUSES, not 'SENT'.
        *
@@ -355,6 +355,17 @@ export async function runOutreach(): Promise<PlanSummary> {
        */
       prisma.outreachAttempt.findFirst({
         where: { pairId: pair.id, status: { in: [...DELIVERED_STATUSES] } },
+        orderBy: { sentAt: 'desc' },
+        select: { sentAt: true },
+      }),
+      /**
+       * The newest delivery to this RECIPIENT from ANY page — the sender-blind fact the
+       * 2026-08-17 duplicate incident proved nothing was reading. Every other spacing
+       * fact here is per pair, and per-pair facts cannot see a second page writing into
+       * an inbox the first one reached half an hour earlier.
+       */
+      prisma.outreachAttempt.findFirst({
+        where: { pair: { targetId: pair.targetId }, status: { in: [...DELIVERED_STATUSES] } },
         orderBy: { sentAt: 'desc' },
         select: { sentAt: true },
       }),
@@ -420,6 +431,7 @@ export async function runOutreach(): Promise<PlanSummary> {
       sender: { status: pair.sender.status, dailyCap: pair.sender.dailyCap },
       target: { optedOut: pair.target.optedOut },
       lastSentAt: lastSent?.sentAt ?? null,
+      targetLastDeliveredAt: targetLastDelivered?.sentAt ?? null,
       touchesSoFar: touches,
       targetRepliedAt: replied?.repliedAt ?? null,
       targetSentTodayCount: targetToday,

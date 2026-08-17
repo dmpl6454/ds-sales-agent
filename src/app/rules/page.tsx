@@ -50,6 +50,8 @@ const STOP_LABELS: Record<(typeof RESEND_BLOCKS)[keyof typeof RESEND_BLOCKS], st
   [RESEND_BLOCKS.HOOK_STALE_SINCE_DRAFT]:
     'the message says when we saw their placement, and it has waited long enough that the timing is no longer right',
   [RESEND_BLOCKS.NO_SESSION]: 'the account is not signed in',
+  [RESEND_BLOCKS.TARGET_RECENTLY_CONTACTED]:
+    'another of our pages wrote to this recipient within the spacing window — one inbox never hears from two of our pages back to back',
   [RESEND_BLOCKS.TARGET_DAILY_CAP]: 'the recipient reached today’s cap',
   [RESEND_BLOCKS.SENDER_DAILY_CAP]: 'the account reached today’s cap',
   [RESEND_BLOCKS.PERSONA_NOT_DISTINCT]: 'the account shares its identity with another account',
@@ -93,6 +95,19 @@ export default async function RulesPage() {
   const settings = await getSettings()
   const [groupSize, soakDays] = await Promise.all([cohortSize(), cohortSoakDays()])
   const caps = await prisma.senderAccount.aggregate({ _min: { dailyCap: true }, _max: { dailyCap: true } })
+  /**
+   * The Volume list was honest and still misread: it names five caps and never adds them
+   * up, so "2 per recipient per day" on the first line was taken for the system's total
+   * throughput (Tabish, 2026-08-17: "is there a limit?"). The summary line below answers
+   * that in one number per rule, each read from the module that enforces it — the fleet
+   * scope because the burner writes to nobody.
+   */
+  const fleetCaps = await prisma.senderAccount.aggregate({
+    where: { fleetMember: true },
+    _sum: { dailyCap: true },
+    _count: true,
+  })
+  const paceCeiling = FLEET_MAX_PER_HOUR * (ACTIVE_TO_HOUR - ACTIVE_FROM_HOUR)
   const brandTouches = await readNewBrandTouchCounts()
   const capMin = caps._min.dailyCap ?? 5
   const capMax = caps._max.dailyCap ?? 5
@@ -121,6 +136,10 @@ export default async function RulesPage() {
         settings.fleetMaxPerDay === Number.POSITIVE_INFINITY
           ? 'No fleet-wide daily cap — chosen deliberately, one setting away from binding.'
           : `${settings.fleetMaxPerDay} per day across all accounts together.`,
+        `All together: the pace allows at most ${paceCeiling} deliveries a day, and the ` +
+          `${fleetCaps._count} accounts' own caps allow ${fleetCaps._sum.dailyCap ?? 0} between them — ` +
+          `whichever is smaller is the real daily ceiling. The per-recipient number above is not a ` +
+          `throughput limit; it protects one inbox from hearing from several of our pages in one day.`,
         env.MAX_TOTAL_SENDS === null
           ? 'No lifetime ceiling — chosen deliberately.'
           : `${env.MAX_TOTAL_SENDS} messages lifetime, counting ones still waiting.`,

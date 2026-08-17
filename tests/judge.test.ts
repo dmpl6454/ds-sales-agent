@@ -32,7 +32,7 @@ vi.mock('@/detection/ocr', async (importOriginal) => {
 
 const { judgeWithFrame } = await import('@/detection/judge')
 
-const ordinaryTarget = { shortcode: 'DbtNU9UzWYU', caption: 'a bus in Thane', optedOut: false, frameJudgingSupported: true }
+const ordinaryTarget = { shortcode: 'DbtNU9UzWYU', caption: 'a bus in Thane', optedOut: false, detectorKey: 'semantic' }
 
 /** A frame that read cleanly and carries the founding case's decisive token. */
 function frameRead() {
@@ -60,7 +60,7 @@ describe('judgeWithFrame — what it refuses to spend a call on', () => {
   })
 
   it('does not judge a channel whose detector cannot use frame text', async () => {
-    const result = await judgeWithFrame({ ...ordinaryTarget, frameJudgingSupported: false }, 'ORGANIC')
+    const result = await judgeWithFrame({ ...ordinaryTarget, detectorKey: 'passthrough' }, 'ORGANIC')
 
     expect(result.reason).toBe('unsupported')
     expect(classifyCaption).not.toHaveBeenCalled()
@@ -182,5 +182,83 @@ describe('judgeWithFrame — absence of evidence never becomes a verdict', () =>
     const result = await judgeWithFrame(ordinaryTarget, 'ORGANIC')
 
     expect(result.verdict).toBe('CAMPAIGN')
+  })
+})
+
+describe('judgeWithFrame — the M.O.M second look (2026-08-17, Tabish\'s decision)', () => {
+  const momPost = { shortcode: 'DmomTest01', caption: 'A wild new campaign from a fast-food giant', optedOut: false, detectorKey: 'mom' }
+
+  /**
+   * The direction the feature exists for: MEASURED 2026-08-17, 61 in-window M.O.M posts
+   * were rule-negative and NOTHING else had ever read them — an undisclosed paid post on
+   * that channel was missed with certainty. A rule-negative now reaches the model.
+   */
+  it('re-judges a rule-negative and escalates when the model says CAMPAIGN', async () => {
+    classifyCaption.mockResolvedValue({ verdict: 'CAMPAIGN', confidence: 92, reason: 'campaign-slogan hashtag plus announcement', brands: ['@somebrand'] })
+
+    const result = await judgeWithFrame(momPost, 'ORGANIC')
+
+    expect(result.verdict).toBe('CAMPAIGN')
+    expect(result.secondLook).toEqual({ confidence: 92, reason: 'campaign-slogan hashtag plus announcement', brands: ['@somebrand'] })
+    expect(result.signals).toContain('second-look:judged')
+    // The caption call settled it — no frame is read for a CAMPAIGN, same as everywhere.
+    expect(readFrameText).not.toHaveBeenCalled()
+    expect(classifyCaption).toHaveBeenCalledTimes(1)
+    // Caption first, ALONE: the second-look call carries no frame prompt.
+    expect(classifyCaption.mock.calls[0]?.[2]).toBeNull()
+  })
+
+  /**
+   * THE LABEL DIRECTION, which must never move: a rule POSITIVE is #Collaboration in the
+   * caption — the publisher's own disclosure, label-grade. The second look exists for
+   * negatives only; spending a model call to second-guess a disclosure would let a model
+   * outrank a fact.
+   */
+  it('NEVER touches a rule-positive — the disclosure is a fact, not an opinion', async () => {
+    const result = await judgeWithFrame(momPost, 'CAMPAIGN')
+
+    expect(result.reason).toBe('caption-decisive')
+    expect(result.verdict).toBe('CAMPAIGN')
+    expect(result.secondLook).toBeNull()
+    expect(classifyCaption).not.toHaveBeenCalled()
+  })
+
+  it('continues into the frame path when the model agrees the post is ordinary', async () => {
+    classifyCaption.mockResolvedValue({ verdict: 'ORGANIC', confidence: 90, reason: 'editorial commentary', brands: [] })
+    readFrameText.mockResolvedValue(frameRead())
+
+    const result = await judgeWithFrame(momPost, 'ORGANIC')
+
+    // Two calls: the second look (no frame prompt), then the frame call (with it).
+    expect(classifyCaption).toHaveBeenCalledTimes(2)
+    expect(classifyCaption.mock.calls[0]?.[2]).toBeNull()
+    expect(classifyCaption.mock.calls[1]?.[2]).toContain('frame')
+    expect(result.signals).toContain('second-look:judged')
+  })
+
+  /**
+   * A failed call is never a verdict — the lesson `frame:call-failed` taught at a cost
+   * of 83 posts. The rule's ORGANIC stands, and the signal keeps the post selectable by
+   * the backfill instead of filing it as judged.
+   */
+  it('a failed second-look call decides nothing and is named in the signals', async () => {
+    classifyCaption.mockResolvedValue(null)
+    readFrameText.mockResolvedValue({ prompt: null, evidence: { kind: 'no-frame' as const }, text: null })
+
+    const result = await judgeWithFrame(momPost, 'ORGANIC')
+
+    expect(result.verdict).toBe('ORGANIC')
+    expect(result.secondLook).toBeNull()
+    expect(result.signals).toContain('second-look:call-failed')
+  })
+
+  it('a SEMANTIC channel gets no second look — its caption verdict is already the model\'s', async () => {
+    readFrameText.mockResolvedValue({ prompt: null, evidence: { kind: 'no-frame' as const }, text: null })
+
+    const result = await judgeWithFrame(ordinaryTarget, 'ORGANIC')
+
+    expect(result.secondLook).toBeNull()
+    // Only the frame path may call the model here, and with no frame there is no call.
+    expect(classifyCaption).not.toHaveBeenCalled()
   })
 })

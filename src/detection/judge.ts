@@ -70,8 +70,18 @@ export interface JudgeInput {
    * page we will never write to ran a paid campaign is not.
    */
   optedOut: boolean
-  /** Only the semantic detector's channels can be re-judged; a rule detector's verdict is a LABEL. */
-  frameJudgingSupported: boolean
+  /**
+   * WHICH detector produced the caption verdict — judge.ts decides what that permits,
+   * so "which detectors support what" has ONE definition instead of one per caller.
+   * It was `frameJudgingSupported: boolean`, derived independently at three call sites;
+   * adding the M.O.M second look would have meant a fourth derivation at each.
+   *
+   *   semantic — the caption verdict is the model's own; the frame may escalate it.
+   *   mom      — a rule verdict. POSITIVE is a label and is never touched. NEGATIVE is
+   *              only "no #Collaboration tag", so it gets the SECOND LOOK below.
+   *   anything else — a verdict no model produced and no frame may move.
+   */
+  detectorKey: string
   /**
    * The post's tags and co-authors, ALREADY FENCED by `tagsForPrompt`, exactly as the
    * caption verdict was reached with.
@@ -102,6 +112,31 @@ export type JudgeReason =
   /** A person has answered this one. Their answer outranks any model. */
   | 'human-labelled'
 
+/** Detectors whose verdicts the frame path may act on at all. */
+const FRAME_JUDGING_DETECTORS = new Set(['semantic', 'mom'])
+
+/**
+ * ── THE M.O.M SECOND LOOK (2026-08-17, Tabish's decision) ─────────────────────────
+ *
+ * Rule detectors whose NEGATIVE gets re-judged by the semantic model before the frame
+ * path runs. The `mom` rule is perfect on its corpus in one direction — 22 in-window
+ * posts carry #Collaboration and every one is paid — but its negative means only "no
+ * disclosure tag", and MEASURED on 2026-08-17: **61 in-window posts were rule-negative
+ * and NOTHING else ever read them.** CLAUDE.md has said since the 13 August audit that
+ * an undisclosed M.O.M paid post is missed with certainty and that changing it is its
+ * own decision; Tabish made that decision ("make sure paid posts detection is accurate
+ * … for both viral bhayani and madabout").
+ *
+ * The rule POSITIVE is never touched — it is label-grade and stays `rules`. Only the
+ * negative is re-asked, so recall can rise and never fall. The known cost is precision
+ * on exactly this channel: M.O.M's editorial is commentary about other brands'
+ * campaigns, the documented false-alarm class. That trade is acceptable for the same
+ * three reasons the frame-escalation trade was: it is the recall-protecting direction,
+ * the cross on /paid-posts makes every escalation reversible, and with `singleTemplate`
+ * ON a false CAMPAIGN never reaches message copy.
+ */
+const SECOND_LOOK_DETECTORS = new Set(['mom'])
+
 export interface JudgeResult {
   verdict: Verdict
   signals: string[]
@@ -115,6 +150,14 @@ export interface JudgeResult {
   changedByFrame: boolean
   /** Why the frame was or was not consulted. Rendered, never swallowed. */
   reason: JudgeReason
+  /**
+   * Set when the SECOND LOOK ran — a rule-negative re-judged by the semantic model. The
+   * caller needs these to store an honest row: the verdict is now the model's, so
+   * `verdictSource`, confidence and the reason must be the model's too, not the rule's.
+   * Null when the second look did not run or its call failed (a failed call is never a
+   * verdict, and the rule's own answer stands).
+   */
+  secondLook: { confidence: number; reason: string; brands: string[] } | null
 }
 
 /**
@@ -138,6 +181,7 @@ export async function judgeWithFrame(
     engine: null,
     changedByFrame: false,
     reason: 'judged',
+    secondLook: null,
   }
 
   /**
@@ -148,7 +192,35 @@ export async function judgeWithFrame(
   if (opts.humanLabelled) return { ...base, reason: 'human-labelled' }
 
   if (input.optedOut) return { ...base, reason: 'opted-out' }
-  if (!input.frameJudgingSupported) return { ...base, reason: 'unsupported' }
+  if (!FRAME_JUDGING_DETECTORS.has(input.detectorKey)) return { ...base, reason: 'unsupported' }
+
+  /**
+   * THE SECOND LOOK — see SECOND_LOOK_DETECTORS above. A rule-negative is re-asked of
+   * the semantic model, caption first and ALONE (no frame prompt), exactly as a
+   * semantic channel's caption verdict is produced — so the frame flow below then
+   * differs from this call in exactly one input, which is what `applyFrameSignal`
+   * attributes the difference to. The same tag block reaches both calls, per the
+   * ordering constraint on `tagEvidence`.
+   *
+   * A failed call decides nothing: the rule's ORGANIC stands, and the signal names the
+   * failure so the backfill can re-offer the post rather than filing it as judged —
+   * `frame:call-failed` taught that lesson at a cost of 83 posts.
+   */
+  let secondLook: JudgeResult['secondLook'] = null
+  const extraSignals: string[] = []
+  if (SECOND_LOOK_DETECTORS.has(input.detectorKey) && captionOnly === 'ORGANIC') {
+    const call = await classifyCaption(input.caption, input.shortcode, null, input.tagText ?? null)
+    if (call) {
+      captionOnly = modelVerdictToStored(call.verdict)
+      secondLook = { confidence: call.confidence, reason: call.reason, brands: call.brands }
+      extraSignals.push('second-look:judged')
+    } else {
+      extraSignals.push('second-look:call-failed')
+    }
+    base.verdict = captionOnly
+    base.secondLook = secondLook
+    base.signals = extraSignals
+  }
 
   /**
    * Only a caption the classifier called ORDINARY can be moved by its footage.
@@ -177,7 +249,7 @@ export async function judgeWithFrame(
    */
   if (!frame.prompt) {
     const outcome = applyFrameSignal(captionOnly, captionOnly, frame.evidence)
-    return { ...base, verdict: outcome.verdict, signals: outcome.signals, engine }
+    return { ...base, verdict: outcome.verdict, signals: [...extraSignals, ...outcome.signals], engine }
   }
 
   const withFrameCall = await classifyCaption(input.caption, input.shortcode, frame.prompt, input.tagText ?? null)
@@ -193,7 +265,7 @@ export async function judgeWithFrame(
   if (!withFrameCall) {
     return {
       ...base,
-      signals: ['frame:call-failed'],
+      signals: [...extraSignals, 'frame:call-failed'],
       frameText: summary,
       frameSummary: summary,
       engine,
@@ -212,11 +284,12 @@ export async function judgeWithFrame(
 
   return {
     verdict: outcome.verdict,
-    signals: outcome.signals,
+    signals: [...extraSignals, ...outcome.signals],
     frameText: summary,
     frameSummary: summary,
     engine,
     changedByFrame: outcome.verdict !== captionOnly,
     reason: 'judged',
+    secondLook,
   }
 }

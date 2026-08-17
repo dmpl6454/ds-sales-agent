@@ -149,12 +149,13 @@ export async function rejudgeUnusedEvidence(opts: RejudgeOptions = {}): Promise<
         caption: p.caption,
         optedOut: p.target.optedOut,
         /**
-         * A rule detector's verdict is a LABEL, not an opinion, and the footage must not
-         * move it — that is what makes @madovermarketing_mom usable as ground truth at all.
-         * Asked of the detector rather than compared against a key string, which is the
-         * shortcut CLAUDE.md records rendering "Paid campaigns found: 0" for a whole channel.
+         * judge.ts owns what each detector's verdicts permit, keyed on the detector —
+         * but READINESS is still asked of the detector itself ("no API key" must skip
+         * cleanly rather than burn a failed call per pass), which is the shortcut
+         * CLAUDE.md records rendering "Paid campaigns found: 0" for a whole channel.
+         * A not-ready detector is passed as 'passthrough': unsupported, skipped, free.
          */
-        frameJudgingSupported: (detector.readiness?.() ?? { ready: true }).ready,
+        detectorKey: (detector.readiness?.() ?? { ready: true }).ready ? detector.key : 'passthrough',
         tagText: await tagsForStoredPost({
           shortcode: p.shortcode,
           taggedAccounts: p.taggedAccounts,

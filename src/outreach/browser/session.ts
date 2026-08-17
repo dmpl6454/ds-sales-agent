@@ -44,8 +44,18 @@ const CHECKPOINT_PATHS = ['/challenge', '/accounts/suspended', '/accounts/disabl
  * Not simply merged into LOGIN_PATHS because the remedy differs — a login form means
  * re-authenticate, a 2FA prompt means enter a code for a session that already exists.
  * Checked BEFORE the login paths, because IG's 2FA URL sits under `/accounts/login/`.
+ *
+ * `/two_step_verification` was MEASURED, not guessed: on 2026-08-17 a real hand login
+ * was prompted at `/accounts/login/two_step_verification?encrypted_context=…` — a URL
+ * that matches neither of the paths this list shipped with, while `/accounts/login` IS
+ * a substring of it. So the login branch won, and a routine code prompt read as a DEAD
+ * SESSION: NotLoggedInError → `sessionInvalid: true` → the gate's no-session stop, with
+ * the screen telling the operator to re-login an account that was signed in the whole
+ * time. That is the §3.5 false-evidence cascade, reachable from a URL nobody had seen
+ * until Instagram served it. The paths here are substrings, so this one entry covers
+ * both the bare and the /accounts/login/-prefixed form.
  */
-const TWO_FACTOR_PATHS = ['/two_factor', '/accounts/login/two_factor']
+const TWO_FACTOR_PATHS = ['/two_factor', '/accounts/login/two_factor', '/two_step_verification']
 
 /**
  * A login form is NOT a checkpoint, and conflating the two was a real bug.

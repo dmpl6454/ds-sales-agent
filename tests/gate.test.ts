@@ -15,6 +15,7 @@ function ok(): ResendInput {
     targetOptedOut: false,
   targetIsWatchOnly: false,
     targetRepliedAt: null,
+  targetRecentContact: null,
     targetSentTodayCount: 0,
     senderSentTodayCount: 0,
     maxPerTargetPerDay: 2,
@@ -268,5 +269,53 @@ describe('a draft whose persona has since changed', () => {
   it('applies whether or not a person is present', () => {
     expect(evaluateResend({ ...ok(), unattended: false, draftPersonaStale: true }).ok).toBe(false)
     expect(evaluateResend({ ...ok(), unattended: true, draftPersonaStale: true }).ok).toBe(false)
+  })
+})
+
+describe('one recipient, one conversation at a time  [2026-08-17]', () => {
+  /**
+   * THE MEASURED INCIDENT, as a fixture: @absolutejk heard from @bollywoodchronicle at
+   * 17:44 and from @bollywoodsocietyy at 18:13 the same day — twenty-nine minutes apart,
+   * near-identical bodies, different page names. Every spacing rule was per PAIR, so the
+   * second page's message was a "first touch" with no history; the only cross-sender rule
+   * (2/recipient/day) PERMITS one duplicate a day; and rotation deliberately elects the
+   * next page for the next touch. Tabish saw it on the dashboard before any code did.
+   */
+  it('refuses when ANY of our pages delivered to this recipient inside the window', () => {
+    const r = evaluateResend({
+      ...ok(),
+      targetRecentContact: { fromHandle: 'bollywoodchronicle', hoursAgo: 0.5 },
+    })
+    expect(r.ok).toBe(false)
+    if (!r.ok) {
+      expect(r.reason).toBe(RESEND_BLOCKS.TARGET_RECENTLY_CONTACTED)
+      // The detail names the page and the recency — a refusal must say why, on the thing
+      // it refuses, and "some rule fired" is not a reason an operator can act on.
+      expect(r.detail).toContain('bollywoodchronicle')
+    }
+  })
+
+  /**
+   * The direction Tabish described: "another page only if the first was blocked." A
+   * blocked sender DELIVERED nothing, so the recipient never locks — the fallback works
+   * by construction rather than by an exception nobody tests.
+   */
+  it('a recipient nobody has actually reached is open to any page', () => {
+    expect(evaluateResend({ ...ok(), targetRecentContact: null }).ok).toBe(true)
+  })
+
+  it('is absolute — an override must be inert, like the daily caps', () => {
+    const r = evaluateResend({
+      ...ok(),
+      targetRecentContact: { fromHandle: 'bollywoodchronicle', hoursAgo: 2 },
+      overrides: [RESEND_BLOCKS.TARGET_RECENTLY_CONTACTED],
+    })
+    expect(r.ok).toBe(false)
+  })
+
+  it('applies unattended and attended alike', () => {
+    const contact = { fromHandle: 'bollywoodsocietyy', hoursAgo: 26 }
+    expect(evaluateResend({ ...ok(), unattended: true, targetRecentContact: contact }).ok).toBe(false)
+    expect(evaluateResend({ ...ok(), unattended: false, targetRecentContact: contact }).ok).toBe(false)
   })
 })

@@ -45,6 +45,28 @@ describe('classifyUrl', () => {
   it('classifies 2FA ahead of the login form when the URL contains both', () => {
     expect(classifyUrl('https://www.instagram.com/accounts/login/two_factor')).toBe('needs-2fa')
   })
+
+  /**
+   * THE URL INSTAGRAM ACTUALLY SERVES, verbatim from a real hand login on 2026-08-17.
+   *
+   * The list shipped with `/two_factor` only, this URL says `two_step_verification`, and
+   * `/accounts/login` is a substring of it — so the login branch won and a routine code
+   * prompt was classified as a dead session. `markSessionInvalid` would then have halted
+   * a signed-in revenue account on false evidence. The earlier tests in this block pin
+   * the URL the author ASSUMED; this one pins the URL that was MEASURED, which is the
+   * difference that let the gap ship with a green suite.
+   */
+  it('classifies the real two_step_verification URL as 2FA, not as logged out', () => {
+    expect(
+      classifyUrl(
+        'https://www.instagram.com/accounts/login/two_step_verification?encrypted_context=AWSCReis8or8K_nbBxUr23nmHBuPs7wcNehzg6J2v',
+      ),
+    ).toBe('needs-2fa')
+  })
+
+  it('classifies the bare two_step_verification path as 2FA too', () => {
+    expect(classifyUrl('https://www.instagram.com/two_step_verification/')).toBe('needs-2fa')
+  })
 })
 
 describe('looksLikeEnforcement', () => {

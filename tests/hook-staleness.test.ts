@@ -115,6 +115,7 @@ describe('the gate stop', () => {
     targetOptedOut: false,
   targetIsWatchOnly: false,
     targetRepliedAt: null,
+    targetRecentContact: null,
     targetSentTodayCount: 0,
     senderSentTodayCount: 0,
     maxPerTargetPerDay: 2,
