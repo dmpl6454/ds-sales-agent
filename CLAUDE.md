@@ -334,6 +334,86 @@ caveat in this file, because a trend is rendered from rows.
 
 **Still not rendered anywhere.** The data half is done; `/paid-posts` does not yet show it.
 
+### THE UI AUDIT — FIVE THINGS THE SCREEN CLAIMED THAT THE DATA DID NOT
+
+Tabish: *"UI frontend to backend audit must be performed and data must be represented
+accordingly."* Done by rendering each page in a real browser and querying the live database
+in the same script. Each half was self-consistent; only the comparison showed the gap.
+
+1. **YOU COULD NOT ADD A SENDING ACCOUNT AT ALL.** `addSender` had existed for weeks —
+   validated, audited, creating routes — and **not one file in `src/app` imported it**. The
+   only way in was writing to the database by hand. `/targets` had its form the whole time,
+   which is exactly why nobody noticed: the pair looked symmetrical from outside. There is
+   now an **Add a sending account** form on `/senders`.
+2. **THE TARGET LIST GROUPED BY `kind`, NOT `role`.** This file already says why that is a
+   trap — `kind === 'CHANNEL'` is NOT "a page we watch", because `importProspects` writes
+   messageable prospects as CHANNEL. The two columns agree on all 99 rows TODAY, which is
+   precisely why reading the page could not catch it: the first imported list would have
+   appeared under the heading for pages we never write to.
+3. **THE HEADINGS COUNTED ROWS THE CLAIM WAS FALSE OF** — *"Companies we message (95)"* while
+   13 are retired and can never be messaged; *"Pages we watch (4)"* while 2 are. Now (82) and
+   (2), with retired rows still listed and counted separately.
+4. **A CONTROL THAT DOES NOTHING WAS OFFERED ON 95 ROWS.** *"read their posts every check"* on
+   company rows — and `pipeline.ts` reads `kind: 'CHANNEL'`, so turning it on for a BRAND
+   spends four feed requests a pass on an account whose posts nothing classifies. Tabish
+   asked for it to go; it is now on WATCH rows only.
+5. **"checked four times a day" WAS THREE WEEKS STALE** — detection got its own 15-minute
+   clock on 2026-08-07. Imported from `DETECT_INTERVAL_MINUTES` now. It also rendered as
+   **"watch2 channels"**: the JSX bug already recorded here, where the space between an
+   expression and the next line's text is dropped.
+
+And the wording Tabish saw on a draft: `gate.ts` said *"channel is retired"* about a BRAND
+row. **95 of 99 targets are companies**, so the word was wrong for nearly every row it can
+appear on. It is "this recipient is retired" now, in the gate and in the remedy.
+
+### THE ACCURACY TREND IS ON SCREEN, AND THE LANDING PAGE IS HALF THE SIZE
+
+`accuracyHistory` had stored every run since 13 August and **nothing rendered it** — measured
+thirty times, shown never. `/paid-posts` now carries it: the **RANGE** across a run's repeats
+(never a point — 2 of 89 posts flip between identical runs), how long ago it ran, *"not
+measurable"* rather than 0% where a channel has no positives, and the standing caveat that
+this measures CAPTION judging and is not a coverage figure.
+
+**THE SIMPLIFICATION FIGURE WAS TAKEN ON AN EMPTY QUEUE AND UNDERSTATED IT FIVEFOLD.** With
+77 drafts the landing page measured **196 numerals, 3,458 words, 12,253px**, against the
+35/593/1,349 measured when the queue was empty. Density is proportional to queue depth, so
+that whole exercise must be done on a full day.
+
+Collapsing each draft's message body behind one click takes it to **96 numerals, 1,837 words,
+5,961px** — half. The brief's hard constraint is ASSERTED rather than assumed: all 20 cards
+still carry their refusal sentence on the **collapsed** row, checked in the browser.
+
+**`pnpm ig:layout` then failed at 611 queries against a 520 budget, and that is the check
+earning its keep.** Not raised — a budget is a ceiling over a bounded design. The second
+`recheckBeforeSend` per draft is skipped when autopilot is OFF, because with the dispatcher
+stopped it buys one sentence ("ready to send by hand" against "ready, and waiting for you")
+that means press the button either way. With autopilot ON the distinction is real and the
+call is still made.
+
+### COST IS ACCURATE, AND IT WAS CHECKED TWICE
+
+Tabish asked. Verified two independent ways, because a figure agreeing with itself proves
+nothing: the stored ledger sums to **$0.193662**, and recomputing from raw tokens against the
+price table gives **$0.193662** — the eighth decimal.
+
+**The DeepSeek trap is NOT present.** `usage.prompt_tokens` INCLUDES
+`prompt_cache_hit_tokens`, so recording both bills cached tokens twice. `semantic.ts` records
+`prompt_cache_miss_tokens` as `inputTokens`, which is the correct complement. Had it been
+wrong the total would read **$1.69 against $0.124 — 13.6× high**. 7,486 calls, cache hit
+**94.4%**.
+
+### OUR OWN TWO PAGES HAVE NOT BEEN READ SINCE 13 AUGUST
+
+Found while auditing, corroborated two ways and **not acted on, because it is Tabish's call**:
+@bollywoodsocietyy and @bollywoodchronicle have `watchEnabled: false`, and (1) their newest
+stored post is 2026-08-13T08:00 while @viralbhayani is current to the minute, and (2)
+`pipeline.ts` reads `where: { kind: 'CHANNEL', watchEnabled: true }`, which excludes them.
+
+**No audit row explains it.** That contradicts the 2026-08-07 entry in this file — *"posts
+kept, still watched — watching our own pages is ground truth, not prospecting"*. Their 802 and
+937 posts are frozen history still counted in figures. Resuming would restart roughly 1,500
+feed requests a day, which is why it was left alone rather than flipped.
+
 ### WHERE THIS SESSION LEFT THE SYSTEM
 
 Everything below is deployed and running unless it says otherwise.
@@ -351,7 +431,11 @@ Everything below is deployed and running unless it says otherwise.
 | the queue | **77 waiting**, 73 room left. 74 of 77 pass every gate — READ THEM before turning autopilot on |
 | GitHub | `origin/main` is level with the Linode and with this working tree |
 | accuracy | on a daily cron at 09:00 IST, storing the range and the `predRule`. Not rendered yet |
-| tests | **1,571 / 78 files**, typecheck clean, verified on a CLEAN CLONE as well as here |
+| the UI | **you can add a sending account now** (there was no form at all); targets grouped by WATCH/PROSPECT with honest counts |
+| accuracy | daily cron at 09:00 IST **and rendered on /paid-posts** as a range with its date |
+| the landing page | **half the size** with a full queue — 12,253px → 5,961px, every refusal still on the collapsed row |
+| cost | verified twice: ledger $0.193662 = recomputed $0.193662. No DeepSeek double-count |
+| tests | **1,572 / 78 files**, typecheck clean, `ig:layout` all green including budgets |
 
 **STILL OUTSTANDING, honestly:**
 
