@@ -243,7 +243,11 @@ pm2 crash-looped the app 40+ times on *"Could not find a production build in the
 directory"*. The build failure itself was transient and the next build was clean — the
 damage was entirely the masked exit code. Check `${PIPESTATUS[0]}`, or do not pipe.
 
-### DISCARDING A DRAFT DOES NOT GIVE THE DAY'S BUDGET BACK
+### DISCARDING A DRAFT DOES NOT GIVE THE DAY'S BUDGET BACK — **FIXED THE SAME DAY, see above**
+
+> The section below is the MEASUREMENT that justified the redesign two sections up. It is kept
+> because the reasoning is the useful part; the behaviour it describes is gone. A discarded draft
+> now returns its slot immediately, because the queue bound is a depth rather than a daily rate.
 
 **MEASURED at the end of this session: `created=10 delivered=1` against
 `maxNewBrandTouchesPerDay = 10`, and all ten of those attempts are `SKIPPED`.** The cap
@@ -258,6 +262,78 @@ regardless of how many were later thrown away. But it means **a rewrite cycle co
 so clearing the queue and expecting it to refill the same day is wrong. Say which it is before
 anyone concludes the planner has stopped.
 
+### THE CAP ON DRAFTS WAS GUARDING THE WRONG THING, AND IT MADE THE DELIVERY CAP UNREACHABLE
+
+Tabish: *"cap should not exist for drafts should it, what if we discover several targets?"*
+
+He is right. `checkNewBrandTouchCap` compared TWO counters against ONE number, and the old
+shape had three faults visible only together:
+
+1. **A draft reaches nobody.** The rule's own rationale — ten first touches in one afternoon
+   look nothing like ten across ten days — is about what a RECIPIENT sees. That is an argument
+   about DELIVERY. Applied to creation it guards something no stranger observes.
+2. **THE DELIVERY CAP COULD NEVER BE REACHED.** `created` was checked FIRST and shared the
+   number, so once the queue held N first touches nothing more was written — and `delivered`
+   could therefore never reach N either. **The counter carrying the actual safety argument was
+   dead in practice.** `tests/brand-guards.test.ts` now asserts it binding with an EMPTY queue,
+   which is a state the old shape made unreachable.
+3. **A cleanup spent the day's allowance.** MEASURED: 9 drafts discarded for carrying the old
+   template plus 1 written read **10/10**, so no new company could be contacted for the rest of
+   that day, on account of messages nobody received.
+
+**The queue bound is a DEPTH now** — `maxWaitingNewBrandDrafts`, default **150**, counted over
+READY/QUEUED only:
+
+- discovering 200 companies fills the queue and stops, rather than stalling drafting for a day;
+- discarding a draft returns its room immediately, because room is a slot and not a spent token;
+- the draft/discard/redraft loop the old docblock feared still cannot exceed the bound, because
+  it never grows the queue — and it contacts nobody and spends no model call, since with
+  `singleTemplate` on rendering is template substitution.
+
+`maxNewBrandTouchesPerDay` keeps the name that carries the rationale and now means **DELIVERED
+first touches per day, nothing else.** It is **10**. It was briefly 60, which was only ever
+defensible while it also governed drafting — 60 deliveries a day is far past what fleet pacing
+permits (3/hour inside 10:00-21:00 IST = 33).
+
+**The refusal text changed with the rule, and a test asserts the old word is GONE.** *"the rest
+of the queue waits for tomorrow"* is now false: waiting is not what clears a depth, sending or
+discarding is, and that can happen in the next minute.
+
+**VERIFIED BY RUNNING IT:** with the old cap spent a slot queued 0; after the change, 50 drafts,
+then 27 more on the next slot — **77 waiting, 73 room left, 0 body defects** across all of them
+(right opener, standard template, non-null send-guard needle, no raw handle anywhere).
+
+### AND READING THE RECIPIENTS FOUND NINE PEOPLE THE CATEGORY RULE CANNOT SEE
+
+Retired: **@azmishabana18** (Shabana Azmi), **@ushakakadeofficial** (2.4M followers, no
+category — the pitch would have opened *"Hi Usha Kakade team,"*), @anandpandit (his company
+@anandpanditmotionpictures stays), @arvindwriterdirector, @kunalkemmu, @shekharravjiani,
+@ritesh_sid, @you_sunilsihaag, @paradoxindia_ — plus @ananyapanday, @acharyavinodkumar,
+@deepakmukut and @kamala.trust earlier in the day.
+
+The planner's own guard held @rahuldevofficial and @shalini.passi correctly. It cannot see the
+rest because **45 of the never-contacted BRAND rows have NO CATEGORY AT ALL**, and a category
+the list does not recognise is read as evidence of a COMPANY. That is the honest gap, unchanged:
+it should fall through to `decideBrand` as UNRESOLVED, and brand resolution still has **no
+accuracy harness**, so that change must be measured before it ships.
+
+**A queue this size must be READ before autopilot is turned on.** 74 of 77 drafts pass every
+gate; the only thing standing between them and a stranger's inbox is the switch.
+
+### ACCURACY RUNS ON A CRON NOW
+
+`30 3 * * *` on the Linode (09:00 IST — after the overnight posts land, before the commercial
+peak, so it scores a settled corpus), `pnpm ig:accuracy --repeat 3`, logging to
+`/var/log/ds-accuracy.log`. **`--repeat 3` is not optional**: the classifier is not
+deterministic and one run swings recall 95-100%, so a single figure is a sample.
+
+Each run stores the RANGE across its repeats and the `predRule` that produced it. **Figures
+either side of 2026-08-17 are not comparable** — `pred` became `final === 'CAMPAIGN'`, so frame
+escalations now count as positive predictions. The rule is recorded IN THE ROW rather than as a
+caveat in this file, because a trend is rendered from rows.
+
+**Still not rendered anywhere.** The data half is done; `/paid-posts` does not yet show it.
+
 ### WHERE THIS SESSION LEFT THE SYSTEM
 
 Everything below is deployed and running unless it says otherwise.
@@ -266,13 +342,16 @@ Everything below is deployed and running unless it says otherwise.
 |---|---|
 | committed | **10 commits**, all deployed to the Linode. `origin/main` on GitHub is still at `db2687d` — **the push has not been done** |
 | the queue | **0 waiting drafts.** 46 cleared (30 duplicates, 16 old template, 9 more written and discarded mid-session), 1 delivered message untouched throughout |
-| the cap | **spent for today** — `created=10` against `maxNewBrandTouchesPerDay=10`, all ten SKIPPED. The queue rebuilds after IST midnight, not before |
+| the caps | **REDESIGNED** — delivery 10/day (the pattern guard), queue depth 150 (its own number). Discarding now returns room immediately |
 | detection | `frame:call-failed` **83 → 0**, 11 escalated to CAMPAIGN. In-window CAMPAIGN **316 → 328** |
 | prospects | **91 live, 6 retired.** 18 created from a home-IP run; 4 retired as people or charities |
 | routes | the burner's **70** pair rows pruned; 285 remain, 0 history lost |
 | layout | `pnpm ig:layout` **all green**, first run ever. `/` measures **111/520** queries, not the 454 this file used to state |
 | the diagram | **rebuilt and republished to the same URL**, from the deployed code — see `docs/PIPELINE.md` |
-| tests | **1,567 / 78 files**, typecheck clean, verified on a CLEAN CLONE as well as here |
+| the queue | **77 waiting**, 73 room left. 74 of 77 pass every gate — READ THEM before turning autopilot on |
+| GitHub | `origin/main` is level with the Linode and with this working tree |
+| accuracy | on a daily cron at 09:00 IST, storing the range and the `predRule`. Not rendered yet |
+| tests | **1,571 / 78 files**, typecheck clean, verified on a CLEAN CLONE as well as here |
 
 **STILL OUTSTANDING, honestly:**
 
