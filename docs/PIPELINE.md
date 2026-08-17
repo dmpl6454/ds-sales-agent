@@ -2,6 +2,45 @@
 
 https://claude.ai/code/artifact/517b2e18-4c61-428c-a300-9b21de07d1c6
 
+> ## REBUILT 2026-08-17 AFTERNOON, from the deployed code and the live database. Title unchanged: **Three Clocks**.
+>
+> Same URL, same 🔁 favicon, `force: true`. The previous version was written on 13 August and
+> **the 17 August restructure invalidated its spine**, not merely its numbers: it said ELEVEN
+> gate questions and there are now twelve, it drew a verdict set containing REVIEW which no
+> longer exists, and it had no notion of the two target types.
+>
+> **What changed in the drawing, and why each is a mechanism rather than a number:**
+>
+> 1. **The footage can now MINT a paid verdict.** The old page drew it as able only to flag a
+>    post for a human. Figure 2 now shows the raise arm ending in PAID, annotated *11 found this
+>    way*, with the three things it still may never do written under the figure — it cannot
+>    clear a paid post, overturn one, give an unjudged post a verdict, or touch a human answer.
+> 2. **Two target types.** Figure 3 opens on `watched publisher → never messaged`, because
+>    confusing the publisher with the prospect is the mistake the system made for months, and no
+>    figure had ever drawn the distinction.
+> 3. **Brand candidates come from two sources.** The caption's @mentions AND the accounts
+>    Instagram tags, with the caption arm marked *asked first* — the bound is a lookup budget, so
+>    ordering is the mechanism, not a preference.
+> 4. **Twelve questions**, `target-is-watch-only` among them, with the single crossable stop
+>    chipped and a note on why it is the only one that may be crossed.
+>
+> **Figures re-measured the same afternoon, from the live Postgres:** 2,617 posts since 1 Aug ·
+> 328 judged paid · 1,267 with the video read · **11 paid that only the footage found** · 5 human
+> answers (the 21 poisoned ones are cleared) · 91 companies live, 6 retired · **0 waiting drafts**
+> · **1 delivered ever** · $0.18 across 7,014 model calls.
+>
+> **The "what is true today" table is the replacement for a "known wrong" section**, and it is
+> deliberately not a to-do list: detection is NOT broken, the 98% figure is not comparable
+> (78.6% where ground truth was built properly), the company classifier has no harness at all,
+> and one page of three can actually send. A reader who takes only that table away has the
+> honest state of the system.
+>
+> **Verified before publishing, and the checker was MUTATION-TESTED:** every `<text>` inside its
+> own viewBox, no label straddling a box it does not belong to, no sideways scroll, and `body`
+> painting its own ground — asserted in BOTH themes. Injecting a label 960px into a 900-wide
+> frame and shifting a box 56px into its neighbour produced 6 failures across the two themes;
+> restoring them passed. A checker that has never failed proves nothing.
+
 > ## REBUILT 2026-08-13 EVENING, and the debt above is CLEARED. Title: **Three Clocks**.
 >
 > Same URL, same 🔁 favicon, `force: true`. Rebuilt from the code and the live database, not

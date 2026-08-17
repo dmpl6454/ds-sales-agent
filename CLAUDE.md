@@ -258,6 +258,38 @@ regardless of how many were later thrown away. But it means **a rewrite cycle co
 so clearing the queue and expecting it to refill the same day is wrong. Say which it is before
 anyone concludes the planner has stopped.
 
+### WHERE THIS SESSION LEFT THE SYSTEM
+
+Everything below is deployed and running unless it says otherwise.
+
+| | |
+|---|---|
+| committed | **10 commits**, all deployed to the Linode. `origin/main` on GitHub is still at `db2687d` — **the push has not been done** |
+| the queue | **0 waiting drafts.** 46 cleared (30 duplicates, 16 old template, 9 more written and discarded mid-session), 1 delivered message untouched throughout |
+| the cap | **spent for today** — `created=10` against `maxNewBrandTouchesPerDay=10`, all ten SKIPPED. The queue rebuilds after IST midnight, not before |
+| detection | `frame:call-failed` **83 → 0**, 11 escalated to CAMPAIGN. In-window CAMPAIGN **316 → 328** |
+| prospects | **91 live, 6 retired.** 18 created from a home-IP run; 4 retired as people or charities |
+| routes | the burner's **70** pair rows pruned; 285 remain, 0 history lost |
+| layout | `pnpm ig:layout` **all green**, first run ever. `/` measures **111/520** queries, not the 454 this file used to state |
+| the diagram | **rebuilt and republished to the same URL**, from the deployed code — see `docs/PIPELINE.md` |
+| tests | **1,567 / 78 files**, typecheck clean, verified on a CLEAN CLONE as well as here |
+
+**STILL OUTSTANDING, honestly:**
+
+- **The dashboard simplification** (the largest item in the 17 August handoff) is untouched.
+  Its four constraints are unchanged and still binding — a draft's refusal must stay on the
+  COLLAPSED row, `tests/stopInventory.test.ts` requires every stop reachable with a remedy,
+  `tests/shell.test.ts` requires ≥6 authenticated pages, and `src/scripts/layout.ts` hardcodes
+  each page's path, H1 and query budget and FAILS rather than skips.
+- **Accuracy is half done.** `accuracyHistory` now stores the RANGE across a run's repeats and
+  the `predRule` that produced it — you cannot render a range you never stored, and figures
+  either side of 17 August are not comparable. **Nothing renders it, and `ig:accuracy` is not on
+  a cron.** Note before designing that: the model emits ~8 distinct confidence values and never
+  goes below 85 on an ORGANIC, so **a review queue keyed on model uncertainty would find
+  nothing**.
+- **Two of three fleet accounts still have no Instagram session.** Until someone presses Connect
+  from the home IP, raising any cap changes nothing.
+
 ### FIGURES RE-MEASURED THIS AFTERNOON
 
 | stated | measured |
