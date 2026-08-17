@@ -38,6 +38,17 @@ export interface AccountRow {
   /** A hand login has happened, so this account CAN send unattended. */
   connected: boolean
   connecting: boolean
+  /**
+   * Is this account in the ROTATION? `fleetMember: false` means it is excluded from
+   * `ensureFleetPairs` and `runOutreach` entirely — it is an account we own that writes to
+   * nobody, which is what keeps the rehearsal burner out of real outreach.
+   *
+   * Read by this page since 2026-08-17, because until then it was not: @tabishmukaddam1 has
+   * 0 routes and cannot be elected by rotation, and the page filed it under **"Sending on
+   * their own"**. A group title stating a capability its members do not have is the same
+   * defect as a heading counting rows the claim is false of.
+   */
+  fleetMember: boolean
   sentThisWeek: number
   sentToday: number
   dailyCap: number
@@ -52,7 +63,7 @@ export interface AccountRow {
 
 export interface AccountGroup {
   /** `not-armed` is gone with the per-account toggle — one switch, 2026-08-08. */
-  key: 'broken' | 'needs-login' | 'needs-persona' | 'ready'
+  key: 'broken' | 'needs-login' | 'needs-persona' | 'ready' | 'out-of-fleet'
   title: string
   rows: AccountRow[]
 }
@@ -184,6 +195,7 @@ export async function buildAccountsPage(connectingHandles: readonly string[] = [
       state,
       connected: usable,
       connecting: connecting.has(s.handle),
+      fleetMember: s.fleetMember,
       sentThisWeek: week.get(s.id) ?? 0,
       sentToday: todayUsed.get(s.id) ?? 0,
       dailyCap: s.dailyCap,
@@ -216,6 +228,12 @@ export async function buildAccountsPage(connectingHandles: readonly string[] = [
     return got
   }
 
+  /*
+    OUT OF THE ROTATION FIRST, because it is a fact about what the account IS rather than
+    about what is currently wrong with it. Taken before the others so a burner that also
+    happens to be signed out is described by the thing that matters.
+  */
+  const outOfFleet = take((r) => !r.fleetMember)
   const broken = take((r) => r.status === 'CHALLENGED' || r.personaProblems.length > 0)
   const needsLogin = take((r) => !r.connected)
   const needsPersona = take((r) => r.personaSharedWithAnother)
@@ -250,6 +268,11 @@ export async function buildAccountsPage(connectingHandles: readonly string[] = [
       key: 'ready',
       title: 'Sending on their own',
       rows: ready,
+    },
+    {
+      key: 'out-of-fleet',
+      title: 'Not in the rotation — writes to nobody',
+      rows: outOfFleet,
     },
   ]
 
