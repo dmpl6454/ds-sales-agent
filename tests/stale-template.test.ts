@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { classifyOpener } from '@/outreach/staleTemplate'
+import { classifyOpener, classifyTemplate } from '@/outreach/staleTemplate'
 import { buildGreeting, introLine, renderMessage } from '@/outreach/render'
 
 /**
@@ -207,5 +207,51 @@ describe('classifyOpener — what it refuses to call stale', () => {
       const v = classifyOpener(i)
       expect(v.detail.length).toBeGreaterThan(20)
     }
+  })
+})
+
+/**
+ * ── A SECOND WAY A BODY GOES OUT OF DATE (2026-08-17) ─────────────────────────────────
+ *
+ * MEASURED, four minutes apart: the server drafted 9 messages at 08:00:28 UTC, and
+ * `singleTemplate` was turned on at 08:04:15. All 9 carried the correct merged opener — so
+ * `classifyOpener` called them `current`, rightly — while their bodies came from the brand
+ * variant pool the setting had just replaced. Every one of them was sendable.
+ *
+ * Two independent questions, so two functions.
+ */
+describe('classifyTemplate', () => {
+  const STANDARD = "We're a Bollywood and paparazzi network doing over 30 crore (300M) views a day"
+
+  it('a body carrying the standard template is current', () => {
+    const body = `Hi X, I'm Kapil.\n\n${STANDARD}, and we work year-round.\n\nLooking forward to connecting.`
+    expect(classifyTemplate({ renderedBody: body, requiredPhrase: STANDARD }).shape).toBe('current')
+  })
+
+  it('a body from the replaced variant pool is stale', () => {
+    const body = "Hi X, I'm Kapil.\n\nMost brands reach us for one campaign. The ones who see compounding returns commit to a calendar."
+    expect(classifyTemplate({ renderedBody: body, requiredPhrase: STANDARD }).shape).toBe('stale')
+  })
+
+  /** With no single template in force, every pool body is legitimate and nothing is stale. */
+  it('is inert when no single template is in force', () => {
+    const body = 'Hi X, anything at all.'
+    expect(classifyTemplate({ renderedBody: body, requiredPhrase: null }).shape).toBe('current')
+    expect(classifyTemplate({ renderedBody: body, requiredPhrase: '' }).shape).toBe('current')
+  })
+
+  it('an empty body is unknown, never stale', () => {
+    expect(classifyTemplate({ renderedBody: '', requiredPhrase: STANDARD }).shape).toBe('unknown')
+    expect(classifyTemplate({ renderedBody: null, requiredPhrase: STANDARD }).shape).toBe('unknown')
+  })
+
+  /**
+   * Editing a draft is explicitly allowed while it is READY, so the check must survive an
+   * operator rewriting a later paragraph. It identifies the template, it does not demand
+   * byte-identity.
+   */
+  it('survives an edited later paragraph', () => {
+    const body = `Hi X, I'm Kapil.\n\n${STANDARD}, and we work year-round.\n\nI rewrote this bit entirely by hand.`
+    expect(classifyTemplate({ renderedBody: body, requiredPhrase: STANDARD }).shape).toBe('current')
   })
 })

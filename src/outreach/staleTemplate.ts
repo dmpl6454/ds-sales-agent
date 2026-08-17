@@ -124,3 +124,43 @@ export function classifyOpener(input: OpenerInput): OpenerVerdict {
     detail: `line 1 does not begin with the greeting "${greeting}" — this body was probably edited by hand, so it is left alone`,
   }
 }
+
+/**
+ * WAS THIS BODY BUILT FROM THE TEMPLATE THAT IS IN FORCE NOW?
+ *
+ * A SECOND, SEPARATE QUESTION from `classifyOpener`, and separate on purpose: the opener
+ * changed because `renderMessage` changed, and the template can change because a `Setting`
+ * row changed. A draft can be current on one and stale on the other, and one function
+ * answering both would have to pick a winner.
+ *
+ * MEASURED 2026-08-17, four minutes apart: the server drafted 9 messages at 08:00:28 UTC and
+ * `singleTemplate` was turned on at 08:04:15. All 9 carried the correct MERGED OPENER — so
+ * `classifyOpener` called them `current`, quite rightly — while their bodies were the
+ * brand-variant pitch that the setting had just replaced. Every one of them was sendable.
+ *
+ * ── THE REQUIRED PHRASE IS PASSED IN, NEVER RESTATED ──────────────────────
+ *
+ * The caller supplies a distinctive sentence from the template now in force, taken from the
+ * exported constant itself. A copy of that sentence here would be a second source of truth
+ * for the message body, which is the drift this file already exists to catch once.
+ */
+export function classifyTemplate(input: {
+  renderedBody: string | null
+  /** A distinctive line from the template in force, or null when no single template applies. */
+  requiredPhrase: string | null
+}): OpenerVerdict {
+  const body = (input.renderedBody ?? '').trim()
+  const phrase = (input.requiredPhrase ?? '').trim()
+
+  // No single template in force: every body is legitimately from the variant pools.
+  if (phrase === '') return { shape: 'current', detail: 'no single template is in force, so any pool body is current' }
+  if (body === '') return { shape: 'unknown', detail: 'the stored body is empty, so its template cannot be read' }
+
+  if (body.includes(phrase)) {
+    return { shape: 'current', detail: 'the body carries the standard template' }
+  }
+  return {
+    shape: 'stale',
+    detail: 'the body was written from a message pool that the standard template has since replaced',
+  }
+}
