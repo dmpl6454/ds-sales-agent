@@ -70,10 +70,40 @@ export interface RejudgeSummary {
    * which is information, not a failure, and it must not read as "nothing to do".
    */
   skippedNoEvidence: number
+  /**
+   * ── WHY THIS IS SEPARATE FROM `skippedNoEvidence` (2026-08-17) ────────────
+   *
+   * Both counters mean "left alone", and collapsing them cost a real diagnosis. The pass
+   * was logging `noFrameHere=10 remaining=83` on the very host that HELD all 83 frames —
+   * a number naming a cause ("the frames are elsewhere") that was false, while the actual
+   * cause was that the classifier was never asked. Twenty minutes went into checking the
+   * OCR engine, the frame directory and the API key, all of which were fine.
+   *
+   * That is `framesRead` collapsing five states into one, reappearing in the counter built
+   * to avoid it. A skip because THIS MACHINE cannot see the frame and a skip because the
+   * CALL did not answer have different remedies — move hosts, versus look at the model —
+   * so they are two numbers.
+   */
+  skippedCallFailed: number
+  /** Dry-run detail: what each examined post WOULD become. Empty on a writing pass. */
+  proposals: { shortcode: string; from: string; to: string; signals: string[]; frameText: string | null }[]
 }
 
-export async function rejudgeUnusedEvidence(): Promise<RejudgeSummary> {
+export interface RejudgeOptions {
+  /**
+   * Override `REJUDGE_PER_PASS`. The small bound exists so a DETECTION pass stays cheap;
+   * a person draining a backlog on purpose is a different act, exactly as `ig:brands --run`
+   * is a different act from the bounded automatic resolve pass.
+   */
+  limit?: number
+  /** Decide and report, write nothing. The default for the CLI, never for the pipeline. */
+  dryRun?: boolean
+}
+
+export async function rejudgeUnusedEvidence(opts: RejudgeOptions = {}): Promise<RejudgeSummary> {
   const cutoff = detectionCutoff()
+  const limit = opts.limit ?? REJUDGE_PER_PASS
+  const dryRun = opts.dryRun ?? false
 
   /**
    * `verdict: 'ORGANIC'` in the query, not because this pass decides the rule, but because
@@ -94,7 +124,7 @@ export async function rejudgeUnusedEvidence(): Promise<RejudgeSummary> {
   const candidates = await prisma.detectedCampaign.findMany({
     where,
     orderBy: { postedAt: 'desc' },
-    take: REJUDGE_PER_PASS,
+    take: limit,
     select: {
       id: true,
       shortcode: true,
@@ -109,6 +139,8 @@ export async function rejudgeUnusedEvidence(): Promise<RejudgeSummary> {
 
   let changed = 0
   let skippedNoEvidence = 0
+  let skippedCallFailed = 0
+  const proposals: RejudgeSummary['proposals'] = []
   for (const p of candidates) {
     const detector = getDetector(p.target.detectorKey)
     const judged = await judgeWithFrame(
@@ -154,7 +186,13 @@ export async function rejudgeUnusedEvidence(): Promise<RejudgeSummary> {
      */
     const readTheFrame = judged.signals.some((sig) => sig === 'frame:read-agreed' || sig.startsWith('frame:says-') || sig === 'frame:no-text' || sig.startsWith('frame:disagreed-'))
     if (!readTheFrame) {
-      skippedNoEvidence++
+      /**
+       * TWO COUNTERS, because they have different remedies. `frame:call-failed` coming back
+       * means the frame WAS read here and the classifier did not answer — look at the model.
+       * Anything else means this host cannot see the frame — run it where the frames are.
+       */
+      if (judged.signals.includes('frame:call-failed')) skippedCallFailed++
+      else skippedNoEvidence++
       continue
     }
 
@@ -165,6 +203,24 @@ export async function rejudgeUnusedEvidence(): Promise<RejudgeSummary> {
      * throttled handle held the whole per-pass budget while making no request at all.
      */
     const signals = (p.signals ?? '').replace(/frame:call-failed/g, judged.signals.join(' '))
+
+    /**
+     * The dry run DECIDES exactly as the writing pass does — same `judgeWithFrame`, same
+     * guards — and only the write is withheld. A preview computed by a different route is
+     * a preview of something else, which is how `ig:classify` once reported "27 reach the
+     * model" and then classified zero.
+     */
+    if (dryRun) {
+      proposals.push({
+        shortcode: p.shortcode,
+        from: p.verdict,
+        to: judged.verdict,
+        signals: judged.signals,
+        frameText: judged.frameText ?? null,
+      })
+      if (judged.verdict !== p.verdict) changed++
+      continue
+    }
 
     if (judged.verdict !== p.verdict || signals !== p.signals) {
       await prisma.detectedCampaign.update({
@@ -187,5 +243,5 @@ export async function rejudgeUnusedEvidence(): Promise<RejudgeSummary> {
   }
 
   const remaining = await prisma.detectedCampaign.count({ where })
-  return { examined: candidates.length, changed, remaining, skippedNoEvidence }
+  return { examined: candidates.length, changed, remaining, skippedNoEvidence, skippedCallFailed, proposals }
 }

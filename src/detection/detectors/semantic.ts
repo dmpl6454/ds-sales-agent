@@ -253,8 +253,31 @@ export async function classifyCaption(
    * mean the post became UNCLASSIFIED — "we could not judge it" — for 27 posts whose
    * shortness IS the finding. That left a permanently non-zero unjudged count that no
    * amount of re-running could ever clear, which reads on screen as a backlog.
+   *
+   * ── "NOTHING" MEANS NO EVIDENCE, NOT A SHORT CAPTION (2026-08-17) ─────────
+   *
+   * MEASURED, and it is why this line moved: **83 of 83 posts carrying
+   * `frame:call-failed` have a caption under 15 characters, and all 83 carry frame text.**
+   * Not one was a failed call. `judgeWithFrame` passes `frameText` here — a call whose
+   * input is the caption AND the footage — and this guard vetoed it on the caption alone,
+   * returned null, and the caller recorded that null as `frame:call-failed`. So the model
+   * was never asked, about the exact population the footage feature exists to catch: a
+   * one-word caption on a reel whose video carries the evidence.
+   *
+   * What was actually sitting unjudged, read off the stored `frameText`: `BALMAIN`,
+   * `EUGENIX HAIRSCIENCES`, `x300Ultra` — the last being a Vivo handset, and Vivo is the
+   * only advertiser ever confirmed on that channel by a disclosure hashtag.
+   *
+   * So the question is whether there is anything to judge, not whether the CAPTION is
+   * long. A short caption with footage is the Thane bus. A short caption with nothing is
+   * still free, still ORGANIC, and still never sent to the model.
+   *
+   * Deliberately NOT relaxed for `tagText`: tags reach BOTH calls about a post, so lifting
+   * the floor for them would let a post be judged with tags in one call and skipped in the
+   * other, and `applyFrameSignal` attributes any difference to THE FOOTAGE.
    */
-  if (trimmed.length < MIN_JUDGEABLE_CAPTION) return null
+  const hasFrameEvidence = (frameText ?? '').trim().length > 0
+  if (trimmed.length < MIN_JUDGEABLE_CAPTION && !hasFrameEvidence) return null
 
   /**
    * Cost is RECORDED now, not just printed by whichever script happened to run.

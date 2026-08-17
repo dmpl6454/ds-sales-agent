@@ -25,7 +25,18 @@ describe('re-judging never writes what it did not read', () => {
   it('writes only after confirming the frame was actually read', () => {
     // The guard, and the `continue` that makes it binding rather than advisory.
     expect(SRC).toMatch(/const readTheFrame =/)
-    expect(SRC).toMatch(/if \(!readTheFrame\) \{[\s\S]{0,120}continue/)
+
+    /**
+     * Asserted as "no write between the guard and its `continue`" rather than as a
+     * character-count window. The window version broke the moment the skip gained its
+     * second counter (2026-08-17) — a test failing because correct code moved is a test
+     * asserting the layout instead of the property.
+     */
+    const guard = SRC.indexOf('if (!readTheFrame)')
+    expect(guard).toBeGreaterThan(-1)
+    const block = SRC.slice(guard, SRC.indexOf('continue', guard))
+    expect(block).not.toMatch(/prisma\./)
+    expect(block.length).toBeGreaterThan(0)
   })
 
   /**
@@ -61,7 +72,26 @@ describe('the pass cannot run away or overwrite a person', () => {
   it('is bounded per pass, and the bound is a named constant', () => {
     expect(REJUDGE_PER_PASS).toBeGreaterThan(0)
     expect(REJUDGE_PER_PASS).toBeLessThanOrEqual(25)
-    expect(SRC).toMatch(/take: REJUDGE_PER_PASS/)
+
+    /**
+     * The bound became overridable on 2026-08-17 so `pnpm ig:rejudge` can drain a backlog
+     * deliberately, exactly as `ig:brands --run` is a different act from the bounded
+     * automatic resolve pass. What must stay true is that the DEFAULT is the named
+     * constant — a caller that passes nothing, which is the pipeline, is still bounded.
+     */
+    expect(SRC).toMatch(/take: limit/)
+    expect(SRC).toMatch(/opts\.limit \?\? REJUDGE_PER_PASS/)
+  })
+
+  /**
+   * The pipeline must never pass a limit or a dry run. A detection pass that drained the
+   * whole backlog would be a burst against the same endpoint detection depends on, and one
+   * that ran dry would look like it was working while writing nothing.
+   */
+  it('the pipeline calls it with no options, so it gets the bound and does write', () => {
+    const pipeline = readFileSync(new URL('../src/detection/pipeline.ts', import.meta.url), 'utf8')
+    expect(pipeline).toMatch(/rejudgeUnusedEvidence\(\)/)
+    expect(pipeline).not.toMatch(/rejudgeUnusedEvidence\(\{/)
   })
 
   /**

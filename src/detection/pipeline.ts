@@ -395,7 +395,7 @@ export async function runDetection(
     log.warn('re-judging unused evidence failed — next pass retries', {
       error: err instanceof Error ? err.message : String(err),
     })
-    return { examined: 0, changed: 0, remaining: 0, skippedNoEvidence: 0 }
+    return { examined: 0, changed: 0, remaining: 0, skippedNoEvidence: 0, skippedCallFailed: 0, proposals: [] }
   })
   // `remaining` is in the condition too: a drained backlog must go quiet, and a STUCK one
   // must not — examined=0 with remaining>0 is the state worth a line.
@@ -405,7 +405,15 @@ export async function runDetection(
       changed: rejudged.changed,
       // Named, because "examined 10, changed 0" on a host with no frame store is a
       // different fact from "examined 10, changed 0" on the host that has them.
+      //
+      // TWO NUMBERS, NOT ONE. This line used to print `noFrameHere` for BOTH skip reasons,
+      // and on 2026-08-17 it read `noFrameHere=10 remaining=83` on the very host holding
+      // all 83 frames — a counter asserting a cause that was false, which sent a diagnosis
+      // through the OCR engine, the frames directory and the API key before the real cause
+      // (the classifier was never asked) turned up. A number that names a reason must be
+      // true about that reason.
       noFrameHere: rejudged.skippedNoEvidence,
+      callDidNotAnswer: rejudged.skippedCallFailed,
       remaining: rejudged.remaining,
     })
   }
