@@ -565,10 +565,12 @@ export async function runOutreach(): Promise<PlanSummary> {
        * is a continuing conversation already spaced by cooldown.
        */
       const capGate = checkNewBrandTouchCap({
-        // The run's own first touches are added to the CREATED counter only: they are rows
-        // this loop has written, and it delivers nothing (`manualAssistSender`), so adding
-        // them to the delivered figure would claim messages nobody received.
-        firstTouchesCreatedToday: newBrandTouches.created + brandFirstTouchesThisRun,
+        // The run's own first touches are added to the WAITING depth only: they are rows this
+        // loop has written and left in the queue, and it delivers nothing
+        // (`manualAssistSender`), so adding them to the delivered figure would claim messages
+        // nobody received.
+        waitingFirstTouches: newBrandTouches.waiting + brandFirstTouchesThisRun,
+        maxWaitingNewBrandDrafts: settings.maxWaitingNewBrandDrafts,
         firstTouchesDeliveredToday: newBrandTouches.delivered,
         maxNewBrandTouchesPerDay: settings.maxNewBrandTouchesPerDay,
         isFirstTouch: decision.touchNumber === 1,

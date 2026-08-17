@@ -43,11 +43,21 @@ export interface BrandTouchInput {
    * See `brandTouchCounts.ts` for why they are kept apart: one bounds the QUEUE, the other
    * bounds what strangers actually receive, and today they read 6 and 0.
    */
-  /** First touches to brands WRITTEN today (IST) — bounds the draft queue. */
-  firstTouchesCreatedToday: number
+  /**
+   * First-touch brand drafts WAITING right now — a DEPTH, not a daily rate.
+   *
+   * Changed 2026-08-17 (Tabish: *"cap should not exist for drafts should it, what if we
+   * discover several targets?"*). A draft reaches nobody, so bounding how many are WRITTEN
+   * per day guards nothing a recipient can see — and because both counters were compared
+   * against one number with this one checked first, the DELIVERY cap could never be reached.
+   * Discarding a draft also spent the day's allowance on a message no one received.
+   */
+  waitingFirstTouches: number
+  /** How deep the first-touch queue may get. Its own number now — see above. */
+  maxWaitingNewBrandDrafts: number
   /** First touches to brands DELIVERED today (IST) — bounds what recipients see. */
   firstTouchesDeliveredToday: number
-  /** The cap. Both counters are measured against it independently. */
+  /** The DELIVERY cap. The rule the rationale was written about. */
   maxNewBrandTouchesPerDay: number
   /**
    * Is THIS a first touch? Only first touches are capped — a follow-up is a continuing
@@ -72,16 +82,17 @@ export function checkNewBrandTouchCap(input: BrandTouchInput): BrandGuardResult 
    * number. "2 written and 0 delivered" and "0 written and 2 delivered" are different
    * situations with different remedies, and a merged figure would describe neither.
    *
-   * Created is checked first because it is the one that binds in practice: a delivery
-   * needs a draft, so the queue fills before the inbox does.
+   * The queue depth is checked first because it is the one that binds in practice: a
+   * delivery needs a draft, so the queue fills before the inbox does. They no longer share a
+   * number, which is what makes the delivery cap reachable at all.
    */
-  if (input.firstTouchesCreatedToday >= input.maxNewBrandTouchesPerDay) {
+  if (input.waitingFirstTouches >= input.maxWaitingNewBrandDrafts) {
     return {
       ok: false,
       reason: BRAND_BLOCKS.NEW_BRAND_DAILY_CAP,
       detail:
-        `${input.firstTouchesCreatedToday} first message(s) to new brands have already been written today ` +
-        `(cap ${input.maxNewBrandTouchesPerDay}) — the rest of the queue waits for tomorrow`,
+        `${input.waitingFirstTouches} first message(s) to new brands are already waiting ` +
+        `(room for ${input.maxWaitingNewBrandDrafts}) — send or discard some and the rest will be written`,
     }
   }
 

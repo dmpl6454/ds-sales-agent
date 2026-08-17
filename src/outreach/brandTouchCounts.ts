@@ -46,28 +46,59 @@ import { DELIVERED_STATUSES } from '@/lib/constants'
  * conversation with a stranger, and a follow-up is already spaced by `cooldownDays` and
  * bounded by `maxUnansweredTouches`.
  */
+/**
+ * ── THE QUEUE COUNTER IS A DEPTH, NOT A DAILY RATE (2026-08-17, Tabish) ───────────────
+ *
+ * *"cap should not exist for drafts should it, what if we discover several targets?"*
+ *
+ * He is right, and the old shape had three faults that only show up together:
+ *
+ * 1. **A draft reaches nobody.** The rule's whole rationale — ten first touches in one
+ *    afternoon look nothing like ten across ten days — is about what a RECIPIENT sees. That
+ *    argument is about delivery. Applying it to creation guards a thing no stranger observes.
+ * 2. **It made the delivery cap unreachable.** Both counters were compared against ONE
+ *    number, and `created` was checked FIRST. So once the queue held N first touches, no more
+ *    were written — and `delivered` could therefore never reach N either. The counter
+ *    carrying the actual safety argument was dead in practice, which is this project's
+ *    signature failure wearing the costume of a second guard.
+ * 3. **A cleanup spent the day's allowance.** MEASURED, and it is what prompted the question:
+ *    9 drafts were discarded for carrying the old template, a tenth was written, and
+ *    `created` read 10/10 — so no new company could be contacted for the rest of the day,
+ *    on account of messages nobody ever received.
+ *
+ * So the queue bound is now the DEPTH OF THE WAITING QUEUE, against its own setting:
+ *
+ *   - discovering 200 companies fills the queue to the bound and stops, rather than stalling
+ *     drafting for the day;
+ *   - discarding a draft returns its room immediately, because the room is a slot, not a
+ *     spent token;
+ *   - a draft/discard/redraft loop — the thing the old docblock feared — still cannot exceed
+ *     the bound, because it never grows the queue. It also contacts nobody and, with
+ *     `singleTemplate` on, spends no model call: rendering is template substitution.
+ *
+ * And the delivery counter keeps the name that carries the rationale,
+ * `maxNewBrandTouchesPerDay`, now measured against nothing else.
+ */
 export interface NewBrandTouchCounts {
-  /** First touches to brands WRITTEN today, whatever became of them. */
-  created: number
-  /** First touches to brands DELIVERED today. */
+  /** First-touch brand drafts WAITING right now. A depth, not a rate — see above. */
+  waiting: number
+  /** First touches to brands DELIVERED today. The pattern guard. */
   delivered: number
 }
 
 export async function readNewBrandTouchCounts(dayStart: Date = istDayStart()): Promise<NewBrandTouchCounts> {
-  const [created, delivered] = await Promise.all([
+  const [waiting, delivered] = await Promise.all([
     /**
-     * `queuedAt`, not `createdAt` — `OutreachAttempt` has no `createdAt` column, and a
-     * plausible-looking `createdAt` filter is a runtime error rather than a compile one.
-     *
-     * EVERY status counts, `SKIPPED` included. A draft that was written and then discarded
-     * still opened a conversation as far as this cap is concerned: excluding discards would
-     * let a loop draft, discard and redraft its way past the cap without limit, and the
-     * discarded body has already burned its campaign from the pool (documented in
-     * `compose.ts`) so it was not free either.
+     * READY/QUEUED only. `SKIPPED` is deliberately NOT counted: a discarded draft is not in
+     * the queue, and the whole point of a depth bound is that clearing the queue makes room.
      */
     prisma.outreachAttempt.count({
-      where: { touchNumber: 1, queuedAt: { gte: dayStart }, pair: { target: { kind: 'BRAND' } } },
+      where: { touchNumber: 1, status: { in: ['READY', 'QUEUED'] }, pair: { target: { kind: 'BRAND' } } },
     }),
+    /**
+     * `sentAt`, scoped to today — this one IS a daily rate, because it is about how many
+     * strangers heard from us in one day.
+     */
     prisma.outreachAttempt.count({
       where: {
         touchNumber: 1,
@@ -77,5 +108,5 @@ export async function readNewBrandTouchCounts(dayStart: Date = istDayStart()): P
       },
     }),
   ])
-  return { created, delivered }
+  return { waiting, delivered }
 }
