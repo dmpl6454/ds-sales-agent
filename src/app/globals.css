@@ -870,7 +870,16 @@ label { display: block; }
   background: var(--bg-1);
   padding: 16px 18px;
 }
-.settingrow-label { font-weight: 500; }
+/* A GRID TRACK THAT CAN SHRINK DOES NOT MAKE ITS ITEM SHRINK.
+   Found by `pnpm ig:layout` on its first ever run, 2026-08-17: /settings had
+   scrollWidth=968 against clientWidth=800, and the widest element was this label. The
+   columns above are already `minmax(0, …)`, so the TRACKS were free to shrink — but a grid
+   ITEM defaults to `min-width: auto`, which refuses to go narrower than its content, and
+   the row pushed the page sideways instead.
+   Fixed on the children rather than on the one label that happened to be widest, because
+   the next long word would land on a different element. */
+.settingrow > * { min-width: 0; }
+.settingrow-label { font-weight: 500; overflow-wrap: anywhere; }
 .settingrow-consequence { margin: 0; color: var(--tx-1); max-width: 70ch; line-height: 1.6; }
 /* The full argument, marked as an aside by a rule rather than by a box — it is supporting
    material, not another control. */
@@ -884,7 +893,15 @@ label { display: block; }
   max-width: 70ch;
 }
 
-.stepper { display: flex; gap: 8px; align-items: center; }
+/* WRAPS, because the pill beside the value is prose of unbounded length.
+   `pnpm ig:layout` caught /settings scrolling sideways (scrollWidth 968 against a 800
+   viewport) and named the LABEL as the widest element — which it was, and it was not the
+   cause. Measuring the whole overflow chain showed the label merely STRETCHING to a column
+   whose min-content width was set by this flex row: a 219px `pill-warn` reading "well above
+   the default 2", which cannot shrink and would not wrap.
+   So the fix is here rather than on the label the checker pointed at. A guard's report names
+   the widest thing, not the thing responsible. */
+.stepper { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 .stepper button { width: 30px; height: 30px; padding: 0; justify-content: center; border-color: var(--ln-2); background: var(--bg-1); font-size: 14px; }
 .stepper-value {
   font-family: var(--font-mono), ui-monospace, monospace;
