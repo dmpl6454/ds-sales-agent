@@ -5,6 +5,41 @@ changing anything that touches sending.
 
 ---
 
+## THIS REPO IS SHARED NOW — READ `docs/SECOND-MACHINE.md` BEFORE SETTING IT UP
+
+As of 2026-08-17 the code goes to a second operator on their own Mac, via
+`github.com/dmpl6454/ds-sales-agent`. That changes the threat model, because **`SEND_ENABLED`
+defaults TRUE** — a fresh clone on somebody's laptop can drive a browser and DM a real
+company, where the hosted deployment is hard-floored off.
+
+**VERIFIED BY DOING IT, not by writing it down.** The repo was cloned into a temporary
+directory and set up exactly as a newcomer would: 336 files, `pnpm install` (postinstall
+generates the SQLite client), `cp .env.example .env`, `pnpm typecheck` clean, `pnpm test`
+**1,567 passing / 78 files**, `pnpm db:push`, `pnpm db:seed`. All of it worked with no
+database, no tunnel and no API key.
+
+**AND THE APP WAS STILL UNUSABLE.** `.env.example` did not mention `SIGNUP_INVITE_CODE`, and
+an unset invite code means signup is **CLOSED** — correct on a server, a dead end on a
+laptop. You start the app, open `/sign-up`, and can never create the account that would let
+you in; nothing on screen explains it, because from the code's point of view nothing is
+wrong. `SEND_ENABLED` and `MAX_TOTAL_SENDS` were missing too.
+
+`tests/env-example.test.ts` is now TOTAL over the schema in `src/lib/env.ts`, the same way
+`tests/stopInventory.test.ts` is total over `RESEND_BLOCKS` — the failure mode is a key
+somebody adds and forgets to document, and no behavioural test can fail for a line of
+documentation nobody wrote. Mutation-tested: removing `SIGNUP_INVITE_CODE` from the example
+fails two assertions.
+
+**What must never be shared, and is not in the repo:** `.env` (untracked in all 13 commits;
+a pattern scan of the whole history is clean), `~/.ds-sales-agent` (Chrome profiles — the
+cookie key here is a PUBLIC CONSTANT, so a copy of that directory decrypts offline), and any
+Instagram session. **Sessions are deliberately not copyable between machines**: each Mac logs
+in by hand, once per account, from its own home IP. That is the single load-bearing safety
+choice in the whole design and it is why a second machine cannot be bootstrapped from the
+first one's profiles.
+
+---
+
 ## 17 AUGUST, AFTERNOON — IT IS DEPLOYED, AND FOUR THINGS BELOW THIS LINE WERE FALSE
 
 **Read this before the section under it.** The 17 August work is now COMMITTED and RUNNING
