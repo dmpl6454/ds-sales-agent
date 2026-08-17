@@ -22,6 +22,7 @@ export const SETTING_KEYS = {
   hookMaxAgeHours: 'hookMaxAgeHours',
   autopilotEnabled: 'autopilotEnabled',
   maxNewBrandTouchesPerDay: 'maxNewBrandTouchesPerDay',
+  maxWaitingNewBrandDrafts: 'maxWaitingNewBrandDrafts',
   personaGateChannels: 'personaGateChannels',
   fleetMaxPerHour: 'fleetMaxPerHour',
   fleetMaxPerDay: 'fleetMaxPerDay',
@@ -57,6 +58,19 @@ export interface RuntimeSettings {
    * list: two channels today, then one more prospect for every paid post, forever.
    */
   maxNewBrandTouchesPerDay: number
+  /**
+   * How many first-touch brand drafts may WAIT at once. A DEPTH, not a daily rate.
+   *
+   * Separate from `maxNewBrandTouchesPerDay` since 2026-08-17. A draft reaches nobody, so a
+   * daily cap on writing guards nothing a recipient sees — and while the two shared one
+   * number, the delivery cap could never be reached, because creation was checked first and
+   * stopped the queue growing before any of it went out.
+   *
+   * Generous on purpose: discovering two hundred companies should fill the queue and stop,
+   * not stall drafting for a day. It is a runaway backstop for a planner that runs 96 times
+   * a day, not a safety rule about strangers' inboxes — that one is the delivery cap.
+   */
+  maxWaitingNewBrandDrafts: number
 
   /**
    * Does the persona gate cover CHANNEL sends, not just brand sends?
@@ -204,6 +218,7 @@ function defaults(): RuntimeSettings {
     // 2, chosen by Tabish. At ~20 brands discovered per month the queue drains faster
     // than it fills, so queue depth on the dashboard stays a real signal.
     maxNewBrandTouchesPerDay: 2,
+    maxWaitingNewBrandDrafts: 150,
     // ON. The safe direction is the one that refuses to send.
     personaGateChannels: true,
     fleetMaxPerHour: FLEET_MAX_PER_HOUR,
@@ -335,6 +350,7 @@ export async function getSettings(): Promise<RuntimeSettings> {
      */
     autopilotEnabled: d.autopilotEnabled && bool(SETTING_KEYS.autopilotEnabled, false),
     maxNewBrandTouchesPerDay: num(SETTING_KEYS.maxNewBrandTouchesPerDay, d.maxNewBrandTouchesPerDay),
+    maxWaitingNewBrandDrafts: num(SETTING_KEYS.maxWaitingNewBrandDrafts, d.maxWaitingNewBrandDrafts),
     personaGateChannels: bool(SETTING_KEYS.personaGateChannels, d.personaGateChannels),
     generateMessages: bool(SETTING_KEYS.generateMessages, d.generateMessages),
     singleTemplate: bool(SETTING_KEYS.singleTemplate, d.singleTemplate),

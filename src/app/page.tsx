@@ -188,8 +188,11 @@ export default async function AutopilotPage() {
                   {m.newCompanies.delivered} of {m.newCompanies.cap}
                 </strong>{' '}
                 contacted today
-                {m.newCompanies.created !== m.newCompanies.delivered ? (
-                  <> · {m.newCompanies.created} written and waiting to go out</>
+                {m.newCompanies.waiting > 0 ? (
+                  <>
+                    {' '}
+                    · {m.newCompanies.waiting} written and waiting to go out, room for {m.newCompanies.queueRoom}
+                  </>
                 ) : null}
                 {m.newCompanies.neverContacted > 0 ? (
                   <>

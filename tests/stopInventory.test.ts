@@ -308,7 +308,13 @@ describe('every gate stop is reachable and explains itself', () => {
 
 describe('the brand guards explain themselves', () => {
   it('the new-brand daily cap', () => {
-    const r = checkNewBrandTouchCap({ isFirstTouch: true, firstTouchesCreatedToday: 2, firstTouchesDeliveredToday: 0, maxNewBrandTouchesPerDay: 2 })
+    const r = checkNewBrandTouchCap({
+      isFirstTouch: true,
+      waitingFirstTouches: 2,
+      maxWaitingNewBrandDrafts: 2,
+      firstTouchesDeliveredToday: 0,
+      maxNewBrandTouchesPerDay: 2,
+    })
     expect(r.ok).toBe(false)
     if (!r.ok) {
       expect(r.reason).toBe(BRAND_BLOCKS.NEW_BRAND_DAILY_CAP)

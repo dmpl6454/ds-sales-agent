@@ -139,7 +139,15 @@ export default async function RulesPage() {
           one enforcing it reads as headroom.
         */
         `${settings.maxNewBrandTouchesPerDay} brands contacted for the first time per day, across all accounts — ` +
-          `${brandTouches.created} written so far today, ${brandTouches.delivered} delivered.`,
+          `${brandTouches.delivered} delivered so far today.`,
+        /*
+          A SEPARATE NUMBER SINCE 2026-08-17, because it answers a different question. A draft
+          reaches nobody, so how many are WAITING is a queue-depth concern, not a rule about
+          strangers' inboxes. While the two shared one number the delivery cap above could
+          never be reached at all: creation was checked first and stopped the queue growing.
+        */
+        `Room for ${settings.maxWaitingNewBrandDrafts} first messages waiting at once — ${brandTouches.waiting} in the queue now. ` +
+          `Sending or discarding one makes room immediately.`,
       ],
     },
     {

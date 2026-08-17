@@ -242,7 +242,7 @@ export interface MessagesPageView {
    * planner asks, so the page cannot report the cap by a different rule than the one
    * enforcing it.
    */
-  newCompanies: { cap: number; created: number; delivered: number; neverContacted: number }
+  newCompanies: { cap: number; waiting: number; queueRoom: number; delivered: number; neverContacted: number }
   /**
    * Who "Send a message now" may pick from.
    *
@@ -527,7 +527,8 @@ export async function buildMessagesPage(): Promise<MessagesPageView> {
       .sort((a, b) => b.used - a.used),
     newCompanies: {
       cap: settings.maxNewBrandTouchesPerDay,
-      created: newTouchCounts.created,
+      waiting: newTouchCounts.waiting,
+      queueRoom: settings.maxWaitingNewBrandDrafts,
       delivered: newTouchCounts.delivered,
       neverContacted,
     },
