@@ -444,13 +444,56 @@ if (all.errors.length) {
 const HISTORY_KEY = 'accuracyHistory'
 const HISTORY_MAX = 30
 
+/**
+ * WHICH RULE PRODUCED THE POSITIVE PREDICTION, STORED WITH THE FIGURE.
+ *
+ * On 2026-08-17 `pred` changed to `final === 'CAMPAIGN'`, so frame escalations now count as
+ * positive predictions and **every figure recorded before that date is incomparable with
+ * every figure after it.** CLAUDE.md says so in prose, which is exactly the arrangement that
+ * lets the first frame escalation read as a regression: a trend is rendered from the stored
+ * rows, and a caveat living in a document is not in the row.
+ *
+ * Same lesson as `verdictSource` keeping a `#Collaboration` fact apart from a model's
+ * opinion, and as recording WHICH OCR engine answered — *never compare figures across rules
+ * without knowing which rule produced them.* An entry with no `predRule` predates the change
+ * and is displayed as such rather than silently plotted beside newer ones.
+ */
+const PRED_RULE = 'final-campaign' as const
+
 interface HistoryEntry {
   at: string
   repeats: number
   frames: boolean
   tags: boolean
-  /** Per channel, so a gain on one can never hide a loss on another in the record either. */
-  channels: Record<string, { labels: number; correct: number; recall: number; precision: number }>
+  /** Absent on entries written before 2026-08-17. See PRED_RULE. */
+  predRule?: string
+  /**
+   * Per channel, so a gain on one can never hide a loss on another in the record either.
+   *
+   * `*Lo`/`*Hi` are the RANGE across the repeats of this run, and they are the point of the
+   * entry rather than a decoration. The classifier is not deterministic — measured, 2 of 89
+   * posts change verdict between identical runs, and at 22 positives one flip is 4.5% of
+   * recall — so a single stored mean re-creates precisely the false precision that
+   * `--repeat` exists to expose. The console printed the range and the record threw it away.
+   *
+   * Absent on entries written before 2026-08-17; a reader must fall back to the mean and say
+   * that it is one.
+   */
+  channels: Record<
+    string,
+    {
+      labels: number
+      correct: number
+      recall: number
+      precision: number
+      recallLo?: number
+      recallHi?: number
+      correctLo?: number
+      correctHi?: number
+      precisionLo?: number
+      precisionHi?: number
+    }
+  >
 }
 
 const entry: HistoryEntry = {
@@ -458,6 +501,7 @@ const entry: HistoryEntry = {
   repeats: REPEATS,
   frames: useFrames,
   tags: useTags,
+  predRule: PRED_RULE,
   channels: {},
 }
 for (const c of channels) {
@@ -465,11 +509,27 @@ for (const c of channels) {
   if (!perRun.length) continue
   const n = perRun.map((b) => b.tp + b.tn + b.fp + b.fn)
   const mean = (xs: number[]) => xs.reduce((a, b) => a + b, 0) / xs.length
+
+  const correctRuns = perRun.map((b) => ((b.tp + b.tn) / Math.max(1, b.tp + b.tn + b.fp + b.fn)) * 100)
+  const recallRuns = perRun.map((b) => (b.tp + b.fn ? (b.tp / (b.tp + b.fn)) * 100 : -1))
+  const precisionRuns = perRun.map((b) => (b.tp + b.fp ? (b.tp / (b.tp + b.fp)) * 100 : -1))
+
   entry.channels[c.handle] = {
     labels: n[0]!,
-    correct: Math.round(mean(perRun.map((b) => ((b.tp + b.tn) / Math.max(1, b.tp + b.tn + b.fp + b.fn)) * 100))),
-    recall: Math.round(mean(perRun.map((b) => (b.tp + b.fn ? (b.tp / (b.tp + b.fn)) * 100 : -1)))),
-    precision: Math.round(mean(perRun.map((b) => (b.tp + b.fp ? (b.tp / (b.tp + b.fp)) * 100 : -1)))),
+    correct: Math.round(mean(correctRuns)),
+    recall: Math.round(mean(recallRuns)),
+    precision: Math.round(mean(precisionRuns)),
+    /**
+     * The SPREAD across this run's repeats, kept because the mean alone is the false
+     * precision `--repeat` exists to expose. With one repeat lo === hi, which is honest: it
+     * says a single run was taken, rather than implying a range was measured.
+     */
+    correctLo: Math.round(Math.min(...correctRuns)),
+    correctHi: Math.round(Math.max(...correctRuns)),
+    recallLo: Math.round(Math.min(...recallRuns)),
+    recallHi: Math.round(Math.max(...recallRuns)),
+    precisionLo: Math.round(Math.min(...precisionRuns)),
+    precisionHi: Math.round(Math.max(...precisionRuns)),
   }
 }
 

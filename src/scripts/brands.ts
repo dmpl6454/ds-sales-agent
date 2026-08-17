@@ -1,11 +1,13 @@
 import { prisma } from '@/lib/db'
 import {
   resolveBrandsInCaption,
+  resolveBrandsForHandles,
   mentionsIn,
   modelHasRun,
   resetBrandResolverLimit,
   resolveBrand,
 } from '@/detection/resolveBrand'
+import { brandCandidatesFor, excludedHandles } from '@/detection/brandCandidates'
 import { createBrandTarget } from '@/outreach/brandTarget'
 
 /**
@@ -359,17 +361,29 @@ async function main(): Promise<void> {
 
   if (!isRun) {
     // Show the raw material without touching the network.
+    const neverAProspect = await excludedHandles()
     const seen = new Set<string>()
+    const bySource = { mention: 0, tag: 0 }
     for (const c of campaigns) {
-      const ms = mentionsIn(c.caption)
-      if (ms.length === 0) continue
-      for (const m of ms) seen.add(m)
+      const cands = brandCandidatesFor(c, neverAProspect)
+      if (cands.length === 0) continue
+      for (const m of cands) {
+        if (!seen.has(m.handle)) bySource[m.source]++
+        seen.add(m.handle)
+      }
       console.log(`  @${c.target.handle} · ${c.shortcode}`)
-      console.log(`     ${ms.map((m) => '@' + m).join(' ')}`)
+      console.log(`     ${cands.map((m) => (m.source === 'tag' ? `@${m.handle} [tag]` : '@' + m.handle)).join(' ')}`)
     }
     const known = await prisma.brandLookup.findMany({ where: { handle: { in: [...seen] } } })
     const unresolved = [...seen].filter((h) => !known.some((k) => k.handle === h && k.kind !== 'UNKNOWN'))
-    console.log(`\n  ${seen.size} distinct @mention(s); ${unresolved.length} need a profile lookup.`)
+    /**
+     * The two sources are counted separately because they are not equally good evidence and
+     * the bound is a LOOKUP budget. A run whose new candidates are nearly all tags is
+     * spending the scarce endpoint on accounts Instagram merely says appear in the media —
+     * true of the celebrity as often as the advertiser.
+     */
+    console.log(`\n  ${seen.size} distinct candidate(s): ${bySource.mention} from captions, ${bySource.tag} from media tags.`)
+    console.log(`  ${unresolved.length} need a profile lookup.`)
     console.log(`  At ~6s each that is about ${Math.ceil((unresolved.length * 6) / 60)} minute(s).`)
     console.log(`  Re-run with --run to resolve them.\n`)
     return
@@ -398,9 +412,27 @@ async function main(): Promise<void> {
   let unresolved = 0
   let created = 0
 
+  const neverAProspect = await excludedHandles()
+
   for (const c of campaigns) {
-    if (mentionsIn(c.caption).length === 0) continue
-    const verdicts = await resolveBrandsInCaption(c.caption)
+    /**
+     * ── TAGS, NOT JUST CAPTION MENTIONS (2026-08-17) ─────────────────────────
+     *
+     * This loop used to `continue` when the caption carried no @mention, which is **51% of
+     * in-window CAMPAIGN posts** — and exactly the half the tag source was added for on
+     * 17 August. Because `taggedHandlesIn` had been wired into `autoResolveBrands` alone,
+     * and that pass is 429'd on the Linode on its first lookup of every pass, the feature
+     * was reachable from NEITHER path in production.
+     *
+     * `brandCandidatesFor` is now the one definition, shared with that pass, so a mention
+     * still outranks a tag and our own pages are excluded before a lookup is spent.
+     */
+    const candidates = brandCandidatesFor(c, neverAProspect)
+    if (candidates.length === 0) continue
+    const verdicts = await resolveBrandsForHandles(
+      candidates.map((x) => x.handle),
+      { caption: c.caption ?? '' },
+    )
 
     for (const v of verdicts) {
       if (v.kind === 'PERSON') {
