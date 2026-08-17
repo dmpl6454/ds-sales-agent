@@ -288,9 +288,39 @@ export async function collectMessages(
  * bubble if Instagram groups them, and `messages.length >= ourBodies.length` would then be
  * satisfied by bubbles that are not ours at all — including a reply, which is precisely the
  * thing we are trying not to miss.
+ *
+ * ── EACH SENT BODY MUST CLAIM ITS OWN BUBBLE (2026-08-17) ─────────────────
+ *
+ * This asked `messages.some(...)` per body — MEMBERSHIP, not occurrence — and membership is
+ * a property of the whole thread. So N copies of one body were all answered by ONE visible
+ * bubble: `foundOurs` reached `ourBodies.length` from a read that had seen a single message,
+ * `complete` came back true, and the caller stamped `replyCheckedAt` as VERIFIED SILENCE
+ * over a conversation it had not seen.
+ *
+ * It was latent only while every body differed. The single standard template makes every
+ * message to a recipient byte-identical, which turns the common case into the broken one —
+ * so this ships WITH that change, not after it.
+ *
+ * That is the third time this exact shape has appeared here, and the answer has been the
+ * same every time: `matching.ts` asked *is the needle present* when the composer held it
+ * either way, then asked it again when an EARLIER BUBBLE held it. **Count the thing that
+ * changes, not the thing that is there either way.**
+ *
+ * The claim is greedy and each message is consumed at most once. Where Instagram GROUPS two
+ * of our messages into one bubble the second body finds nothing left to claim and the read
+ * reports INCOMPLETE — which holds the send. That is the safe direction and the deliberate
+ * one: a hold is visible on `/messages` with the buttons that settle it, while a false
+ * `complete` is a guard reporting silence it never verified.
  */
 export function assessRead(messages: ThreadMessage[], ourBodies: readonly string[]): ThreadRead {
-  const foundOurs = ourBodies.filter((body) => messages.some((m) => isOneOfOurs(m.text, [body]))).length
+  const claimed = new Set<number>()
+  let foundOurs = 0
+  for (const body of ourBodies) {
+    const idx = messages.findIndex((m, i) => !claimed.has(i) && isOneOfOurs(m.text, [body]))
+    if (idx === -1) continue
+    claimed.add(idx)
+    foundOurs += 1
+  }
   return {
     messages,
     foundOurs,

@@ -102,6 +102,21 @@ function Row({ p, sendersAble }: { p: ProspectRow; sendersAble: number }) {
       )}
 
       {/*
+        NOTHING IS JUDGING THEIR POSTS. Bad, not muted: a watched channel on a detector that
+        classifies nothing stores posts forever and finds zero paid campaigns, which reads on
+        every other screen as "they do no paid work". The sentence comes from the detector's
+        own `readiness()`, so a channel whose classifier has no API key and one with no
+        classifier at all are two different problems with two different fixes.
+      */}
+      {p.unjudgedNote !== null && <p className="account-message bad">{p.unjudgedNote}</p>}
+
+      {/*
+        OUR OWN PAGE. Stated on the row rather than in a rationale page, because the decision
+        it belongs to — leaving reading off — is made here.
+      */}
+      {p.groundTruthNote !== null && <p className="account-message">{p.groundTruthNote}</p>}
+
+      {/*
         ── WILL ANYTHING HAPPEN HERE — A FACT, NOT A CHIP WALL ────────────────
 
         This was a collapsible chip per sender×recipient route: twenty today, 3,900 at 65×60.
@@ -109,19 +124,40 @@ function Row({ p, sendersAble }: { p: ProspectRow; sendersAble: number }) {
         by one rule and created automatically now, so there was nothing left to click.
 
         The SENTENCE stays, because answering "will anything be sent to this person" is what
-        the chips were really for, and removing a control must never remove an explanation. It
-        answers from ability: `sendersAble` counts accounts that can actually send, so it reads
-        honestly — zero — when the fleet is signed out. "while Autopilot is on" is the qualifier
-        a row must never drop, because this page must not promise sending that the one switch is
-        currently refusing.
+        the chips were really for, and removing a control must never remove an explanation.
+
+        WHAT IT SAYS CHANGED ON 2026-08-13, AND THE OLD WORDING WAS THE PROBLEM. It read
+        "Messaged automatically by rotation while Autopilot is on (N accounts able to send)".
+        Every word was true except the load-bearing one: rotation was NOT happening —
+        `whoseTurn` returned null for every recipient, so all N accounts wrote to them, not one
+        in turn. MEASURED: 7 recipients holding a draft from all three fleet accounts. The row
+        described the design while the system did the opposite, and a count of accounts *able*
+        to send reads as capacity rather than as what will actually be written.
+
+        It now names the ONE account, from the same function the planner asks. `sendersAble`
+        stays beside it as the fleet-wide fact it always was — ability, so it reads zero when
+        the fleet is signed out even while Autopilot is on.
 
         Retired is stated first and absolutely, and it is the only branch here: `optedOut` is
         the one promise this UI makes that has to survive every other feature.
       */}
+      {/*
+        `nextSenderWillWrite` decides whether the fleet-capacity figure belongs here at all.
+
+        MEASURED 2026-08-13: 8 of the 70 BRAND rows are people — film directors, an actor —
+        and the planner refuses every one of them (`checkRecipientIsNotAPerson`). This row
+        told a reader "Next message comes from @bollywoodchronicle" about all eight. Those
+        rows were deliberately left for a person to JUDGE, and this page was the one place
+        someone would see they are people; it was saying the opposite. The sentence is now
+        the planner's own refusal, and "N accounts can send" is dropped with it — a capacity
+        figure beside a refusal re-reads as a promise.
+      */}
       <p className="muted">
         {p.retired
           ? 'Retired — never contacted.'
-          : `Messaged automatically by rotation while Autopilot is on (${sendersAble} account${sendersAble === 1 ? '' : 's'} able to send).`}
+          : p.nextSenderWillWrite
+            ? `${p.nextSenderSentence} ${sendersAble} account${sendersAble === 1 ? '' : 's'} in the fleet can send right now.`
+            : p.nextSenderSentence}
       </p>
 
       <div className="account-actions">

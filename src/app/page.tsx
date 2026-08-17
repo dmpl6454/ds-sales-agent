@@ -87,7 +87,9 @@ export default async function AutopilotPage() {
     pausedBy: m.pause,
     repliesWaiting: c.replies.length,
     uncertain: m.uncertain.length,
-    draftsWaiting: m.waiting.length,
+    // The TOTAL, not the page size — the headline count must not shrink because the
+    // list below it is capped.
+    draftsWaiting: m.waitingTotal,
     topRefusal: topRefusal
       ? { detail: topRefusal.detail, count: topRefusal.count, remedy: topRefusal.remedy }
       : null,
@@ -150,27 +152,50 @@ export default async function AutopilotPage() {
             {/* A send Instagram accepted that never appeared — the one thing a person must settle. */}
             <UncertainList uncertain={m.uncertain} />
 
-            {/* Today's per-recipient allowance — the same count the send guard checks. */}
-            {m.todayByRecipient.length > 0 && (
-              <section>
-                <h2>Today&rsquo;s allowance</h2>
-                <div className="rows">
-                  {m.todayByRecipient.map((r) => (
-                    <div className="rowitem" key={r.handle}>
-                      <span>@{r.handle}</span>
-                      <span className="muted" style={{ marginLeft: 'auto' }}>
-                        {r.used} claimed today
-                      </span>
-                    </div>
-                  ))}
-                </div>
-              </section>
-            )}
+            {/*
+              TODAY'S NEW-COMPANY ALLOWANCE — one line, and it replaces a per-recipient list.
+
+              That list showed "@x — 1 claimed today" per recipient, which duplicated
+              `TARGET_DAILY_CAP` — a gate stop whose remedy is deliberately `href: null`,
+              because offering "raise the cap" as the fix for hitting a cap is the one thing
+              this project's top rule forbids. So it was a wall of rows nobody could act on.
+
+              What was NOT on any screen was the cap that actually governs throughput.
+              MEASURED 2026-08-17: it was 2 a day, 61 companies had never been contacted, and
+              the fleet's own pacing permits 33 — a limit 16x tighter than the machinery
+              around it, with nothing saying so. Tabish asked for it to be raised "or make it
+              more apparent"; both happened.
+
+              Both counters, never merged: `created` is how many conversations were opened in
+              the queue, `delivered` is how many strangers actually heard from us. They
+              diverge, and merging them hides whichever is smaller.
+            */}
+            <section>
+              <h2>New companies today</h2>
+              <p className="cardnote">
+                <strong>
+                  {m.newCompanies.delivered} of {m.newCompanies.cap}
+                </strong>{' '}
+                contacted today
+                {m.newCompanies.created !== m.newCompanies.delivered ? (
+                  <> · {m.newCompanies.created} written and waiting to go out</>
+                ) : null}
+                {m.newCompanies.neverContacted > 0 ? (
+                  <>
+                    {' '}
+                    · {m.newCompanies.neverContacted} company{m.newCompanies.neverContacted === 1 ? '' : 's'} still to
+                    reach, about {Math.ceil(m.newCompanies.neverContacted / Math.max(1, m.newCompanies.cap))} day
+                    {Math.ceil(m.newCompanies.neverContacted / Math.max(1, m.newCompanies.cap)) === 1 ? '' : 's'} at this
+                    rate
+                  </>
+                ) : null}
+              </p>
+            </section>
           </div>
         </section>
 
         {/* The queue: each draft, why it cannot go out right now, and the button that sends it. */}
-        <WaitingList waiting={m.waiting} autopilotOn={v.autopilot.on} />
+        <WaitingList waiting={m.waiting} total={m.waitingTotal} autopilotOn={v.autopilot.on} />
 
         {/* Manual send: the same queue, one draft earlier. It writes a draft that appears above. */}
         <OnDemandPanel accounts={m.onDemandSenders} channels={m.onDemandRecipients} />

@@ -75,6 +75,12 @@ export async function createBrandTarget(
       contactFirstName: null,
       kind: 'BRAND',
       /**
+       * A discovered brand is the SECOND kind of target: it exists because we saw it buying
+       * placement, and writing to it is the whole point. Set explicitly rather than left to
+       * the column default, so this row states what it is instead of inheriting it.
+       */
+      role: 'PROSPECT',
+      /**
        * Brands are messaged, not watched. Pointing one at a real detector would fetch a
        * feed every detection pass for every prospect, forever, against an anonymous
        * endpoint whose only risk is an IP block.
@@ -111,7 +117,13 @@ export async function createBrandTarget(
           senderHandle: s.handle,
           targetHandle: handle,
           ourHandles,
+          senderIsFleetMember: s.fleetMember,
           targetOptedOut: target.optedOut,
+          // Always false in practice — this function writes `role: 'PROSPECT'` a few lines
+          // above, because a discovered brand is by definition someone to write to. Read
+          // from the row anyway: the predicate is asked the whole question, and a literal
+          // here would be a second statement of a fact the row already holds.
+          targetIsWatchOnly: target.role === 'WATCH',
         }),
       )
       .map((s) => ({

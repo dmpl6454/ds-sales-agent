@@ -134,7 +134,17 @@ function ChannelBlock({ channel: c }: { channel: ChannelCard }) {
   )
 }
 
+/**
+ * ADD A TARGET — and the first thing it asks is WHICH KIND, because the two do opposite
+ * things and the answer decides everything else about the row.
+ *
+ * Until 2026-08-17 this form created one thing and its note said *"A new channel is messaged
+ * by the fleet as soon as Autopilot is on"*. That was true, and it was the bug: adding
+ * @viralbhayani to watch it also made it a recipient, and MEASURED, both competitors were
+ * carrying 13 attempts each with 6 drafts waiting.
+ */
 function AddChannelForm({ onDone }: { onDone: () => void }) {
+  const [role, setRole] = useState<'WATCH' | 'PROSPECT'>('WATCH')
   const [handle, setHandle] = useState('')
   const [name, setName] = useState('')
   const [greeting, setGreeting] = useState('')
@@ -145,7 +155,7 @@ function AddChannelForm({ onDone }: { onDone: () => void }) {
     setBusy(true)
     setMsg(null)
     try {
-      const r = await addTarget(handle, name, greeting)
+      const r = await addTarget(handle, name, greeting, role)
       setMsg({ ok: r.ok, text: r.message })
       if (r.ok) {
         setHandle('')
@@ -157,32 +167,52 @@ function AddChannelForm({ onDone }: { onDone: () => void }) {
     }
   }
 
+  const watching = role === 'WATCH'
+
   return (
     <div className="addform">
       <div className="addform-row">
+        <label>
+          <span>What is this?</span>
+          <select value={role} onChange={(e) => setRole(e.target.value as 'WATCH' | 'PROSPECT')}>
+            <option value="WATCH">A page to watch for paid posts</option>
+            <option value="PROSPECT">A company to message</option>
+          </select>
+        </label>
         <label>
           <span>Instagram handle</span>
           <input
             value={handle}
             onChange={(e) => setHandle(e.target.value)}
-            placeholder="madovermarketing_mom"
+            placeholder={watching ? 'viralbhayani' : 'crocsindia'}
             autoComplete="off"
             spellCheck={false}
           />
         </label>
         <label>
           <span>Name</span>
-          <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Mad Over Marketing" autoComplete="off" />
-        </label>
-        <label>
-          <span>Greeting</span>
           <input
-            value={greeting}
-            onChange={(e) => setGreeting(e.target.value)}
-            placeholder="Mad Over Marketing"
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            placeholder={watching ? 'Viral Bhayani' : 'Crocs India'}
             autoComplete="off"
           />
         </label>
+        {/*
+          The greeting is the first thing a RECIPIENT reads. A watched page is never written
+          to, so asking for it there would be asking for something nothing will ever use.
+        */}
+        {watching ? null : (
+          <label>
+            <span>Greeting</span>
+            <input
+              value={greeting}
+              onChange={(e) => setGreeting(e.target.value)}
+              placeholder="Crocs India"
+              autoComplete="off"
+            />
+          </label>
+        )}
         <button className="primary" onClick={submit} disabled={busy || handle.trim().length === 0}>
           {busy ? 'Adding…' : 'Add'}
         </button>
@@ -191,16 +221,24 @@ function AddChannelForm({ onDone }: { onDone: () => void }) {
         </button>
       </div>
       {/*
-        ONE SWITCH, 2026-08-08. This read "New channels start with every account switched off;
-        turn them on per account above" — a promise that is now FALSE in the dangerous direction:
-        `ensureFleetPairs` creates every allowed route automatically, so a channel added here is
-        reachable as soon as Autopilot is on. Telling an operator otherwise would be telling them
-        adding a channel is inert when it is not.
+        The note says which of the two things is about to happen, because they are opposites
+        and only one of them puts a message in a stranger's inbox. The previous version said
+        "a new channel is messaged by the fleet as soon as Autopilot is on" about EVERY row —
+        true then, and the reason both competitors were carrying drafts.
       */}
       <p className="cardnote">
-        Greeting is what they literally read first — “Hi <em>Mad Over Marketing</em>,”. A new channel is messaged by
-        the fleet as soon as Autopilot is on, so add one only if you want it written to. Its posts are recorded but not
-        classified as paid or not, because a guess on an unfamiliar channel would be worse than no answer.
+        {watching ? (
+          <>
+            We will read this page’s feed every 15 minutes and judge each post paid or ordinary. It is{' '}
+            <strong>never messaged</strong> — the companies found in its paid posts are who we write to.
+          </>
+        ) : (
+          <>
+            This company is <strong>messaged by the fleet</strong> as soon as Autopilot is on, so add one only if you
+            want it written to. Its feed is not read. The greeting is what they literally see first — “Hi{' '}
+            <em>Crocs India</em>,”.
+          </>
+        )}
       </p>
       {msg ? (
         <p className={msg.ok ? 'cardnote note-ok' : 'cardnote note-warn'}>

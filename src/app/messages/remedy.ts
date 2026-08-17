@@ -51,6 +51,20 @@ export const REMEDIES = {
    */
   [RESEND_BLOCKS.TARGET_OPTED_OUT]: { href: null, label: 'This channel is retired — nothing to do here.' },
 
+  /**
+   * `/targets` is where the two kinds of target are visible and where a row can be changed
+   * from one to the other, so this is the rare case where "where to fix it" is a real place
+   * rather than `null`.
+   *
+   * A draft carrying this stop is almost certainly one written BEFORE the two types existed
+   * — MEASURED on the day they shipped, 6 of them, aimed at our two competitors. The honest
+   * remedy is to discard it, which is the control already on the card.
+   */
+  [RESEND_BLOCKS.TARGET_IS_WATCH_ONLY]: {
+    href: '/targets',
+    label: 'We watch this page to find who is buying from them — discard this draft',
+  },
+
   // Both clear by waiting. See the note above on why neither links to /settings.
   [RESEND_BLOCKS.TARGET_DAILY_CAP]: { href: null, label: 'The allowance resets at midnight IST.' },
   [RESEND_BLOCKS.SENDER_DAILY_CAP]: { href: null, label: 'The allowance resets at midnight IST.' },
@@ -63,6 +77,18 @@ export const REMEDIES = {
   [RESEND_BLOCKS.PERSONA_CHANGED_SINCE_DRAFT]: {
     href: null,
     label: 'Discard it below and a fresh one will be written.',
+  },
+
+  /**
+   * Same remedy as the persona stop above and for the same reason: the fix is a NEW body,
+   * not an edit to this one. `href: null` is the real answer — there is no page to visit,
+   * because nothing is misconfigured. The draft simply waited too long, and the next planning
+   * pass writes a replacement with the right wording (or none, if the placement is now too
+   * old to be worth naming, which `describeRecency` decides by returning null past 120 days).
+   */
+  [RESEND_BLOCKS.HOOK_STALE_SINCE_DRAFT]: {
+    href: null,
+    label: 'Discard it below; the next one will describe the timing correctly.',
   },
 
   /**

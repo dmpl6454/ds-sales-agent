@@ -1059,6 +1059,12 @@ label { display: block; }
 .hint, .cardnote, .h2-note, .h2note, .setting-why, .login-note, .undecided-why, .brandcap {
   font-size: 12.5px; color: var(--tx-1); line-height: 1.6; max-width: 70ch;
 }
+/* A note appended INSIDE a heading needs its own gap: it sits directly against the heading
+   text with no whitespace of its own, and rendered "Brandsnewest 40 of 77 confirmed".
+   Found by reading the page, not by any geometry check — two boxes touching is a correct
+   layout, and only the words are wrong. Scoped to .h2note alone; the others in the rule
+   above are block-level notes that must not gain an indent. */
+.h2note { margin-left: 0.5rem; }
 .cardnote code, .setting-why code { font-family: var(--font-mono), ui-monospace, monospace; font-size: 11px; }
 
 /* tables */

@@ -1,6 +1,6 @@
 import { prisma } from '@/lib/db'
 import { DELIVERED_STATUSES } from '@/lib/constants'
-import { nextSender, type RingMember, type RotationChoice } from './rotation'
+import { fleetRingOrder, nextSender, type RingMember, type RotationChoice } from './rotation'
 
 /**
  * The database half of rotation: read the ring and the history, then ask the pure
@@ -98,27 +98,79 @@ export async function categoriesForTarget(targetId: string): Promise<{ id: strin
   return rows.map((r) => r.category)
 }
 
+/**
+ * WHICH ring decided this.
+ *
+ * Carried rather than inferred, because "@a is next in the Bollywood group" and "@a is next
+ * in the fleet rotation" are different facts and a refusal that names the wrong one sends
+ * an operator to a group that does not exist. `/messages` and `/targets` render this.
+ */
+export type RingKind = 'group' | 'fleet'
+
 export interface WhoseTurnResult {
-  categoryId: string
-  categoryName: string
+  ring: RingKind
+  /** The group, when one decided. Null on the fleet ring — there is no row to link to. */
+  categoryId: string | null
+  categoryName: string | null
   choice: RotationChoice
   lastSenderId: string | null
+}
+
+/** How to name the ring in a sentence a person reads. PURE. */
+export function describeRing(r: Pick<WhoseTurnResult, 'ring' | 'categoryName'>): string {
+  return r.ring === 'group' ? (r.categoryName ?? 'this group') : 'the fleet rotation'
+}
+
+/**
+ * The fleet ring FOR ONE RECIPIENT: every fleet sender that has a route to them.
+ *
+ * Built from the pair rows rather than from `SenderAccount` directly, and that is the
+ * safety content of this function. `routes.ts` refuses some routes outright — never
+ * self-pair, never pair one of OUR OWN PAGES to another — so a ring assembled from "all
+ * fleet accounts" could name a sender with no pair to this target. Rotation would then
+ * elect it, every real pair would be skipped as "not their turn", and the recipient would
+ * get nothing while the log claimed a turn had been taken. Reading the routes that actually
+ * exist makes that unreachable instead of merely unlikely.
+ */
+export async function fleetRingFor(targetId: string): Promise<RingMember[]> {
+  const rows = await prisma.outreachPair.findMany({
+    where: { targetId, sender: { fleetMember: true } },
+    select: { sender: { select: { id: true, handle: true, cohort: true } } },
+  })
+  return fleetRingOrder(rows.map((r) => r.sender))
 }
 
 /**
  * Whose turn is it to write to this recipient?
  *
- * `unavailable` is supplied by the caller — it knows which accounts are CHALLENGED, not
- * connected, or out of daily allowance, and rotation should not re-derive that. Keeping
- * the reasons as strings means a refusal can say WHICH accounts were unavailable and
- * why, rather than "nothing happened".
+ * NEVER NULL SINCE 2026-08-13, and that is the whole fix. It used to return null for a
+ * target in no group; both branches at the one call site read `if (turn && …)`, so null
+ * meant *no rotation at all* — and `Category` has had 0 rows since it was created, so null
+ * was the only answer this function had ever given. Every sender drafted to every
+ * recipient. See `fleetRingOrder` for the measurement.
+ *
+ * A target in a group uses that group's ring. A target in none uses the fleet. There is no
+ * third case, so there is no way back to "everybody writes" by accident: a caller that
+ * forgets to handle a refusal now fails to compile rather than falling through to the
+ * permissive branch.
+ *
+ * `unavailable` is supplied by the caller — it knows which accounts are CHALLENGED, signed
+ * out, or out of daily allowance, and rotation should not re-derive that. It must carry
+ * MACHINE-INDEPENDENT facts only; see `sessionRecorded` in sessionHealth.ts for why a
+ * filesystem check belongs nowhere near this. Keeping the reasons as strings means a
+ * refusal can say WHICH accounts were unavailable and why, rather than "nothing happened".
+ *
+ * `fleet` is an optional pre-loaded ring. The planner asks this once per TARGET across a
+ * run of many pairs and passes the ring it already holds; a lone caller (a page, a CLI)
+ * omits it and this reads the routes itself. Same answer either way — the parameter buys
+ * queries, never a different verdict.
  */
 export async function whoseTurn(args: {
   targetId: string
   unavailable?: ReadonlyMap<string, string>
-}): Promise<WhoseTurnResult | null> {
+  fleet?: readonly RingMember[]
+}): Promise<WhoseTurnResult> {
   const categories = await categoriesForTarget(args.targetId)
-  if (categories.length === 0) return null
 
   /**
    * One category per target for now, and the FIRST is used when there are several.
@@ -128,20 +180,140 @@ export async function whoseTurn(args: {
    * would make that decision invisible. The dashboard shows category membership, so a
    * target in two is visible rather than mysterious.
    */
-  const category = categories[0]!
-  const [ring, lastSenderId] = await Promise.all([ringFor(category.id), lastSenderTo(args.targetId)])
+  const category = categories[0] ?? null
 
+  const [ring, lastSenderId] = await Promise.all([
+    category !== null
+      ? ringFor(category.id)
+      : (args.fleet ?? (await fleetRingFor(args.targetId))),
+    lastSenderTo(args.targetId),
+  ])
+
+  return decideTurn({ targetId: args.targetId, category, ring, lastSenderId, unavailable: args.unavailable })
+}
+
+/**
+ * THE DECISION, shared by both loaders. No database, no clock.
+ *
+ * Split out when `whoseTurnForMany` arrived, because the alternative was a second copy of
+ * "which ring, and what does that mean" — and one rule with several callers drifting apart
+ * is the failure this codebase has now recorded five times (`gate.ts`, `readThread.ts`, the
+ * two Connect buttons, `judge.ts`). The loaders differ only in how many round trips they
+ * spend; the answer they compose is this function, once.
+ */
+function decideTurn(input: {
+  targetId: string
+  category: { id: string; name: string } | null
+  ring: readonly RingMember[]
+  lastSenderId: string | null
+  unavailable?: ReadonlyMap<string, string>
+}): WhoseTurnResult {
   return {
-    categoryId: category.id,
-    categoryName: category.name,
-    lastSenderId,
+    ring: input.category !== null ? 'group' : 'fleet',
+    categoryId: input.category?.id ?? null,
+    categoryName: input.category?.name ?? null,
+    lastSenderId: input.lastSenderId,
     choice: nextSender({
-      ring,
-      lastSenderId,
-      unavailable: args.unavailable,
-      targetId: args.targetId,
+      ring: input.ring,
+      lastSenderId: input.lastSenderId,
+      unavailable: input.unavailable,
+      targetId: input.targetId,
     }),
   }
+}
+
+/**
+ * Whose turn it is for MANY recipients, in a bounded number of queries.
+ *
+ * ── WHY A BATCH LOADER EXISTS AT ALL ──────────────────────────────────────
+ *
+ * `whoseTurn` costs three queries. `/targets` renders a line per recipient, and at the
+ * measured 72 targets that is 216 round trips — each ~28-37 ms across the SSH tunnel,
+ * because SSH multiplexes every channel over one TCP stream and concurrency barely helps.
+ * That is the same unbounded-N+1 that made `buildBrandsPanel` a ten-second page, and adding
+ * a second one in the commit that fixes rotation would be a poor trade.
+ *
+ * FOUR queries regardless of how many recipients are asked about. The rings, the group
+ * memberships and the delivery history are all read in full and joined in memory.
+ *
+ * `lastSenderTo` is the only subtle one: it wants the most recent DELIVERED sender PER
+ * target, which SQL would express as a window function Prisma cannot emit. Reading the
+ * delivered rows newest-first and keeping the first sighting of each target gives the same
+ * answer, and the set is bounded by messages actually sent — 0 today, and bounded by the
+ * fleet's own caps forever after.
+ */
+export async function whoseTurnForMany(
+  targetIds: readonly string[],
+  unavailable?: ReadonlyMap<string, string>,
+): Promise<Map<string, WhoseTurnResult>> {
+  const out = new Map<string, WhoseTurnResult>()
+  if (targetIds.length === 0) return out
+  const ids = [...new Set(targetIds)]
+
+  const [pairRows, groupRows, ringRows, delivered] = await Promise.all([
+    prisma.outreachPair.findMany({
+      where: { targetId: { in: ids }, sender: { fleetMember: true } },
+      select: { targetId: true, sender: { select: { id: true, handle: true, cohort: true } } },
+    }),
+    prisma.categoryTarget.findMany({
+      where: { targetId: { in: ids }, enabled: true },
+      select: { targetId: true, category: { select: { id: true, name: true } } },
+    }),
+    prisma.categorySender.findMany({
+      orderBy: { position: 'asc' },
+      select: {
+        categoryId: true,
+        position: true,
+        enabled: true,
+        sender: { select: { id: true, handle: true } },
+      },
+    }),
+    prisma.outreachAttempt.findMany({
+      where: { targetId: { in: ids }, status: { in: [...DELIVERED_STATUSES] } },
+      orderBy: { sentAt: 'desc' },
+      select: { targetId: true, senderId: true },
+    }),
+  ])
+
+  const fleetByTarget = new Map<string, { id: string; handle: string; cohort: number }[]>()
+  for (const p of pairRows) {
+    const list = fleetByTarget.get(p.targetId) ?? []
+    list.push(p.sender)
+    fleetByTarget.set(p.targetId, list)
+  }
+
+  /** First sighting wins, because the rows arrived newest-first. */
+  const lastSenderByTarget = new Map<string, string>()
+  for (const a of delivered) if (!lastSenderByTarget.has(a.targetId)) lastSenderByTarget.set(a.targetId, a.senderId)
+
+  const groupByTarget = new Map<string, { id: string; name: string }>()
+  for (const g of groupRows) if (!groupByTarget.has(g.targetId)) groupByTarget.set(g.targetId, g.category)
+
+  const ringByCategory = new Map<string, RingMember[]>()
+  for (const r of ringRows) {
+    const list = ringByCategory.get(r.categoryId) ?? []
+    list.push({ senderId: r.sender.id, handle: r.sender.handle, position: r.position, enabled: r.enabled })
+    ringByCategory.set(r.categoryId, list)
+  }
+
+  for (const targetId of ids) {
+    const category = groupByTarget.get(targetId) ?? null
+    const ring =
+      category !== null
+        ? (ringByCategory.get(category.id) ?? [])
+        : fleetRingOrder(fleetByTarget.get(targetId) ?? [])
+    out.set(
+      targetId,
+      decideTurn({
+        targetId,
+        category,
+        ring,
+        lastSenderId: lastSenderByTarget.get(targetId) ?? null,
+        unavailable,
+      }),
+    )
+  }
+  return out
 }
 
 /** Create a category, or return the existing one with that slug. Idempotent by design. */

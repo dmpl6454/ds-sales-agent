@@ -7,6 +7,7 @@ import { signatureBlock } from './render'
 import { replyHaltFloor } from './replyHalt'
 import { profileStatus } from './browser/profile'
 import { sessionUsable } from './sessionHealth'
+import { assertedRecency, hookRecencyStale } from './brandPitch'
 import { DELIVERED_STATUSES } from '@/lib/constants'
 
 /**
@@ -64,6 +65,22 @@ export interface ResendInput {
 
   targetOptedOut: boolean
   /**
+   * `TargetAccount.role === 'WATCH'` — a publisher we read, never a recipient.
+   *
+   * ── WHY THIS IS AT THE GATE AND NOT ONLY IN routes.ts ─────────────────────
+   *
+   * `routes.ts` decides which routes may be CREATED. It cannot help with the rows that
+   * already exist, and MEASURED on the day this shipped there were 26 attempts and 8 pairs
+   * to our two competitors, 6 of them still READY with a live Send button. A rule that only
+   * governs creation leaves every draft written before it was written.
+   *
+   * `prepareOnDemandSend` is also deliberately exempt from `routes.ts` and creates its own
+   * pair, so the on-demand dialog is a second path this has to cover. The gate is asked by
+   * BOTH the dispatcher and every Send button, which is why it is the one place that closes
+   * both holes.
+   */
+  targetIsWatchOnly: boolean
+  /**
    * A reply from this target to ANY of our senders, WITHIN the resume window — the DB
    * half only surfaces replies newer than `replyResumeHours` (default one day), so an
    * older reply simply stops arriving here and messaging resumes. Tabish's decision,
@@ -119,6 +136,14 @@ export interface ResendInput {
    * worse cure than a refusal that says what to do.
    */
   draftPersonaStale: boolean
+  /**
+   * The dated claim in the stored body no longer matches the campaign's age.
+   *
+   * A body is rendered once and frozen; `describeRecency` bands `days <= 10` as "last week".
+   * MEASURED 2026-08-13: a draft written on 11 August about a 9-day-old campaign still says
+   * "last week" about a placement now 11 days old, and is still queued.
+   */
+  draftHookStale: boolean
 
   /**
    * Blocks a present human has explicitly acknowledged, from the on-demand dialog.
@@ -137,6 +162,7 @@ export const RESEND_BLOCKS = {
   NOT_WAITING: 'not-waiting',
   SENDER_NOT_ACTIVE: 'sender-not-active',
   TARGET_OPTED_OUT: 'target-opted-out',
+  TARGET_IS_WATCH_ONLY: 'target-is-watch-only',
   TARGET_REPLIED: 'target-replied',
   NO_SESSION: 'no-session',
   TARGET_DAILY_CAP: 'target-daily-cap',
@@ -144,6 +170,7 @@ export const RESEND_BLOCKS = {
   PERSONA_NOT_DISTINCT: 'persona-not-distinct',
   COHORT_NOT_CLEARED: 'cohort-not-cleared',
   PERSONA_CHANGED_SINCE_DRAFT: 'persona-changed-since-draft',
+  HOOK_STALE_SINCE_DRAFT: 'hook-stale-since-draft',
 } as const
 
 /**
@@ -257,6 +284,20 @@ export function evaluateResend(input: ResendInput): ResendResult {
     return { ok: false, reason: RESEND_BLOCKS.TARGET_OPTED_OUT, detail: 'channel is retired' }
   }
 
+  /**
+   * NOT overridable, and absent from OVERRIDABLE_BLOCKS on purpose. Every stop a human may
+   * cross is about TIMING; this one is about WHO the recipient is. "I know something the
+   * agent does not" is not an argument for pitching a competitor whose feed we read to find
+   * their advertisers.
+   */
+  if (input.targetIsWatchOnly) {
+    return {
+      ok: false,
+      reason: RESEND_BLOCKS.TARGET_IS_WATCH_ONLY,
+      detail: 'this is a page we watch for paid posts, not a company we message',
+    }
+  }
+
   // A reply means a human conversation started. Continuing to fire a queued cold
   // pitch into it is the single most damaging thing this system could do, so it halts
   // every sender to this target, not just the one that got the reply.
@@ -302,6 +343,23 @@ export function evaluateResend(input: ResendInput): ResendResult {
     }
   }
 
+  /**
+   * NOT overridable, and it sits directly after the persona staleness stop because it is
+   * the same shape of problem: the body was true when it was written and is not true now.
+   *
+   * "I know something the agent does not" is an argument about TIMING. It is not an argument
+   * for telling a company we saw their placement "last week" when it was three weeks ago —
+   * to the one team certain to know exactly when they ran it.
+   */
+  if (input.draftHookStale) {
+    return {
+      ok: false,
+      reason: RESEND_BLOCKS.HOOK_STALE_SINCE_DRAFT,
+      detail:
+        'this message says when we saw their placement, and it has been waiting long enough that the timing is no longer right — discard it and write a new one',
+    }
+  }
+
   if (input.targetSentTodayCount >= input.maxPerTargetPerDay) {
     return {
       ok: false,
@@ -332,7 +390,7 @@ export interface ResendAttempt {
     senderId: string
     targetId: string
     sender: { handle: string; status: string; dailyCap: number }
-    target: { optedOut: boolean; kind?: string }
+    target: { optedOut: boolean; role: string; kind?: string }
   }
 }
 
@@ -424,6 +482,12 @@ export async function recheckBeforeSend(
         sender: {
           select: { personaName: true, personaRole: true, personaBrand: true, personaPhone: true, personaEmail: true },
         },
+        /**
+         * The campaign a channel follow-up's dated claim is about. A BRAND first touch gets
+         * its date from somewhere else entirely — see `hookCampaignPostedAt` below.
+         */
+        campaign: { select: { postedAt: true } },
+        target: { select: { discoveredFromCampaignId: true } },
       },
     }),
     /**
@@ -451,9 +515,12 @@ export async function recheckBeforeSend(
    */
   const draftPersonaStale = draft !== null && !draft.renderedBody.includes(signatureBlock(draft.sender))
 
+  const draftHookStale = await isDraftHookStale(draft)
+
   return evaluateResend({
     attemptStatus: attempt.status,
     draftPersonaStale,
+    draftHookStale,
     unattended: opts.unattended,
     senderStatus: sender.status,
     senderCohortCleared: ladder.ok,
@@ -471,6 +538,7 @@ export async function recheckBeforeSend(
     }),
     senderDailyCap: sender.dailyCap,
     targetOptedOut: target.optedOut,
+    targetIsWatchOnly: target.role === 'WATCH',
     targetRepliedAt: replied?.repliedAt ?? null,
     targetSentTodayCount: targetToday,
     senderSentTodayCount: senderToday,
@@ -478,4 +546,53 @@ export async function recheckBeforeSend(
     personaSharedWithAnotherSender: personaShared,
     overrides: opts.overrides,
   })
+}
+
+/**
+ * HAS THE DATED CLAIM IN THIS DRAFT DECAYED? Read out of the BODY, not recomputed.
+ *
+ * `hookRecencyStale` finds the band the stored text asserts and compares it against the band
+ * that campaign's age would produce NOW. Reading the body is what makes this correct for a
+ * draft an operator edited by hand: the stored bytes are what the recipient receives and what
+ * the send guards compare against.
+ *
+ * ── THE DATE COMES FROM TWO DIFFERENT PLACES ──────────────────────────────
+ *
+ * A channel follow-up references the attempt's OWN campaign. A brand's FIRST TOUCH is built
+ * from `TargetAccount.discoveredFromCampaignId` — the post that made them a prospect — and
+ * MEASURED on the live drafts, every brand draft has `campaignId: null` while still asserting
+ * "last week". Reading only `attempt.campaign` would have left this stop unreachable on
+ * exactly the messages that have it wrong.
+ *
+ * ── THE QUERY IS ONLY PAID FOR WHEN THERE IS A CLAIM ──────────────────────
+ *
+ * `assertedRecency` is asked first, on a string already in hand. A body that names no date
+ * cannot be stale, and that is most of them — the degraded opening claims no placement at
+ * all — so the ordinary path adds no round trip to a gate the dashboard calls per draft.
+ */
+async function isDraftHookStale(
+  draft: {
+    renderedBody: string
+    campaign: { postedAt: Date } | null
+    target: { discoveredFromCampaignId: string | null }
+  } | null,
+): Promise<boolean> {
+  if (draft === null) return false
+  if (assertedRecency(draft.renderedBody) === null) return false
+
+  let postedAt: Date | null = draft.campaign?.postedAt ?? null
+  if (postedAt === null && draft.target.discoveredFromCampaignId !== null) {
+    const discovered = await prisma.detectedCampaign.findUnique({
+      where: { id: draft.target.discoveredFromCampaignId },
+      select: { postedAt: true },
+    })
+    postedAt = discovered?.postedAt ?? null
+  }
+
+  /**
+   * A claim we can no longer date is STALE, not safe. The body says "last week" and we have
+   * lost the post it referred to — that is precisely the state in which the sentence cannot
+   * be stood behind. Absence of data must not harden into permission.
+   */
+  return hookRecencyStale({ body: draft.renderedBody, postedAt, now: new Date() })
 }

@@ -1,7 +1,15 @@
 import { prisma } from '@/lib/db'
 import { env } from '@/lib/env'
 import { readStringArray } from '@/lib/json'
-import { istDayStart, istDateKey, daysAgo, istStamp, relativeLabel as relative } from '@/lib/time'
+import {
+  istDayStart,
+  istDateKey,
+  daysAgo,
+  istStamp,
+  istPostedLabel,
+  latenessLabel,
+  relativeLabel as relative,
+} from '@/lib/time'
 /**
  * `operatorName` — never a raw `displayName`.
  *
@@ -17,12 +25,13 @@ import { sessionUsable } from '@/outreach/sessionHealth'
 import { postUrl } from '@/lib/urls'
 import { isConnecting } from '@/outreach/browser/connect'
 import { getSettings } from '@/lib/settings'
+import { visibleChannelFilter, ourOwnPageHandles } from '@/detection/visibleChannels'
 import { detectionCutoff } from '@/lib/cutoff'
+import { readLabelledSet } from '@/detection/labels'
 import { replyHaltFloor } from '@/outreach/replyHalt'
-import { readHeartbeat } from '@/worker/scheduler'
+import { readHeartbeat, machineId } from '@/worker/scheduler'
 import { assessWatch, watchHealthSentence } from '@/detection/watchHealth'
 import { getDetector } from '@/detection/detectors'
-import type { ReviewRow } from './paid-posts/review'
 /**
  * The SAME function the planner's guard calls, deliberately. A page that computed
  * "personas are shared" its own way could disagree with the rule actually blocking the
@@ -103,6 +112,27 @@ export interface SchedulerState {
   running: boolean
   /** 'dashboard' (embedded) or 'worker' (separate process). */
   host: string | null
+  /**
+   * ── WHICH MACHINE IS BEATING, AND WHY `host` ALONE CANNOT SAY ──────────────────────
+   *
+   * `host` distinguishes *embedded in a dashboard* from *a separate worker*. It was the
+   * whole answer while one machine ran everything. Since hosting (2026-08-08) the watch
+   * runs on the LINODE and the dashboard is also served from there, so the beat reads
+   * `host: 'dashboard'` — and a second dashboard opened on a Mac read that and rendered
+   * *"watch running INSIDE THIS DASHBOARD"*. MEASURED 2026-08-13: the live beat is
+   * `{"host":"dashboard","machine":"linode-detect"}` while the Mac dashboard, which
+   * correctly declined to schedule anything, told its reader the watch was inside it.
+   *
+   * That is not cosmetic. CLAUDE.md opens on a 20-hour outage nobody noticed, and the
+   * reader of this sentence is deciding whether closing this window stops the watch. The
+   * answer is machine-dependent and only `machine` carries it, so it is carried here.
+   *
+   * `null` for a heartbeat written before the field existed — treated as "not this one",
+   * the same conservative direction `startScheduler` already takes.
+   */
+  machine: string | null
+  /** Is the beating process on the machine rendering this page? */
+  here: boolean
   lastBeatLabel: string | null
 }
 
@@ -310,8 +340,25 @@ export interface AutoDecidedBrandCard {
   confidence: number | null
 }
 
+/**
+ * How many brand cards the panel shows.
+ *
+ * Bounded because the list is CONTEXT — "which companies have we found" — and not an
+ * inventory. Unbounded, it was 145 of the page's 174 queries and grew with every discovery;
+ * at 500 brands the page was a minute. Prisma Studio is where the whole table lives.
+ */
+export const BRAND_CARDS_SHOWN = 40
+
 export interface BrandsPanel {
   confirmed: BrandCard[]
+  /**
+   * How many BRAND rows exist in total.
+   *
+   * Shown next to the list, the way the posts table says "showing the newest 100 of 223". A
+   * truncated list with no total reads as the whole set, which is the silent degradation this
+   * bound would otherwise introduce while fixing the slow one.
+   */
+  confirmedTotal: number
   /**
    * What the model decided about handles Instagram could not classify, newest first.
    *
@@ -343,6 +390,23 @@ export interface BrandsPanel {
  * pages' queries — measured at ~200 ms on the live database, against a `force-dynamic` page on
  * localhost. If that ever matters, split the QUERIES and keep one definition of each SENTENCE.
  */
+/**
+ * One sentence about whether a channel's judging has ever been checked.
+ *
+ * Deliberately does NOT quote a percentage. The harness reports per-channel figures and
+ * they move between identical runs (recall on M.O.M measures 95-100% over three); putting a
+ * single sample on a page a CEO reads would be the over-precision this whole file argues
+ * against. What a reader needs here is whether the number exists at all.
+ */
+function accuracyNoteFor(labels: number, stored: number): string {
+  if (labels === 0) {
+    return 'Never checked for accuracy — no post here has a known right answer, so how well it is judged is unknown.'
+  }
+  const share = stored > 0 ? Math.round((labels / stored) * 100) : 0
+  if (share >= 50) return `Accuracy is checked against ${labels} posts here, which is most of them.`
+  return `Accuracy is checked against only ${labels} of ${stored} posts here, so the figure is thin.`
+}
+
 export async function buildCeoView(): Promise<CeoView> {
   const dayStart = istDayStart()
   const weekStart = daysAgo(7)
@@ -354,8 +418,16 @@ export async function buildCeoView(): Promise<CeoView> {
         orderBy: { handle: 'asc' },
         include: { pairs: { include: { target: true } } },
       }),
+      /**
+       * CHANNEL CARDS — and `role: 'WATCH'` with our own pages excluded, not bare `kind`.
+       *
+       * This read every CHANNEL row with no filter at all, so @bollywoodsocietyy and
+       * @bollywoodchronicle rendered as watched-channel cards on `/` and `/paid-posts`,
+       * each stating a post count and an accuracy note about a page we own. `nav.tsx` was
+       * the only place that filtered, which is the one-rule-several-callers shape again.
+       */
       prisma.targetAccount.findMany({
-        where: { kind: 'CHANNEL' },
+        where: { role: 'WATCH', handle: { notIn: [...ourOwnPageHandles()] } },
         include: { pairs: { include: { sender: true } } },
         orderBy: { handle: 'asc' },
       }),
@@ -396,7 +468,8 @@ export async function buildCeoView(): Promise<CeoView> {
     ])
 
   const weekDetected = await prisma.detectedCampaign.count({
-    where: { verdict: 'CAMPAIGN', detectedAt: { gte: weekStart } },
+    // Scoped like every other figure a person reads — see visibleChannels.ts.
+    where: { verdict: 'CAMPAIGN', detectedAt: { gte: weekStart }, ...(await visibleChannelFilter()) },
   })
 
   /**
@@ -695,6 +768,10 @@ export async function buildCeoView(): Promise<CeoView> {
     scheduler: {
       running: hb?.fresh ?? false,
       host: hb?.beat.host ?? null,
+      machine: hb?.beat.machine ?? null,
+      // Same comparison `startScheduler` makes before it trusts a pid, for the same reason:
+      // a beat from elsewhere is a fact about another kernel. An absent machine is "not here".
+      here: hb ? (hb.beat.machine ?? null) === machineId() : false,
       lastBeatLabel: hb ? relative(new Date(hb.beat.at)) : null,
     },
     nextSlotLabel: nextSlotLabel(),
@@ -909,7 +986,27 @@ export interface PaidPostsView {
   /** Every verdict IN THE WINDOW, including UNCLASSIFIED — NOT JUDGED, never "organic". */
   byVerdict: { verdict: string; count: number }[]
   /** Per channel: how much we have stored, and how much of it has been judged. */
-  perChannel: { name: string; handle: string; postsLogged: number; campaignsThisWeek: number; unclassified: boolean; unclassifiedReason: string | null }[]
+  perChannel: {
+    name: string
+    handle: string
+    postsLogged: number
+    campaignsThisWeek: number
+    unclassified: boolean
+    unclassifiedReason: string | null
+    /**
+     * HAS ANYONE EVER CHECKED WHETHER THIS CHANNEL'S JUDGING IS RIGHT? (repair plan 5.4)
+     *
+     * A channel with no labels has NO accuracy — not a good one, not a bad one. The figure
+     * this project quotes (98% correct, 100% recall) is measured on @madovermarketing_mom
+     * and belongs to @madovermarketing_mom, and it is measured on the one channel where the
+     * classifier never runs in production. MEASURED: @bollywoodchronicle has **0 labels
+     * across 937 stored posts**, and @viralbhayani has 4 across 1,005.
+     *
+     * Said per row, because the alternative is a reader assuming the headline figure covers
+     * everything — the same failure the "counted from 1 of 5 channels" caveat exists for.
+     */
+    accuracyNote: string
+  }[]
   detection: DetectionHealth
   brands: BrandsPanel
   /**
@@ -938,22 +1035,41 @@ export interface PaidPostsView {
   framesFailed: number
   frameFlagged: number
   /**
-   * Posts waiting for a person to settle — REVIEW with no human answer yet, oldest first.
-   * Separate from `posts` because work to do and a record of what happened are different
-   * things: a row needing an answer inside a 100-row history scrolls off within days.
+   * The review queue and the settled list are GONE (Tabish, 2026-08-17). There is one
+   * table, it carries every post the system calls paid plus the ones a person crossed off,
+   * and the cross lives on the row. Three lists showing the same posts taught a reader to
+   * skip all three.
    */
-  review: ReviewRow[]
 }
 
 export interface PaidPostRow {
   shortcode: string
   url: string
   dayLabel: string
+  /**
+   * WHEN THE POST WENT UP — "12 Aug (16:42)", IST. Formatted here rather than in the page,
+   * like every other interpretation on this dashboard.
+   *
+   * The bare date was ambiguous in the way that matters: @viralbhayani's commercial posting
+   * starts around 09:00 IST and peaks 16:00-20:00, and over 14 days it published 84 posts
+   * before 09:00 of which ZERO were paid. An operator judging a verdict needs the hour.
+   */
+  postedLabel: string
+  /** The full stamp, for the cell's `title`. Precision without a wider column. */
+  postedExact: string
+  /**
+   * "found 15h later" — set ONLY when detection was far behind publication, which on the
+   * measured data means the watch had a GAP rather than a slow pass. Null on the common
+   * path so the column stays quiet; see `latenessLabel`.
+   */
+  lateness: string | null
   channelName: string
   channelHandle: string
   /** Display names from the caption. Empty when extraction found none. */
   brands: string[]
   verdict: string
+  /** A person has crossed this off as ordinary. Drives the undo state of the cross. */
+  dismissed: boolean
   /**
    * Set when this row is here because the FOOTAGE flagged it — the caption said
    * ordinary. Carries what the model saw, because a review request that does not say
@@ -965,7 +1081,13 @@ export interface PaidPostRow {
 export async function buildPaidPostsView(): Promise<PaidPostsView> {
   const v = await buildCeoView()
 
-  const PAID_VERDICTS = ['CAMPAIGN', 'REVIEW']
+  /**
+   * What counts as "paid" on this page. One value since 2026-08-17 — REVIEW is gone and a
+   * post is paid or it is ordinary. Kept as a named list rather than inlined, because the
+   * table's `OR` also pulls in rows a person has crossed off and the two conditions being
+   * separately readable is the point.
+   */
+  const PAID_VERDICTS = ['CAMPAIGN']
   const POSTS_SHOWN = 100
 
   /**
@@ -986,7 +1108,19 @@ export async function buildPaidPostsView(): Promise<PaidPostsView> {
    * "not judged" is a real number that real work can drive to zero.
    */
   const since = detectionCutoff()
-  const inWindow = { postedAt: { gte: since } }
+  /**
+   * ── AND THE WINDOW IS SCOPED TO CHANNELS A PERSON SHOULD SEE ─────────────
+   *
+   * Our own pages are watched for ground truth and their posts must not appear on a screen.
+   * MEASURED before this line existed: 1,555 of the 2,608 in-window posts were ours — 59.6%
+   * of every figure on this page — and 5 of the 26 open review rows were @bollywoodsocietyy,
+   * i.e. the dashboard asking a person to judge whether our own post was paid.
+   *
+   * Folded into `inWindow` rather than added per query ON PURPOSE. Every site below already
+   * spreads this object, so one definition covers all of them and a query added later
+   * inherits it. `tests/visible-channels.test.ts` greps for the ones that do not.
+   */
+  const inWindow = { postedAt: { gte: since }, ...(await visibleChannelFilter()) }
 
   const [
     byVerdictRaw,
@@ -999,21 +1133,37 @@ export async function buildPaidPostsView(): Promise<PaidPostsView> {
     framesNoEngine,
     framesFailed,
     frameFlagged,
-    reviewRows,
   ] = await Promise.all([
     prisma.detectedCampaign.groupBy({ by: ['verdict'], where: inWindow, _count: { _all: true } }),
     prisma.detectedCampaign.count({ where: { verdict: 'CAMPAIGN', ...inWindow } }),
-    // CAMPAIGN and REVIEW both belong on this table: REVIEW means the classifier was not
-    // confident, which is a request for a person to look — and the link is how they look.
+    /**
+     * Every post the system calls paid — and, since 2026-08-17, the ones a person has
+     * CROSSED OFF as well, which is what makes the cross undoable.
+     *
+     * REVIEW used to be on this list too, because "the classifier was not confident" was a
+     * request for someone to look. There is no such state any more: a post is paid or it is
+     * ordinary, and the cross is how a person says which.
+     *
+     * Including dismissed rows is the release half of the control. The 8 August bulk write
+     * showed what happens without one — 21 posts answered and then reachable from no screen
+     * at all, permanently, with no way back. A correction a person can see and reverse is
+     * the whole difference.
+     */
     prisma.detectedCampaign.findMany({
-      where: { verdict: { in: PAID_VERDICTS }, ...inWindow },
+      where: {
+        OR: [{ verdict: { in: PAID_VERDICTS } }, { humanLabel: false }],
+        ...inWindow,
+      },
       orderBy: { postedAt: 'desc' },
       take: POSTS_SHOWN,
       select: {
         shortcode: true,
         postedAt: true,
+        // For the lateness note: how far behind publication detection actually was.
+        detectedAt: true,
         brands: true,
         verdict: true,
+        humanLabel: true,
         signals: true,
         frameText: true,
         target: { select: { handle: true, displayName: true } },
@@ -1021,7 +1171,8 @@ export async function buildPaidPostsView(): Promise<PaidPostsView> {
     }),
     prisma.detectedCampaign.count({ where: { verdict: { in: PAID_VERDICTS }, ...inWindow } }),
     // Reported, never hidden: a corpus we hold but do not judge is a fact worth one line.
-    prisma.detectedCampaign.count({ where: { postedAt: { lt: since } } }),
+    // Beside the in-window figures on the same page, so it carries the same scope.
+    prisma.detectedCampaign.count({ where: { postedAt: { lt: since }, ...(await visibleChannelFilter()) } }),
     /**
      * FIVE STATES, NOT ONE NUMBER.
      *
@@ -1051,25 +1202,16 @@ export async function buildPaidPostsView(): Promise<PaidPostsView> {
     prisma.detectedCampaign.count({ where: { signals: { contains: 'frame:ocr-failed' }, ...inWindow } }),
     // `signals` is a JSON string; this marker is written by applyFrameSignal alone.
     prisma.detectedCampaign.count({ where: { signals: { contains: 'frame:flagged-for-review' }, ...inWindow } }),
-    /**
-     * Oldest first, and bounded. `humanLabel: null` is the whole queue definition — a post
-     * a person has answered is settled forever, whatever any classifier says later.
-     */
-    prisma.detectedCampaign.findMany({
-      where: { verdict: 'REVIEW', humanLabel: null, ...inWindow },
-      orderBy: { postedAt: 'asc' },
-      take: 25,
-      select: {
-        shortcode: true,
-        postedAt: true,
-        caption: true,
-        classifierReason: true,
-        frameText: true,
-        signals: true,
-        target: { select: { handle: true } },
-      },
-    }),
   ])
+
+  /**
+   * How many labels each channel has, for `accuracyNote`. From `readLabelledSet` — the SAME
+   * function `pnpm ig:accuracy` scores against, so the page cannot claim a channel is
+   * measured when the harness would call it unmeasured. Three queries, once per render.
+   */
+  const labelled = await readLabelledSet()
+  const labelsByChannel = new Map<string, number>()
+  for (const r of labelled.rows) labelsByChannel.set(r.channel, (labelsByChannel.get(r.channel) ?? 0) + 1)
 
   return {
     weekDetected: v.week.detected,
@@ -1086,6 +1228,7 @@ export async function buildPaidPostsView(): Promise<PaidPostsView> {
       campaignsThisWeek: c.campaignsThisWeek,
       unclassified: c.unclassified,
       unclassifiedReason: c.unclassifiedReason,
+      accuracyNote: accuracyNoteFor(labelsByChannel.get(c.handle) ?? 0, c.postsLogged),
     })),
     detection: v.detection,
     brands: v.brands,
@@ -1093,11 +1236,33 @@ export async function buildPaidPostsView(): Promise<PaidPostsView> {
       shortcode: p.shortcode,
       url: postUrl(p.shortcode),
       dayLabel: istDateKey(p.postedAt),
+      postedLabel: istPostedLabel(p.postedAt),
+      postedExact: istStamp(p.postedAt),
+      lateness: latenessLabel(p.postedAt, p.detectedAt),
       channelName: operatorName(p.target.displayName),
       channelHandle: p.target.handle,
       brands: readStringArray(p.brands),
       verdict: p.verdict,
-      frameEvidence: readStringArray(p.signals).includes('frame:flagged-for-review') ? p.frameText : null,
+      /**
+       * Has a person already crossed this off? Drives the control's two states — the cross,
+       * or "marked ordinary — undo". `humanLabel === false` and not `verdict === 'ORGANIC'`,
+       * because only a PERSON's answer is undoable here; a classifier ORGANIC never reaches
+       * this table.
+       */
+      dismissed: p.humanLabel === false,
+      /**
+       * What the FOOTAGE said, when the footage is why this row is here at all. The signal
+       * changed name with the escalation target: `frame:flagged-for-review` became
+       * `frame:escalated-to-campaign`. Both are read, because rows judged before the change
+       * still carry the old one and dropping them would silently blank the evidence column
+       * on exactly the posts most likely to be wrong.
+       */
+      frameEvidence: (() => {
+        const sig = readStringArray(p.signals)
+        return sig.includes('frame:escalated-to-campaign') || sig.includes('frame:flagged-for-review')
+          ? p.frameText
+          : null
+      })(),
     })),
     postsTotal,
     framesRead,
@@ -1105,15 +1270,6 @@ export async function buildPaidPostsView(): Promise<PaidPostsView> {
     framesNoEngine,
     framesFailed,
     frameFlagged,
-    review: reviewRows.map((r) => ({
-      shortcode: r.shortcode,
-      url: postUrl(r.shortcode),
-      dayLabel: istDateKey(r.postedAt),
-      channelHandle: r.target.handle,
-      caption: r.caption,
-      reason: r.classifierReason,
-      frameEvidence: readStringArray(r.signals).includes('frame:flagged-for-review') ? r.frameText : null,
-    })),
   }
 }
 
@@ -1247,38 +1403,79 @@ async function buildChannelCards(
  * guess as a verdict.
  */
 async function buildBrandsPanel(settings: Awaited<ReturnType<typeof getSettings>>): Promise<BrandsPanel> {
+  /**
+   * ── THE N+1 THAT MADE THIS PAGE TEN SECONDS LONG (fixed 2026-08-13) ──────
+   *
+   * This read every BRAND target with NO `take`, then ran TWO SERIAL awaits inside the loop
+   * — a count and a campaign lookup, per brand. MEASURED: `buildCeoView` took **9.9 s** and
+   * issued **174 queries**, of which **145 came from here**.
+   *
+   * NEITHER CAUSE IS SUFFICIENT ALONE, and that is the part worth keeping. On SQLite at ~1 ms
+   * a query the N+1 cost 0.2 s and was invisible for months. Hosting made a `select 1` through
+   * the SSH tunnel **28-37 ms** (raw ping to the Linode is 4.4 ms), and SSH multiplexes every
+   * channel over ONE TCP stream, so 20 concurrent queries on a pool of 10 still take 305 ms —
+   * concurrency barely helps, which rules out the obvious `Promise.all` fix. Then brand
+   * discovery finally worked on 2026-08-12 and 9 brands became 68. A latent design flaw, a
+   * slow link and a feature succeeding: the page got slow because things went RIGHT.
+   *
+   * It is now THREE queries regardless of how many brands exist: the rows, one `groupBy` for
+   * the delivered counts, one `findMany` for the discovery campaigns. Joined in memory.
+   */
   const brandTargets = await prisma.targetAccount.findMany({
     where: { kind: 'BRAND' },
-    include: {
-      pairs: { select: { enabled: true } },
-      campaigns: { select: { id: true } },
-    },
-    orderBy: { createdAt: 'asc' },
+    /**
+     * BOUNDED, with the total reported beside it — the posts table already does this
+     * ("showing the newest 100 of 223"). An unbounded list is a page that degrades silently
+     * as the system succeeds, which is exactly how this one reached ten seconds.
+     *
+     * NEWEST first, not oldest: the useful question on a CEO's page is "what has been found
+     * lately", and the oldest rows are the ones already known about.
+     */
+    take: BRAND_CARDS_SHOWN,
+    include: { pairs: { select: { enabled: true } } },
+    orderBy: { createdAt: 'desc' },
   })
+  const brandTotal = await prisma.targetAccount.count({ where: { kind: 'BRAND' } })
 
-  const confirmed: BrandCard[] = []
-  for (const b of brandTargets) {
-    const sent = await prisma.outreachAttempt.count({
-      where: { pair: { targetId: b.id }, status: { in: [...DELIVERED_STATUSES] } },
-    })
+  const campaignIds = brandTargets
+    .map((b) => b.discoveredFromCampaignId)
+    .filter((id): id is string => id !== null)
+
+  const [sentRows, campaigns] = await Promise.all([
+    prisma.outreachAttempt.groupBy({
+      by: ['targetId'],
+      where: { targetId: { in: brandTargets.map((b) => b.id) }, status: { in: [...DELIVERED_STATUSES] } },
+      _count: { _all: true },
+    }),
+    campaignIds.length === 0
+      ? Promise.resolve([])
+      : prisma.detectedCampaign.findMany({
+          where: { id: { in: campaignIds } },
+          select: { id: true, target: { select: { displayName: true } } },
+        }),
+  ])
+  const sentByTarget = new Map(sentRows.map((r) => [r.targetId, r._count._all]))
+  /**
+   * `operatorName` applied HERE, at extraction, not at the point of use.
+   *
+   * Both spellings render the same string, and only this one satisfies the rule that no view
+   * model holds a raw `displayName` — `tests/labels.test.ts` is a grep and cannot see a wrap
+   * applied three lines later. It caught exactly that in this refactor, which is its job: a
+   * raw label in a map is one careless read away from the screen.
+   */
+  const publisherByCampaign = new Map(campaigns.map((c) => [c.id, operatorName(c.target.displayName)]))
+
+  const confirmed: BrandCard[] = brandTargets.map((b) => ({
+    handle: b.handle,
+    name: operatorName(b.displayName),
+    category: b.brandCategory,
     // Which publisher's post surfaced this company. Prose, never a handle.
-    const campaign = b.discoveredFromCampaignId
-      ? await prisma.detectedCampaign.findUnique({
-          where: { id: b.discoveredFromCampaignId },
-          select: { target: { select: { handle: true, displayName: true } } },
-        })
-      : null
-
-    confirmed.push({
-      handle: b.handle,
-      name: operatorName(b.displayName),
-      category: b.brandCategory,
-      discoveredOn: campaign ? operatorName(campaign.target.displayName) : null,
-      enabled: b.pairs.some((p) => p.enabled),
-      sent,
-      retired: b.optedOut,
-    })
-  }
+    discoveredOn:
+      b.discoveredFromCampaignId !== null ? (publisherByCampaign.get(b.discoveredFromCampaignId) ?? null) : null,
+    enabled: b.pairs.some((p) => p.enabled),
+    sent: sentByTarget.get(b.id) ?? 0,
+    retired: b.optedOut,
+  }))
 
   /**
    * WHAT THE MODEL DECIDED, newest first — a record of automatic work, not a queue.
@@ -1324,6 +1521,7 @@ async function buildBrandsPanel(settings: Awaited<ReturnType<typeof getSettings>
 
   return {
     confirmed,
+    confirmedTotal: brandTotal,
     autoDecided,
     newTouchCap: settings.maxNewBrandTouchesPerDay,
     newTouchesUsedToday: newBrandTouchesUsed,

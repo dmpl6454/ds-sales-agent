@@ -35,16 +35,44 @@ import { SESSION_COOKIE } from '@/lib/session-cookie'
 const BASE = process.env.DS_LAYOUT_BASE ?? 'http://127.0.0.1:3100'
 const TOKEN = process.env.DS_LAYOUT_TOKEN
 
-/** Every authenticated page, with a string that must appear on it. */
-const PAGES: Array<{ path: string; heading: string }> = [
-  { path: '/', heading: 'Autopilot' },
-  { path: '/targets', heading: 'Targets' },
-  { path: '/paid-posts', heading: 'Paid posts' },
-  { path: '/analytics', heading: 'Analytics' },
-  { path: '/senders', heading: 'Senders' },
-  { path: '/rules', heading: 'Rules' },
-  { path: '/cost', heading: 'Cost' },
-  { path: '/settings', heading: 'Settings' },
+/**
+ * Every authenticated page, with a string that must appear on it and a QUERY BUDGET.
+ *
+ * ── WHAT THE BUDGET IS FOR, AND WHAT IT IS NOT ────────────────────────────────────────
+ *
+ * The defect it catches is a loop issuing one query per row — a count that GROWS WITH THE
+ * DATA. `buildBrandsPanel` ran two queries per brand across an unbounded list: invisible at
+ * 9 brands, a ten-second page at 68, a minute at 500. Nothing noticed for months, because
+ * every other check on this page passes on a slow page as happily as on a fast one.
+ *
+ * FOUND ON THE FIRST REAL RUN, which is this check earning its keep before it was even
+ * finished: `/` issued **559 queries** (measured twice, 1,577 ms) — after the brands N+1
+ * had been killed. The cause was the per-draft gate loop in `buildMessagesPage` over an
+ * unbounded queue, whose own comment claimed the list was "small by construction" because
+ * `maxUnansweredTouches` and the daily caps bound it. Those bound SENDS. The list is now
+ * capped at `WAITING_SHOWN` with the total shown beside it, which took `/` to 454.
+ *
+ * THE NUMBERS BELOW ARE CEILINGS OVER TODAY'S BOUNDED DESIGN, plus roughly a quarter of
+ * headroom. That is a weaker statement than "no page may exceed 20 queries" and it is the
+ * honest one: `/` legitimately asks the REAL gate about every draft it renders, because a
+ * draft that does not say why it cannot be sent is the failure this dashboard is built
+ * against. What the budget asserts is that the count stays a function of the LIMIT rather
+ * than of the queue — so a new per-row loop, or an unbounded list added later, fails here.
+ *
+ * `/`'s 454 is high and is left as outstanding work rather than hidden: reducing it means
+ * batching the gate's own reads, which is a change to a safety-critical function and wants
+ * its own session. Raising a budget to make this pass is the one thing not to do.
+ */
+const PAGES: Array<{ path: string; heading: string; queryBudget: number }> = [
+  // Bounded by WAITING_SHOWN (20) x the gate's own reads, plus the page's fixed work.
+  { path: '/', heading: 'Autopilot', queryBudget: 520 },
+  { path: '/targets', heading: 'Targets', queryBudget: 120 },
+  { path: '/paid-posts', heading: 'Paid posts', queryBudget: 120 },
+  { path: '/analytics', heading: 'Analytics', queryBudget: 125 },
+  { path: '/senders', heading: 'Senders', queryBudget: 35 },
+  { path: '/rules', heading: 'Rules', queryBudget: 30 },
+  { path: '/cost', heading: 'Cost', queryBudget: 30 },
+  { path: '/settings', heading: 'Settings', queryBudget: 25 },
 ]
 
 /**
@@ -202,6 +230,22 @@ async function measure(page: Page) {
   })
 }
 
+/**
+ * Read and zero the server's query counter.
+ *
+ * `enabled: false` is a FAILURE rather than a skip. Counting is off unless the server was
+ * started with `DS_QUERY_COUNT=1`, and a budget check that quietly passes when nobody is
+ * counting is precisely the reassuring falsehood this file was written against — the same
+ * shape as `framesRead` collapsing "no engine" into "no text found".
+ */
+async function readQueryCount(page: Page): Promise<number | null> {
+  const res = await page.request.get(BASE + '/api/query-count')
+  if (!res.ok()) return null
+  const body = (await res.json()) as { enabled: boolean; queries?: number }
+  if (!body.enabled) return null
+  return body.queries ?? null
+}
+
 async function main() {
   if (!TOKEN) {
     console.error('Set DS_LAYOUT_TOKEN to a valid dashboard session token.')
@@ -221,6 +265,13 @@ async function main() {
     console.log(`\n══ ${vp.name} — ${vp.width}×${vp.height} ══`)
 
     for (const p of PAGES) {
+      /**
+       * Zero the counter IMMEDIATELY before navigating, so what is measured is this page's
+       * render and not whatever the previous assertions cost. The read is discarded.
+       */
+      const budgetOn = vp === VIEWPORTS[0]
+      if (budgetOn) await readQueryCount(page)
+
       const res = await page.goto(BASE + p.path, { waitUntil: 'networkidle' })
       console.log(`\n ${p.path}  (HTTP ${res?.status()})`)
 
@@ -228,6 +279,31 @@ async function main() {
       const landed = new URL(page.url()).pathname
       check(landed === p.path, `stayed on ${p.path}`, landed !== p.path ? `redirected to ${landed}` : '')
       if (landed !== p.path) continue
+
+      /**
+       * ── THE QUERY BUDGET ──────────────────────────────────────────────────────────
+       *
+       * Read FIRST, before the asset fetches and the geometry probes below, so nothing
+       * this script does is attributed to the page. Measured once per page, at the wide
+       * viewport only: the query count is a property of the render, not of the width, and
+       * asserting it twice would only make a failure appear twice.
+       *
+       * This is the check the ten-second dashboard needed and did not have. Geometry,
+       * assets, headings and error boundaries all passed on `/` while it issued 174
+       * queries over a tunnel; the page was laid out perfectly and took ten seconds.
+       */
+      if (budgetOn) {
+        const queries = await readQueryCount(page)
+        if (queries === null) {
+          check(false, 'the server is counting queries', 'start it with DS_QUERY_COUNT=1')
+        } else {
+          check(
+            queries <= p.queryBudget,
+            `stays within its query budget (${queries}/${p.queryBudget})`,
+            `${queries} queries to render one page — look for a loop issuing one per row`,
+          )
+        }
+      }
 
       const m = await measure(page)
 

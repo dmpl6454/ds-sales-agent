@@ -112,4 +112,45 @@ describe('assessRead', () => {
     expect(r.foundOurs).toBe(1)
     expect(r.complete).toBe(true)
   })
+
+  /**
+   * ── THE SINGLE-TEMPLATE CASE, WHICH USED TO PASS FROM ONE BUBBLE ──────────
+   *
+   * Every message is now the SAME standard template, so a pair's bodies are byte-identical.
+   * The old check asked `messages.some(...)` per body — membership, which is a property of
+   * the whole thread — so ONE visible bubble answered for all three, `complete` came back
+   * true, and the caller stamped verified silence over a conversation it had not seen.
+   *
+   * This is the assertion that fails if the claim is ever relaxed back to membership. It is
+   * mutation-tested: replacing the body of `assessRead` with the old
+   * `ourBodies.filter((b) => messages.some((m) => isOneOfOurs(m.text, [b]))).length`
+   * makes the first expectation read 3 and the test fails.
+   */
+  it('does not let one bubble vouch for three identical messages', () => {
+    const ours = [OURS_A, OURS_A, OURS_A]
+    const oneVisible = assessRead([bubble(OURS_A, ours)], ours)
+    expect(oneVisible.foundOurs).toBe(1)
+    expect(oneVisible.complete).toBe(false)
+
+    const twoVisible = assessRead([bubble(OURS_A, ours), bubble(OURS_A, ours)], ours)
+    expect(twoVisible.foundOurs).toBe(2)
+    expect(twoVisible.complete).toBe(false)
+
+    // And the honest positive direction: all three present reads as complete.
+    const allVisible = assessRead([bubble(OURS_A, ours), bubble(OURS_A, ours), bubble(OURS_A, ours)], ours)
+    expect(allVisible.foundOurs).toBe(3)
+    expect(allVisible.complete).toBe(true)
+  })
+
+  /**
+   * The failure this guard exists for, with identical bodies: a partial read that also
+   * hides a reply must not report complete. If it did, `replyCheckedAt` would be stamped
+   * and the next follow-up would fire into a live conversation.
+   */
+  it('holds when identical messages are partly visible and a reply is present', () => {
+    const ours = [OURS_A, OURS_A]
+    const r = assessRead([bubble(OURS_A, ours), bubble(THEIRS, ours)], ours)
+    expect(r.foundOurs).toBe(1)
+    expect(r.complete).toBe(false)
+  })
 })

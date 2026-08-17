@@ -80,6 +80,36 @@ export interface OnDemandVerdict {
   warnings: OnDemandNote[]
 }
 
+/**
+ * ── EVERY RULE A PERSON MAY CROSS, AS A CLOSED SET ────────────────────────────────────
+ *
+ * `/rules` promises at the top of the page that *"every number is read from the module
+ * that enforces it"*, and its "never crossed" list keeps that promise — `STOP_LABELS` is
+ * TOTAL over `RESEND_BLOCKS`, so a gate stop added without a sentence is a compile error.
+ * Its "you may cross" list did not: it was one hand-written sentence, and it still named
+ * **"the route being off"** — `PAIR_DISABLED`, a stop DELETED on 2026-08-08 along with the
+ * per-route chip. So the page told a reader they could cross a rule that no longer exists,
+ * on the one screen whose entire job is saying what the system will and will not do.
+ *
+ * Same shape as `MAX_TOTAL_SENDS` being counted two ways: a page describing a rule by a
+ * different source than the one enforcing it is worse than a page that omits it, because
+ * it reads as knowledge. So the crossable set is declared HERE, beside the code that emits
+ * it, and the page renders labels TOTAL over these keys.
+ *
+ * `TARGET_REPLIED` deliberately reuses the gate's own string — it is the one stop that is
+ * both a gate block and crossable, and two vocabularies for one rule is how they drift.
+ */
+export const CROSSABLE_RULES = {
+  TARGET_REPLIED: RESEND_BLOCKS.TARGET_REPLIED,
+  COOLDOWN_ACTIVE: 'cooldown-active',
+  NO_NEW_MATERIAL: 'no-new-material',
+  UNANSWERED_TOUCH_LIMIT: 'unanswered-touch-limit',
+  PENDING_ATTEMPT_EXISTS: 'pending-attempt-exists',
+  LIFETIME_SEND_CAP_REACHED: 'lifetime-send-cap-reached',
+} as const
+
+export type CrossableRule = (typeof CROSSABLE_RULES)[keyof typeof CROSSABLE_RULES]
+
 const MS_PER_DAY = 86_400_000
 
 /** "3 days ago" / "today" — the dialog needs plain English, not an ISO string. */
@@ -158,7 +188,7 @@ export function describeOnDemand(f: OnDemandFacts): OnDemandVerdict {
   // a live human conversation, and the recipient is the one person who engaged.
   if (f.targetRepliedAt !== null) {
     warnings.push({
-      reason: RESEND_BLOCKS.TARGET_REPLIED,
+      reason: CROSSABLE_RULES.TARGET_REPLIED,
       text: `They replied ${agoLabel(f.now, f.targetRepliedAt)}. Automated outreach to them is halted so a person can take over — sending now adds another message to a live conversation.`,
     })
   }
@@ -169,7 +199,7 @@ export function describeOnDemand(f: OnDemandFacts): OnDemandVerdict {
     if (elapsed < required) {
       const daysLeft = Math.ceil((required - elapsed) / MS_PER_DAY)
       warnings.push({
-        reason: 'cooldown-active',
+        reason: CROSSABLE_RULES.COOLDOWN_ACTIVE,
         text: `You already messaged them ${agoLabel(f.now, f.lastSentAt)}. Normal spacing is ${f.cooldownDays} days, so this is ${daysLeft} day${daysLeft === 1 ? '' : 's'} early.`,
       })
     }
@@ -177,28 +207,28 @@ export function describeOnDemand(f: OnDemandFacts): OnDemandVerdict {
 
   if (f.touchesSoFar > 0 && f.unusedCampaignCount === 0) {
     warnings.push({
-      reason: 'no-new-material',
+      reason: CROSSABLE_RULES.NO_NEW_MATERIAL,
       text: 'Nothing new has been detected from them since your last message, so this one repeats material they have already seen. Repetition is the thing Instagram penalises most.',
     })
   }
 
   if (f.touchesSoFar >= f.maxUnansweredTouches) {
     warnings.push({
-      reason: 'unanswered-touch-limit',
+      reason: CROSSABLE_RULES.UNANSWERED_TOUCH_LIMIT,
       text: `You have sent ${f.touchesSoFar} message${f.touchesSoFar === 1 ? '' : 's'} with no reply. Instagram does not deliver further requests to someone who has not accepted, so this may not arrive at all.`,
     })
   }
 
   if (f.pendingAttemptCount > 0) {
     warnings.push({
-      reason: 'pending-attempt-exists',
+      reason: CROSSABLE_RULES.PENDING_ATTEMPT_EXISTS,
       text: 'A message to them is already written and waiting to be sent. This creates a second one.',
     })
   }
 
   if (f.maxTotalSends !== null && f.totalInFlight >= f.maxTotalSends) {
     warnings.push({
-      reason: 'lifetime-send-cap-reached',
+      reason: CROSSABLE_RULES.LIFETIME_SEND_CAP_REACHED,
       text: `The overall send limit of ${f.maxTotalSends} is reached (${f.totalInFlight} used or waiting). The scheduled agent has stopped preparing anything new.`,
     })
   }

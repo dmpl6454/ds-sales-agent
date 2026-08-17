@@ -37,14 +37,37 @@ const ev = (kind: FrameEvidence['kind'], hadText = true): FrameEvidence =>
   kind === 'read' ? { kind: 'read', hadText } : ({ kind } as FrameEvidence)
 
 describe('applyFrameSignal — what the footage may change', () => {
-  it('raises a caption ORGANIC to REVIEW when the frame turns the answer commercial (the Thane path)', () => {
+  /**
+   * ── THE THANE PATH NOW LANDS ON CAMPAIGN (2026-08-17) ────────────────────
+   *
+   * This asserted REVIEW, and beside it sat *"does NOT assert CAMPAIGN on frame evidence —
+   * no harness measures that yet"*. Both described the same caution, and the caution was
+   * right while a review queue existed to surface into.
+   *
+   * Tabish removed the queue — *"either a post is paid or unpaid/ordinary, no in between"* —
+   * so the footage's only remaining escalation target is CAMPAIGN. The caveat that justified
+   * the old assertion is UNCHANGED and still true: `ig:accuracy`'s labels are caption-derived,
+   * so a frame-driven CAMPAIGN is measured by no harness. What changed is the answer to
+   * "what do we do about that", and the answer is now a cross a person clicks rather than a
+   * third state nobody settled.
+   *
+   * The distinct signal is what keeps the population countable, which is why it is asserted
+   * here: `frame:escalated-to-campaign` marks every row where the footage, not the caption,
+   * made the call.
+   */
+  it('raises a caption ORGANIC to CAMPAIGN when the frame turns the answer commercial (the Thane path)', () => {
     const out = applyFrameSignal('ORGANIC', 'CAMPAIGN', ev('read'))
-    expect(out.verdict).toBe('REVIEW')
-    expect(out.signals).toContain('frame:flagged-for-review')
+    expect(out.verdict).toBe('CAMPAIGN')
+    expect(out.signals).toContain('frame:escalated-to-campaign')
+    expect(out.signals).toContain('frame:says-campaign')
   })
 
-  it('does NOT assert CAMPAIGN on frame evidence — no harness measures that yet', () => {
-    expect(applyFrameSignal('ORGANIC', 'CAMPAIGN', ev('read')).verdict).not.toBe('CAMPAIGN')
+  /** A frame-driven CAMPAIGN must stay identifiable, or no future harness can find them. */
+  it('marks a frame-driven CAMPAIGN distinctly from a caption-driven one', () => {
+    const fromFrame = applyFrameSignal('ORGANIC', 'CAMPAIGN', ev('read'))
+    const fromCaption = applyFrameSignal('CAMPAIGN', 'CAMPAIGN', ev('read'))
+    expect(fromFrame.signals).toContain('frame:escalated-to-campaign')
+    expect(fromCaption.signals).not.toContain('frame:escalated-to-campaign')
   })
 
   it('NEVER clears a post: a frame saying ordinary cannot lower a caption CAMPAIGN', () => {
@@ -74,7 +97,8 @@ describe('applyFrameSignal — what the footage may change', () => {
   it('NEVER demotes, for any combination of inputs', () => {
     // The signal exists to surface misses. Downward is the one direction it must not have,
     // because a quiet loss of recall is exactly what this project refuses to trade.
-    const rank: Record<Verdict, number> = { UNCLASSIFIED: 0, ORGANIC: 1, REVIEW: 2, CAMPAIGN: 3 }
+    // REVIEW left this scale on 2026-08-17 — a post is paid or ordinary, nothing between.
+    const rank: Record<Verdict, number> = { UNCLASSIFIED: 0, ORGANIC: 1, CAMPAIGN: 2 }
     for (const captionOnly of VERDICTS) {
       for (const withFrame of VERDICTS) {
         for (const kind of ['read', 'no-frame', 'unavailable', 'failed'] as const) {

@@ -1,0 +1,540 @@
+import { describe, it, expect, beforeEach } from 'vitest'
+import Database from 'better-sqlite3'
+import { mkdtempSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+
+/**
+ * `whoseTurn` WHEN THE RECIPIENT IS IN NO GROUP — against a real database.
+ *
+ * ── WHY THIS FILE EXISTS ──────────────────────────────────────────────────
+ *
+ * `tests/rotation.test.ts` covers `nextSender` thoroughly and in both directions, and it
+ * can, because that function is pure: it is handed a ring as a fixture. So the whole suite
+ * asserted what rotation DOES with a ring, and nothing at all asserted that anything ever
+ * BUILDS one.
+ *
+ * Nothing did. MEASURED on the live database 2026-08-13: `Category` 0 rows,
+ * `CategorySender` 0, `CategoryTarget` 0, and 0 of 72 targets in a group — from the day the
+ * table was created. `whoseTurn` returned `null` for every recipient there has ever been,
+ * both branches at its one call site read `if (turn && …)`, and the result was that every
+ * sender drafted to every recipient: 8 recipients holding a draft from more than one
+ * sender, 7 of them from all three, near-identical bodies under one phone number and one
+ * email. Every rotation test passed the whole time.
+ *
+ * That is this codebase's recurring shape — a well-tested consumer and an untested producer
+ * — so the producer is driven directly here, against a database, for the same reason
+ * `tests/cohorts-live.test.ts` exists: the answer is assembled from Prisma `select`s, where
+ * a stale column name fails at RUNTIME while typecheck passes.
+ *
+ * ── WHAT IS DELIBERATELY *NOT* MOCKED ─────────────────────────────────────
+ *
+ * `profileStatus`. Rotation must not consult it, and the last test in this file is the
+ * assertion of that: availability is built by the CALLER from database facts, because the
+ * machine that drafts is the Linode and it has no Chrome profiles at all. A test that
+ * mocked the filesystem would quietly permit a future change to start reading it again.
+ *
+ * DDL is transcribed from `prisma/migrations`, never from a reading of the schema.
+ */
+
+const dir = mkdtempSync(join(tmpdir(), 'ds-rotation-fleet-'))
+const dbPath = join(dir, 'rotation.db')
+
+const bootstrap = new Database(dbPath)
+bootstrap.exec(`
+  CREATE TABLE "SenderAccount" (
+    "id" TEXT NOT NULL PRIMARY KEY,
+    "handle" TEXT NOT NULL,
+    "displayName" TEXT NOT NULL,
+    "personaName" TEXT NOT NULL,
+    "personaRole" TEXT NOT NULL,
+    "personaBrand" TEXT NOT NULL,
+    "personaPhone" TEXT NOT NULL,
+    "personaEmail" TEXT NOT NULL,
+    "autoSendEnabled" BOOLEAN NOT NULL DEFAULT false,
+    "fleetMember" BOOLEAN NOT NULL DEFAULT true,
+    "dailyCap" INTEGER NOT NULL DEFAULT 5,
+    "status" TEXT NOT NULL DEFAULT 'ACTIVE',
+    "challengedAt" DATETIME,
+    "cohort" INTEGER NOT NULL DEFAULT 1,
+    "sessionPath" TEXT,
+    "sessionSavedAt" DATETIME,
+    "sessionInvalidAt" DATETIME,
+    "sessionInvalidReason" TEXT,
+    "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+  );
+  CREATE UNIQUE INDEX "SenderAccount_handle_key" ON "SenderAccount"("handle");
+
+  CREATE TABLE "TargetAccount" (
+    "id" TEXT NOT NULL PRIMARY KEY,
+    "handle" TEXT NOT NULL,
+    "displayName" TEXT NOT NULL,
+    "contactFirstName" TEXT,
+    "kind" TEXT NOT NULL DEFAULT 'CHANNEL',
+    "role" TEXT NOT NULL DEFAULT 'PROSPECT',
+    "detectorKey" TEXT NOT NULL DEFAULT 'passthrough',
+    "optedOut" BOOLEAN NOT NULL DEFAULT false,
+    "watchEnabled" BOOLEAN NOT NULL DEFAULT true,
+    "importNote" TEXT,
+    "discoveredFromCampaignId" TEXT,
+    "brandCategory" TEXT,
+    "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+  );
+  CREATE UNIQUE INDEX "TargetAccount_handle_key" ON "TargetAccount"("handle");
+
+  CREATE TABLE "OutreachPair" (
+    "id" TEXT NOT NULL PRIMARY KEY,
+    "senderId" TEXT NOT NULL,
+    "targetId" TEXT NOT NULL,
+    "cooldownDays" INTEGER NOT NULL DEFAULT 7,
+    "maxUnansweredTouches" INTEGER NOT NULL DEFAULT 3,
+    "enabled" BOOLEAN NOT NULL DEFAULT true,
+    "bespokeBody" TEXT,
+    "bespokeNote" TEXT,
+    "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+  );
+  CREATE UNIQUE INDEX "OutreachPair_senderId_targetId_key"
+    ON "OutreachPair"("senderId", "targetId");
+
+  CREATE TABLE "OutreachAttempt" (
+    "id" TEXT NOT NULL PRIMARY KEY,
+    "pairId" TEXT NOT NULL,
+    "senderId" TEXT NOT NULL,
+    "targetId" TEXT NOT NULL,
+    "campaignId" TEXT,
+    "variantId" TEXT NOT NULL,
+    "touchNumber" INTEGER NOT NULL,
+    "hookLine" TEXT,
+    "renderedBody" TEXT NOT NULL,
+    "status" TEXT NOT NULL DEFAULT 'QUEUED',
+    "queuedAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "sentAt" DATETIME,
+    "sentBy" TEXT,
+    "threadUrl" TEXT,
+    "error" TEXT,
+    "attempts" INTEGER NOT NULL DEFAULT 0,
+    "failureCode" TEXT,
+    "repliedAt" DATETIME,
+    "replyText" TEXT,
+    "replyCheckedAt" DATETIME,
+    "replyHandledAt" DATETIME,
+    "replyHandledBy" TEXT
+  );
+
+  CREATE TABLE "Category" (
+    "id" TEXT NOT NULL PRIMARY KEY,
+    "name" TEXT NOT NULL,
+    "slug" TEXT NOT NULL,
+    "note" TEXT,
+    "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+  );
+  CREATE UNIQUE INDEX "Category_slug_key" ON "Category"("slug");
+
+  CREATE TABLE "CategorySender" (
+    "id" TEXT NOT NULL PRIMARY KEY,
+    "categoryId" TEXT NOT NULL,
+    "senderId" TEXT NOT NULL,
+    "position" INTEGER NOT NULL DEFAULT 0,
+    "enabled" BOOLEAN NOT NULL DEFAULT true,
+    "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+  );
+  CREATE UNIQUE INDEX "CategorySender_categoryId_senderId_key"
+    ON "CategorySender"("categoryId", "senderId");
+
+  CREATE TABLE "CategoryTarget" (
+    "id" TEXT NOT NULL PRIMARY KEY,
+    "categoryId" TEXT NOT NULL,
+    "targetId" TEXT NOT NULL,
+    "enabled" BOOLEAN NOT NULL DEFAULT true,
+    "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+  );
+  CREATE UNIQUE INDEX "CategoryTarget_categoryId_targetId_key"
+    ON "CategoryTarget"("categoryId", "targetId");
+`)
+bootstrap.close()
+
+process.env.DATABASE_URL = `file:${dbPath}`
+process.env.TZ = 'Asia/Kolkata'
+
+const { whoseTurn, describeRing, fleetRingFor } = await import('@/outreach/categories')
+const { fleetRingOrder } = await import('@/outreach/rotation')
+const { sessionRecorded } = await import('@/outreach/sessionHealth')
+const { prisma } = await import('@/lib/db')
+
+const persona = {
+  personaName: 'Kapil Jain',
+  personaRole: 'Co-founder',
+  personaBrand: 'Bollywood Society',
+  personaPhone: '+91 60000 189766',
+  personaEmail: 'kapil@digitalsukoon.com',
+}
+
+const TARGET = 't_brand'
+
+async function addSender(
+  handle: string,
+  opts: { cohort?: number; fleetMember?: boolean; pairTo?: string } = {},
+) {
+  const { cohort = 1, fleetMember = true, pairTo = TARGET } = opts
+  await prisma.senderAccount.create({
+    data: { id: `s_${handle}`, handle, displayName: handle, cohort, fleetMember, ...persona },
+  })
+  if (pairTo !== '') {
+    await prisma.outreachPair.create({
+      data: { id: `p_${handle}`, senderId: `s_${handle}`, targetId: pairTo },
+    })
+  }
+}
+
+/** A DELIVERED message — the whole of rotation's stored state. */
+async function addDelivered(handle: string, sentAt: Date, status = 'SENT') {
+  await prisma.outreachAttempt.create({
+    data: {
+      id: `a_${handle}_${sentAt.getTime()}`,
+      pairId: `p_${handle}`,
+      senderId: `s_${handle}`,
+      targetId: TARGET,
+      variantId: 'v_1',
+      touchNumber: 1,
+      renderedBody: 'body',
+      status,
+      sentAt,
+    },
+  })
+}
+
+beforeEach(async () => {
+  await prisma.categoryTarget.deleteMany()
+  await prisma.categorySender.deleteMany()
+  await prisma.category.deleteMany()
+  await prisma.outreachAttempt.deleteMany()
+  await prisma.outreachPair.deleteMany()
+  await prisma.senderAccount.deleteMany()
+  await prisma.targetAccount.deleteMany()
+  await prisma.targetAccount.create({
+    data: { id: TARGET, handle: 'crocsindia', displayName: 'Crocs India', kind: 'BRAND' },
+  })
+})
+
+describe('whoseTurn on the fleet ring — a recipient in no group', () => {
+  it('CHOOSES ONE SENDER when all three are able (it used to choose none, so all three wrote)', async () => {
+    await addSender('alpha')
+    await addSender('bravo')
+    await addSender('charlie')
+
+    const turn = await whoseTurn({ targetId: TARGET })
+
+    expect(turn.ring).toBe('fleet')
+    expect(turn.categoryId).toBeNull()
+    expect(turn.choice.ok).toBe(true)
+    // Deterministic: cohort, then handle. Not "whichever row came back first".
+    expect(turn.choice.ok && turn.choice.handle).toBe('alpha')
+  })
+
+  it('never returns null, which is the whole fix — null meant "everybody writes"', async () => {
+    await addSender('alpha')
+    const turn = await whoseTurn({ targetId: TARGET })
+    // Typed non-nullable; asserted at runtime too, because the old call sites were
+    // `if (turn && …)` and a null slipping back would silently restore the defect.
+    expect(turn).not.toBeNull()
+    expect(turn.choice.ok).toBe(true)
+  })
+
+  it('PASSES THE TURN ON when the first sender is unavailable', async () => {
+    await addSender('alpha')
+    await addSender('bravo')
+    await addSender('charlie')
+
+    const turn = await whoseTurn({
+      targetId: TARGET,
+      unavailable: new Map([['s_alpha', 'never signed in']]),
+    })
+
+    expect(turn.choice.ok && turn.choice.handle).toBe('bravo')
+  })
+
+  it('REFUSES with all-unavailable when nobody can write, naming each reason', async () => {
+    await addSender('alpha')
+    await addSender('bravo')
+
+    const turn = await whoseTurn({
+      targetId: TARGET,
+      unavailable: new Map([
+        ['s_alpha', 'flagged by Instagram'],
+        ['s_bravo', 'never signed in'],
+      ]),
+    })
+
+    expect(turn.choice.ok).toBe(false)
+    expect(turn.choice.ok === false && turn.choice.reason).toBe('all-unavailable')
+    // The detail is what an operator reads. Both accounts, both reasons.
+    expect(turn.choice.ok === false && turn.choice.detail).toContain('alpha: flagged by Instagram')
+    expect(turn.choice.ok === false && turn.choice.detail).toContain('bravo: never signed in')
+  })
+
+  it('walks on from whoever DELIVERED last, so no recipient hears from one page twice running', async () => {
+    await addSender('alpha')
+    await addSender('bravo')
+    await addSender('charlie')
+    await addDelivered('alpha', new Date('2026-08-10T09:00:00Z'))
+
+    const turn = await whoseTurn({ targetId: TARGET })
+    expect(turn.choice.ok && turn.choice.handle).toBe('bravo')
+  })
+
+  it('a draft that was never DELIVERED does not advance the ring', async () => {
+    await addSender('alpha')
+    await addSender('bravo')
+    // READY, not SENT: prepared and waiting. The recipient has heard nothing.
+    await addDelivered('alpha', new Date('2026-08-10T09:00:00Z'), 'READY')
+
+    const turn = await whoseTurn({ targetId: TARGET })
+    expect(turn.choice.ok && turn.choice.handle).toBe('alpha')
+  })
+
+  it('a REPLIED message still counts as delivered — a reply must not rewind the ring', async () => {
+    await addSender('alpha')
+    await addSender('bravo')
+    await addDelivered('alpha', new Date('2026-08-10T09:00:00Z'), 'REPLIED')
+
+    const turn = await whoseTurn({ targetId: TARGET })
+    expect(turn.choice.ok && turn.choice.handle).toBe('bravo')
+  })
+
+  /**
+   * BOTH of these insert in the OPPOSITE order to the answer they expect.
+   *
+   * The first draft did not, and mutation testing caught it: deleting the sort from
+   * `fleetRingOrder` entirely left all nineteen tests green, because positions were then
+   * assigned in insertion order and insertion order happened to match. `fleetRingFor` runs
+   * a `findMany` with no `orderBy`, so without the sort the ring is whatever order the
+   * database felt like — a rotation that is deterministic only by luck.
+   */
+  it('orders by COHORT before handle, so the proven baseline sits at the front of the ring', async () => {
+    await addSender('alpha', { cohort: 2 })
+    await addSender('zulu', { cohort: 1 })
+
+    const turn = await whoseTurn({ targetId: TARGET })
+    expect(turn.choice.ok && turn.choice.handle).toBe('zulu')
+  })
+
+  it('breaks a cohort tie on handle, inserted in the opposite order', async () => {
+    await addSender('zulu', { cohort: 1 })
+    await addSender('alpha', { cohort: 1 })
+
+    const turn = await whoseTurn({ targetId: TARGET })
+    expect(turn.choice.ok && turn.choice.handle).toBe('alpha')
+  })
+
+  it('EXCLUDES a non-fleet sender — the burner has 70 pair rows and must never be elected', async () => {
+    await addSender('tabishmukaddam1', { fleetMember: false })
+    await addSender('alpha')
+
+    const ring = await fleetRingFor(TARGET)
+    expect(ring.map((m) => m.handle)).toEqual(['alpha'])
+  })
+
+  it('EXCLUDES a fleet sender with no route to this recipient', async () => {
+    await addSender('alpha')
+    // Paired to nothing: `routes.ts` refuses some routes outright, and a ring built from
+    // "all fleet accounts" would elect this one, skip every real pair, and write nothing.
+    await addSender('bravo', { pairTo: '' })
+
+    const ring = await fleetRingFor(TARGET)
+    expect(ring.map((m) => m.handle)).toEqual(['alpha'])
+  })
+
+  it('refuses with empty-ring rather than choosing anyone when no route exists at all', async () => {
+    await addSender('alpha', { pairTo: '' })
+    const turn = await whoseTurn({ targetId: TARGET })
+    expect(turn.choice.ok).toBe(false)
+    expect(turn.choice.ok === false && turn.choice.reason).toBe('empty-ring')
+  })
+
+  it('a pre-loaded ring is an optimisation, never a different verdict', async () => {
+    await addSender('alpha')
+    await addSender('bravo')
+
+    const loaded = await fleetRingFor(TARGET)
+    const withRing = await whoseTurn({ targetId: TARGET, fleet: loaded })
+    const withoutRing = await whoseTurn({ targetId: TARGET })
+
+    expect(withRing.choice).toEqual(withoutRing.choice)
+    expect(withRing.ring).toBe(withoutRing.ring)
+  })
+})
+
+describe('fleetRingOrder — the pure half, driven with scrambled input', () => {
+  it('is a total order independent of the order it was handed', () => {
+    const rows = [
+      { id: 's_zulu', handle: 'zulu', cohort: 1 },
+      { id: 's_alpha', handle: 'alpha', cohort: 2 },
+      { id: 's_bravo', handle: 'bravo', cohort: 1 },
+    ]
+    expect(fleetRingOrder(rows).map((m) => m.handle)).toEqual(['bravo', 'zulu', 'alpha'])
+    // Same set, shuffled in: same ring. This is what "deterministic" has to mean when the
+    // producer is a findMany with no orderBy.
+    expect(fleetRingOrder([...rows].reverse()).map((m) => m.handle)).toEqual(['bravo', 'zulu', 'alpha'])
+  })
+
+  it('numbers positions densely from zero, so ringOrder cannot re-sort them apart', () => {
+    const ring = fleetRingOrder([
+      { id: 's_b', handle: 'bravo', cohort: 1 },
+      { id: 's_a', handle: 'alpha', cohort: 1 },
+    ])
+    expect(ring.map((m) => m.position)).toEqual([0, 1])
+    expect(ring.map((m) => m.handle)).toEqual(['alpha', 'bravo'])
+  })
+
+  it('marks every member enabled — a pair row IS a live route since 2026-08-08', () => {
+    const ring = fleetRingOrder([{ id: 's_a', handle: 'alpha', cohort: 1 }])
+    expect(ring[0]!.enabled).toBe(true)
+  })
+})
+
+describe('whoseTurn on a GROUP ring — unchanged by the fleet fallback', () => {
+  async function putInGroup(senderHandles: string[]) {
+    await prisma.category.create({ data: { id: 'c_1', name: 'Bollywood', slug: 'bollywood' } })
+    await prisma.categoryTarget.create({ data: { id: 'ct_1', categoryId: 'c_1', targetId: TARGET } })
+    for (const [i, h] of senderHandles.entries()) {
+      await prisma.categorySender.create({
+        data: { id: `cs_${h}`, categoryId: 'c_1', senderId: `s_${h}`, position: i },
+      })
+    }
+  }
+
+  it('uses the GROUP order, not the fleet order, and says which ring decided', async () => {
+    await addSender('alpha')
+    await addSender('bravo')
+    await addSender('charlie')
+    // Group order deliberately disagrees with alphabetical, so a fleet fallback leaking in
+    // would be visible rather than coincidentally right.
+    await putInGroup(['charlie', 'bravo', 'alpha'])
+
+    const turn = await whoseTurn({ targetId: TARGET })
+    expect(turn.ring).toBe('group')
+    expect(turn.categoryName).toBe('Bollywood')
+    expect(turn.choice.ok && turn.choice.handle).toBe('charlie')
+    expect(describeRing(turn)).toBe('Bollywood')
+  })
+
+  it('a sender OUTSIDE the group is not offered a turn, even though it is in the fleet', async () => {
+    await addSender('alpha')
+    await addSender('bravo')
+    await putInGroup(['bravo'])
+
+    const turn = await whoseTurn({ targetId: TARGET })
+    expect(turn.choice.ok && turn.choice.handle).toBe('bravo')
+  })
+
+  it('a DISABLED membership is skipped — suspended, not removed', async () => {
+    await addSender('alpha')
+    await addSender('bravo')
+    await putInGroup(['alpha', 'bravo'])
+    await prisma.categorySender.update({ where: { id: 'cs_alpha' }, data: { enabled: false } })
+
+    const turn = await whoseTurn({ targetId: TARGET })
+    expect(turn.choice.ok && turn.choice.handle).toBe('bravo')
+  })
+
+  it('an empty group refuses rather than falling back to the fleet', async () => {
+    // The fallback is for a target in NO group. A target in an EMPTY group is a
+    // configuration someone made, and quietly widening it to the whole fleet would
+    // message people from accounts nobody put in that ring.
+    await addSender('alpha')
+    await putInGroup([])
+
+    const turn = await whoseTurn({ targetId: TARGET })
+    expect(turn.ring).toBe('group')
+    expect(turn.choice.ok).toBe(false)
+    expect(turn.choice.ok === false && turn.choice.reason).toBe('empty-ring')
+  })
+
+  it('describeRing names the fleet when no group decided', () => {
+    expect(describeRing({ ring: 'fleet', categoryName: null })).toBe('the fleet rotation')
+  })
+})
+
+describe('availability fed to rotation is machine-independent', () => {
+  /**
+   * THE REGRESSION THIS GUARDS, measured 2026-08-13.
+   *
+   * The planner runs on the Linode; that host has no `~/.ds-sales-agent` directory at all,
+   * because Chrome profiles live on each operator's own device and the server may never
+   * send. So `profileStatus(h).hasSession` — which `sessionUsable` needs — is false for
+   * EVERY account on the one machine that drafts. Had the binding rotation been fed that
+   * answer, every recipient would have resolved to `all-unavailable` and drafting would
+   * have stopped fleet-wide, silently.
+   */
+  it('sessionRecorded reads the DATABASE, so the server and a laptop agree', () => {
+    const signedIn = { sessionPath: 'profiles/alpha', sessionInvalidAt: null }
+    const neverSignedIn = { sessionPath: null, sessionInvalidAt: null }
+    const provedDead = { sessionPath: 'profiles/charlie', sessionInvalidAt: new Date('2026-08-06T09:58:00Z') }
+
+    expect(sessionRecorded(signedIn)).toBe(true)
+    expect(sessionRecorded(neverSignedIn)).toBe(false)
+    expect(sessionRecorded(provedDead)).toBe(false)
+  })
+
+  /**
+   * A SOURCE GREP, because no behavioural test can fail for a line nobody has written yet,
+   * and the failure mode is a future edit "restoring" the filesystem check — which would
+   * look like a correctness improvement and would stop drafting on the server.
+   */
+  it('the availability rotation is fed never reads the filesystem', async () => {
+    const { readFileSync } = await import('node:fs')
+    const src = readFileSync(new URL('../src/outreach/availability.ts', import.meta.url), 'utf8')
+    const code = src.slice(src.indexOf('export async function readSenderAvailability'))
+
+    expect(code).toContain('sessionRecorded')
+    expect(code).not.toContain('profileStatus')
+    expect(code).not.toContain('hasSessionOnDisk')
+    expect(code).not.toContain('sessionUsable')
+  })
+
+  /**
+   * THE BURNER HAS 70 LIVE PAIR ROWS, AND TWO INDEPENDENT THINGS KEEP IT OUT.
+   *
+   * MEASURED 2026-08-13: `@tabishmukaddam1` is `fleetMember: false` and has 70 `OutreachPair`
+   * rows — and since 2026-08-08 a pair row IS a live route. It is inert because `runOutreach`
+   * scopes its query to fleet members and `fleetRingFor` scopes the ring the same way. Both
+   * are one word each, and losing either would put the rehearsal account into automatic
+   * outreach to 70 real companies.
+   *
+   * The rows themselves are deliberately NOT deleted here. `OutreachAttempt.pairId` is
+   * `ON DELETE CASCADE`, so removing a pair removes the record of every message that pair
+   * ever sent — and that record is what spacing, the unanswered-touch cap and the
+   * new-material rule are derived from. 0 of the 70 carry attempts today, so a delete would
+   * be safe today; a delete PATH that can reach a pair with history would not be.
+   */
+  it('the planner scopes its pairs to the fleet — the burner has 70 live routes', async () => {
+    const { readFileSync } = await import('node:fs')
+    const src = readFileSync(new URL('../src/outreach/plan.ts', import.meta.url), 'utf8')
+    const query = src.slice(src.indexOf('const pairs = await prisma.outreachPair.findMany('))
+    expect(query.slice(0, 200)).toContain('fleetMember: true')
+  })
+
+  it('every caller of rotation asks that ONE reader, so a page cannot disagree with the planner', async () => {
+    const { readFileSync } = await import('node:fs')
+    const callers = [
+      '../src/outreach/plan.ts',
+      '../src/scripts/dedupe-drafts.ts',
+      '../src/app/view-model/messages-page.ts',
+      '../src/app/view-model/prospects-page.ts',
+    ]
+    for (const rel of callers) {
+      const src = readFileSync(new URL(rel, import.meta.url), 'utf8')
+      expect(src, `${rel} must build rotation availability from the shared reader`).toContain(
+        'readSenderAvailability',
+      )
+      // None of them may hand-roll the map — that is how `gate.ts` drifted twice.
+      expect(src, `${rel} must not rebuild the availability map inline`).not.toContain(
+        "unavailable.set(s.id, 'never signed in')",
+      )
+    }
+  })
+})

@@ -5,6 +5,11 @@ import { BRAND_BLOCKS, checkNewBrandTouchCap, checkPersonaDistinct } from '@/out
 import { decideDispatch, assessBreaker } from '@/outreach/pacing'
 import { FAILURE_CODES } from '@/lib/constants'
 import { asSentence, remedyFor, withoutShellCommand } from '@/app/messages/remedy'
+import { describeOnDemand, CROSSABLE_RULES } from '@/outreach/onDemand'
+import { readFileSync } from 'node:fs'
+import { join, resolve } from 'node:path'
+
+const ROOT_DIR = resolve(__dirname, '..')
 
 /**
  * ── THE STOP INVENTORY — the safety net for the dashboard redesign ─────────
@@ -120,6 +125,7 @@ function gateInput(over: Record<string, unknown> = {}) {
     senderHasSession: true,
     senderDailyCap: 5,
     targetOptedOut: false,
+    targetIsWatchOnly: false,
     targetRepliedAt: null,
     targetSentTodayCount: 0,
     senderSentTodayCount: 0,
@@ -135,10 +141,12 @@ const GATE_CASES: Array<[string, Record<string, unknown>]> = [
   [RESEND_BLOCKS.SENDER_NOT_ACTIVE, { senderStatus: 'CHALLENGED' }],
   [RESEND_BLOCKS.COHORT_NOT_CLEARED, { senderCohortCleared: false, senderCohortDetail: 'group 1 has been sending for 3 of 14 days' }],
   [RESEND_BLOCKS.TARGET_OPTED_OUT, { targetOptedOut: true }],
+  [RESEND_BLOCKS.TARGET_IS_WATCH_ONLY, { targetIsWatchOnly: true }],
   [RESEND_BLOCKS.TARGET_REPLIED, { targetRepliedAt: new Date('2026-08-19T12:00:00Z') }],
   [RESEND_BLOCKS.NO_SESSION, { senderHasSession: false }],
   [RESEND_BLOCKS.PERSONA_NOT_DISTINCT, { personaSharedWithAnotherSender: true }],
   [RESEND_BLOCKS.PERSONA_CHANGED_SINCE_DRAFT, { draftPersonaStale: true }],
+  [RESEND_BLOCKS.HOOK_STALE_SINCE_DRAFT, { draftHookStale: true }],
   [RESEND_BLOCKS.TARGET_DAILY_CAP, { targetSentTodayCount: 2 }],
   [RESEND_BLOCKS.SENDER_DAILY_CAP, { senderSentTodayCount: 5 }],
 ]
@@ -286,6 +294,8 @@ describe('every gate stop is reachable and explains itself', () => {
       RESEND_BLOCKS.PERSONA_NOT_DISTINCT,
       RESEND_BLOCKS.COHORT_NOT_CLEARED,
       RESEND_BLOCKS.PERSONA_CHANGED_SINCE_DRAFT,
+      // Same family: the message is wrong for its recipient, not merely early.
+      RESEND_BLOCKS.HOOK_STALE_SINCE_DRAFT,
       RESEND_BLOCKS.NOT_WAITING,
     ]
     for (const code of absolute) {
@@ -298,7 +308,7 @@ describe('every gate stop is reachable and explains itself', () => {
 
 describe('the brand guards explain themselves', () => {
   it('the new-brand daily cap', () => {
-    const r = checkNewBrandTouchCap({ isFirstTouch: true, newBrandTouchesToday: 2, maxNewBrandTouchesPerDay: 2 })
+    const r = checkNewBrandTouchCap({ isFirstTouch: true, firstTouchesCreatedToday: 2, firstTouchesDeliveredToday: 0, maxNewBrandTouchesPerDay: 2 })
     expect(r.ok).toBe(false)
     if (!r.ok) {
       expect(r.reason).toBe(BRAND_BLOCKS.NEW_BRAND_DAILY_CAP)
@@ -430,5 +440,88 @@ describe('every failure code is documented for a person', () => {
     expect(FAILURE_CODES).toContain('logged-out')
     expect(FAILURE_CODES).toContain('two-factor')
     expect(FAILURE_CODES).toContain('navigation')
+  })
+})
+
+// ── the rules a person MAY cross ───────────────────────────────────────────
+
+/**
+ * ── THE OTHER HALF OF THE INVENTORY, WHICH DID NOT HAVE ONE ───────────────────────────
+ *
+ * Everything above pins the stops that REFUSE. The rules a person may CROSS had no such
+ * net, and it showed: `/rules` described them in one hand-written sentence which still
+ * named **"the route being off"** — `PAIR_DISABLED`, deleted on 2026-08-08 with the
+ * per-route chip. The page that exists to say what the system will and will not do was
+ * offering a reader a rule that does not exist.
+ *
+ * `CROSSABLE_RULES` is now the declared set and `/rules` renders labels TOTAL over it, so a
+ * missing sentence is a compile error. That covers "a key with no label". It does NOT cover
+ * the direction that actually broke — a warning `describeOnDemand` emits under a code that
+ * is not in the set at all, which would be silently absent from the page. So this drives
+ * every warning to fire and asserts each reason is a declared one.
+ *
+ * Mutation-tested: adding a warning with a fresh literal reason fails here, and removing an
+ * entry from `CROSSABLE_RULES` fails here too.
+ */
+describe('every rule a person may cross is declared, and the page can name it', () => {
+  const DECLARED = new Set<string>(Object.values(CROSSABLE_RULES))
+
+  /** Facts chosen so that EVERY warning fires at once. */
+  const allWarnings = describeOnDemand({
+    now: NOW,
+    senderStatus: 'ACTIVE',
+    senderHasSession: true,
+    senderPersonaProblems: [],
+    targetOptedOut: false,
+    targetSentTodayCount: 0,
+    senderSentTodayCount: 0,
+    senderDailyCap: 5,
+    maxPerTargetPerDay: 2,
+    isSelfSend: false,
+    cooldownDays: 7,
+    lastSentAt: new Date(NOW.getTime() - 86_400_000), // yesterday: inside the 7-day spacing
+    touchesSoFar: 3,
+    maxUnansweredTouches: 3,
+    targetRepliedAt: new Date(NOW.getTime() - 3_600_000),
+    pendingAttemptCount: 1,
+    unusedCampaignCount: 0,
+    totalInFlight: 6,
+    maxTotalSends: 6,
+  }).warnings
+
+  it('produces every declared rule, so none of them is unreachable', () => {
+    const seen = new Set(allWarnings.map((w) => w.reason))
+    for (const code of DECLARED) {
+      expect(seen, `${code} is declared crossable and no input produces it`).toContain(code)
+    }
+  })
+
+  it('produces nothing that is NOT declared — an undeclared warning is missing from /rules', () => {
+    for (const w of allWarnings) {
+      expect(DECLARED, `warning "${w.reason}" is emitted but not in CROSSABLE_RULES`).toContain(w.reason)
+    }
+  })
+
+  it('every one of them still explains itself in English', () => {
+    for (const w of allWarnings) assertReadable(`crossable:${w.reason}`, w.text, w.reason)
+  })
+
+  /**
+   * The deleted control, named. A grep rather than a set check, because the failure was
+   * PROSE on a page: someone re-adding the sentence would not touch `CROSSABLE_RULES`.
+   *
+   * COMMENTS ARE STRIPPED FIRST, and that is the point rather than a convenience. The first
+   * version of this test grepped the whole file and FAILED — on the comment written directly
+   * above the fix, which quotes the deleted wording in order to explain why it went. A grep
+   * that cannot tell rendered text from an explanation of rendered text is measuring the
+   * wrong bytes, and the safe-looking response (reword the comment) would leave the next
+   * person unable to write down the history at all.
+   */
+  it('no rendered text on /rules names the per-route switch, deleted on 2026-08-08', () => {
+    const page = readFileSync(join(ROOT_DIR, 'src/app/rules/page.tsx'), 'utf8')
+    const rendered = page.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')
+    expect(rendered).not.toMatch(/route being off|route is switched off|pair-disabled/i)
+    // and the strip must not have eaten everything, which would pass vacuously
+    expect(rendered).toContain('CROSSABLE_LABELS')
   })
 })

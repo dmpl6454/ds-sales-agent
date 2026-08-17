@@ -171,6 +171,8 @@ async function main() {
         displayName: t.displayName,
         contactFirstName: t.contactFirstName,
         kind: 'CHANNEL',
+        // Seeded channels are watched publishers, never recipients.
+        role: 'WATCH',
         detectorKey: t.detectorKey,
       },
     })

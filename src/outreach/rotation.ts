@@ -63,6 +63,53 @@ export type RotationChoice =
   | { ok: true; senderId: string; handle: string; position: number }
   | { ok: false; reason: 'empty-ring' | 'all-unavailable'; detail: string }
 
+/**
+ * THE RING WHEN A RECIPIENT IS IN NO GROUP: the fleet itself, in a stable order. PURE.
+ *
+ * ── WHY THIS EXISTS ───────────────────────────────────────────────────────
+ *
+ * Until 2026-08-13 "no group" meant NO ROTATION: `whoseTurn` returned null and both call
+ * sites read `if (turn && …)`, so every enabled pair was considered independently. That was
+ * written when `Category` being empty was a temporary state. It never stopped being empty —
+ * MEASURED on the live database: `Category` 0 rows, `CategorySender` 0, `CategoryTarget` 0,
+ * and 0 of 72 targets in a group, from the day the table was created.
+ *
+ * So the documented behaviour ("a target in NO category behaves exactly as before") was the
+ * ONLY behaviour, and its consequence was measured too: 8 recipients holding a draft from
+ * more than one sender, 7 of them from all three, the bodies near-identical and carrying the
+ * same phone number and email. That is precisely the cross-account fingerprint decision 3b
+ * exists to prevent — arriving as the default rather than as anyone's choice.
+ *
+ * The mechanism was never wrong. `nextSender` starts after whoever wrote last and skips
+ * whoever cannot write, which is exactly the intended behaviour; nothing fed it a ring.
+ * This is the ring, and it needs no configuration: a recipient in no group is rotated
+ * through the fleet, and a recipient in a group keeps using that group.
+ *
+ * ── THE ORDER ─────────────────────────────────────────────────────────────
+ *
+ * `cohort` first, then handle. Cohort is the onboarding ladder (Phase 9) and putting it
+ * first means the proven baseline accounts sit at the front of the ring while accounts
+ * added later join the back — the same staging the ladder already expresses, rather than a
+ * second opinion about it. Handle breaks the tie because it is total and stable.
+ *
+ * A rename reshuffles the fleet ring, and that is harmless by construction: the walk starts
+ * from `lastSenderId`, so a reshuffle changes who comes NEXT and can never change how many
+ * senders write — which is the property that matters.
+ *
+ * Every member is `enabled: true`. Since 2026-08-08 there is no per-route switch — a pair
+ * row IS a live route — so "may this account write at all right now" is not a property of
+ * the ring; it is the caller's `unavailable` map, and it is re-asked at delivery by
+ * `gate.ts`.
+ */
+export function fleetRingOrder(
+  senders: readonly { id: string; handle: string; cohort: number }[],
+): RingMember[] {
+  return senders
+    .slice()
+    .sort((a, b) => (a.cohort === b.cohort ? a.handle.localeCompare(b.handle) : a.cohort - b.cohort))
+    .map((s, i) => ({ senderId: s.id, handle: s.handle, position: i, enabled: true }))
+}
+
 /** Enabled members in ring order. Ties on `position` break on handle, so it is total. */
 export function ringOrder(ring: readonly RingMember[]): RingMember[] {
   return ring

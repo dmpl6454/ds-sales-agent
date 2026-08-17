@@ -15,7 +15,16 @@ import { describe, expect, it, vi, beforeEach } from 'vitest'
 const classifyCaption = vi.hoisted(() => vi.fn())
 const readFrameText = vi.hoisted(() => vi.fn())
 
-vi.mock('@/detection/detectors/semantic', () => ({ classifyCaption }))
+/**
+ * Only `classifyCaption` is mocked — it is the network call. `modelVerdictToStored` is the
+ * REAL pure mapping, because it is part of what these tests are about: the model's word for
+ * "genuinely ambiguous" becoming a paid post is the behaviour under test, and a mock of it
+ * would assert the mock.
+ */
+vi.mock('@/detection/detectors/semantic', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/detection/detectors/semantic')>()
+  return { ...actual, classifyCaption }
+})
 vi.mock('@/detection/ocr', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/detection/ocr')>()
   return { ...actual, readFrameText }
@@ -85,15 +94,16 @@ describe('judgeWithFrame — what it refuses to spend a call on', () => {
 })
 
 describe('judgeWithFrame — the footage may escalate and nothing more', () => {
-  it('raises a caption ORGANIC to REVIEW when the footage says commercial', async () => {
+  it('raises a caption ORGANIC to CAMPAIGN when the footage says commercial', async () => {
     readFrameText.mockResolvedValue(frameRead())
     classifyCaption.mockResolvedValue({ verdict: 'CAMPAIGN', confidence: 88, reason: 'Title presents the bus as a product' })
 
     const result = await judgeWithFrame(ordinaryTarget, 'ORGANIC')
 
-    // REVIEW, never CAMPAIGN: ig:accuracy's labels are caption-derived, so a
-    // frame-driven CAMPAIGN is measured by nothing that exists.
-    expect(result.verdict).toBe('REVIEW')
+    // CAMPAIGN since 2026-08-17: there is no third state, and a paid post filed as
+    // ordinary is the one error this project refuses. The cross on /paid-posts is the
+    // corrective, and it shipped in the same change.
+    expect(result.verdict).toBe('CAMPAIGN')
     expect(result.changedByFrame).toBe(true)
     expect(result.frameSummary).toContain('SWITCH')
     expect(result.engine).toBe('vision')
@@ -109,13 +119,19 @@ describe('judgeWithFrame — the footage may escalate and nothing more', () => {
     expect(result.changedByFrame).toBe(false)
   })
 
-  it('cannot CLEAR a post: a REVIEW stays REVIEW even when the footage reads ordinary', async () => {
+  /**
+   * The footage may never CLEAR a post, and that survives the binary change unchanged —
+   * only the verdict it cannot clear is different. Frame text reading "ordinary" about a
+   * post the caption called paid is one weak input disagreeing with a measured one, and
+   * acting on it would silently lower recall.
+   */
+  it('cannot CLEAR a post: a CAMPAIGN stays CAMPAIGN even when the footage reads ordinary', async () => {
     readFrameText.mockResolvedValue(frameRead())
     classifyCaption.mockResolvedValue({ verdict: 'ORGANIC', confidence: 95, reason: 'nothing commercial' })
 
-    const result = await judgeWithFrame(ordinaryTarget, 'REVIEW')
+    const result = await judgeWithFrame(ordinaryTarget, 'CAMPAIGN')
 
-    expect(result.verdict).toBe('REVIEW')
+    expect(result.verdict).toBe('CAMPAIGN')
     expect(result.changedByFrame).toBe(false)
   })
 })
@@ -153,12 +169,18 @@ describe('judgeWithFrame — absence of evidence never becomes a verdict', () =>
     expect(result.signals.length).toBeGreaterThan(0)
   })
 
-  it('treats a low-confidence CAMPAIGN from the frame as REVIEW, not CAMPAIGN', async () => {
+  /**
+   * The confidence floor no longer downgrades. MEASURED before it was removed: **0 rows in
+   * the entire corpus** ever carried `downgraded:confidence-below-70`, so the band had never
+   * fired once — and with REVIEW gone the only two places it could land are the verdict
+   * itself or ORGANIC, and ORGANIC is a silent loss of recall.
+   */
+  it('keeps a low-confidence CAMPAIGN from the frame as CAMPAIGN', async () => {
     readFrameText.mockResolvedValue(frameRead())
     classifyCaption.mockResolvedValue({ verdict: 'CAMPAIGN', confidence: 55, reason: 'possibly a promo' })
 
     const result = await judgeWithFrame(ordinaryTarget, 'ORGANIC')
 
-    expect(result.verdict).toBe('REVIEW')
+    expect(result.verdict).toBe('CAMPAIGN')
   })
 })

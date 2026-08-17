@@ -6,10 +6,13 @@ import { getDetector } from './detectors'
 import { setChannelVocabulary } from './detectors/semantic'
 import { buildVocabulary } from './detectors/novelty'
 import { saveFrame } from './media'
+import { buildRawPayload, evidenceRefresh } from './evidence'
+import { tagsForPost } from './tagEvidence'
 import { judgeWithFrame } from './judge'
 import { hoursAgo } from '@/lib/time'
 import { DETECT_LOOKBACK_HOURS } from './cadence'
 import { autoResolveBrands, type AutoResolveSummary } from './autoResolve'
+import { rejudgeUnusedEvidence, type RejudgeSummary } from './rejudge'
 
 /**
  * Detection: read each watched channel's recent posts and classify them.
@@ -41,6 +44,14 @@ export interface ChannelOutcome {
    * the campaign count.
    */
   frameFlagged: number
+  /**
+   * Posts already stored whose TAGS, COLLABORATORS or sponsor flag had changed since we
+   * captured them. Counted rather than merged into `stored`, because a post editing itself
+   * after publication is a different event from a post arriving, and the number is the only
+   * evidence that refreshing is worth doing at all — a permanent zero would say the
+   * comparison is buying nothing, which is a finding rather than a quiet success.
+   */
+  evidenceRefreshed: number
   pagesFetched: number
   error?: string
   parseFailure?: boolean
@@ -105,6 +116,7 @@ export async function runDetection(
       organic: 0,
       officiallyPaid: 0,
       frameFlagged: 0,
+      evidenceRefreshed: 0,
       pagesFetched: 0,
     }
 
@@ -125,9 +137,15 @@ export async function runDetection(
 
       const known = await prisma.detectedCampaign.findMany({
         where: { shortcode: { in: posts.map((p) => p.shortcode) } },
-        select: { shortcode: true },
+        /**
+         * The stored EVIDENCE comes back with the shortcode, so a re-observation can tell
+         * whether anything actually moved. Two extra columns on a query that already runs
+         * every pass; no extra round trip.
+         */
+        select: { shortcode: true, taggedAccounts: true, rawPayload: true },
       })
       const knownSet = new Set(known.map((k) => k.shortcode))
+      const storedByShortcode = new Map(known.map((k) => [k.shortcode, k]))
       outcome.alreadyKnown = knownSet.size
 
       const fresh = posts.filter((p) => !knownSet.has(p.shortcode))
@@ -140,9 +158,37 @@ export async function runDetection(
        * `saveFrame` is idempotent (a frame already on disk costs one stat()) and never
        * throws. This is how `DbtNU9UzWYU`'s class of post stays re-examinable after its
        * CDN URL rotates — the corpus keeps the evidence, not a pointer to it.
+       *
+       * ── AND THE TAGS ARE REFRESHED HERE, FOR THE SAME REASON THE FRAME IS ──
+       *
+       * Tags and collaborators are stored at first sighting and were never looked at
+       * again, because `persist` is reached only for posts in `fresh`. A publisher can add
+       * a brand tag AFTER posting — that is an ordinary thing for a paid placement whose
+       * paperwork lands late — and until now that edit was invisible to us forever.
+       *
+       * `evidenceRefresh` is PURE and returns null when nothing moved, which is nearly
+       * always. Without that comparison this loop would write ~18,000 rows a day to record
+       * that nothing had happened. A change is LOGGED, because a row that rewrites itself
+       * with no explanation is a row nobody can audit — and because a tag appearing on a
+       * post we already judged ORGANIC is exactly the event worth seeing.
        */
       for (const post of posts) {
-        if (knownSet.has(post.shortcode)) await saveFrame(post.shortcode, post.thumbnailUrl)
+        const stored = storedByShortcode.get(post.shortcode)
+        if (!stored) continue
+        await saveFrame(post.shortcode, post.thumbnailUrl)
+
+        const refreshed = evidenceRefresh(stored, post, new Date())
+        if (!refreshed) continue
+        await prisma.detectedCampaign.update({
+          where: { shortcode: post.shortcode },
+          data: { taggedAccounts: refreshed.taggedAccounts, rawPayload: refreshed.rawPayload },
+        })
+        outcome.evidenceRefreshed += 1
+        log.step('a stored post changed its own evidence', {
+          shortcode: post.shortcode,
+          handle: target.handle,
+          changed: refreshed.changed.join(', '),
+        })
       }
 
       /**
@@ -220,6 +266,20 @@ export async function runDetection(
              */
             optedOut: target.optedOut,
             frameJudgingSupported: detector.key === 'semantic',
+            /**
+             * The SAME tag block the caption verdict was reached with. Built here from the
+             * same post the detector saw, so the frame call differs from the caption call
+             * in exactly one thing — the frame — which is what `applyFrameSignal` is about
+             * to attribute the difference to.
+             */
+            tagText: await tagsForPost(
+              {
+                taggedAccounts: post.taggedAccounts,
+                collabHandles: post.collabHandles,
+                isPaidPartnership: post.isPaidPartnership,
+              },
+              post.shortcode.slice(0, 6),
+            ),
           },
           captionVerdict,
         )
@@ -317,6 +377,38 @@ export async function runDetection(
       awaitingRetry: 0,
     }
   })
+
+  /**
+   * ── AND EVIDENCE THAT WAS READ BUT NEVER REACHED A VERDICT (repair plan 6.4) ─────────
+   *
+   * MEASURED: 65 in-window posts carry `frame:call-failed` — the footage was read, the
+   * words extracted, and the classifier call that would have folded them in failed. Correct
+   * at the time (*a failed call is never recorded as a verdict*), and wrong forever after,
+   * because nothing tried again. Bounded per pass, never overriding a human answer, and
+   * only ever through `judgeWithFrame` so the permission table still applies.
+   *
+   * Caught separately from the brand resolver and from detection itself: this is the least
+   * urgent thing in the pass, and a post that scrolls out of the feed window can never be
+   * re-scraped, so it must not be able to take the run down with it.
+   */
+  const rejudged = await rejudgeUnusedEvidence().catch((err): RejudgeSummary => {
+    log.warn('re-judging unused evidence failed — next pass retries', {
+      error: err instanceof Error ? err.message : String(err),
+    })
+    return { examined: 0, changed: 0, remaining: 0, skippedNoEvidence: 0 }
+  })
+  // `remaining` is in the condition too: a drained backlog must go quiet, and a STUCK one
+  // must not — examined=0 with remaining>0 is the state worth a line.
+  if (rejudged.examined > 0 || rejudged.remaining > 0) {
+    log.info('re-judged evidence read earlier', {
+      examined: rejudged.examined,
+      changed: rejudged.changed,
+      // Named, because "examined 10, changed 0" on a host with no frame store is a
+      // different fact from "examined 10, changed 0" on the host that has them.
+      noFrameHere: rejudged.skippedNoEvidence,
+      remaining: rejudged.remaining,
+    })
+  }
 
   /**
    * `awaitingRetry` is in the CONDITION as well as the body, deliberately: a pass that looked
@@ -427,16 +519,13 @@ async function persist(
      * (`src/detection/media.ts`), before classification, on every channel. A stored URL is
      * a promise that something else will still be there later; the file is the evidence.
      * The URLs stay because they cost nothing and record what the CDN offered.
+     *
+     * The SHAPE is built by `buildRawPayload` (src/detection/evidence.ts) rather than
+     * inline here, because the known-post loop now refreshes this same payload when a
+     * publisher edits its tags — and two object literals producing one shape is exactly
+     * how the seven keys and the `taggedAccounts` column came to disagree.
      */
-    rawPayload: JSON.stringify({
-      isPaidPartnership: post.isPaidPartnership,
-      sponsorHandles: post.sponsorHandles,
-      collabHandles: post.collabHandles,
-      thumbnailUrl: post.thumbnailUrl,
-      videoUrl: post.videoUrl,
-      videoDurationSeconds: post.videoDurationSeconds,
-      capturedAt: new Date().toISOString(),
-    }),
+    rawPayload: buildRawPayload(post, new Date()),
     frameText: provenance.frameText,
   }
 
@@ -455,6 +544,10 @@ async function persist(
      * why `pnpm ig:detect` alongside the scheduler is safe.
      *
      * Never overwrites a human's REVIEW-queue label.
+     *
+     * `taggedAccounts` is in here now. It was the one captured field the reconciler left
+     * behind, so a post that landed on this branch kept whichever tags the losing pass had
+     * — a silent, invisible divergence between the column and the payload beside it.
      */
     update: {
       likeCount: data.likeCount,
@@ -463,6 +556,7 @@ async function persist(
       verdict: data.verdict,
       signals: data.signals,
       brands: data.brands,
+      taggedAccounts: data.taggedAccounts,
       rawPayload: data.rawPayload,
       frameText: data.frameText,
     },

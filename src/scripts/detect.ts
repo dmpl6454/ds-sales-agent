@@ -18,6 +18,12 @@ const s = await runDetection(lookbackHours ? { lookbackHours } : {})
 for (const c of s.channels) {
   console.log(
     `  @${c.handle}: ${c.fetched} fetched, ${c.stored} new (${c.campaigns} campaigns), ${c.alreadyKnown} known` +
+      /*
+       * Only when it happened. A post editing its own tags after publication is rare and
+       * worth a word; a "0 refreshed" on every channel every pass is furniture, and this
+       * dashboard has a rule about numbers that appear whether or not they mean anything.
+       */
+      (c.evidenceRefreshed > 0 ? `, ${c.evidenceRefreshed} changed their tags since we stored them` : '') +
       (c.error ? ` — ERROR: ${c.error}` : ''),
   )
 }

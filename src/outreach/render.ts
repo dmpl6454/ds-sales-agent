@@ -1,4 +1,5 @@
 import { readStringArray } from '@/lib/json'
+import { usableBrandName } from './usableName'
 
 /**
  * Message rendering.
@@ -46,8 +47,36 @@ export interface RenderPersona {
  * Typed as a Pick so a caller holding only the three rendered fields can probe without
  * inventing values for two fields the block does not use.
  */
-export function signatureBlock(p: Pick<RenderPersona, 'personaBrand' | 'personaPhone' | 'personaEmail'>): string {
-  return `${p.personaBrand}\n${p.personaPhone}\n${p.personaEmail}`
+export function signatureBlock(
+  p: Pick<RenderPersona, 'personaName' | 'personaRole' | 'personaBrand' | 'personaPhone' | 'personaEmail'>,
+): string {
+  /**
+   * ── THE NAME IS BACK (2026-08-17, Tabish's copy) ──────────────────────────
+   *
+   * On 2026-08-07 Tabish asked that "the persona needs to only be channel name", and the
+   * name and role lines were removed. The standard message he supplied on 2026-08-17 signs
+   * off with them again:
+   *
+   *     Kapil Jain
+   *     Co-founder, {Sending Channel}
+   *     +91 60000 189766
+   *     kapil@digitalsukoon.com
+   *
+   * A recorded reversal, not a regression. Two consequences applied the same day so they
+   * cannot drift:
+   *
+   *   - `personaFingerprint` takes `personaName` and `personaRole` back, because its own
+   *     contract is that it "excludes nothing that appears in the message and includes
+   *     nothing that does not". All four accounts share the name, so this does not weaken
+   *     distinctness — the page name is still what separates them.
+   *   - `validatePersona` checks the name and role again. A guard about a field no
+   *     recipient sees is a guard about nothing; a field every recipient reads is the
+   *     opposite.
+   *
+   * Still ONE writer, and the gate's staleness probe and the quality gate both call it, so
+   * writer and probe share bytes.
+   */
+  return `${p.personaName}\n${p.personaRole}, ${p.personaBrand}\n${p.personaPhone}\n${p.personaEmail}`
 }
 
 export interface RenderTarget {
@@ -141,11 +170,47 @@ export function isClosingLine(line: string): boolean {
   return /^looking forward to connecting\.?$/i.test(line.trim())
 }
 
+/**
+ * "I'm Kapil Jain, Co-founder of Bollywood Chronicle." — the opener, restored 2026-08-17.
+ *
+ * It was dropped on 2026-08-07 when the persona became the page name alone, and Tabish's
+ * standard message brings it back as the first thing after the greeting. It is joined ONTO
+ * the greeting line rather than placed under it, so the recipient's inbox preview carries
+ * who is writing and what page they are from.
+ *
+ * Its retired standalone form is still in `ENVELOPE_PATTERNS`, which is correct and must
+ * stay: messages delivered before 2026-08-07 carry it on its own line forever, and envelope
+ * matching errs loose. The merged line does not match that pattern (it is anchored on `^i'm`
+ * and this line starts with the greeting) and does not need to — `proseLines` drops the
+ * first line positionally, which is the rule that "needs no pattern to be right".
+ */
+export function introLine(p: Pick<RenderPersona, 'personaName' | 'personaRole' | 'personaBrand'>): string {
+  return `I'm ${p.personaName}, ${p.personaRole} of ${p.personaBrand}.`
+}
+
 /** "Hi Sumeet," when we know the name, otherwise address the publication. */
 export function buildGreeting(target: RenderTarget): string {
   const name = target.contactFirstName?.trim()
   if (name) return `Hi ${name},`
-  return `Hi ${greetableName(target.displayName)} team,`
+
+  /**
+   * A HANDLE MUST NOT BE GREETED. `greetableName` trims a display name down to something
+   * sayable — "Milano Ice Cream, Bangalore" → "Milano Ice Cream" — and it cannot help here,
+   * because there is nothing wrong with the SHAPE of `agoracitycentre`. It is the wrong
+   * STRING: `brandTarget.ts` stores the handle as the display name whenever Instagram
+   * returns no full name, and 21 of the 68 live BRAND rows are in that state.
+   *
+   * MEASURED in a real waiting draft: **"Hi agoracitycentre team,"** — the first line the
+   * prospect reads.
+   *
+   * "Hi there," rather than a guess. The alternative — inventing a company name from the
+   * handle — is the same class of mistake as inventing a persona: plausible, wrong, and
+   * addressed to the people most certain to notice.
+   */
+  const usable = usableBrandName(target.displayName, target.handle)
+  if (usable === null) return 'Hi there,'
+
+  return `Hi ${greetableName(usable)} team,`
 }
 
 /**
@@ -384,8 +449,33 @@ export function renderMessage(args: {
     .replace(/\{\{\s*channel\s*\}\}/g, channelName)
     .trim()
 
+  /**
+   * ── THE OPENER RUNS INTO THE GREETING (2026-08-17, Tabish) ────────────────
+   *
+   * *"No space to be given after 'Hi' as that obscures the message in Instagram DMs … no
+   * space and new line after hi this ruins it."*
+   *
+   * This array used to hold a bare `''` between the greeting and the body, and
+   * `parts.join('\n')` turned it into a blank line:
+   *
+   *     Hi Crocs India team,
+   *                              ← this
+   *     You are investing in placement on entertainment publishers…
+   *
+   * Instagram's inbox list previews only the FIRST line of a message, so every recipient's
+   * preview read "Hi Crocs India team," and nothing else — the pitch was invisible until
+   * they opened it. One empty string, and it cost every message its opening.
+   *
+   * The greeting and the introduction are now ONE line. Note what this does downstream:
+   * `proseLines` drops line 1 BY POSITION, so the merged opener can never be the needle, and
+   * everything the send guards have to work with comes from the template's own paragraphs.
+   * MEASURED, the surviving requirement is one paragraph over 40 characters — see the
+   * constraint note on `SINGLE_TEMPLATE_MIDDLE`, which spells out which shapes return null.
+   */
+  const opener = `${buildGreeting(target)} ${introLine(persona)}`
+
   const parts = [
-    buildGreeting(target),
+    opener,
     ...(hookLine ? ['', hookLine] : []),
     '',
     body,
@@ -424,10 +514,18 @@ export function validatePersona(p: RenderPersona): string[] {
   if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(p.personaEmail)) {
     problems.push(`personaEmail "${p.personaEmail}" is not a valid email`)
   }
-  // Only what RENDERS is validated. `personaName`/`personaRole` stopped appearing in
-  // messages on 2026-08-07 (the persona is the channel name alone), and blocking a send
-  // on a field the recipient never sees would be a guard about nothing.
+  /**
+   * Only what RENDERS is validated, and on 2026-08-17 that grew back.
+   *
+   * `personaName`/`personaRole` stopped appearing in messages on 2026-08-07, and this note
+   * correctly said blocking a send on a field nobody sees would be a guard about nothing.
+   * Tabish's standard message puts both back — in the opening line AND in the signature —
+   * so the same reasoning now requires them to be checked. An empty `personaName` would
+   * render *"I'm , Co-founder of Bollywood Chronicle."* as the first line a prospect reads.
+   */
   if (p.personaBrand.trim().length < 2) problems.push('personaBrand is empty')
+  if (p.personaName.trim().length < 2) problems.push('personaName is empty, and it opens every message')
+  if (p.personaRole.trim().length < 2) problems.push('personaRole is empty, and it opens every message')
 
   return problems
 }

@@ -44,6 +44,81 @@ export function istHourOfDay(at: Date = new Date()): number {
   return Number(istTimeKey(at).slice(0, 2))
 }
 
+/**
+ * When a post went up — "12 Aug (16:42)", the date then the IST hour in brackets.
+ *
+ * ── WHY THE HOUR IS WORTH A COLUMN ──────────────────────────────────────────
+ *
+ * `/paid-posts` showed a bare date, so a post published in the commercial window looked
+ * exactly like one at 3am. That distinction is real and MEASURED: over 14 days
+ * @viralbhayani published 84 posts before 09:00 IST and not one of them was paid.
+ * Commercial posting starts around 09:00 and peaks 16:00-20:00, so the hour is a large
+ * part of judging whether a verdict is plausible — which is the whole job of the person
+ * reading the review queue.
+ *
+ * IST, like every other date boundary in this system. A UTC hour here would put an
+ * evening post on the previous day for the person reading it, which is worse than showing
+ * no hour at all.
+ *
+ * Deliberately NOT "Today"/"Yesterday": that vocabulary already exists for the activity
+ * feed, and a second implementation of it is how "yesterday" in one place becomes
+ * "1 day ago" in another. A table spanning several days wants the date stated plainly.
+ */
+export function istPostedLabel(at: Date): string {
+  const date = new Intl.DateTimeFormat('en-GB', {
+    timeZone: TIMEZONE,
+    day: 'numeric',
+    month: 'short',
+  }).format(at)
+  return `${date} (${istTimeKey(at)})`
+}
+
+/**
+ * How long after publication we FOUND a post, in minutes — or null when that cannot be
+ * stated honestly.
+ *
+ * Detection runs every 15 minutes, and the measured reality on the posts this dashboard
+ * shows is p50 8.2 min / p90 16.8 min. The outliers are not near the median: every post
+ * over an hour late was over TWELVE hours late, because lateness here does not come from a
+ * slow pass, it comes from the watch having a GAP — the 20-hour outage on 8 August is the
+ * documented case, and a post that scrolls out of the 48-post feed window during one can
+ * never be re-scraped. So this is a witness to downtime, not a performance metric.
+ *
+ * NULL FOR A NEGATIVE AGE, and that is not defensive padding. MEASURED on the live
+ * database 2026-08-13: **14 rows have `detectedAt` BEFORE `postedAt`**, which is
+ * physically impossible and is the residue of the timezone bug that stored 6,291
+ * timestamps 5.5 hours ahead. For those rows the two timestamps cannot both be trusted,
+ * so the honest answer is "we cannot say" — rendering a confident number computed from a
+ * value we know is wrong is how a bad measurement outlives the bug that caused it.
+ */
+export function detectionLatenessMinutes(postedAt: Date, detectedAt: Date): number | null {
+  const mins = Math.round((detectedAt.getTime() - postedAt.getTime()) / 60_000)
+  return mins < 0 ? null : mins
+}
+
+/**
+ * Four detect intervals. Anything later than this was NOT found by the routine cadence,
+ * which is the only thing the number is meant to say.
+ *
+ * The bound is insensitive by construction rather than by tuning: on the rows this page
+ * renders, the same eight posts are flagged at any threshold between one hour and twelve.
+ */
+export const LATE_DETECTION_MINUTES = 60
+
+/**
+ * "found 15h later" — rendered ONLY past the bound, so the common case stays silent.
+ *
+ * A number that appears on every row is furniture and stops being read; a number that
+ * appears on eight rows out of a hundred is a finding.
+ */
+export function latenessLabel(postedAt: Date, detectedAt: Date): string | null {
+  const mins = detectionLatenessMinutes(postedAt, detectedAt)
+  if (mins === null || mins <= LATE_DETECTION_MINUTES) return null
+  if (mins < 1440) return `found ${Math.round(mins / 60)}h later`
+  const days = Math.floor(mins / 1440)
+  return days === 1 ? 'found a day later' : `found ${days} days later`
+}
+
 /** Human-readable IST stamp for logs and the dashboard. */
 export function istStamp(at: Date = new Date()): string {
   return new Intl.DateTimeFormat('en-GB', {

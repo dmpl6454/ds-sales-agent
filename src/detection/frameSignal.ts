@@ -86,17 +86,36 @@ export function applyFrameSignal(
   // direction it moved, and only one direction is permitted.
   switch (withFrame) {
     case 'CAMPAIGN':
-      // The Thane path. Surfaced for a person rather than asserted, because no harness
-      // measures a frame-driven CAMPAIGN yet.
-      return captionOnly === 'ORGANIC' || captionOnly === 'REVIEW'
-        ? { verdict: 'REVIEW', signals: ['frame:flagged-for-review', 'frame:says-campaign'] }
-        : { verdict: captionOnly, signals: ['frame:says-campaign'] }
-    case 'REVIEW':
-      // Frame text introduced doubt about a post the caption was sure about. Doubt is
-      // allowed to surface a post; it is never allowed to clear one.
+      /**
+       * ── THE THANE PATH, AND IT NOW LANDS ON CAMPAIGN (2026-08-17) ────────
+       *
+       * This returned REVIEW — "surfaced for a person rather than asserted, because no
+       * harness measures a frame-driven CAMPAIGN yet". That caution was right while there
+       * was a queue to surface into. Tabish removed the queue: *"either a post is paid or
+       * unpaid/ordinary, no in between."*
+       *
+       * So the footage now MINTS a paid post, which is the one thing this table was
+       * originally written to forbid. Three things make that the right trade rather than a
+       * loosening, and they should be checked before anyone tightens it back:
+       *
+       *  1. It is the direction this project always picks. A missed paid post is invisible
+       *     and unappealable; a false alarm is a row a person crosses off in one click.
+       *  2. The corrective SHIPPED WITH IT. The cross on `/paid-posts` writes a human
+       *     ORGANIC through `labelPost`, so a wrong escalation is one click from settled —
+       *     which is exactly what the old REVIEW queue was for, minus the third state.
+       *  3. The evidence is real. **18 of the 26 live REVIEW rows existed only because of
+       *     this path**, including both founding cases — the Thane bus, whose frame reads
+       *     `SWITCH` across the bumper, and the Sony game-show card. Sending those to
+       *     ORGANIC instead would have thrown away the entire reason the OCR work exists.
+       *
+       * What is still true, and still measured by nothing: `ig:accuracy`'s labels are
+       * caption-derived, so a frame-driven CAMPAIGN is scored by no harness. That is why
+       * the signal below stays distinct — `frame:says-campaign` on a row whose caption said
+       * ORGANIC is queryable, and it is the population any future measurement starts from.
+       */
       return captionOnly === 'ORGANIC'
-        ? { verdict: 'REVIEW', signals: ['frame:flagged-for-review', 'frame:says-review'] }
-        : { verdict: captionOnly, signals: ['frame:says-review'] }
+        ? { verdict: 'CAMPAIGN', signals: ['frame:escalated-to-campaign', 'frame:says-campaign'] }
+        : { verdict: captionOnly, signals: ['frame:says-campaign'] }
     case 'ORGANIC':
       /**
        * THE FRAME MAY NEVER CLEAR A POST. Frame text saying "ordinary" about a post the

@@ -74,6 +74,7 @@ bootstrap.exec(`
     "displayName" TEXT NOT NULL,
     "contactFirstName" TEXT,
     "kind" TEXT NOT NULL DEFAULT 'CHANNEL',
+    "role" TEXT NOT NULL DEFAULT 'PROSPECT',
     "detectorKey" TEXT NOT NULL DEFAULT 'passthrough',
     "optedOut" BOOLEAN NOT NULL DEFAULT false,
     "watchEnabled" BOOLEAN NOT NULL DEFAULT true,
