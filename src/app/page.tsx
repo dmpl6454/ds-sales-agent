@@ -138,14 +138,25 @@ export default async function AutopilotPage() {
 
           <div className="stack">
             {/* A reply halts every account writing to that recipient until someone takes over. */}
+            {/*
+              THE EXPLANATION MOVED TO /rules (2026-08-17), THE REPLIES DID NOT.
+
+              Two sentences used to sit here saying a reply halts every account, resumes after
+              a day, and that "I have replied" releases it sooner. `/rules` already states both
+              of those from the modules that enforce them — so this was the second copy, on the
+              page a person looks at most, which is how a reader learns to skip both.
+
+              What stays is the reply itself and the control that releases it. The heading now
+              carries the one-clause version, because a reader who has never seen this before
+              still needs to know the halt is fleet-wide, and a link cannot say that in situ.
+            */}
             {c.replies.length > 0 && (
               <section>
-                <h2>They replied</h2>
-                <p className="blurb">
-                  A reply stops <strong>every</strong> account writing to that recipient. It resumes on its own
-                  after a day; &ldquo;I have replied&rdquo; releases it sooner and keeps the reply.
-                </p>
+                <h2>They replied — every account to them is paused</h2>
                 <RepliesPanel replies={c.replies} />
+                <p className="cardnote">
+                  <a href="/rules">How the pause works</a>
+                </p>
               </section>
             )}
 
