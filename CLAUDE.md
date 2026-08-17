@@ -414,6 +414,34 @@ kept, still watched — watching our own pages is ground truth, not prospecting"
 937 posts are frozen history still counted in figures. Resuming would restart roughly 1,500
 feed requests a day, which is why it was left alone rather than flipped.
 
+### "WHY IS THIS ACCOUNT STILL THERE, WE DELETED IT?" — WE DELETED ITS ROUTES
+
+Tabish hit *"@tabishmukaddam1 is already one of your accounts"* while adding it, and read that
+as the delete having failed. It had not, and the confusion was the UI's fault three times over.
+
+**A PAIR IS A ROUTE. AN ACCOUNT IS AN IDENTITY.** `pnpm ig:prune-pairs --run` removed the
+burner's **70 `OutreachPair` rows** and nothing else — which is exactly what it says it does.
+The `SenderAccount` row survives with `fleetMember: false`, 0 routes and 0 attempts: an
+account we own that writes to nobody, which is the whole point of the burner.
+
+**AND `/senders` NEVER READ `fleetMember`.** MEASURED: the word appeared **zero** times in
+`accounts-page.ts`, so the burner was filed under **"Sending on their own"** — a group title
+asserting a capability it does not have and cannot have. There is now a fourth group,
+**"Not in the rotation — writes to nobody"**, taken FIRST because it is a fact about what the
+account IS rather than about what is currently wrong with it.
+
+**AND THE REFUSAL NAMED NOTHING.** *"@x is already one of your accounts"* is true and sends a
+person looking for something they cannot see — `AccountGroupView` collapses any group that
+needs no attention, which is right at 65 accounts and means a healthy account is one click
+away. The message now names the group and the state, and says outright that removing routes
+does not remove the account. *"If the person a warning is FOR has to ask what it means, the
+warning has not done its job"* — already in this file, about a different warning.
+
+**A side effect worth recording:** verifying this in a headless browser clicked a Connect
+button and opened a real Chrome profile for @bollywoodsocietyy. No send is possible from a
+login window, and it was closed properly — closing is what flushes cookies to disk — with the
+cookie file intact at 20,480 bytes. **Do not drive `/senders` with a blanket click sweep.**
+
 ### WHERE THIS SESSION LEFT THE SYSTEM
 
 Everything below is deployed and running unless it says otherwise.

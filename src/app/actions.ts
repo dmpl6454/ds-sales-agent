@@ -860,8 +860,37 @@ export async function addSender(handleRaw: string, displayNameRaw: string): Prom
   } catch {
     return { ok: false, message: 'That is not a valid Instagram handle (letters, numbers, dots, underscores).' }
   }
-  if (await prisma.senderAccount.findUnique({ where: { handle } })) {
-    return { ok: false, message: `@${handle} is already one of your accounts.` }
+  /**
+   * ── SAY WHERE IT IS, NOT JUST THAT IT EXISTS (2026-08-17) ─────────────────
+   *
+   * This used to read *"@x is already one of your accounts."* — true, and it sent Tabish
+   * looking for an account he could not see, so he concluded it had been deleted. It had
+   * not: `pnpm ig:prune-pairs` had removed @tabishmukaddam1's 70 ROUTES, and the account row
+   * survived exactly as designed (a pair is a route, the account is an identity).
+   *
+   * The page was not hiding it either — `AccountGroupView` collapses a group that needs no
+   * attention, which is right at 65 accounts and means a healthy account is a click away.
+   *
+   * So the refusal now names the group it is in and the state it is in. *"If the person a
+   * warning is FOR has to ask what it means, the warning has not done its job"* — already in
+   * CLAUDE.md, about a different warning.
+   */
+  const existing = await prisma.senderAccount.findUnique({
+    where: { handle },
+    select: { fleetMember: true, status: true, sessionInvalidAt: true },
+  })
+  if (existing) {
+    const where = !existing.fleetMember
+      ? 'under “Not in the rotation — writes to nobody”'
+      : existing.status === 'CHALLENGED'
+        ? 'under “Needs you now”'
+        : 'on this page — open the groups below to see it'
+    return {
+      ok: false,
+      message:
+        `@${handle} is already one of your accounts, ${where}. ` +
+        `Nothing was changed. Removing its routes does not remove the account — the account is the identity, a route is permission to write to one recipient.`,
+    }
   }
   /**
    * Being both a sender and a target is allowed — messaging one account you own from
