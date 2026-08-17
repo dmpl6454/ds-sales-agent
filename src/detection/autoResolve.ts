@@ -2,6 +2,7 @@ import { prisma } from '@/lib/db'
 import { log } from '@/lib/logger'
 import { detectionCutoff } from '@/lib/cutoff'
 import { mentionsIn, taggedHandlesIn, modelHasRun, resolveBrand } from './resolveBrand'
+import { brandCandidatesFor, excludedHandles } from './brandCandidates'
 import { createBrandTarget } from '@/outreach/brandTarget'
 
 /**
@@ -381,32 +382,18 @@ export async function autoResolveBrands(
 
   /**
    * Handles that must never cost a lookup: our own fleet pages, and every publisher we
-   * WATCH. @viralbhayani and @bollywoodpap appear in their own posts' media tags, and a
-   * watched publisher is a competitor rather than a prospect — `routes.ts` would refuse the
-   * route anyway, but only after the endpoint had been spent on it.
+   * WATCH. Built by `excludedHandles`, shared with `pnpm ig:brands`, so the unattended pass
+   * and the command a person runs cannot disagree about who is excluded.
    */
-  const neverAProspect = new Set(
-    (
-      await prisma.targetAccount.findMany({
-        where: { role: 'WATCH' },
-        select: { handle: true },
-      })
-    ).map((t) => t.handle.toLowerCase()),
-  )
-  for (const h of (await prisma.senderAccount.findMany({ select: { handle: true } })).map((x) => x.handle)) {
-    neverAProspect.add(h.toLowerCase())
-  }
+  const neverAProspect = await excludedHandles()
 
   for (const post of posts) {
-    const fromCaption = mentionsIn(post.caption ?? '').map((h: string) => ({ h, source: 'mention' as const }))
-    const fromTags = taggedHandlesIn(post.taggedAccounts, post.rawPayload).map((h: string) => ({
-      h,
-      source: 'tag' as const,
-    }))
-
-    for (const { h: mention, source } of [...fromCaption, ...fromTags]) {
-      const handle = mention.toLowerCase()
-      if (neverAProspect.has(handle)) continue
+    /**
+     * ONE DEFINITION OF "WHAT DOES THIS POST OFFER", shared with `pnpm ig:brands`. The two
+     * assembled it separately until 2026-08-17, and the CLI's copy read captions only — so
+     * the tag source reached neither path in production. See `brandCandidates.ts`.
+     */
+    for (const { handle, source } of brandCandidatesFor(post, neverAProspect)) {
       if (seen.has(handle)) continue
       seen.add(handle)
 

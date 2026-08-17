@@ -37,6 +37,20 @@ const PEOPLE: [category: string, handle: string][] = [
   ['Artist', 'elvish_yadav'],
   ['Fashion Designer', 'bharat_reshma'],
   ['Public Figure', 'adityathackeray'],
+  /**
+   * ── MEASURED 2026-08-17, FROM A REAL `pnpm ig:brands --run` ──────────────
+   *
+   * Both of these were CREATED as BRAND targets with three live routes apiece, because
+   * neither word was in the person list. @ananyapanday is a Bollywood actress with 26.3M
+   * followers whose own Instagram category reads "Private Investigator"; @acharyavinodkumar
+   * is an astrologer with 2.1M.
+   *
+   * They are here as regression cases and NOT as evidence the approach works. Anyone may
+   * set any category, so this list can never be complete — see the note on
+   * `PERSON_ROLE_WORDS`, which records the structural fix and why it is not done yet.
+   */
+  ['Private Investigator', 'ananyapanday'],
+  ['Astrologist', 'acharyavinodkumar'],
 ]
 
 /** Live categories that name a business. Every one must survive the rule. */

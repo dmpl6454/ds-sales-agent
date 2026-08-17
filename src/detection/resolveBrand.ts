@@ -165,10 +165,33 @@ const PERSON_CATEGORIES = new Set([
  * prospect, visibly and retryably; a wrong BRAND puts a media-buying pitch in a private
  * person's DMs from a revenue account.
  */
+/**
+ * ── AND IT IS AN ENUMERATION OVER AN OPEN TAXONOMY, WHICH IS THE REAL LIMIT ──
+ *
+ * MEASURED 2026-08-17, from a real `pnpm ig:brands --run`: **@ananyapanday — a Bollywood
+ * actress with 26.3M followers — was created as a BRAND target with three live routes**,
+ * because Instagram reports her category as **"Private Investigator"**. So did
+ * @acharyavinodkumar, an astrologer with 2.1M, on **"Astrologist"**.
+ *
+ * Neither word was in this list, and no amount of adding words makes the list complete:
+ * anyone may set any category, and a vanity or joke category is exactly what a celebrity
+ * sets. The words below are added because they cost nothing and stop a recurrence of the
+ * two observed cases — NOT because the approach now works.
+ *
+ * The structural fix is different and is NOT done here: a category this list does not
+ * recognise is currently read as evidence of a COMPANY, which is *absence of data becoming
+ * a positive verdict* for the sixth time in this codebase. It should fall through to
+ * `decideBrand` as UNRESOLVED. That change would reroute many currently-correct BRAND
+ * resolutions through the model, and **there is still no accuracy harness for brand
+ * resolution** — so it must be measured before it ships, not guessed at. Written down here
+ * rather than half-done.
+ */
 const PERSON_ROLE_WORDS: readonly string[] = [
   'actor',
   'actress',
   'artist',
+  'astrologer',
+  'astrologist',
   'athlete',
   'author',
   'blogger',
@@ -187,6 +210,8 @@ const PERSON_ROLE_WORDS: readonly string[] = [
   'filmmaker',
   'gamer',
   'influencer',
+  // "Private Investigator" — @ananyapanday's own category, and she has 26.3M followers.
+  'investigator',
   'journalist',
   'lawyer',
   'model',
@@ -913,16 +938,36 @@ async function persistResolution(h: string, applied: ModelApplication): Promise<
   return verdict
 }
 
-/** Resolve a caption's mentions, slowly, stopping the moment Instagram objects. */
-export async function resolveBrandsInCaption(caption: string): Promise<BrandVerdict[]> {
+/**
+ * Resolve an explicit list of handles, slowly, stopping the moment Instagram objects.
+ *
+ * ── WHY THIS TAKES HANDLES RATHER THAN A CAPTION (2026-08-17) ─────────────
+ *
+ * `resolveBrandsInCaption` reads `mentionsIn(caption)` and nothing else, and for a month
+ * that WAS every candidate there was. The 17 August work added a second source — the
+ * handles Instagram itself asserts about the post, via `taggedHandlesIn` — and wired it
+ * into `autoResolveBrands` only.
+ *
+ * MEASURED: that left the tag source with NO REACHABLE PATH IN PRODUCTION. The automatic
+ * pass reads tags and is 429'd on the Linode on its first lookup, every pass; the CLI runs
+ * happily from a home IP and could not see a tag at all — worse, `ig:brands` skipped the
+ * whole POST when its caption had no mentions, which is 51% of in-window CAMPAIGN posts and
+ * precisely the population tags were added for. A feature reachable from neither the
+ * unattended pass nor the command a person runs is not shipped, whatever the tests say.
+ *
+ * So the engine takes a candidate LIST and both callers assemble it the same way. The
+ * caption still travels with each handle, because it is the one piece of evidence the
+ * profile endpoint never had.
+ */
+export async function resolveBrandsForHandles(
+  handles: readonly string[],
+  context: { caption: string },
+): Promise<BrandVerdict[]> {
   const out: BrandVerdict[] = []
-  for (const handle of mentionsIn(caption)) {
+  for (const handle of handles) {
     const cached = await prisma.brandLookup.findUnique({ where: { handle } })
     const wasCached = cached !== null && cached.kind !== 'UNKNOWN'
-    // The caption travels with the handle: it is the one piece of evidence the profile
-    // endpoint never had, and the difference between "@x, whose product this is" and
-    // "@x, credited for the photo".
-    out.push(await resolveBrand(handle, { caption }))
+    out.push(await resolveBrand(handle, { caption: context.caption }))
     // Read AFTER the lookup: it is what that lookup just set. No point sleeping 6s between
     // handles we are no longer going to ask about, and no point continuing the loop at all.
     const backingOff = rateLimitCooldownActive(rateLimitedUntil, clock())
@@ -930,4 +975,12 @@ export async function resolveBrandsInCaption(caption: string): Promise<BrandVerd
     if (backingOff) break
   }
   return out
+}
+
+/**
+ * Resolve a caption's mentions. Unchanged in behaviour — it is `resolveBrandsForHandles`
+ * over exactly `mentionsIn(caption)`, so existing callers are byte-identical.
+ */
+export async function resolveBrandsInCaption(caption: string): Promise<BrandVerdict[]> {
+  return resolveBrandsForHandles(mentionsIn(caption), { caption })
 }
