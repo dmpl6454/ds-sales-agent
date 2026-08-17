@@ -42,6 +42,7 @@
     "ig:enrich": "tsx src/scripts/enrich.ts",
     "ig:dispatch": "tsx src/scripts/dispatch.ts",
     "ig:dedupe-drafts": "tsx src/scripts/dedupe-drafts.ts",
+    "ig:discard-stale-drafts": "tsx src/scripts/discard-stale-drafts.ts",
     "ig:import": "tsx src/scripts/import.ts",
     "ig:prune": "tsx src/scripts/prune.ts",
     "ig:layout": "tsx src/scripts/layout.ts",

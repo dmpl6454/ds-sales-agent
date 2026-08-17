@@ -134,11 +134,32 @@ export const CLOSING_LINE = 'Looking forward to connecting.'
  * renders a real message and asserts every envelope line it produced is recognised, so
  * forgetting fails the suite rather than silently weakening a guard.
  */
+/**
+ * A line that is a GREETING AND NOTHING ELSE — "Hi Sumeet," / "Hi Amazon India team,".
+ *
+ * Named and exported rather than left inline because `staleTemplate.ts` needs exactly this
+ * question, and a second copy of the pattern is how one rule with several readers drifts —
+ * the failure this codebase has now had four times (`gate.ts`, `readThread.ts`, the two
+ * Connect buttons, `judge.ts`).
+ *
+ * Anchored on the trailing comma, which is what makes it usable as a staleness probe: the
+ * CURRENT opener continues into `introLine` and ends in a full stop, so it cannot match. A
+ * line that matches is therefore a greeting the old `[greeting, '', body]` join left standing
+ * on its own — regardless of whether that greeting is still the one we would build today,
+ * which matters because `usableBrandName` changed several of them.
+ */
+const GREETING_ONLY = /^(hi|hello|hey|dear|greetings|namaste)\b.{0,60},$/i
+
+/** True when this line is a greeting standing alone, carrying no other prose. */
+export function isGreetingOnlyLine(line: string): boolean {
+  return GREETING_ONLY.test(line.trim())
+}
+
 const ENVELOPE_PATTERNS: readonly RegExp[] = [
   // buildGreeting — "Hi Sumeet," / "Hi Amazon India team,". Also renders in the thread
   // header, so it is present whether or not anything was delivered. Alternatives are
   // listed because an edited body may not use ours.
-  /^(hi|hello|hey|dear|greetings|namaste)\b.{0,60},$/i,
+  GREETING_ONLY,
   // The RETIRED intro line — "I'm Kapil Jain, Co-founder of Bollywood Society." Dropped
   // from renderMessage 2026-08-07 (the persona is only the channel name now), and the
   // pattern is KEPT deliberately: messages already delivered and drafts written before
@@ -441,8 +462,34 @@ export function renderMessage(args: {
    *
    * Fixing the substitution rather than the copy is deliberate: the wording is Tabish's and
    * it is already correct — it is the token underneath it that was lying.
+   *
+   * ── AND IT MUST ASK `usableBrandName`, WHICH IT DID NOT UNTIL 2026-08-17 ──
+   *
+   * FOUND BY RENDERING THE REAL MESSAGE, which is the only way any of these have been found.
+   * The 2026-08-13 fix established that a stored `displayName` is often just the handle and
+   * must never be put in front of a prospect, and it was applied at TWO of the three places
+   * that speak the name: `buildGreeting` above, and `brandFirstTouch` in brandPitch.ts. This
+   * line — the `{{brand}}` token in the BRAND variant pool — was missed, so the greeting
+   * degraded correctly to "Hi there," while the body two paragraphs down still read:
+   *
+   *     I would like to propose an annual plan for agoracitycentre rather than another
+   *     one-off, priced as media buying rather than influencer fees.
+   *
+   * A half-applied rule reads as fixed, which is worse than an unfixed one: the screen that
+   * would have shown the defect (the greeting) is exactly the part that was repaired.
+   *
+   * "your brand" rather than a guess, and rather than "you", because one of the six live
+   * contexts is POSSESSIVE — *"a plan built around {{brand}}'s next few months"* — and it is
+   * the only phrasing that stays grammatical across all six. Same degrade-honestly rule as
+   * the greeting: name nothing rather than invent a company name from a handle.
    */
-  const brandToken = target.kind === 'BRAND' ? greetableName(target.displayName) : (firstBrand ?? 'your brand partners')
+  const brandToken =
+    target.kind === 'BRAND'
+      ? (() => {
+          const usable = usableBrandName(target.displayName, target.handle)
+          return usable === null ? 'your brand' : greetableName(usable)
+        })()
+      : (firstBrand ?? 'your brand partners')
 
   const body = variantBody
     .replace(/\{\{\s*brand\s*\}\}/g, brandToken)
