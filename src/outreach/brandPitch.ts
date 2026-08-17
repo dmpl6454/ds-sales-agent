@@ -138,6 +138,26 @@ export function hookRecencyStale(input: { body: string; postedAt: Date | null; n
  * invented hook is worse than none, which is why `buildHookLine` returns null rather than
  * guessing.
  */
+/**
+ * `Crocs India` → `Crocs India's`, but `Asshna Developers` → `Asshna Developers'`.
+ *
+ * FOUND BY READING A REAL DRAFT, 2026-08-17: *"I saw **Asshna Developers's** placement with
+ * Viral Bhayani last week"* — the first sentence a prospect reads, in a pitch whose whole
+ * job is looking like it was written by a person who knows their business.
+ *
+ * MEASURED against the live BRAND rows: names ending in `s` are common here — Asshna
+ * Developers, Amazon MGM Studios, Sach Developers, Excel Music Records — so this is the
+ * normal case rather than an edge one.
+ *
+ * The rule is the ordinary English one for a plural ending in `s`, applied on the FINAL
+ * character only. Deliberately not clever about singular names that end in s (Adidas's is
+ * arguably correct): both forms read as written by a person, whereas `Developers's` reads as
+ * written by string concatenation, which is the only failure that matters here.
+ */
+export function possessive(name: string): string {
+  return /s$/i.test(name.trim()) ? `${name.trim()}'` : `${name.trim()}'s`
+}
+
 export function brandFirstTouch(input: BrandFirstTouchInput): string {
   const { publisherName, postedAt, now } = input
   const when = describeRecency(postedAt, now)
@@ -166,7 +186,7 @@ export function brandFirstTouch(input: BrandFirstTouchInput): string {
   const canClaimPlacement = publisherName !== null && brandName !== null
 
   const opening = canClaimPlacement
-    ? `I saw ${brandName}'s placement with ${publisherName}${when ? ` ${when}` : ''} — nicely done.`
+    ? `I saw ${possessive(brandName!)} placement with ${publisherName}${when ? ` ${when}` : ''} — nicely done.`
     : // No verifiable claim available. State the general observation and move to the
       // proposition. Never fabricate a placement.
       `You are investing in placement on entertainment publishers, so I will be direct about why we may be worth a conversation.`

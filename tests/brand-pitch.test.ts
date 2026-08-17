@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { brandFirstTouch, describeRecency, publisherDisplayName } from '@/outreach/brandPitch'
+import { brandFirstTouch, describeRecency, publisherDisplayName, possessive } from '@/outreach/brandPitch'
 import { BRAND_MESSAGE_VARIANTS } from '../prisma/brandVariants'
 import { MESSAGE_VARIANTS } from '../prisma/variants'
 
@@ -146,5 +146,50 @@ describe('the brand pool is a DIFFERENT proposition, not reworded channel copy',
       const tokens = v.body.match(/\{\{\s*(\w+)\s*\}\}/g) ?? []
       for (const t of tokens) expect(t).toMatch(/\{\{\s*(brand|channel)\s*\}\}/)
     }
+  })
+})
+
+/**
+ * ── THE POSSESSIVE, FOUND BY READING A REAL DRAFT (2026-08-17) ────────────────────────
+ *
+ * A live waiting draft opened *"I saw Asshna Developers's placement with Viral Bhayani last
+ * week"* — the first sentence a prospect reads. Names ending in `s` are the normal case among
+ * the live BRAND rows, not an edge one: Asshna Developers, Amazon MGM Studios, Sach
+ * Developers, Excel Music Records.
+ */
+describe('possessive', () => {
+  it("adds 's to an ordinary name", () => {
+    expect(possessive('Crocs India')).toBe("Crocs India's")
+    expect(possessive('Philips India')).toBe("Philips India's")
+  })
+
+  it("adds only an apostrophe to a name already ending in s", () => {
+    expect(possessive('Asshna Developers')).toBe("Asshna Developers'")
+    expect(possessive('Amazon MGM Studios')).toBe("Amazon MGM Studios'")
+    expect(possessive('Excel Music Records')).toBe("Excel Music Records'")
+  })
+
+  it('never produces the double possessive that was shipping', () => {
+    for (const n of ['Asshna Developers', 'Amazon MGM Studios', 'Sach Developers', 'Crocs India']) {
+      expect(possessive(n)).not.toContain("s's")
+    }
+  })
+
+  it('is case-insensitive about the final s, and trims', () => {
+    expect(possessive('ACME RECORDS')).toBe("ACME RECORDS'")
+    expect(possessive('  Crocs India  ')).toBe("Crocs India's")
+  })
+
+  /** The real sentence, end to end, so the fix is asserted where it is actually read. */
+  it('reads correctly in the real opening line', () => {
+    const body = brandFirstTouch({
+      handle: 'asshnadevelopers',
+      brandName: 'Asshna Developers',
+      publisherName: 'Viral Bhayani',
+      postedAt: new Date('2026-08-10'),
+      now: new Date('2026-08-17'),
+    })
+    expect(body).toContain("I saw Asshna Developers' placement with Viral Bhayani")
+    expect(body).not.toContain("Developers's")
   })
 })

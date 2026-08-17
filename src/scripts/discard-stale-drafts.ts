@@ -2,8 +2,10 @@ import 'dotenv/config'
 import { prisma } from '@/lib/db'
 import { env } from '@/lib/env'
 import { buildGreeting } from '@/outreach/render'
-import { classifyOpener, type OpenerShape } from '@/outreach/staleTemplate'
+import { classifyOpener, classifyTemplate, type OpenerShape } from '@/outreach/staleTemplate'
 import { discardAttempt } from '@/outreach/discard'
+import { getSettings } from '@/lib/settings'
+import { SINGLE_TEMPLATE_MIDDLE } from '@/outreach/compose'
 
 /**
  * `pnpm ig:discard-stale-drafts` — retire waiting drafts written against an older
@@ -64,6 +66,20 @@ async function main(): Promise<void> {
     return
   }
 
+  /**
+   * The phrase comes from the EXPORTED CONSTANT, never from a copy typed here. Its first
+   * line is enough to identify the template and short enough to survive an operator tidying
+   * a later paragraph — the check is "was this built from the standard template", not "is it
+   * byte-identical to it", because editing a draft is explicitly allowed.
+   */
+  const settings = await getSettings()
+  const requiredPhrase = settings.singleTemplate ? (SINGLE_TEMPLATE_MIDDLE.split('\n')[0] ?? null) : null
+  console.log(
+    settings.singleTemplate
+      ? 'One standard message is in force, so a body from the old variant pools is out of date.\n'
+      : 'No single template is in force; only the opener shape is checked.\n',
+  )
+
   const buckets: Record<OpenerShape, { line: string; id: string }[]> = { stale: [], current: [], unknown: [] }
 
   for (const d of waiting) {
@@ -80,11 +96,34 @@ async function main(): Promise<void> {
       kind: d.target.kind,
     })
 
-    const verdict = classifyOpener({ renderedBody: d.renderedBody, greetingNow })
+    const opener = classifyOpener({ renderedBody: d.renderedBody, greetingNow })
+    const template = classifyTemplate({ renderedBody: d.renderedBody, requiredPhrase })
+
+    /**
+     * TWO INDEPENDENT REASONS A BODY CAN BE OUT OF DATE, and `stale` on EITHER is stale —
+     * a draft only survives by being current on both. `unknown` still beats `stale`, because
+     * the destructive direction must never win from a question we could not answer.
+     */
+    const shape: OpenerShape =
+      opener.shape === 'unknown' || template.shape === 'unknown'
+        ? 'unknown'
+        : opener.shape === 'stale' || template.shape === 'stale'
+          ? 'stale'
+          : 'current'
+
+    const reason =
+      shape === 'stale'
+        ? [opener.shape === 'stale' ? opener.detail : null, template.shape === 'stale' ? template.detail : null]
+            .filter(Boolean)
+            .join('; ')
+        : shape === 'unknown'
+          ? (opener.shape === 'unknown' ? opener.detail : template.detail)
+          : opener.detail
+
     const age = d.queuedAt ? `${Math.floor((Date.now() - d.queuedAt.getTime()) / 86_400_000)}d old` : 'undated'
-    buckets[verdict.shape].push({
+    buckets[shape].push({
       id: d.id,
-      line: `  ${d.sender.handle} → @${d.target.handle}  (${age})  ${verdict.detail}`,
+      line: `  ${d.sender.handle} → @${d.target.handle}  (${age})  ${reason}`,
     })
   }
 
