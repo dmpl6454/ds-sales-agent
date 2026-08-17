@@ -5,6 +5,232 @@ changing anything that touches sending.
 
 ---
 
+## 17 AUGUST, AFTERNOON — IT IS DEPLOYED, AND FOUR THINGS BELOW THIS LINE WERE FALSE
+
+**Read this before the section under it.** The 17 August work is now COMMITTED and RUNNING
+on the Linode. Deploying it is what made the next four findings visible, and every one of
+them was invisible to a passing suite.
+
+### THE HEADLINE CHANGE WAS NOT IN FORCE. A `Setting` ROW WAS DEFEATING IT
+
+`singleTemplate` defaults **true** in code, and the live database held **`false`** — a row
+left from 2026-08-06 when the flag shipped off-by-default, with **no audit row**, because
+settings were not audited then. So "one standard message" was not what production wrote, and
+the queue this session cleared would have been rewritten from the variant pools.
+
+Same shape as `autoSendEnabled`: a stored bit nobody had written since, gone quietly inert
+and silently outranking the code that reads it. **Turned ON as Tabish's decision, recorded as
+his in the audit log.** When a flag's default changes, CHECK THE ROW — the default only
+governs a deployment that has never set it.
+
+### THE 83 `frame:call-failed` WERE NEVER FAILED CALLS
+
+**MEASURED: 83 of 83 have a caption under 15 characters, and all 83 carry frame text.** Not
+one was a failed call. `classifyCaption` returns null BEFORE making a request when the
+caption is short — so no `ModelCall` row was written either, and the cost table read 1,912
+successes against a single failure while 83 posts sat unjudged.
+
+`judgeWithFrame` passes the frame prompt to that same function — a call whose input is the
+caption AND the footage — and the caption-length floor vetoed it on the caption alone. The
+null then reached the caller and was recorded as `frame:call-failed`, **a name asserting the
+opposite of what happened**, about the exact population the footage feature exists for.
+
+What was sitting unread, straight off the stored `frameText`: `BALMAIN`,
+`EUGENIX HAIRSCIENCES`, `x300Ultra` (a Vivo handset — and Vivo is the only advertiser ever
+confirmed on that channel by a disclosure hashtag), and `SONY ENTERTAINMENT TELEVISION |
+24 AUG | 8PM MON`.
+
+The floor now asks whether there is ANY evidence, which is what its docblock always said it
+meant. **Deliberately NOT relaxed for tags**: tags reach both calls about a post, so lifting
+it for them would let a tag-driven disagreement be recorded as `frame:disagreed-higher` and
+credit the footage for something it never saw.
+
+**This MERGES two items the handoff listed separately** — "83 posts whose footage never
+reached a verdict" and "119 auto-ORGANIC by the short-caption rule, 84 with unread footage"
+are the same defect from two ends. `pnpm ig:rejudge` (DRY RUN BY DEFAULT) drained it: **83 →
+0, 11 verdicts escalated to CAMPAIGN.** The dry run predicted 12 and the write produced 11,
+which is the documented non-determinism, not a bug.
+
+**Read the 11 before trusting them.** Roughly 6-7 are convincing (a Sony show promo with
+airtime, EUGENIX saturating a frame, a ZEE5 promo with certification); 4-5 are weak, two of
+them escalating on garbled OCR fragments (`PRESE | LRA`). That precision cost was accepted
+because recall is never traded here, the cross on `/paid-posts` makes it reversible, and with
+`singleTemplate` ON a false CAMPAIGN **no longer reaches message copy at all**.
+
+### "54% JUDGED ON CAPTION ALONE" IS A DEAD BACKLOG, NOT AN OPEN HOLE
+
+The handoff asked *why*. Measured, and the answer retires the item:
+
+| week posted | posts | caption-only |
+|---|---|---|
+| W31 (28 Jul–3 Aug) | 325 | **100%** |
+| W32 (4–10 Aug) | 1,373 | 68.2% |
+| W33 (11–17 Aug) | 820 | **0.9%** |
+
+`judgeWithFrame` became the one judging path on 2026-08-08 and frame capture began 7 August.
+So the 1,269 caption-only posts are **history**, and **only 27 of them (2.1%) have a frame on
+the server's disk** — the rest never had one banked and the CDN URL is long gone. Same
+conclusion as "804 recoverable frames" turning out to be 85, all HTTP 403: nothing to build,
+the preventive half already works.
+
+**THE ONE REAL AND PERMANENT GAP IS @madovermarketing_mom: 100% caption-only, by design.**
+Its detector is `mom`, a hashtag rule, which never calls the frame path at all. An undisclosed
+M.O.M paid post is missed with certainty. Changing that is its own decision with its own risk.
+
+### THE MODEL NEVER HEDGES, AND THE FLOOR IS 85 NOT 80
+
+In-window, `verdictSource: 'semantic'`: **ORGANIC 2,071 verdicts, ZERO below 80, minimum 85.**
+CAMPAIGN has 10 below 80, all at exactly 60. The whole corpus uses about **eight** distinct
+confidence values (60, 85, 88, 90, 92, 95, 98, 100).
+
+That is a small vocabulary of stock numbers, not a calibrated probability. **The consequence
+is a design constraint: a review queue keyed on model uncertainty would find nothing**, and
+the direction where doubt would actually be useful — an ORGANIC that might be paid — is the
+one where it never appears. Know this before building anything that reads a confidence.
+
+---
+
+## THE TAG SOURCE REACHED NEITHER PATH IN PRODUCTION — AND RUNNING IT MADE A COMPANY OF AN ACTRESS
+
+Priority 2 was *"verify, do not rebuild"*. Verifying found the feature unreachable.
+
+`taggedHandlesIn` shipped on 17 August wired into `autoResolveBrands` **and nowhere else** —
+and that pass is 429'd on the Linode on its first lookup of every pass. Meanwhile
+`pnpm ig:brands`, the command the handoff tells an operator to run **from a home IP precisely
+because of that throttle**, read caption @mentions only, and did
+`if (mentionsIn(c.caption).length === 0) continue` — throwing away the whole post. **51% of
+in-window CAMPAIGN posts carry no usable caption @mention**, which is exactly the half tags
+were added for.
+
+So it reached neither the unattended pass nor the command a person runs, while every unit
+test of `taggedHandlesIn` passed, **because the defect was a missing CALLER.** Fifth time.
+
+`src/detection/brandCandidates.ts` is the one definition now (`brandCandidatesFor`, PURE, plus
+`excludedHandles` beside it as `cohorts.ts` keeps its reader). Both invariants survive and are
+tested: a caption mention is ordered BEFORE a tag, and our own pages plus watched publishers
+are excluded BEFORE the lookup budget rather than refused after it is spent.
+`tests/brand-candidates.test.ts` greps both call sites.
+
+**MEASURED from the real home-IP run:** candidates 349 → **374**, of which **31 from media
+tags**; 141 brands, 279 people, 78 needs-a-human, **18 new BRAND targets**.
+
+The four checks the handoff asked for all PASS: `@deepikapadukone` PERSON,
+`@itsrohitshetty` PERSON, `@bollywoodpap` PERSON ("Digital creator"), `@aasthagill` PERSON —
+none became a target. Real advertisers arrived: **@lava_mobiles, @mtr_foods, @philipsindia,
+@sonytvofficial, @redchilliesent, @zee5_marathi** — and `@philipsindia` rather than `@philips`
+is the tag approach earning its keep, since the global HQ is what a guessed handle produces.
+
+### AND THE PERSON RULE IS AN ENUMERATION OVER AN OPEN TAXONOMY
+
+**@ananyapanday — a Bollywood actress with 26.3M followers — was created as a BRAND target
+with three live routes**, because Instagram reports her category as **"Private
+Investigator"**. So was @acharyavinodkumar, an astrologer with 2.1M, on **"Astrologist"**.
+
+Both words are now in `PERSON_ROLE_WORDS`, and **that is a plaster, not a fix**: anyone may
+set any category, and a vanity category is exactly what a celebrity sets. The structural
+fault is that a category the list does not recognise is read as evidence of a COMPANY —
+*absence of data becoming a positive verdict*, for the sixth time in this codebase. It should
+fall through to `decideBrand` as UNRESOLVED, and that is NOT done here because it reroutes
+many currently-correct resolutions through a model that **still has no accuracy harness**.
+Measure it before shipping it.
+
+`pnpm ig:retire-target` (DRY RUN BY DEFAULT) exists because the undo lived only on the
+dashboard while the command that CREATES prospects must be run from a terminal on a home IP.
+It sets `optedOut`, never deletes. Retired: **@ananyapanday, @acharyavinodkumar,
+@deepakmukut, @kamala.trust.**
+
+**FOUND BY RUNNING IT:** the first version parsed the `--reason` VALUE as a handle and went
+looking for a target called *"not a media buyer: a person or a charity…"*. It reported "no
+such target" — safe by luck. `--reason bollywoodchronicle` would have offered to retire a
+real account.
+
+---
+
+## READING THE REAL MESSAGE FOUND THREE MORE THINGS THE SUITE COULD NOT
+
+Every one of these came from rendering an actual body to an actual prospect. 1,542 tests did
+not see any of them.
+
+- **The handle still reached the BODY.** The 13 August rule "a stored `displayName` is often
+  just the handle and must never be shown" was applied at TWO of the three places that speak
+  the name — `buildGreeting` and `brandFirstTouch` — and missed the `{{brand}}` token. So the
+  greeting degraded correctly to "Hi there," while the body read *"an annual plan for
+  **agoracitycentre**"*. **A half-applied rule is worse than an unapplied one: the part a
+  reader checks is the part that got repaired.** Now "your brand" — the only phrasing
+  grammatical across all six live `{{brand}}` contexts, one of which is possessive.
+- **`"Asshna Developers's placement"`** — `brandFirstTouch` concatenated `'s`. Names ending in
+  `s` are the NORMAL case here (Asshna Developers, Amazon MGM Studios, Excel Music Records).
+  `possessive()` now handles it.
+- **A DRAFT GOES STALE IN TWO INDEPENDENT WAYS.** The server drafted 9 messages at 08:00:28
+  UTC; `singleTemplate` went on at 08:04:15. All 9 carried the correct merged opener — so the
+  opener check called them current, rightly — while their bodies were the pool the setting had
+  just replaced. **And all 9 were SENDABLE**, because @bollywoodchronicle holds a session and
+  they postdated the persona change. `classifyOpener` and `classifyTemplate` are therefore two
+  pure predicates, not one clever one; `stale` on either is stale, and `unknown` still beats
+  `stale`.
+
+**`pnpm ig:discard-stale-drafts`** (DRY RUN BY DEFAULT) is the command for all of this. Its
+predicate is a PATTERN, not an equality, and running it against the live queue is what proved
+why: `usableBrandName` had changed the greeting for every raw-handle recipient, so comparing
+against today's greeting filed five drafts as "probably edited by hand" when they carried the
+worst copy in the queue.
+
+**A TEST CAUGHT MY OWN MEASUREMENT BEING UNSOUND.** The obvious probe for the merged opener is
+"the old shape has a blank second line" — and BOTH shapes have one, because the blank is the
+paragraph break and always was. It agreed with the hypothesis regardless of the data. That is
+*a check that verifies its own symmetry*, already in this file once, reproduced live.
+
+---
+
+## THE DEPLOY, AS IT ACTUALLY WORKS — AND ONE THING THAT WOULD BREAK IT
+
+The server is **not a git repo**; code is rsync'd from `git ls-files`, stale files removed
+explicitly, then `prisma-client-for-env.sh` → `pnpm build` → `pm2 restart ds-sales-agent`.
+It is a SHARED box (five other pm2 apps), so nothing may be done broadly.
+
+**THERE IS NO `_prisma_migrations` TABLE. NEVER RUN `prisma migrate deploy` THERE.** The
+schema was never managed by `prisma migrate`; the `role` column and its index are already
+present and correct. A migrate would try to replay everything against a populated database.
+
+**`pnpm build` requires stopping pm2 first** (the standing never-build-while-serving rule),
+and that also pauses DETECTION, because the scheduler is embedded in the dashboard process.
+The feed window gives ~18 hours of slack, so a few minutes is safe — but it is the same
+coupling that made the 2026-08-08 outage invisible.
+
+**A `comm` diff of server-vs-repo file lists needs `LC_ALL=C sort` on both sides.** macOS and
+GNU `sort` order punctuation differently, and the mismatch showed files as present in BOTH
+"only on server" and "only in repo" — acting on that output would have deleted live files.
+
+### DISCARDING A DRAFT DOES NOT GIVE THE DAY'S BUDGET BACK
+
+**MEASURED at the end of this session: `created=10 delivered=1` against
+`maxNewBrandTouchesPerDay = 10`, and all ten of those attempts are `SKIPPED`.** The cap
+counts first touches CREATED today, so the 9 drafts discarded for carrying the old template
+plus one more spent the entire day's allowance on messages nobody ever received. **The queue
+does not rebuild until IST midnight**, and a slot before then reports `queued=0 skipped=285`,
+which reads exactly like drafting being broken.
+
+That is the conservative direction and probably the right one — the cap exists to protect the
+PATTERN, and ten first touches in one afternoon look nothing like ten across ten days
+regardless of how many were later thrown away. But it means **a rewrite cycle costs double**,
+so clearing the queue and expecting it to refill the same day is wrong. Say which it is before
+anyone concludes the planner has stopped.
+
+### FIGURES RE-MEASURED THIS AFTERNOON
+
+| stated | measured |
+|---|---|
+| burner holds 72 pair rows (then 73) | **70** — all pruned, 0 carried an attempt, the 1 delivered message untouched |
+| 46 waiting drafts, all blocked | true at the start; **now 0**, after 30 duplicates + 16 stale + 9 more |
+| 83 `frame:call-failed` | 83, and **not one was a failed call** |
+| 119 short-caption posts, 84 with footage | **144 rules-judged, 113 with a frame on disk** |
+| 2,614 in-window posts | **2,616**, CAMPAIGN 316 → **328** after the re-judge |
+
+Timestamps were re-verified after draft times looked wrong: DB in UTC, stored text matching
+`now()`, Mac agreeing. **The 5.5-hour bug has not returned.**
+
+---
+
 ## THE 17 AUGUST RESTRUCTURE — TWO TARGET TYPES, ONE MESSAGE, TWO VERDICTS
 
 **Read this before anything below it. It changes the target model, the message copy, the
