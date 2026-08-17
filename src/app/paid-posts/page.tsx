@@ -6,6 +6,8 @@ import { PageHead } from '../page-head'
 import { BrandsPanelView } from '../brands'
 import { CoverageNote } from '../coverage'
 import { DismissButton } from './dismiss'
+import { AccuracyTrendPanel } from './accuracy'
+import { buildAccuracyTrend } from '../view-model/accuracy-trend'
 
 export const dynamic = 'force-dynamic'
 
@@ -39,7 +41,7 @@ export default async function PaidPostsPage() {
   const user = await currentUser()
   if (!user) redirect('/sign-in')
 
-  const v = await buildPaidPostsView()
+  const [v, accuracy] = await Promise.all([buildPaidPostsView(), buildAccuracyTrend()])
   const judged = v.byVerdict.filter((r) => r.verdict !== 'UNCLASSIFIED').reduce((n, r) => n + r.count, 0)
   const unjudged = v.byVerdict.find((r) => r.verdict === 'UNCLASSIFIED')?.count ?? 0
 
@@ -276,6 +278,17 @@ export default async function PaidPostsPage() {
             ))}
           </ul>
         </section>
+
+        {/*
+          HOW WELL THE JUDGING IS DOING, from the runs the harness already stored.
+          `accuracyHistory` has held every run since 2026-08-13 and NOTHING rendered it — a
+          measurement taken 30 times and never once shown, which is the same shape as the 166
+          cover frames saved in a day and never read.
+
+          Below the verdicts and above the brands, because it is a statement about the table
+          directly above it: those verdicts are what this is measuring the quality of.
+        */}
+        <AccuracyTrendPanel trend={accuracy} />
 
         {/*
           Brands sit below the verdicts because a brand is what judging PRODUCED: a paid post

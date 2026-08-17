@@ -49,7 +49,11 @@ export const REMEDIES = {
    * No control, on purpose. Retirement is the one promise the UI makes that has to survive
    * every other feature, so there is deliberately no "un-retire" button beside a draft.
    */
-  [RESEND_BLOCKS.TARGET_OPTED_OUT]: { href: null, label: 'This channel is retired — nothing to do here.' },
+  /*
+    "recipient", not "channel" — 95 of the 99 targets are companies. Seen on a real draft:
+    "Channel is retired. This channel is retired." about a person.
+  */
+  [RESEND_BLOCKS.TARGET_OPTED_OUT]: { href: null, label: 'This recipient is retired — nothing to do here.' },
 
   /**
    * `/targets` is where the two kinds of target are visible and where a row can be changed

@@ -411,10 +411,27 @@ export async function buildMessagesPage(): Promise<MessagesPageView> {
       ? { ok: true, reason: null, detail: null, remedy: null }
       : { ok: false, reason: attended.reason, detail: asSentence(attended.detail), remedy: remedyFor(attended.reason) }
 
-    // Only when the button would work — anything refused with a human present is refused at
-    // least as hard without one, so the second pass would cost six queries to learn nothing.
+    /*
+      Only when the button would work — anything refused with a human present is refused at
+      least as hard without one, so the second pass would cost six queries to learn nothing.
+
+      ── AND ONLY WHEN AUTOPILOT IS ON (2026-08-17) ──────────────────────────────
+      `pnpm ig:layout` failed at **611 queries against a 520 budget** the first time this page
+      was measured with a FULL queue — 77 drafts, 20 rendered. The budget is a ceiling over a
+      bounded design and raising it to make the check pass is the one thing not to do, so the
+      question is what the second call BUYS.
+
+      With autopilot OFF it buys one sentence: "Ready to send by hand, it will not go out on
+      its own" instead of "Ready, and waiting for you". Both mean press the button — nothing
+      goes out unattended either way, because the dispatcher is not running. So it was seven
+      queries per draft to choose between two phrasings of the same instruction.
+
+      With autopilot ON the distinction is real — "this one will go on its own" against "this
+      one will not" — so the call is still made. `Refusal` already falls through to the
+      autopilot-off sentence when `auto` is null, which is why this needs no change there.
+    */
     let auto: SendVerdict | null = null
-    if (attended.ok) {
+    if (attended.ok && settings.autopilotEnabled) {
       const r = await recheckBeforeSend(a, { unattended: true })
       auto = r.ok
         ? { ok: true, reason: null, detail: null, remedy: null }

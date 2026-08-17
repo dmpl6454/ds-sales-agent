@@ -2,6 +2,7 @@
 
 import { useState } from 'react'
 import { addTarget, removeTarget } from './actions'
+import { DETECT_INTERVAL_MINUTES } from '@/detection/cadence'
 import type { ChannelCard } from './view-model'
 
 /**
@@ -22,9 +23,18 @@ export function ChannelsPanel({ channels }: { channels: ChannelCard[] }) {
   return (
     <section>
       <h2>
-        Channels we watch
+        Channels we watch{' '}
+        {/*
+          ── "four times a day" WAS THREE WEEKS OUT OF DATE ────────────────────
+          Detection got its OWN clock on 2026-08-07 — every DETECT_INTERVAL_MINUTES, not the
+          four IST send slots. The number is imported from the module that schedules it, the
+          way `/rules` imports every value it states, so this line cannot drift again.
+
+          The leading `{' '}` is not decoration: JSX drops the space between an expression and
+          text on the next line, and this rendered as "watch2 channels" on the live page.
+        */}
         <span className="h2-note">
-          {watched.length} channel{watched.length === 1 ? '' : 's'} checked four times a day
+          {watched.length} channel{watched.length === 1 ? '' : 's'} read every {DETECT_INTERVAL_MINUTES} minutes
         </span>
       </h2>
 
