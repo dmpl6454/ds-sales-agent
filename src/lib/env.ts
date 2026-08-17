@@ -112,6 +112,21 @@ const schema = z.object({
     .pipe(z.string().regex(/^[A-Za-z0-9 .()-]{1,40}$/, 'SEND_BROWSER must be an app name').nullable()),
 })
 
+/**
+ * EVERY KEY THIS SCHEMA GOVERNS, so `.env.example` can be checked against it.
+ *
+ * MEASURED 2026-08-17, cloning the repo the way a second operator will: `.env.example` was
+ * missing `SIGNUP_INVITE_CODE`, `SEND_ENABLED` and `MAX_TOTAL_SENDS`. The first of those is
+ * a DEAD END rather than an inconvenience — an unset invite code means signup is CLOSED, so
+ * a new operator installs the app, starts it, and can never create the account that would
+ * let them use it. Nothing says why, because that behaviour is correct on a server.
+ *
+ * `tests/env-example.test.ts` is total over this list, for the same reason
+ * `tests/stopInventory.test.ts` is total over `RESEND_BLOCKS`: the failure mode is a key
+ * somebody adds here and forgets to document, and no behavioural test can fail for that.
+ */
+export const ENV_KEYS = Object.keys(schema.shape).sort()
+
 const parsed = schema.safeParse(process.env)
 
 if (!parsed.success) {
