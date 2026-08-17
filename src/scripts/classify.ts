@@ -226,7 +226,7 @@ async function main(): Promise<void> {
           shortcode: post.shortcode,
           caption: post.caption,
           optedOut: target.optedOut,
-          frameJudgingSupported: true, // only semantic channels reach this loop
+          detectorKey: 'semantic', // only semantic channels reach this loop
           tagText,
         },
         captionVerdict,

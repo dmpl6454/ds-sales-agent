@@ -28,6 +28,7 @@ import { ensureCategory, addTargetToCategory } from '@/outreach/categories'
 import { discardAttempt } from '@/outreach/discard'
 import { log } from '@/lib/logger'
 import { validatePersona } from '@/outreach/render'
+import { checkTemplateBody } from '@/outreach/templateGuard'
 import { requireOperator } from '@/lib/session'
 import { MESSAGE_VARIANTS } from '../../prisma/variants'
 import { BRAND_MESSAGE_VARIANTS } from '../../prisma/brandVariants'
@@ -702,6 +703,55 @@ export async function setAutopilot(on: boolean): Promise<{ ok: boolean; message:
   return {
     ok: true,
     message: on ? 'Autopilot on — armed accounts will send at each slot.' : 'Autopilot off — messages will wait for you.',
+  }
+}
+
+/**
+ * The standard message, editable — with the floor checked AT SAVE (2026-08-17, Tabish:
+ * "provide a universal template editor").
+ *
+ * `checkTemplateBody` renders a real sample through the SAME `renderMessage` the composer
+ * uses and asks the SAME `distinctiveSlice` the send guards ask. The refusal it returns is
+ * shown verbatim, because the failure it prevents — a template too short to carry a
+ * quotable line — refuses EVERY send in the system and would otherwise surface hours later
+ * as a sending outage with nothing pointing at the edit.
+ *
+ * Existing drafts keep the bytes they were written with; the gate compares against the
+ * STORED body, so an edit here never silently rewrites a message somebody already read.
+ * `pnpm ig:discard-stale-drafts` is the broom for a queue drafted under old copy, and the
+ * form says so beside the Save button.
+ *
+ * Passing null (or only whitespace) resets to the shipped copy — deleting the override is
+ * how "back to standard" works, so there is no second copy of the standard text to drift.
+ */
+export async function setSingleTemplateBody(body: string | null): Promise<{ ok: boolean; message: string }> {
+  const user = await requireOperator()
+
+  if (body === null || body.trim().length === 0) {
+    await prisma.setting.deleteMany({ where: { key: SETTING_KEYS.singleTemplateBody } })
+    await audit(user.email, 'setting.changed', 'Setting:singleTemplateBody', 'reset to the shipped standard message')
+    revalidatePath('/settings')
+    revalidatePath('/')
+    return { ok: true, message: 'Back to the standard message. New drafts use the shipped copy.' }
+  }
+
+  const verdict = checkTemplateBody(body)
+  if (!verdict.ok) return { ok: false, message: verdict.reason }
+
+  await setSetting(SETTING_KEYS.singleTemplateBody, body.trim())
+  await audit(
+    user.email,
+    'setting.changed',
+    'Setting:singleTemplateBody',
+    `standard message edited (${body.trim().length} chars)`,
+  )
+  revalidatePath('/settings')
+  revalidatePath('/')
+  return {
+    ok: true,
+    message:
+      'Saved. New drafts use this text. Messages already waiting keep the copy they were ' +
+      'written with — discard them if the old wording should not go out.',
   }
 }
 

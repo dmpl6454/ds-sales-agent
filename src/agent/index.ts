@@ -4,6 +4,7 @@ import { log } from '@/lib/logger'
 import { dispatchTick } from '@/outreach/dispatcher'
 import { deviceId } from './claim'
 import { profileStatus } from '@/outreach/browser/profile'
+import { reconcileSessionRecords } from './reconcile'
 
 /**
  *   pnpm agent:device
@@ -133,6 +134,14 @@ let stopping = false
 async function tick(): Promise<void> {
   const handles = await localSenderHandles()
   await writePresence(handles)
+
+  /**
+   * A hand login the Connect poll missed is recorded here, by the machine that can prove
+   * it — otherwise /senders says "signed in" (filesystem) while rotation says "never
+   * signed in" (database) and no draft is ever written for the account. Measured, not
+   * hypothetical: @madaboutmarketingg, 2026-08-17. See src/agent/reconcile.ts.
+   */
+  await reconcileSessionRecords(handles)
 
   if (handles.length === 0) {
     // Not an error, and said plainly: a machine with no signed-in profile has nothing to

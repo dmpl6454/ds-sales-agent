@@ -70,6 +70,10 @@ export const REMEDIES = {
   },
 
   // Both clear by waiting. See the note above on why neither links to /settings.
+  [RESEND_BLOCKS.TARGET_RECENTLY_CONTACTED]: {
+    href: null,
+    label: 'Waits by itself — the spacing window opens again a week after the last message this recipient received from any of our pages.',
+  },
   [RESEND_BLOCKS.TARGET_DAILY_CAP]: { href: null, label: 'The allowance resets at midnight IST.' },
   [RESEND_BLOCKS.SENDER_DAILY_CAP]: { href: null, label: 'The allowance resets at midnight IST.' },
 

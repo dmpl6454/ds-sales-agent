@@ -18,6 +18,7 @@ function base(overrides: Partial<GovernorInput> = {}): GovernorInput {
     sender: { status: 'ACTIVE', dailyCap: 5 },
     target: { optedOut: false },
     lastSentAt: null,
+    targetLastDeliveredAt: null,
     touchesSoFar: 0,
     targetRepliedAt: null,
     targetSentTodayCount: 0,
@@ -279,4 +280,31 @@ describe('the Phase 1 routing matrix, simulated over a week', () => {
     expect(second.eligible).toBe(false)
   })
 
+})
+
+describe('recipient-level spacing — whichever page reached them  [2026-08-17]', () => {
+  /**
+   * The duplicate incident as a governor fixture: chronicle delivered to a recipient,
+   * and half an hour later this pair — a DIFFERENT page, so lastSentAt is null and
+   * touchesSoFar is 0, a textbook "first touch" — asked to write to the same person.
+   * Everything per-pair said yes. The recipient's inbox said otherwise.
+   */
+  it('refuses a fresh pair when another page delivered inside the window', () => {
+    const d = evaluatePair(
+      base({ targetLastDeliveredAt: new Date(NOW.getTime() - 30 * 60_000) }),
+    )
+    expect(d.eligible).toBe(false)
+    if (!d.eligible) expect(d.reason).toBe(SKIP_REASONS.TARGET_RECENTLY_CONTACTED)
+  })
+
+  it('opens again once the recipient window has passed', () => {
+    const d = evaluatePair(
+      base({ targetLastDeliveredAt: new Date(NOW.getTime() - 6 * DAY) }),
+    )
+    expect(d.eligible).toBe(true)
+  })
+
+  it('a recipient nobody has reached is open — a BLOCKED first page never locks anyone', () => {
+    expect(evaluatePair(base({ targetLastDeliveredAt: null })).eligible).toBe(true)
+  })
 })

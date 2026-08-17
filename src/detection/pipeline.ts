@@ -265,7 +265,8 @@ export async function runDetection(
              * MEASURED: 64% of OCR runs were against our own retired pages.
              */
             optedOut: target.optedOut,
-            frameJudgingSupported: detector.key === 'semantic',
+            // judge.ts owns what each detector permits — including the M.O.M second look.
+            detectorKey: detector.key,
             /**
              * The SAME tag block the caption verdict was reached with. Built here from the
              * same post the detector saw, so the frame call differs from the caption call
@@ -286,6 +287,13 @@ export async function runDetection(
 
         const verdict = judged.verdict
         const signals = [...captionSignals, ...judged.signals]
+        if (judged.secondLook) {
+          log.step('the second look re-judged a rule-negative', {
+            shortcode: post.shortcode,
+            channel: target.handle,
+            verdict,
+          })
+        }
         if (judged.changedByFrame) {
           outcome.frameFlagged += 1
           log.step('the footage changed the answer', {
@@ -300,18 +308,23 @@ export async function runDetection(
           ...post.sponsorHandles.map((h) => `@${h}`),
           ...post.collabHandles.map((h) => `@${h}`),
           ...cls.brands,
+          // Caption-derived only: the second look's caption call may name brands, its
+          // frame call never does — "brands come from the caption-only call, always".
+          ...(judged.secondLook?.brands ?? []),
         ])
 
         if (verdict === 'CAMPAIGN') outcome.campaigns += 1
         else if (verdict === 'UNCLASSIFIED') outcome.unclassified += 1
         else outcome.organic += 1
 
-        await persist(target.id, post, verdict, confidence, signals, brands, {
+        await persist(target.id, post, verdict, judged.secondLook?.confidence ?? confidence, signals, brands, {
           // Instagram's own label is a fact, not a judgement, so it is recorded as
-          // 'rules' regardless of which detector ran.
-          verdictSource: officiallyPaid ? 'rules' : cls.verdictSource,
-          classifierModel: cls.classifierModel ?? null,
-          classifierReason: cls.classifierReason ?? null,
+          // 'rules' regardless of which detector ran. When the SECOND LOOK ran, the
+          // verdict is the model's and the row must say so — filing a semantic answer
+          // under 'rules' would make it label-grade for every future measurement.
+          verdictSource: officiallyPaid ? 'rules' : judged.secondLook ? 'semantic' : cls.verdictSource,
+          classifierModel: judged.secondLook ? 'deepseek-v4-flash' : (cls.classifierModel ?? null),
+          classifierReason: judged.secondLook?.reason ?? cls.classifierReason ?? null,
           taggedAccounts: post.taggedAccounts ?? [],
           /**
            * What the footage said, from the ONE writer of that sentence

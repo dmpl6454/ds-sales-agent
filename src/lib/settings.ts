@@ -30,6 +30,7 @@ export const SETTING_KEYS = {
   maxSendsPerTick: 'maxSendsPerTick',
   generateMessages: 'generateMessages',
   singleTemplate: 'singleTemplate',
+  singleTemplateBody: 'singleTemplateBody',
   tagsAsEvidence: 'tagsAsEvidence',
   replyResumeHours: 'replyResumeHours',
 } as const
@@ -163,6 +164,19 @@ export interface RuntimeSettings {
   singleTemplate: boolean
 
   /**
+   * The standard message's middle, editable from /settings since 2026-08-17 (Tabish asked
+   * for a template editor). Null means the shipped copy in `compose.ts`
+   * (`SINGLE_TEMPLATE_MIDDLE`) — so a fresh deployment behaves exactly as before, and
+   * "reset to the standard message" is deleting one row rather than pasting text back.
+   *
+   * WRITTEN ONLY through `setSingleTemplateBody` in actions.ts, which refuses any text
+   * that fails `checkTemplateBody` — the mechanical floor on this copy is that
+   * `distinctiveSlice` must find a quotable line or EVERY send is refused, and a textarea
+   * is exactly where a fatally short template would otherwise come from.
+   */
+  singleTemplateBody: string | null
+
+  /**
    * ── TAGS AND CO-AUTHORS AS CLASSIFIER EVIDENCE — BUILT, MEASURED, OFF ──
    *
    * Defaults FALSE, and it is off because the harness said so, not because it is
@@ -232,6 +246,8 @@ function defaults(): RuntimeSettings {
     // OFF. One template for every recipient reverses decision 3, so switching it on is
     // Tabish's call — recorded as his when he makes it.
     singleTemplate: true,
+    // Null = the shipped copy. A row exists only after somebody saves an edit.
+    singleTemplateBody: null,
     // OFF, because the harness measured precision falling 90% -> 83% with it on while
     // recall held. See the interface comment for all three runs and why it is kept.
     tagsAsEvidence: false,
@@ -354,6 +370,12 @@ export async function getSettings(): Promise<RuntimeSettings> {
     personaGateChannels: bool(SETTING_KEYS.personaGateChannels, d.personaGateChannels),
     generateMessages: bool(SETTING_KEYS.generateMessages, d.generateMessages),
     singleTemplate: bool(SETTING_KEYS.singleTemplate, d.singleTemplate),
+    singleTemplateBody: (() => {
+      const raw = map.get(SETTING_KEYS.singleTemplateBody)
+      // Whitespace-only is treated as unset: an accidental save of nothing must fall back
+      // to the shipped copy, never become an empty message body.
+      return raw !== undefined && raw.trim().length > 0 ? raw : d.singleTemplateBody
+    })(),
     tagsAsEvidence: bool(SETTING_KEYS.tagsAsEvidence, d.tagsAsEvidence),
     /**
      * Both fleet ceilings accept "unlimited", and for opposite reasons.

@@ -84,6 +84,9 @@ const GOVERNOR_CASES: Array<[string, Record<string, unknown>]> = [
   [SKIP_REASONS.PENDING_ATTEMPT, { hasPendingAttempt: true }],
   [SKIP_REASONS.UNANSWERED_LIMIT, { touchesSoFar: 3 }],
   [SKIP_REASONS.COOLDOWN_ACTIVE, { touchesSoFar: 1, lastSentAt: new Date('2026-08-19T12:00:00Z') }],
+  // The 2026-08-17 duplicate incident: a DIFFERENT page delivered to this recipient half
+  // an hour ago, so this pair — fresh, touchesSoFar 0 — must still wait out the window.
+  [SKIP_REASONS.TARGET_RECENTLY_CONTACTED, { targetLastDeliveredAt: new Date(NOW.getTime() - 30 * 60_000) }],
   [SKIP_REASONS.NO_NEW_MATERIAL, { touchesSoFar: 1, lastSentAt: new Date('2026-08-01T12:00:00Z'), unusedCampaignCount: 0 }],
   [SKIP_REASONS.TARGET_DAILY_CAP, { targetSentTodayCount: 2, maxPerTargetPerDay: 2 }],
   [SKIP_REASONS.SENDER_DAILY_CAP, { senderSentTodayCount: 5 }],
@@ -147,6 +150,7 @@ const GATE_CASES: Array<[string, Record<string, unknown>]> = [
   [RESEND_BLOCKS.PERSONA_NOT_DISTINCT, { personaSharedWithAnotherSender: true }],
   [RESEND_BLOCKS.PERSONA_CHANGED_SINCE_DRAFT, { draftPersonaStale: true }],
   [RESEND_BLOCKS.HOOK_STALE_SINCE_DRAFT, { draftHookStale: true }],
+  [RESEND_BLOCKS.TARGET_RECENTLY_CONTACTED, { targetRecentContact: { fromHandle: 'bollywoodchronicle', hoursAgo: 0.5 } }],
   [RESEND_BLOCKS.TARGET_DAILY_CAP, { targetSentTodayCount: 2 }],
   [RESEND_BLOCKS.SENDER_DAILY_CAP, { senderSentTodayCount: 5 }],
 ]

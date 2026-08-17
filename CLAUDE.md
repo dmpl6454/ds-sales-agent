@@ -40,6 +40,151 @@ first one's profiles.
 
 ---
 
+## 17 AUGUST, EVENING — AUTOPILOT'S FIRST REAL SEND, AND WHY IT NEVER WORKED BEFORE
+
+**At 17:44 IST autopilot delivered its first unattended message from a revenue account
+ever** — `autopilot:bollywoodchronicle → @absolutejk` — one minute after the fix, which
+was not a code change at all. It was `launchctl kickstart`.
+
+### THE DISPATCHER WAS A NINE-DAY-OLD PROCESS ENFORCING A DELETED RULE
+
+The device agent (`com.digitalsukoon.ds-sales-agent.watch`, pid 23423) had been running
+since **8 August** — started the same day the one-switch redesign deleted
+`autoSendEnabled`. Node froze its modules at start, so for nine days the only process on
+the Mac that could send held every draft with *"auto-send was switched off for
+@bollywoodchronicle"* — **a sentence that exists nowhere in the current tree**, about a
+switch nothing can turn on because the actions that wrote it were deleted. MEASURED at
+17:32 IST: `held=78, sent=0`, all on that one reason, while `/senders` said every account
+was ready and the toggle was ON. The dashboard could not name the stop because the stop
+had been deleted from `STOP_LABELS` — a stale process is the one enforcer the
+"every refusal explains itself" design cannot see.
+
+**The control probe settled it in one grep**: the hold string matches nothing in `src/`,
+so the process writing it could not be running the code on disk. Same lesson as the
+frames reappearing in the credential directory: *a file on disk is not a running
+process* — and it wears its costume better here, because the process was healthy,
+beating, and writing well-formed state rows the whole time. `ps` start time is the
+diagnostic: **when a guard names a rule the code no longer contains, check the process's
+age before debugging the code.**
+
+The morning's one send (`operator:bollywoodchronicle → @crocsindia`, 10:42 IST) was
+Tabish pressing Send by hand — `operator:` is `sendNow`'s format. No `autopilot:` row
+existed before 17:44.
+
+### A HAND LOGIN THE POLL MISSED IS NOW RECORDED BY THE MACHINE THAT CAN PROVE IT
+
+@madaboutmarketingg was signed in by hand at 16:53 IST and **the database never heard** —
+8 `sender.connect.start` audit rows that day, 1 `sender.login`. `sessionPath` is written
+only when `checkConnect`'s poll returns `connected`; stop polling (close the tab,
+navigate away) and the login completes invisibly. The split is the killer:
+`/senders` asks the FILESYSTEM (`sessionUsable`) and said *signed in*; rotation on the
+Linode asks the DATABASE (`sessionRecorded`) and said *never signed in* — so the account
+looked healthy on the one screen anybody reads while no draft could ever be written for
+it. All 77 waiting drafts were chronicle's; that is why.
+
+`src/agent/reconcile.ts` closes the class: every device-agent tick, a profile with a
+session on disk whose row records no login gets recorded (`sender.login.reconciled`,
+actor `device:<name>`). It writes `sessionPath` ONLY — **never `sessionInvalidAt`**,
+which clears on proof alone (§3.5); the fail-closed direction is pinned by
+`tests/session-reconcile.test.ts` and was mutation-tested. Worst case if the disk lies
+(profile holds someone else's session): rotation writes a draft, `identify()` refuses at
+send with WrongAccountError — a wasted draft, never a wrong message.
+@madaboutmarketingg itself was recorded the stronger way first: `pnpm ig:login`'s
+already-signed-in branch, identity verified against Instagram.
+
+### INSTAGRAM'S 2FA URL IS `two_step_verification`, AND THE CARVE-OUT NEVER MATCHED IT
+
+The live prompt (seen in a real hand login, screenshot 17 Aug) is
+`/accounts/login/two_step_verification?encrypted_context=…`. `TWO_FACTOR_PATHS` shipped
+matching `/two_factor` only — and `/accounts/login` IS a substring of the real URL, so
+`classifyUrl` returned **needs-login**: a routine code prompt on a 2FA-enabled account
+read as a DEAD SESSION, and the §3.5 cascade would have marked a live revenue session
+invalid on false evidence. Executed, not inferred, before and after the fix.
+`tests/session-paths.test.ts` now pins the URL Instagram actually serves, verbatim —
+the older tests pinned the URL the author assumed, which is how the gap shipped green.
+
+### AND THE VOLUME LIST WAS HONEST BUT NEVER ADDED ITSELF UP
+
+Tabish read *"2 per recipient per day"* on /rules as the system's total throughput and
+called the page a lie. Every number was true; no line said what the fleet can do in a
+day. /rules now carries one derived line — pace ceiling (3/hr × 11h = 33) against the
+fleet accounts' own caps (sum of `dailyCap`, 15 today) — and says outright that the
+per-recipient number protects an inbox, not throughput. **The daily ceiling is
+min(pace, account caps, 10 new-brand touches), and "several hundred a day" from three
+accounts is not a setting away — it is the ban pattern**, stated to Tabish rather than
+configured. Scale comes from the 61-account ladder, never from cranking three.
+
+### AND WITHIN THE HOUR, ROTATION GOING LIVE EXPOSED THE MISSING SPACING RULE
+
+**Tabish caught it from the dashboard before any code did**: @absolutejk heard from
+@bollywoodchronicle at 17:44 and from @bollywoodsocietyy at **18:13** — twenty-nine
+minutes apart, near-identical template bodies, different page names. @crocsindia the
+same (10:42 manual, 18:07 society). Three more society drafts sat queued at recipients
+chronicle had reached that afternoon.
+
+**Every spacing rule was PER PAIR.** The 7-day cooldown, the touch counter, the
+first-touch exemption from new-material — all keyed on (sender, target). So a second
+page writing to a fresh recipient was a textbook first touch with no history; the only
+cross-sender rule (`MAX_PER_TARGET_PER_DAY` = 2) PERMITS exactly one duplicate a day;
+and rotation then deliberately elects the NEXT page for the next touch — spreading
+senders across one recipient is its whole point, and that is precisely what it did,
+half an hour apart. Nothing anywhere asked *"has anyone written to this person
+lately?"* This only became reachable the day THREE senders held recorded sessions,
+which is why two weeks of running never showed it.
+
+**`TARGET_RECENTLY_CONTACTED` now exists at both ends and is sender-blind**: the
+governor refuses to draft, and the gate refuses to deliver, any message to a recipient
+with a DELIVERED message from ANY page inside the spacing window (`cooldownDays`, 7).
+A BLOCKED sender never locks a recipient — nothing was delivered — so the fallback
+Tabish described ("another page only if the first was blocked") holds by construction.
+Absolute like the daily caps; the override is inert and tested. VERIFIED live within a
+minute of the agent restart: all three queued duplicates held with *"this recipient
+heard from @bollywoodchronicle 1h ago — spacing applies across every page, not per
+account."* The two delivered duplicates cannot be unsent; both recipients are now
+inside the window, so a third touch is refused everywhere.
+
+The inventory test caught my own first version: `!== null` let `undefined` straight
+past both new checks — fixtures that omit a field are exactly how a guard ships
+half-wired. `!= null`, and the totality tests now carry a case for the new stop.
+
+### THE M.O.M SECOND LOOK, AND A TEMPLATE EDITOR — BOTH SHIPPED THE SAME EVENING
+
+**The `mom` rule's negative now reaches the model** (Tabish: "make sure paid posts
+detection is accurate … for both viral bhayani and madabout"). MEASURED before the
+change: **61 in-window M.O.M posts were rule-negative and NOTHING had ever read them**
+— the "missed with certainty" class from the 13 August audit. `judgeWithFrame` now
+takes `detectorKey` instead of `frameJudgingSupported` (judge.ts owns what each
+detector permits — the compiler named all four call sites, including one a grep
+missed), and `SECOND_LOOK_DETECTORS` re-judges a mom rule-NEGATIVE with the semantic
+model, caption first and alone, then the frame. **A rule POSITIVE is never touched** —
+a disclosure is a fact and stays label-grade `rules`. A failed call decides nothing and
+stays selectable. `pnpm ig:second-look` (DRY RUN default) drains the 61 — **run it on
+the server**, where the frames live; it refuses to persist machine-local absence
+signals for exactly the reason `tests/rejudge.test.ts` pins. Same-day harness
+(`--repeat 3`, predRule `final-campaign`): M.O.M recall **100-100%**, correct 96-97%,
+precision 87-90% over 98 labels.
+
+**The standard message is editable on /settings** (`singleTemplateBody` Setting, null =
+the shipped copy). `checkTemplateBody` runs the save through the REAL `renderMessage`
+and the REAL `distinctiveSlice` — writer and probe share bytes — because the mechanical
+floor on that copy ("at least one paragraph over 40 chars or EVERY send refuses") is
+now one textarea away, and it would otherwise surface hours later as a fleet-wide
+outage pointing at nothing. `{{tokens}}` are refused outright: the renderer adds the
+only two things that vary, and braces typed here would reach a real inbox as-is.
+Existing drafts keep their stored bytes; the form says so and points at the discard
+broom.
+
+| after this session | |
+|---|---|
+| autopilot | **WORKING** — 5 unattended sends 17:44–18:13 IST, then honest holds (hourly allowance, then the new spacing stop) |
+| the duplicate incident | 2 recipients double-messaged before the guard existed; 3 more were queued and are now HELD; guard live at both ends |
+| sessions | all four accounts `sessionRecorded`, zero dead-session marks; the reconcile net catches the next missed poll within 60s |
+| today's remaining room | chronicle spent its 5/day; society delivered 2; fresh recipients only, per the new stop |
+| detection | M.O.M second look live in the pipeline; the 61-post backlog drains via `ig:second-look` ON THE SERVER after deploy |
+| tests | **1,600 / 80 files**, typecheck clean; three new guards mutation-tested |
+
+---
+
 ## 17 AUGUST, AFTERNOON — IT IS DEPLOYED, AND FOUR THINGS BELOW THIS LINE WERE FALSE
 
 **Read this before the section under it.** The 17 August work is now COMMITTED and RUNNING

@@ -6,6 +6,8 @@ import { env } from '@/lib/env'
 import { Nav } from '../nav'
 import { PageHead } from '../page-head'
 import { cohortSize, cohortSoakDays } from '@/outreach/cohorts'
+import { SINGLE_TEMPLATE_MIDDLE } from '@/outreach/compose'
+import { TemplateForm } from './template-form'
 import { SettingsForm } from './form'
 
 export const dynamic = 'force-dynamic'
@@ -51,6 +53,7 @@ export default async function SettingsPage() {
           <nav className="settings-nav" aria-label="Setting groups">
             <a href="#volume">Volume and spacing</a>
             <a href="#identity">Identity</a>
+            <a href="#message">The standard message</a>
             <a href="#off">Built, and switched off</a>
             <a href="#env">Set outside the dashboard</a>
           </nav>
@@ -66,6 +69,14 @@ export default async function SettingsPage() {
                 autopilotEnabled: s.autopilotEnabled,
               }}
             />
+
+            <section id="message">
+              <h2>The standard message</h2>
+              <TemplateForm
+                initialBody={s.singleTemplateBody ?? SINGLE_TEMPLATE_MIDDLE}
+                edited={s.singleTemplateBody !== null}
+              />
+            </section>
 
             {/*
               Two things that are BUILT and switched off. On screen because a capability

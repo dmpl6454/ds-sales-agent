@@ -59,6 +59,15 @@ export interface GovernorInput {
   /** Last successful send for THIS pair. null = never contacted. */
   lastSentAt: Date | null
   /**
+   * Last successful send to this TARGET from ANY of our pages. Sender-blind, and the
+   * one spacing fact that is: MEASURED 2026-08-17, @absolutejk heard from two of our
+   * pages twenty-nine minutes apart because every rule here was per pair, a second
+   * page's message counted as a fresh first touch, and rotation deliberately elects
+   * the next page for the next touch. The recipient's inbox does not care which of
+   * our pages a message came from, so neither may the spacing.
+   */
+  targetLastDeliveredAt: Date | null
+  /**
    * How many times this pair has been contacted.
    *
    * For a cold target this can only ever be 0 or 1 — see ALREADY_CONTACTED below.
@@ -114,6 +123,7 @@ export const SKIP_REASONS = {
   TARGET_REPLIED: 'target-replied',
   PENDING_ATTEMPT: 'pending-attempt-exists',
   COOLDOWN_ACTIVE: 'cooldown-active',
+  TARGET_RECENTLY_CONTACTED: 'target-recently-contacted',
   NO_NEW_MATERIAL: 'no-new-material-to-reference',
   UNANSWERED_LIMIT: 'unanswered-touch-limit',
   TARGET_DAILY_CAP: 'target-daily-cap',
@@ -210,6 +220,22 @@ export function evaluatePair(input: GovernorInput): GovernorDecision {
         eligible: false,
         reason: SKIP_REASONS.COOLDOWN_ACTIVE,
         detail: `${daysLeft}d of ${input.pair.cooldownDays}d spacing remaining`,
+      }
+    }
+  }
+
+  // And spacing for the RECIPIENT, whichever page reached them — the rule the duplicate
+  // incident of 2026-08-17 proved missing. Same window as the pair cooldown, so one
+  // number governs both and neither can be loosened without the other.
+  if (input.targetLastDeliveredAt != null) {
+    const elapsedMs = input.now.getTime() - input.targetLastDeliveredAt.getTime()
+    const requiredMs = input.pair.cooldownDays * MS_PER_DAY
+    if (elapsedMs < requiredMs) {
+      const daysLeft = Math.ceil((requiredMs - elapsedMs) / MS_PER_DAY)
+      return {
+        eligible: false,
+        reason: SKIP_REASONS.TARGET_RECENTLY_CONTACTED,
+        detail: `another of our pages wrote to them ${Math.max(1, Math.round(elapsedMs / 3_600_000))}h ago — ${daysLeft}d of recipient spacing remaining`,
       }
     }
   }

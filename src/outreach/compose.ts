@@ -292,7 +292,15 @@ export async function composeForPair(args: {
     const { body } = renderMessage({
       persona: pair.sender,
       target: pair.target,
-      variantBody: SINGLE_TEMPLATE_MIDDLE,
+      /**
+       * The operator-edited template when one is saved, the shipped copy otherwise.
+       * `setSingleTemplateBody` is the ONE writer of that row and refuses anything
+       * `checkTemplateBody` rejects, so by the time text reaches here it has already
+       * passed the same `distinctiveSlice` floor the send guards will apply to the
+       * rendered body — an unsendable template cannot be saved, rather than being
+       * discovered as a fleet-wide refusal hours later.
+       */
+      variantBody: settings.singleTemplateBody ?? SINGLE_TEMPLATE_MIDDLE,
       hook: null,
     })
     return {
