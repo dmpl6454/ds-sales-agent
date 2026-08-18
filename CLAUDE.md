@@ -40,6 +40,90 @@ first one's profiles.
 
 ---
 
+## 18 AUGUST, EVENING — EVERY VOLUME CAP BUT ONE IS GONE, ON TABISH'S INSTRUCTION
+
+**Read this before trusting anything below it about caps, spacing, personas or the message.**
+Tabish, verbatim intent: *"there must be only a limit of say 5 messages per target per same
+account in a day (this should then result in 100s of messages being sent to multiple targets
+in a day), rest unlimited. Remove all caps … cooldown if conversation is ongoing to 2 days"*,
+one universal template *"no signature name whatsoever … no space after hi, it is all
+continuous"*, no settings page, CSV export of sends. **The ban-pattern risk — this file's own
+"several hundred a day from three accounts is the ban pattern" — was stated to him plainly;
+the call is his and is recorded as his, like reply auto-resume and one-switch before it.**
+
+### THE "STALL" HE REPORTED WAS THE CAPS PLUS THE TOGGLE, MEASURED BEFORE ANYTHING CHANGED
+
+Autopilot delivered FIVE times that day (10:46, 10:58, 11:32, 13:48, 14:01 IST, all
+chronicle), but each ON window emitted one send and then held — the 5-minute gap, then the
+3/hour allowance, then chronicle's dailyCap=5 spent by 14:01 — and the toggle was flipped
+ON/OFF six times (all audited) and was OFF when investigated. Also measured: **all 72
+waiting drafts belonged to @bollywoodchronicle** — rotation elected the ring FRONT for every
+never-messaged recipient, so one account owned the entire queue; and the three new channels
+added that morning (@bollywoodpaparazzii, @bachelorssociety, @totalfilmii — sessions
+recorded, personas set) sat in cohort 2 behind the 14-day soak with zero drafts. The 10:52
+interstitial retry burst (3 failures) was the OLD agent code; the 11:15 restart picked up
+the fix and the same recipient delivered at 11:32.
+
+### WHAT THE SYSTEM IS NOW
+
+- **ONE volume rule: `PAIR_DAILY_CAP` — 5 delivered/day from one account to one recipient**
+  (`MAX_PER_PAIR_PER_DAY`, env default 5, clamp 1..10). Enforced in the governor, the gate,
+  and atomically as a `scope: 'pair'` reservation. It replaced MAX_PER_TARGET_PER_DAY
+  (cross-sender), SENDER_DAILY_CAP, the 7-day pair cooldown, TARGET_RECENTLY_CONTACTED
+  (sender-blind spacing), UNANSWERED_LIMIT, the new-brand delivered/day cap, and the fleet
+  hourly allowance (FLEET_MAX_PER_HOUR = Infinity; a `fleetMaxPerHour` Setting row re-binds
+  it in one write — that is the first lever if checkpoints appear).
+- **What still stands, deliberately:** active hours 10:00–21:00 IST, the 5-minute fleet gap
+  (~130 deliveries/day practical ceiling), the reply halt (now **48h** —
+  REPLY_RESUME_HOURS_DEFAULT), NO_NEW_MATERIAL (without it the planner would re-draft the
+  identical template to every unresponsive recipient daily, forever), opt-out, watch-only,
+  the person guard, the cohort ladder MECHANISM (its soak is a Setting row now at **0** —
+  new accounts send immediately, his call), checkpoint handling, the circuit breaker, the
+  composer read-back and thread delta, queue depth 150, and MAX_TOTAL_SENDS.
+- **THE MESSAGE IS THE TEMPLATE, VERBATIM.** `composeForPair` under `singleTemplate` returns
+  `singleTemplateBody ?? SINGLE_TEMPLATE_MIDDLE` byte-for-byte: no greeting, no signature,
+  no hook — `renderMessage` is not called. The shipped copy is Tabish's one-line text
+  ("Hi,We're an Entertainment & Pop Culture Media Network… - Kapil"). A single-line body
+  takes `proseLines`' single-line branch (nothing dropped by position), so the needle is the
+  line's first 60 chars — verified by execution, plus `checkTemplateBody` now validates the
+  verbatim text. **The floor is now simply: keep the template over 40 characters.**
+- **Persona is gone from everything a recipient sees**, so `checkPersonaDistinct`,
+  `personaFingerprint`, `validatePersona`-in-planner, PERSONA_NOT_DISTINCT and
+  PERSONA_CHANGED_SINCE_DRAFT are deleted; the persona editor and the senders form's name
+  field went with them (`addSender` takes a handle, full stop). HOOK_STALE_SINCE_DRAFT went
+  too — no dated claim renders. The columns survive; nothing reads them into messages.
+- **Rotation spreads fresh recipients by hash.** `nextSender` starts a never-messaged
+  recipient at `stableIndex(targetId, ringSize)` (FNV-1a, exported, deterministic across
+  hosts) instead of the ring front. Without this, "no caps" meant "130/day from ONE
+  account" — the per-account ban pattern wearing rotation's clothes.
+- **UI:** the queue is a per-sender COUNT table (no per-draft cards — every draft is the
+  same bytes; the per-draft gate loop and its ~7 queries/row went with it, so `/` is far
+  under budget); the template editor lives on the Autopilot page; **/settings is a redirect
+  stub**; **/analytics has the CSV export** (`/api/export/messages`, filters: IST date
+  range, account, delivered/replied/all; columns: IST+UTC time, sender, recipient, status,
+  sentBy, touch number, reply, thread URL; capped at 10,000 rows).
+- `fleetUsage` counts DELIVERED `OutreachAttempt` rows now (unlimited buckets write no
+  reservation rows, so the old source would read 0 forever), with the hour boundary derived
+  from the IST helpers, not the host clock — the Linode is not on IST.
+
+### DEPLOYED AND VERIFIED LIVE, SAME EVENING
+
+Committed (`90c96bb`), tar-deployed to the Linode (install → postgres client → pm2 stop →
+build → start; scheduler up, detection every 15 min), device agent restarted 16:54:28 IST.
+DB ops, each with an audit row: `cohortSoakDays=0`, stale `maxNewBrandTouchesPerDay=10` row
+deleted (the stale-Setting-row trap, pre-empted this time), autopilot ON. All 72
+old-template drafts discarded via the broom (`ig:discard-stale-drafts` — its
+`requiredPhrase` now reads the EFFECTIVE template, fixing the noted bug where a saved
+override classified every current draft stale). Tests **1,551 / 80 files**, typecheck and
+`pnpm build` clean on both hosts.
+
+**What actually bounds throughput now is PROSPECT INFLOW, not caps**: first touches drain
+the queue and new prospects arrive only from detection plus `pnpm ig:brands --run` on a
+home IP. Follow-ups still require new material. If sends must slow down in a hurry:
+autopilot OFF (instant), or a `fleetMaxPerHour` Setting row.
+
+---
+
 ## 18 AUGUST — THE SECOND LOOK'S FIRST REAL BATCH SAYS IT CAUGHT NOTHING, AND THE REPLY SWEEP HAS NEVER RUN
 
 ### `no-composer` WAS A DIALOG, AND THE RETRY LOOP BEHIND IT WAS THE REAL FIND
