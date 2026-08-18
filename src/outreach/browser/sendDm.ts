@@ -195,6 +195,15 @@ export async function sendDm(params: SendDmParams): Promise<SendDmResult> {
     //    body, or a focus that landed somewhere else from being delivered.
     const staged = ((await composer.textContent()) ?? '').trim()
     if (!messageMatchesOurs(staged, body)) {
+      /**
+       * Show the actual bytes, not just the lengths. The 2026-08-18 template mismatch
+       * (242 staged vs 238 drafted) was undiagnosable from the count alone — the refusal
+       * must carry what the composer actually held so the transformation is visible.
+       */
+      log.step('composer mismatch — staged bytes follow', {
+        staged: JSON.stringify(staged.slice(0, 300)),
+        drafted: JSON.stringify(body.slice(0, 300)),
+      })
       return {
         ok: false,
         reason: `composer content does not match the drafted message (${staged.length} chars staged vs ${body.length} drafted) — nothing sent`,
