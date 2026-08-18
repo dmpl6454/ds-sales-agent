@@ -117,6 +117,27 @@ old-template drafts discarded via the broom (`ig:discard-stale-drafts` — its
 override classified every current draft stale). Tests **1,551 / 80 files**, typecheck and
 `pnpm build` clean on both hosts.
 
+### AND THE FIRST LIVE SENDS FOUND A CLIPBOARD ENCODING BUG THE SUITE NEVER COULD
+
+The first agent-driven send of the new template refused with `composer-mismatch: 242
+chars staged vs 238 drafted`, three drives in a row — while the IDENTICAL code delivered
+from a CLI. The refusal now logs the staged bytes, and they named it: `We‚Äôre` —
+**`pbcopy` under launchd has no `LANG`, so the template's U+2019 apostrophes (the first
+non-ASCII bytes any template ever carried) were decoded as MacRoman**, three characters
+each (+2 × 2 = the 4-char difference, exactly). Reproduced in both directions with
+`env -u LANG pbcopy`; fixed by pinning `LANG`/`LC_ALL=en_US.UTF-8` in `run()`
+(platform.ts) — the same trap as Windows `clip.exe` corrupting em-dashes, one platform
+over. The composer read-back guard was RIGHT every time, and parked nothing: retries
+delivered once the restarted agent held the fix.
+
+**VERIFIED LIVE: the new regime delivered its first two messages** —
+17:07 `autopilot:madaboutmarketingg → @absolutejk` and 17:16
+`autopilot:bollywoodsocietyy → @agoracitycentre`, both 238 chars (the template's exact
+length), both from accounts that had never sent unattended before. The queue rebuilt
+spread across ALL SIX accounts (12/9/13/12/17/10), 0 parked rows, autopilot ON. Note
+what the removed spacing permits, concretely: @absolutejk has now heard from THREE of
+our pages in two days — that is the trade Tabish chose, visible on its first afternoon.
+
 **What actually bounds throughput now is PROSPECT INFLOW, not caps**: first touches drain
 the queue and new prospects arrive only from detection plus `pnpm ig:brands --run` on a
 home IP. Follow-ups still require new material. If sends must slow down in a hurry:
