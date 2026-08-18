@@ -77,6 +77,15 @@ export interface DeliverOptions {
   maxSends?: number
 }
 
+/**
+ * How many delivery failures one draft may accumulate before it stops being offered to
+ * the loop. Three, matching the counter the incident reached before a person stepped in —
+ * enough to ride out a transient (a slow render, a network blip), few enough that a
+ * structural refusal (an account that cannot be messaged) stops costing a browser drive
+ * per minute against a revenue account.
+ */
+export const MAX_DELIVERY_ATTEMPTS = 3
+
 export async function deliverWaiting(opts: DeliverOptions = {}): Promise<DeliverResult> {
   const maxSends = opts.maxSends ?? 1
   /** Browser drives this call has performed. The bound is measured against this. */
@@ -477,12 +486,42 @@ export async function deliverWaiting(opts: DeliverOptions = {}): Promise<Deliver
       continue
     }
 
+    /**
+     * ── THE RETRY CAP (2026-08-18) ─────────────────────────────────────────────
+     *
+     * READY is what this loop picks up, so a draft that fails the same way every time
+     * used to loop FOREVER: MEASURED this morning, `no-composer` against one recipient
+     * drove a real Chrome profile at Instagram once a minute for four minutes straight
+     * before a hand intervened — repeated automated activity against a revenue account,
+     * and each drive spent the whole per-tick bound, so one unmessageable recipient
+     * starved the other 73 drafts. The `attempts` counter was incremented in four places
+     * and read by NOTHING.
+     *
+     * It is read now: after MAX_DELIVERY_ATTEMPTS failures the draft parks in FAILED,
+     * which nothing automatic picks up — the same treatment `not-in-thread` gets, for
+     * the same reason, and it is only safe because the parked list renders on the
+     * landing page with the failure named and the two controls that settle it
+     * (re-queue after fixing the cause, or discard). A parked message nobody can see
+     * is worse than a retried one.
+     */
+    const totalAttempts = attempt.attempts + 1
+    const park = totalAttempts >= MAX_DELIVERY_ATTEMPTS
     await prisma.outreachAttempt.update({
       where: { id: attempt.id },
-      data: { status: 'READY', error, failureCode, attempts: { increment: 1 } },
+      data: { status: park ? 'FAILED' : 'READY', error, failureCode, attempts: { increment: 1 } },
     })
     out.failed += 1
-    out.outcomes.push({ pairKey, result: `failed: ${error}` })
+    out.outcomes.push({
+      pairKey,
+      result: park ? `failed ${totalAttempts} times (${failureCode}) — parked for a person to look at` : `failed: ${error}`,
+    })
+    if (park) {
+      log.alarm('a draft failed repeatedly and is parked — it will not be retried on its own', {
+        pair: pairKey,
+        failureCode,
+        attempts: totalAttempts,
+      })
+    }
   }
 
   if (out.sent > 0 || out.failed > 0) {

@@ -201,6 +201,15 @@ export interface MessagesPageView {
    */
   waitingTotal: number
   uncertain: UncertainMessage[]
+  /** Parked by the retry cap: repeated failures, provably undelivered. */
+  parked: Array<{
+    id: string
+    senderHandle: string
+    targetHandle: string
+    attempts: number
+    failureCode: string | null
+    error: string | null
+  }>
   recent: SentMessage[]
   /** What the paced dispatcher last did, and what is holding it. */
   dispatch: Awaited<ReturnType<typeof dispatchStatus>>
@@ -276,6 +285,7 @@ export async function buildMessagesPage(): Promise<MessagesPageView> {
     waitingRaw,
     waitingTotal,
     uncertainRaw,
+    parkedRaw,
     recentRaw,
     sentThisWeek,
     reservations,
@@ -330,6 +340,18 @@ export async function buildMessagesPage(): Promise<MessagesPageView> {
      */
     prisma.outreachAttempt.findMany({
       where: { status: 'FAILED', failureCode: 'not-in-thread' },
+      include: { sender: { select: { handle: true } }, target: { select: { handle: true } } },
+      orderBy: { queuedAt: 'asc' },
+    }),
+    /**
+     * Drafts the retry cap PARKED — repeated failures, provably undelivered (every code
+     * except not-in-thread is in that class). Rendered with the failure named and two
+     * controls, because parking is only safe while it is visible: the cap stops a
+     * failing draft driving a browser once a minute, and this list is what stops the
+     * park from becoming a silent grave.
+     */
+    prisma.outreachAttempt.findMany({
+      where: { status: 'FAILED', failureCode: { not: 'not-in-thread' } },
       include: { sender: { select: { handle: true } }, target: { select: { handle: true } } },
       orderBy: { queuedAt: 'asc' },
     }),
@@ -516,6 +538,14 @@ export async function buildMessagesPage(): Promise<MessagesPageView> {
       attempts: a.attempts,
       error: a.error,
       profileUrl: profileUrl(a.target.handle),
+    })),
+    parked: parkedRaw.map((a) => ({
+      id: a.id,
+      senderHandle: a.sender.handle,
+      targetHandle: a.target.handle,
+      attempts: a.attempts,
+      failureCode: a.failureCode,
+      error: a.error,
     })),
     dispatch,
     pause,

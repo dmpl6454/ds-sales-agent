@@ -10,6 +10,7 @@ import { BlockerList } from './blockers'
 import { PaceBand } from './pace'
 import { WaitingList } from './messages/waiting'
 import { UncertainList } from './messages/uncertain'
+import { ParkedList } from './messages/parked'
 import { RepliesPanel } from './replies'
 import { OnDemandPanel } from './on-demand'
 import { currentUser } from '@/lib/session'
@@ -162,6 +163,7 @@ export default async function AutopilotPage() {
 
             {/* A send Instagram accepted that never appeared — the one thing a person must settle. */}
             <UncertainList uncertain={m.uncertain} />
+            <ParkedList parked={m.parked} />
 
             {/*
               TODAY'S NEW-COMPANY ALLOWANCE — one line, and it replaces a per-recipient list.
