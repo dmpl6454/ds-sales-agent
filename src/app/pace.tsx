@@ -1,4 +1,10 @@
-import { ACTIVE_FROM_HOUR, ACTIVE_TO_HOUR, FLEET_MAX_PER_HOUR } from '@/outreach/pacing'
+import { ACTIVE_FROM_HOUR, ACTIVE_TO_HOUR } from '@/outreach/pacing'
+
+/**
+ * How many pips are worth drawing. Beyond this the row stops being readable at a glance,
+ * which is the only reason pips exist, so it falls back to the figure.
+ */
+const MAX_PIPS = 12
 
 /**
  * THE PACE — drawn, because the numbers alone do not answer the question people ask.
@@ -9,14 +15,22 @@ import { ACTIVE_FROM_HOUR, ACTIVE_TO_HOUR, FLEET_MAX_PER_HOUR } from '@/outreach
  * they read as trivia. Drawn as a band with `now` on it, the answer is immediate — you
  * are outside the window, or you are inside it and the allowance is spent.
  *
- * ── EVERY NUMBER IS IMPORTED FROM `pacing.ts` ───────────────────────────────
+ * ── THE LIMITS COME FROM THE DISPATCHER, NOT FROM THE CONSTANTS ─────────────
  *
- * Not retyped, not passed in as props with defaults. A page that states a limit by a
- * different rule than the one enforcing it reads as headroom, and this codebase has the
- * receipts: the dashboard measured `MAX_TOTAL_SENDS` against delivered messages while the
- * planner measured it against in-flight ones, so with the ceiling at 6 the planner saw 6/6
- * and refused to prepare anything for two days while the page showed 3/6 and no blocker
- * at all.
+ * `perHour` and `minGapMinutes` are passed in from `dispatchStatus().limits` — the values
+ * the dispatcher ACTUALLY enforces, which are the `Setting` rows when they exist and the
+ * constants otherwise. This file used to import `FLEET_MAX_PER_HOUR` directly, on the
+ * reasoning that importing beats retyping. True, and still one source short: a Setting row
+ * overriding the constant would have made the page state a limit nobody was enforcing —
+ * the `MAX_TOTAL_SENDS` failure (planner saw 6/6 and drafted nothing for two days while
+ * the page showed 3/6) with the roles reversed.
+ *
+ * FOUND THE HARD WAY 2026-08-18: when the hourly allowance became `Infinity`, the pips
+ * below were `Array.from({ length: Infinity })` — a `RangeError` that took `/` to HTTP 500
+ * on every request. A drawing keyed on a limit must handle the limit not existing.
+ *
+ * The active-hours span is still imported: it is a schedule, not an allowance, and there
+ * is no Setting row for it.
  *
  * The active-hours guard in particular used to exist BY ACCIDENT — delivery only ran at
  * four daytime slots, so "we never DM at 4 a.m." was a property of the slot list rather
@@ -26,25 +40,44 @@ export function PaceBand({
   istHour,
   istMinute,
   sentThisHour,
+  perHour,
+  minGapMinutes,
   lastTick,
 }: {
   istHour: number
   istMinute: number
-  /** Fleet sends already claimed this hour, from the reservation table the guard reads. */
+  /** Fleet sends already delivered this IST hour, counted the way the guard counts. */
   sentThisHour: number
+  /** The hourly allowance the dispatcher enforces. `Infinity` when there is none. */
+  perHour: number
+  /** Minutes the dispatcher insists on between two fleet sends. */
+  minGapMinutes: number
   /** What the dispatcher did last, in its own words. Null when it has never run. */
   lastTick: string | null
 }) {
   const span = ACTIVE_TO_HOUR - ACTIVE_FROM_HOUR
   const nowHours = istHour + istMinute / 60
   const inside = nowHours >= ACTIVE_FROM_HOUR && nowHours < ACTIVE_TO_HOUR
+  const capped = Number.isFinite(perHour)
+  /* Pips only while they are both meaningful and readable — see MAX_PIPS. */
+  const pips = capped && perHour <= MAX_PIPS ? perHour : 0
 
   /* Clamped so a 03:40 "now" does not draw the marker off the left edge and imply 10:00. */
   const pos = Math.min(100, Math.max(0, ((nowHours - ACTIVE_FROM_HOUR) / span) * 100))
   const clock = `${String(istHour).padStart(2, '0')}:${String(istMinute).padStart(2, '0')}`
 
+  /**
+   * What paces the fleet when there is no hourly allowance: the minimum gap, which is a
+   * REFUSAL like the allowance was, not a suggestion. Stated as the ceiling it implies so
+   * the sentence answers the question the allowance used to — "how much can go out".
+   */
+  const gapCeiling = minGapMinutes > 0 ? Math.floor((span * 60) / minGapMinutes) : null
+  const usedPhrase = capped
+    ? `${sentThisHour} of ${perHour} fleet sends used this hour`
+    : `${sentThisHour} sent this hour — no hourly limit; one message every ${minGapMinutes} minutes at most`
+
   const label = inside
-    ? `Inside sending hours. It is ${clock} IST; the window runs ${ACTIVE_FROM_HOUR}:00 to ${ACTIVE_TO_HOUR}:00 IST. ${sentThisHour} of ${FLEET_MAX_PER_HOUR} fleet sends used this hour.`
+    ? `Inside sending hours. It is ${clock} IST; the window runs ${ACTIVE_FROM_HOUR}:00 to ${ACTIVE_TO_HOUR}:00 IST. ${usedPhrase}.`
     : `Outside sending hours. It is ${clock} IST; the window runs ${ACTIVE_FROM_HOUR}:00 to ${ACTIVE_TO_HOUR}:00 IST, so nothing will go out until it opens.`
 
   return (
@@ -70,22 +103,30 @@ export function PaceBand({
       </div>
 
       {/*
-        The allowance drawn as pips rather than "2/3". A fraction has to be read; three
-        boxes with two filled is understood without reading. It is also the number the
-        guard actually claims against — `DailyReservation` with `scope: 'fleet'` — not a
-        count this page worked out for itself.
+        The allowance drawn as pips rather than "2/3", WHEN THERE IS ONE. A fraction has to
+        be read; three boxes with two filled is understood without reading.
+
+        With no hourly allowance (2026-08-18) there is nothing to fill, so the row states
+        what actually paces instead — the minimum gap and the ceiling it implies. Drawing
+        an empty or unbounded row would be a picture of a rule that is not in force.
       */}
       <div className="pace-allowance">
         <span className="eyebrow">This hour</span>
-        <span className="pips" aria-hidden="true">
-          {Array.from({ length: FLEET_MAX_PER_HOUR }, (_, i) => (
-            <span key={i} className={i < sentThisHour ? 'pip pip-on' : 'pip'} />
-          ))}
-        </span>
-        <span className="muted">
-          {sentThisHour} of {FLEET_MAX_PER_HOUR} fleet sends used
-        </span>
+        {pips > 0 && (
+          <span className="pips" aria-hidden="true">
+            {Array.from({ length: pips }, (_, i) => (
+              <span key={i} className={i < sentThisHour ? 'pip pip-on' : 'pip'} />
+            ))}
+          </span>
+        )}
+        <span className="muted">{usedPhrase}</span>
       </div>
+
+      {!capped && gapCeiling !== null && (
+        <p className="cardnote">
+          At that spacing the window allows about {gapCeiling} messages a day across every account.
+        </p>
+      )}
 
       {/*
         ── THE THREE CONSTANTS MOVED TO /rules (2026-08-17) ──────────────────────

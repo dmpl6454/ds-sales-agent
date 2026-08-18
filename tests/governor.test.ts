@@ -28,6 +28,8 @@ function base(overrides: Partial<GovernorInput> = {}): GovernorInput {
     unusedCampaignCount: 2,
     pairSentTodayCount: 0,
     maxPerPairPerDay: 5,
+    otherPageLastDeliveredAt: null,
+    cooldownDays: 7,
     hasPendingAttempt: false,
     totalSentEver: 0,
     maxTotalSends: null,
@@ -215,5 +217,40 @@ describe('pending attempts', () => {
     // queue of five by Friday.
     const d = evaluatePair(base({ hasPendingAttempt: true }))
     expect(d).toMatchObject({ eligible: false, reason: SKIP_REASONS.PENDING_ATTEMPT })
+  })
+})
+
+/**
+ * The drafting half of cross-account spacing, restored 2026-08-18 evening. Refused HERE as
+ * well as at the gate so a duplicate is never written at all — a draft that exists only to
+ * be refused later is the "why is nothing sending" noise the reason codes exist to prevent.
+ */
+describe('cross-account spacing, at drafting', () => {
+  const HOUR = 60 * 60 * 1000
+  const DAY = 24 * HOUR
+
+  it('refuses while another of our pages is inside the window', () => {
+    const d = evaluatePair(base({ otherPageLastDeliveredAt: new Date(NOW.getTime() - 2 * DAY), cooldownDays: 7 }))
+    expect(d.eligible).toBe(false)
+    if (!d.eligible) expect(d.reason).toBe(SKIP_REASONS.TARGET_RECENTLY_CONTACTED)
+  })
+
+  /** The releasing direction: past the window, the recipient is available again. */
+  it('permits once the window has passed', () => {
+    const d = evaluatePair(base({ otherPageLastDeliveredAt: new Date(NOW.getTime() - 8 * DAY), cooldownDays: 7 }))
+    expect(d.eligible, 'the spacing window never released').toBe(true)
+  })
+
+  it('permits when no other page has ever written to them', () => {
+    expect(evaluatePair(base({ otherPageLastDeliveredAt: null })).eligible).toBe(true)
+  })
+
+  /**
+   * THE BOUNDARY, exactly on it. `elapsed < required` is the comparison, so a delivery
+   * exactly `cooldownDays` old has released — off by one here is a duplicate DM.
+   */
+  it('releases exactly at the window, not a day later', () => {
+    expect(evaluatePair(base({ otherPageLastDeliveredAt: new Date(NOW.getTime() - 7 * DAY), cooldownDays: 7 })).eligible).toBe(true)
+    expect(evaluatePair(base({ otherPageLastDeliveredAt: new Date(NOW.getTime() - 7 * DAY + HOUR), cooldownDays: 7 })).eligible).toBe(false)
   })
 })

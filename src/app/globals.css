@@ -421,7 +421,16 @@ h3 { margin: 0; font-size: 14px; font-weight: 600; }
 .stack-sm { display: grid; gap: 8px; }
 .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
 .row-between { display: flex; gap: 16px; align-items: center; justify-content: space-between; }
-.grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+/*
+  TWO COLUMNS WHEN THERE IS ROOM, ONE WHEN THERE IS NOT. It was a hard `1fr 1fr`, which
+  cannot collapse — so at 800px the activity feed's sentences pushed /analytics 108px past
+  the viewport and the page scrolled sideways. `pnpm ig:layout` caught it; nothing else
+  would have, because it looks perfect at 1440px and every page here is read at 1440px.
+
+  `min(22rem, 100%)` rather than a bare `22rem`: on a viewport narrower than the track
+  itself, a bare minimum is larger than the container and overflows in the other direction.
+*/
+.grid-2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(22rem, 100%), 1fr)); gap: 12px; }
 .grid-4 { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; }
 
 /* ── STATUS ──────────────────────────────────────────────────────────────── */
@@ -560,6 +569,12 @@ label { display: block; }
 .rows { border: 1px solid var(--ln-1); border-radius: var(--r); background: var(--bg-1); overflow: hidden; }
 .rows > * + * { border-top: 1px solid var(--ln-1); }
 .rowitem { display: flex; align-items: center; gap: 14px; padding: 10px 16px; }
+/*
+  A flex child defaults to `min-width: auto` — "never shrink below your content" — so one
+  long sentence makes the whole row refuse to fit and the page scrolls. These rows are
+  prose; prose wraps.
+*/
+.rowitem > * { min-width: 0; overflow-wrap: anywhere; }
 
 /* ── EVIDENCE ────────────────────────────────────────────────────────────────
    A drafted message body, a recorded reply, the text read off a video frame.
@@ -1144,6 +1159,22 @@ label { display: block; }
 .addform-row { display: flex; gap: 10px; align-items: flex-end; flex-wrap: wrap; }
 .addform label { display: flex; flex-direction: column; gap: 5px; flex: 1 1 170px; }
 .addform label span { font-size: 12.5px; color: var(--tx-1); }
+/*
+  The CSV export filters. Its own grid rather than `.addform-row`, because that row's
+  children size to their content and TWO of these cannot: a `<select>` takes the width of
+  its widest option ("Everything (drafts and failures too)") and `<input type="date">` has
+  a wide intrinsic size. Together they pushed /analytics 108px past an 800px viewport —
+  caught by `pnpm ig:layout`, which is exactly what that check is for.
+
+  `minmax(0, …)` and `min-width: 0` are the load-bearing part: a grid or flex child
+  defaults to `min-width: auto`, which means "never shrink below your content", and that
+  default is what turns one long option into a horizontally scrolling page.
+*/
+.exportform { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(11rem, 100%), 1fr)); gap: 0.75rem; align-items: end; }
+.exportform label { display: flex; flex-direction: column; gap: 5px; min-width: 0; font-size: 12.5px; color: var(--tx-1); }
+.exportform input, .exportform select { min-width: 0; max-width: 100%; }
+.exportform .btn-primary { align-self: end; text-align: center; text-decoration: none; }
+
 .setting { margin-bottom: 1.6rem; }
 .setting label { display: block; font-weight: 600; font-size: 12.5px; margin-bottom: 0.35rem; }
 .setting-check { display: flex; align-items: center; gap: 0.5rem; font-weight: 600; }

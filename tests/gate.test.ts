@@ -16,6 +16,7 @@ function ok(): ResendInput {
     targetRepliedAt: null,
     pairSentTodayCount: 0,
     maxPerPairPerDay: 5,
+    targetRecentContact: null,
   }
 }
 
@@ -200,5 +201,58 @@ describe('evaluateResend — watch-only targets', () => {
 
   it('permits an ordinary prospect', () => {
     expect(evaluateResend({ ...ok(), targetIsWatchOnly: false }).ok).toBe(true)
+  })
+})
+
+/**
+ * ── ONE RECIPIENT, ONE OF OUR PAGES ───────────────────────────────────────
+ *
+ * Removed with the caps on the morning of 2026-08-18 and restored the same evening, after
+ * three of our accounts reached @absolutejk inside two days. Tabish: *"we do not want 3
+ * accounts to send the same message to the individual 3 times."*
+ *
+ * Both directions, because the permitting one is what a fixture change breaks silently:
+ * `null` means nobody else has written, and that MUST still send — a spacing rule that
+ * refuses everything is an outage, not a guard.
+ */
+describe('cross-account spacing', () => {
+  it('refuses when another of our pages wrote to this recipient inside the window', () => {
+    const r = evaluateResend({ ...ok(), targetRecentContact: { fromHandle: 'bollywoodchronicle', hoursAgo: 3 } })
+    expect(r.ok).toBe(false)
+    if (r.ok) return
+    expect(r.reason).toBe(RESEND_BLOCKS.TARGET_RECENTLY_CONTACTED)
+    // The sentence names WHICH page, because "spacing applies" without it is unactionable.
+    expect(r.detail).toContain('@bollywoodchronicle')
+  })
+
+  it('permits when no other page has written', () => {
+    expect(evaluateResend({ ...ok(), targetRecentContact: null })).toEqual({ ok: true })
+  })
+
+  /**
+   * It outranks the per-pair cap, and the ORDER is the point: "somebody else already wrote
+   * to this person" is a fact about the recipient, and a refusal must name the deeper
+   * reason rather than the one that happens to be checked first.
+   */
+  it('is reported ahead of this account\'s own daily allowance', () => {
+    const r = evaluateResend({
+      ...ok(),
+      targetRecentContact: { fromHandle: 'bollywoodsocietyy', hoursAgo: 1 },
+      pairSentTodayCount: 5,
+      maxPerPairPerDay: 5,
+    })
+    expect(r.ok).toBe(false)
+    if (!r.ok) expect(r.reason).toBe(RESEND_BLOCKS.TARGET_RECENTLY_CONTACTED)
+  })
+
+  /** A present human may NOT cross it — see the absolute list in stopInventory. */
+  it('cannot be crossed with an override', () => {
+    const r = evaluateResend({
+      ...ok(),
+      unattended: false,
+      targetRecentContact: { fromHandle: 'totalfilmii', hoursAgo: 2 },
+      overrides: [RESEND_BLOCKS.TARGET_RECENTLY_CONTACTED],
+    })
+    expect(r.ok, 'an absolute stop was crossed by passing its own code as an override').toBe(false)
   })
 })

@@ -64,8 +64,14 @@ const TOKEN = process.env.DS_LAYOUT_TOKEN
  * its own session. Raising a budget to make this pass is the one thing not to do.
  */
 const PAGES: Array<{ path: string; heading: string; queryBudget: number }> = [
-  // Bounded by WAITING_SHOWN (20) x the gate's own reads, plus the page's fixed work.
-  { path: '/', heading: 'Autopilot', queryBudget: 520 },
+  /**
+   * 520 until 2026-08-18, when it was sized for WAITING_SHOWN (20 drafts) × the gate's
+   * ~7 reads each. The queue is a per-sender COUNT now — one groupBy — so the page costs
+   * 112, and a ceiling four times the real figure cannot catch the regression it exists
+   * for: a per-row query loop coming back. Tightened to fit the design that is actually
+   * there, which is what a budget is.
+   */
+  { path: '/', heading: 'Autopilot', queryBudget: 160 },
   { path: '/targets', heading: 'Targets', queryBudget: 120 },
   { path: '/paid-posts', heading: 'Paid posts', queryBudget: 120 },
   { path: '/analytics', heading: 'Analytics', queryBudget: 125 },

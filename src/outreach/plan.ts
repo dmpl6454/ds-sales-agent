@@ -325,7 +325,7 @@ export async function runOutreach(): Promise<PlanSummary> {
      */
     const alreadyUsedIds = await usedCampaignIds(pair.id)
 
-    const [touches, replied, pairToday, pending, unusedCampaignCount] = await Promise.all([
+    const [touches, replied, pairToday, otherPageLastDelivered, pending, unusedCampaignCount] = await Promise.all([
       /**
        * Both counts here use DELIVERED_STATUSES, not 'SENT'.
        *
@@ -345,14 +345,26 @@ export async function runOutreach(): Promise<PlanSummary> {
         orderBy: { repliedAt: 'desc' },
         select: { repliedAt: true },
       }),
-      // The one volume rule left (2026-08-18): five per day from THIS account to
-      // THIS recipient. Counted per pair, matching the gate.
+      // Five per day from THIS account to THIS recipient. Counted per pair, matching the gate.
       prisma.outreachAttempt.count({
         where: {
           pairId: pair.id,
           status: { in: [...DELIVERED_STATUSES] },
           sentAt: { gte: dayStart },
         },
+      }),
+      /**
+       * The newest delivery to this recipient from ANOTHER of our pages — the sender-blind
+       * fact that keeps three of our accounts out of one inbox. Excludes this sender, for
+       * the reason spelled out in gate.ts.
+       */
+      prisma.outreachAttempt.findFirst({
+        where: {
+          pair: { targetId: pair.targetId, senderId: { not: pair.senderId } },
+          status: { in: [...DELIVERED_STATUSES] },
+        },
+        orderBy: { sentAt: 'desc' },
+        select: { sentAt: true },
       }),
       // SENDING included: a browser mid-send is the most pending an attempt gets.
       prisma.outreachAttempt.count({ where: { pairId: pair.id, status: { in: ['QUEUED', 'READY', 'SENDING'] } } }),
@@ -388,6 +400,8 @@ export async function runOutreach(): Promise<PlanSummary> {
       targetRepliedAt: replied?.repliedAt ?? null,
       pairSentTodayCount: pairToday,
       maxPerPairPerDay: settings.maxPerPairPerDay,
+      otherPageLastDeliveredAt: otherPageLastDelivered?.sentAt ?? null,
+      cooldownDays: settings.defaultCooldownDays,
       hasPendingAttempt: pending > 0,
       unusedCampaignCount,
       totalSentEver,

@@ -124,6 +124,9 @@ export default async function AutopilotPage() {
             istHour={istHourOfDay(now)}
             istMinute={istMinute}
             sentThisHour={m.dispatch.usage.thisHour}
+            /* The limits the DISPATCHER enforces — Setting rows where they exist. */
+            perHour={m.dispatch.limits.perHour}
+            minGapMinutes={m.dispatch.limits.minGapMinutes}
             lastTick={lastTick}
           />
 

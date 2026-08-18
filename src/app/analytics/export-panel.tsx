@@ -27,7 +27,7 @@ export function ExportPanel({ senders }: { senders: string[] }) {
     <section>
       <h2>Export sent messages</h2>
       <div className="card">
-        <div className="addform-row" style={{ alignItems: 'flex-end', flexWrap: 'wrap', gap: '0.75rem' }}>
+        <div className="exportform">
           <label>
             <span>From (IST day)</span>
             <input type="date" value={from} onChange={(e) => setFrom(e.target.value)} />
