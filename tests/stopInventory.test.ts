@@ -67,6 +67,8 @@ function governorInput(over: Record<string, unknown> = {}) {
     unusedCampaignCount: 5,
     pairSentTodayCount: 0,
     maxPerPairPerDay: 5,
+    otherPageLastDeliveredAt: null,
+    cooldownDays: 7,
     totalSentEver: 0,
     maxTotalSends: null,
     ...over,
@@ -84,8 +86,17 @@ const GOVERNOR_CASES: Array<[string, Record<string, unknown>]> = [
   [SKIP_REASONS.TARGET_REPLIED, { targetRepliedAt: new Date('2026-08-19T12:00:00Z') }],
   [SKIP_REASONS.PENDING_ATTEMPT, { hasPendingAttempt: true }],
   [SKIP_REASONS.NO_NEW_MATERIAL, { touchesSoFar: 1, unusedCampaignCount: 0 }],
-  // The one volume rule left (2026-08-18): five per day from one account to one recipient.
+  // Five per day from one account to one recipient (2026-08-18).
   [SKIP_REASONS.PAIR_DAILY_CAP, { pairSentTodayCount: 5, maxPerPairPerDay: 5 }],
+  /**
+   * Sender-blind spacing, restored the evening of 2026-08-18 after its morning removal
+   * put three of our pages in one recipient's inbox inside two days. One hour ago against
+   * a seven-day window.
+   */
+  [
+    SKIP_REASONS.TARGET_RECENTLY_CONTACTED,
+    { otherPageLastDeliveredAt: new Date(NOW.getTime() - 60 * 60 * 1000), cooldownDays: 7 },
+  ],
 ]
 
 describe('every governor stop is reachable and explains itself', () => {
@@ -127,6 +138,7 @@ function gateInput(over: Record<string, unknown> = {}) {
     targetRepliedAt: null,
     pairSentTodayCount: 0,
     maxPerPairPerDay: 5,
+    targetRecentContact: null,
     ...over,
   } as Parameters<typeof evaluateResend>[0]
 }
@@ -139,8 +151,13 @@ const GATE_CASES: Array<[string, Record<string, unknown>]> = [
   [RESEND_BLOCKS.TARGET_IS_WATCH_ONLY, { targetIsWatchOnly: true }],
   [RESEND_BLOCKS.TARGET_REPLIED, { targetRepliedAt: new Date('2026-08-19T12:00:00Z') }],
   [RESEND_BLOCKS.NO_SESSION, { senderHasSession: false }],
-  // The one volume rule left (2026-08-18): five per day from one account to one recipient.
+  // Five per day from one account to one recipient (2026-08-18).
   [RESEND_BLOCKS.PAIR_DAILY_CAP, { pairSentTodayCount: 5, maxPerPairPerDay: 5 }],
+  // One recipient hears from one of our pages at a time — restored 2026-08-18 evening.
+  [
+    RESEND_BLOCKS.TARGET_RECENTLY_CONTACTED,
+    { targetRecentContact: { fromHandle: 'bollywoodchronicle', hoursAgo: 3 } },
+  ],
 ]
 
 describe('every gate stop is reachable and explains itself', () => {
@@ -290,6 +307,12 @@ describe('every gate stop is reachable and explains itself', () => {
       RESEND_BLOCKS.NO_SESSION,
       // The last bound on volume: crossing it has no bound at all.
       RESEND_BLOCKS.PAIR_DAILY_CAP,
+      /**
+       * Crossing this would put a second of our pages in an inbox the first one reached
+       * hours ago — the cross-account fingerprint the fleet design exists to avoid, and
+       * a fact about the RECIPIENT rather than about timing.
+       */
+      RESEND_BLOCKS.TARGET_RECENTLY_CONTACTED,
       RESEND_BLOCKS.COHORT_NOT_CLEARED,
       RESEND_BLOCKS.NOT_WAITING,
       // WHO the recipient is, not WHEN — a watched competitor is never a prospect.

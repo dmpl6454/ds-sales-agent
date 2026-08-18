@@ -41,6 +41,13 @@ export function SentList({ recent }: { recent: SentMessage[] }) {
       */}
       <section className="group">
         <h2>Delivered ({recent.length})</h2>
+        {/*
+          `.table-wrap` — the convention this file never used. A table cannot shrink below
+          its content, so without it the widest row pushes the whole PAGE sideways, which
+          `pnpm ig:layout` refuses (measured at 800px: 846 against 800). The rule is that
+          wide content scrolls inside its own box; the page never does.
+        */}
+        <div className="table-wrap">
         <table className="sent-table">
           <thead>
             <tr>
@@ -81,6 +88,7 @@ export function SentList({ recent }: { recent: SentMessage[] }) {
             ))}
           </tbody>
         </table>
+        </div>
       </section>
     </>
   )

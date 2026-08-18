@@ -18,6 +18,7 @@ import {
 
 export const SETTING_KEYS = {
   maxPerPairPerDay: 'maxPerPairPerDay',
+  defaultCooldownDays: 'defaultCooldownDays',
   hookMaxAgeHours: 'hookMaxAgeHours',
   autopilotEnabled: 'autopilotEnabled',
   maxNewBrandTouchesPerDay: 'maxNewBrandTouchesPerDay',
@@ -45,6 +46,15 @@ export interface RuntimeSettings {
    * of high identical-template volume stated to him plainly.
    */
   maxPerPairPerDay: number
+  /**
+   * Days a recipient is off-limits to our OTHER pages after one of them delivers.
+   *
+   * The sender-blind spacing window. Removed with the caps on the morning of 2026-08-18
+   * and RESTORED that evening on Tabish's instruction, after three of our accounts
+   * reached one recipient inside two days. It bounds how many of our pages one person
+   * hears from, never how much the fleet sends.
+   */
+  defaultCooldownDays: number
   hookMaxAgeHours: number
   /**
    * THE switch. ONE SWITCH, 2026-08-08 — this comment used to read "a sender also needs its
@@ -217,6 +227,7 @@ export interface RuntimeSettings {
 function defaults(): RuntimeSettings {
   return {
     maxPerPairPerDay: env.MAX_PER_PAIR_PER_DAY,
+    defaultCooldownDays: env.DEFAULT_COOLDOWN_DAYS,
     hookMaxAgeHours: env.HOOK_MAX_AGE_HOURS,
     autopilotEnabled: env.AUTOPILOT_ENABLED,
     // Unlimited since 2026-08-18 ("Remove all caps", Tabish). The queue-depth bound
@@ -327,6 +338,7 @@ export async function getSettings(): Promise<RuntimeSettings> {
     // the single number Tabish chose to keep, and removing it should be a code change
     // someone reads, not a row someone writes.
     maxPerPairPerDay: num(SETTING_KEYS.maxPerPairPerDay, d.maxPerPairPerDay),
+    defaultCooldownDays: num(SETTING_KEYS.defaultCooldownDays, d.defaultCooldownDays),
     hookMaxAgeHours: num(SETTING_KEYS.hookMaxAgeHours, d.hookMaxAgeHours),
     /**
      * Two different questions, deliberately not conflated:

@@ -68,8 +68,18 @@ export const REMEDIES = {
     label: 'We watch this page to find who is buying from them — discard this draft',
   },
 
-  // Clears by waiting — the one volume rule left (5/day per account to one recipient).
+  // Clears by waiting — five a day from one account to one recipient.
   [RESEND_BLOCKS.PAIR_DAILY_CAP]: { href: null, label: 'The allowance resets at midnight IST.' },
+
+  /**
+   * No control, deliberately. The remedy for "another of our pages already wrote to this
+   * person" is to leave them alone, and offering a way to shorten the window would be
+   * offering to do the thing the rule exists to stop.
+   */
+  [RESEND_BLOCKS.TARGET_RECENTLY_CONTACTED]: {
+    href: null,
+    label: 'Waits by itself — one recipient hears from one of our pages at a time.',
+  },
 
   /**
    * Reachable here for exactly one reason: a draft in SENDING is in the waiting list so that a

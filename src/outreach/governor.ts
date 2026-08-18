@@ -59,8 +59,20 @@ export interface GovernorInput {
   unusedCampaignCount: number
   /** DELIVERED messages from THIS sender to THIS target today (IST). */
   pairSentTodayCount: number
-  /** The one volume rule left: at most this many per pair per IST day (5). */
+  /** At most this many per pair per IST day (5) — Tabish's rule. */
   maxPerPairPerDay: number
+
+  /**
+   * The last DELIVERY to this recipient from ANOTHER of our pages, or null.
+   *
+   * Sender-blind spacing, restored 2026-08-18 evening after its removal that morning let
+   * three of our accounts reach one recipient inside two days. Excludes THIS sender —
+   * see the note in gate.ts: including it would reinstate a per-pair cooldown the
+   * five-a-day rule replaced.
+   */
+  otherPageLastDeliveredAt: Date | null
+  /** Days a recipient is off-limits to our OTHER pages after one of them writes. */
+  cooldownDays: number
 
   /** True when an attempt for this pair is already waiting to be sent. */
   hasPendingAttempt: boolean
@@ -96,7 +108,10 @@ export const SKIP_REASONS = {
   PENDING_ATTEMPT: 'pending-attempt-exists',
   NO_NEW_MATERIAL: 'no-new-material-to-reference',
   PAIR_DAILY_CAP: 'pair-daily-cap',
+  TARGET_RECENTLY_CONTACTED: 'target-recently-contacted',
 } as const
+
+const MS_PER_DAY = 86_400_000
 
 export function evaluatePair(input: GovernorInput): GovernorDecision {
   // Checks are ordered cheapest-and-most-absolute first, so the reason reported
@@ -162,9 +177,26 @@ export function evaluatePair(input: GovernorInput): GovernorDecision {
     }
   }
 
-  // The one volume rule left (2026-08-18, Tabish): five per day from one account
-  // to one recipient. Guards the recipient's inbox against a stuck loop, which is
-  // exactly what he asked it to guard.
+  /**
+   * ONE OF OUR PAGES AT A TIME, per recipient. Refused at DRAFTING as well as at delivery,
+   * so a duplicate is never written — the queue itself is the thing an operator reads, and
+   * a draft that exists only to be refused later is the "why is nothing sending" noise this
+   * file's reason codes exist to prevent.
+   */
+  if (input.otherPageLastDeliveredAt != null) {
+    const elapsedMs = input.now.getTime() - input.otherPageLastDeliveredAt.getTime()
+    const requiredMs = input.cooldownDays * MS_PER_DAY
+    if (elapsedMs < requiredMs) {
+      const daysLeft = Math.ceil((requiredMs - elapsedMs) / MS_PER_DAY)
+      return {
+        eligible: false,
+        reason: SKIP_REASONS.TARGET_RECENTLY_CONTACTED,
+        detail: `another of our pages wrote to them ${Math.max(1, Math.round(elapsedMs / 3_600_000))}h ago — ${daysLeft}d of recipient spacing remaining`,
+      }
+    }
+  }
+
+  // Five per day from one account to one recipient (2026-08-18, Tabish).
   if (input.pairSentTodayCount >= input.maxPerPairPerDay) {
     return {
       eligible: false,

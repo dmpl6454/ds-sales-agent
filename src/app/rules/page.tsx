@@ -7,7 +7,6 @@ import {
   ACTIVE_FROM_HOUR,
   ACTIVE_TO_HOUR,
   DISPATCH_INTERVAL_MINUTES,
-  FLEET_MAX_PER_HOUR,
   FLEET_MIN_GAP_MINUTES,
   MAX_SENDS_PER_TICK,
   CHALLENGE_WINDOW_HOURS,
@@ -49,6 +48,8 @@ const STOP_LABELS: Record<(typeof RESEND_BLOCKS)[keyof typeof RESEND_BLOCKS], st
   [RESEND_BLOCKS.TARGET_REPLIED]: 'they replied — paused for two days, then resumes',
   [RESEND_BLOCKS.NO_SESSION]: 'the account is not signed in',
   [RESEND_BLOCKS.PAIR_DAILY_CAP]: 'this account already sent this recipient five messages today',
+  [RESEND_BLOCKS.TARGET_RECENTLY_CONTACTED]:
+    'another of our pages wrote to this recipient recently — one inbox hears from one of our pages at a time',
   [RESEND_BLOCKS.COHORT_NOT_CLEARED]: 'the account’s onboarding group is not cleared yet',
 }
 
@@ -96,7 +97,6 @@ export default async function RulesPage() {
     _sum: { dailyCap: true },
     _count: true,
   })
-  const paceCeiling = FLEET_MAX_PER_HOUR * (ACTIVE_TO_HOUR - ACTIVE_FROM_HOUR)
   const brandTouches = await readNewBrandTouchCounts()
   const capMin = caps._min.dailyCap ?? 5
   const capMax = caps._max.dailyCap ?? 5
@@ -117,7 +117,8 @@ export default async function RulesPage() {
           unanswered-message cap, the hourly fleet allowance, the new-brand daily cap — was
           removed the same day on his instruction ("Remove all caps … rest unlimited").
         */
-        `${settings.maxPerPairPerDay} messages per day from one account to one recipient — the one volume rule. Everything else is uncapped, by explicit decision.`,
+        `${settings.maxPerPairPerDay} messages per day from one account to one recipient.`,
+        `Once one of our pages writes to someone, our OTHER pages leave them alone for ${settings.defaultCooldownDays} days — so nobody hears the same message from three of our accounts. Sending volume is otherwise uncapped, by explicit decision.`,
         'A follow-up must reference a paid post not used before for that conversation — fresh material is what makes a second message new rather than a repeat, which is what Instagram penalises.',
         settings.fleetMaxPerDay === Number.POSITIVE_INFINITY
           ? 'No fleet-wide daily cap — chosen deliberately, one setting away from binding.'

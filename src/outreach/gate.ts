@@ -85,14 +85,34 @@ export interface ResendInput {
   targetRepliedAt: Date | null
 
   /**
-   * DELIVERED messages from THIS account to THIS recipient today (IST) — the one volume
-   * rule left standing after the 2026-08-18 cap removal, chosen by Tabish: at most
-   * `maxPerPairPerDay` (5) from one account to one recipient in a day, everything else
-   * unbounded. Counted per PAIR, not per target: rotation may point several of our pages
-   * at one recipient, and each page carries its own allowance of five.
+   * DELIVERED messages from THIS account to THIS recipient today (IST) — at most
+   * `maxPerPairPerDay` (5) from one account to one recipient in a day, Tabish's rule of
+   * 2026-08-18. Counted per PAIR, not per target.
    */
   pairSentTodayCount: number
   maxPerPairPerDay: number
+
+  /**
+   * The most recent DELIVERY to this recipient from ANOTHER of our pages, when it falls
+   * inside the spacing window — null outside it, so the pure half needs no clock.
+   *
+   * ── REMOVED THE MORNING OF 2026-08-18, RESTORED THE SAME EVENING ──────────
+   *
+   * It went out with the other caps ("remove all caps"), and the consequence arrived on
+   * the first afternoon: @absolutejk heard from three different pages of ours inside two
+   * days. Tabish, seeing it: *"add back cross account spacing, we do not want 3 accounts
+   * to send the same message to the individual 3 times."*
+   *
+   * SENDER-BLIND on purpose, and it is the only spacing fact that is: the thing being
+   * protected is one person's inbox, which cannot see which of our pages wrote. A
+   * per-pair rule is structurally unable to notice a SECOND page arriving — that is the
+   *2026-08-17 duplicate incident, and removing this rule reproduced it within hours.
+   *
+   * It does NOT bound throughput: it bounds how many of our pages reach ONE recipient.
+   * The same account may still follow up (the per-pair rule above governs that), and
+   * every other recipient is untouched.
+   */
+  targetRecentContact: { fromHandle: string; hoursAgo: number } | null
 
   /**
    * Blocks a present human has explicitly acknowledged, from the on-demand dialog.
@@ -130,6 +150,19 @@ export const RESEND_BLOCKS = {
    * caps, they are conversation and account safety.
    */
   PAIR_DAILY_CAP: 'pair-daily-cap',
+  /**
+   * ── ONE RECIPIENT, ONE OF OUR PAGES (restored 2026-08-18 evening) ─────────
+   *
+   * Sender-blind spacing: a recipient with a DELIVERED message from ANY of our pages
+   * inside the window refuses every OTHER page. Removed with the caps that morning and
+   * put back the same day on Tabish's instruction, after three of our accounts reached
+   * @absolutejk inside two days — the exact pattern it was written for in the first place.
+   *
+   * Absolute, like the daily cap: protecting one person's inbox from an operation that
+   * looks like several is not a matter of operator judgement, and it is the cross-account
+   * fingerprint half of the whole fleet design.
+   */
+  TARGET_RECENTLY_CONTACTED: 'target-recently-contacted',
   COHORT_NOT_CLEARED: 'cohort-not-cleared',
 } as const
 
@@ -281,6 +314,21 @@ export function evaluateResend(input: ResendInput): ResendResult {
     return { ok: false, reason: RESEND_BLOCKS.NO_SESSION, detail: 'account is not connected' }
   }
 
+  /**
+   * Checked BEFORE the per-pair cap, because it is the more fundamental refusal: "someone
+   * else already wrote to this person" is a fact about the recipient, while the pair cap
+   * is a fact about this one conversation. A refusal should name the deeper reason.
+   */
+  if (input.targetRecentContact != null) {
+    const { fromHandle, hoursAgo } = input.targetRecentContact
+    const when = hoursAgo < 24 ? `${Math.max(1, Math.round(hoursAgo))}h ago` : `${Math.round(hoursAgo / 24)} day(s) ago`
+    return {
+      ok: false,
+      reason: RESEND_BLOCKS.TARGET_RECENTLY_CONTACTED,
+      detail: `this recipient heard from @${fromHandle} ${when} — spacing applies across every page, not per account`,
+    }
+  }
+
   if (input.pairSentTodayCount >= input.maxPerPairPerDay) {
     return {
       ok: false,
@@ -322,7 +370,7 @@ export async function recheckBeforeSend(
   const dayStart = istDayStart()
   const { sender, target, senderId, targetId } = attempt.pair
 
-  const [replied, pairToday, ladder, senderRow] = await Promise.all([
+  const [replied, pairToday, otherPageRecently, ladder, senderRow] = await Promise.all([
     prisma.outreachAttempt.findFirst({
       /**
        * `gte: replyHaltFloor(...)` rather than `not: null` since 2026-08-07: a reply
@@ -343,6 +391,26 @@ export async function recheckBeforeSend(
     // Counted per PAIR (this sender to this target): the one volume rule left.
     prisma.outreachAttempt.count({
       where: { pair: { senderId, targetId }, status: { in: [...DELIVERED_STATUSES] }, sentAt: { gte: dayStart } },
+    }),
+    /**
+     * The newest delivery to this recipient from ANOTHER of our pages, inside the window.
+     *
+     * `senderId: { not: senderId }` is the one deliberate difference from the rule as it
+     * stood before 2026-08-18. It used to include this account's own sends, because the
+     * per-pair 7-day cooldown said the same thing anyway. That cooldown is gone and Tabish's
+     * rule is five a day from one account to one recipient — so including self here would
+     * silently reinstate a 7-day pair cooldown and contradict the number he chose. The
+     * question this rule exists to ask is "has a DIFFERENT page of ours written to this
+     * person recently", and now it asks exactly that.
+     */
+    prisma.outreachAttempt.findFirst({
+      where: {
+        pair: { targetId, senderId: { not: senderId } },
+        status: { in: [...DELIVERED_STATUSES] },
+        sentAt: { gte: new Date(Date.now() - settings.defaultCooldownDays * 24 * 60 * 60 * 1000) },
+      },
+      orderBy: { sentAt: 'desc' },
+      select: { sentAt: true, pair: { select: { sender: { select: { handle: true } } } } },
     }),
     /**
      * The cohort ladder, asked HERE rather than trusted from `autoSendEnabled`.
@@ -384,6 +452,13 @@ export async function recheckBeforeSend(
     targetRepliedAt: replied?.repliedAt ?? null,
     pairSentTodayCount: pairToday,
     maxPerPairPerDay: settings.maxPerPairPerDay,
+    targetRecentContact:
+      otherPageRecently?.sentAt != null
+        ? {
+            fromHandle: otherPageRecently.pair.sender.handle,
+            hoursAgo: (Date.now() - otherPageRecently.sentAt.getTime()) / 3_600_000,
+          }
+        : null,
     overrides: opts.overrides,
   })
 }

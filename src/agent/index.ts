@@ -5,6 +5,7 @@ import { dispatchTick } from '@/outreach/dispatcher'
 import { deviceId } from './claim'
 import { profileStatus } from '@/outreach/browser/profile'
 import { reconcileSessionRecords } from './reconcile'
+import { autoResolveBrands } from '@/detection/autoResolve'
 
 /**
  *   pnpm agent:device
@@ -62,6 +63,35 @@ const POLL_INTERVAL_MS = 60_000
 
 /** Written this often so the dashboard can say how long a device has been away. */
 const PRESENCE_INTERVAL_MS = 30_000
+
+/**
+ * ── BRAND DISCOVERY RUNS HERE NOW, BECAUSE HERE IS THE HOME IP ─────────────
+ *
+ * MEASURED 2026-08-12 and unchanged since: Instagram 429s the Linode on the profile
+ * endpoint while answering the same handles from this Mac seconds later. So
+ * `autoResolveBrands` at the end of every server detect pass halts on its first lookup,
+ * forever, and the only thing that ever created a prospect was a person typing
+ * `pnpm ig:brands --run` here.
+ *
+ * That is the shape this codebase has been bitten by repeatedly — *a feature that works
+ * only when someone runs a command is not running* (166 cover frames saved and never
+ * read). Tabish, 2026-08-18: *"this should run automatically, nothing should be manually
+ * run."* So the device agent runs the pass on its own clock.
+ *
+ * It is the SAME function the server calls, not a copy: one bound, one ordering, one
+ * cache, one set of safety rules. It spends no browser and drives nothing — HTTP lookups
+ * against a public endpoint — so it runs on its own timer rather than inside the send
+ * tick, where six-second spacing would delay delivery by minutes.
+ */
+const BRAND_INTERVAL_MS = 30 * 60_000
+
+/**
+ * Lookups per pass. Higher than the server's 10 because this host is not throttled and
+ * the pass is half-hourly rather than every fifteen minutes — but still BOUNDED, because
+ * the endpoint is undocumented, politeness is a 6s gap between lookups, and an unbounded
+ * pass here would be a burst against the one IP every account also logs in from.
+ */
+const BRAND_LOOKUPS_PER_PASS = 25
 
 /** `Setting` key holding the last time each device checked in. */
 export const DEVICE_PRESENCE_KEY = 'devicePresence'
@@ -131,6 +161,49 @@ export async function readPresence(): Promise<DevicePresence[]> {
 
 let stopping = false
 
+/**
+ * One brand pass at a time on this machine.
+ *
+ * A pass can outlive its interval — 25 lookups at 6s spacing is up to 2.5 minutes, and a
+ * slow endpoint makes it longer — so without this a stalled pass would have a second one
+ * started on top of it, both spending the same lookup budget against the same throttled
+ * endpoint. In-process is the right scope: the bound this protects is per host.
+ */
+let brandPassRunning = false
+
+async function brandPass(): Promise<void> {
+  if (brandPassRunning) {
+    log.step('brand discovery is still running from the last pass — skipping this one')
+    return
+  }
+  brandPassRunning = true
+  try {
+    const summary = await autoResolveBrands({ maxLookups: BRAND_LOOKUPS_PER_PASS })
+    /**
+     * Logged EVERY pass, including the empty one. "Nothing was discovered" and "the pass
+     * never ran" are different facts and this is the only place that can tell them apart —
+     * the same reason the dispatcher reports what it held rather than going quiet.
+     */
+    log.info('brand discovery pass', {
+      looked: summary.looked,
+      created: summary.decided,
+      unsure: summary.skippedUnsure,
+      unreached: summary.unreached,
+      haltedEarly: summary.haltedEarly,
+      awaitingRetry: summary.awaitingRetry,
+    })
+  } catch (err) {
+    /**
+     * Never allowed to take the agent down, exactly like the detect-pass rule: discovering
+     * prospects is upstream of sending, and a failure here must not stop messages that are
+     * already written from going out.
+     */
+    log.error('brand discovery pass failed', { error: err instanceof Error ? err.message : String(err) })
+  } finally {
+    brandPassRunning = false
+  }
+}
+
 async function tick(): Promise<void> {
   const handles = await localSenderHandles()
   await writePresence(handles)
@@ -183,6 +256,19 @@ export async function runDeviceAgent(): Promise<void> {
   }, PRESENCE_INTERVAL_MS)
   presence.unref?.()
 
+  /**
+   * Brand discovery, on its own clock and NOT gated on autopilot: finding out which
+   * companies bought a placement is reading public data, not writing to anyone. The
+   * queue can only grow when a prospect exists, so gating discovery on the send switch
+   * would mean turning autopilot on to a queue that had stopped being filled hours ago.
+   *
+   * Fired once at startup as well as on the interval, so a restart does not mean waiting
+   * half an hour for the first pass.
+   */
+  void brandPass()
+  const brands = setInterval(() => void brandPass(), BRAND_INTERVAL_MS)
+  brands.unref?.()
+
   while (!stopping) {
     try {
       await tick()
@@ -195,6 +281,7 @@ export async function runDeviceAgent(): Promise<void> {
   }
 
   clearInterval(presence)
+  clearInterval(brands)
 }
 
 export function stopDeviceAgent(): void {
