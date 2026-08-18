@@ -17,13 +17,11 @@ import {
  */
 
 export const SETTING_KEYS = {
-  defaultCooldownDays: 'defaultCooldownDays',
-  maxPerTargetPerDay: 'maxPerTargetPerDay',
+  maxPerPairPerDay: 'maxPerPairPerDay',
   hookMaxAgeHours: 'hookMaxAgeHours',
   autopilotEnabled: 'autopilotEnabled',
   maxNewBrandTouchesPerDay: 'maxNewBrandTouchesPerDay',
   maxWaitingNewBrandDrafts: 'maxWaitingNewBrandDrafts',
-  personaGateChannels: 'personaGateChannels',
   fleetMaxPerHour: 'fleetMaxPerHour',
   fleetMaxPerDay: 'fleetMaxPerDay',
   fleetMinGapMinutes: 'fleetMinGapMinutes',
@@ -36,8 +34,17 @@ export const SETTING_KEYS = {
 } as const
 
 export interface RuntimeSettings {
-  defaultCooldownDays: number
-  maxPerTargetPerDay: number
+  /**
+   * ── THE ONE VOLUME RULE LEFT (2026-08-18, Tabish's instruction) ─────────
+   *
+   * At most this many DELIVERED messages from ONE account to ONE recipient per IST
+   * day (5). Everything else that bounded volume — the cross-sender per-recipient
+   * cap, the per-sender daily cap, the 7-day cooldown and sender-blind spacing, the
+   * unanswered-touch cap, the fleet hourly allowance — was removed the same day on
+   * his explicit instruction ("Remove all caps … rest unlimited"), with the ban-risk
+   * of high identical-template volume stated to him plainly.
+   */
+  maxPerPairPerDay: number
   hookMaxAgeHours: number
   /**
    * THE switch. ONE SWITCH, 2026-08-08 — this comment used to read "a sender also needs its
@@ -72,22 +79,6 @@ export interface RuntimeSettings {
    * a day, not a safety rule about strangers' inboxes — that one is the delivery cap.
    */
   maxWaitingNewBrandDrafts: number
-
-  /**
-   * Does the persona gate cover CHANNEL sends, not just brand sends?
-   *
-   * Decision 6, taken by Tabish 2026-08-04. At 65 accounts, 63 pages emitting one
-   * byte-identical contact block is the cross-account fingerprint decision 3 exists to
-   * prevent — and rotation makes it worse in the specific way that matters, because the
-   * whole point is that a recipient hears from a different page each time and an
-   * identical signature underneath every one announces they are one operation.
-   *
-   * Defaults ON, which currently halts ALL outreach: every account still says *Kapil
-   * Jain, Co-founder, Bollywood Society*. Tabish accepted that consequence. It is a
-   * setting rather than a constant so whoever is mid-way through editing 63 personas can
-   * finish without the gate whipsawing.
-   */
-  personaGateChannels: boolean
 
   /**
    * ── FLEET PACING, Phase 5 ─────────────────────────────────────────────
@@ -225,16 +216,14 @@ export interface RuntimeSettings {
 
 function defaults(): RuntimeSettings {
   return {
-    defaultCooldownDays: env.DEFAULT_COOLDOWN_DAYS,
-    maxPerTargetPerDay: env.MAX_PER_TARGET_PER_DAY,
+    maxPerPairPerDay: env.MAX_PER_PAIR_PER_DAY,
     hookMaxAgeHours: env.HOOK_MAX_AGE_HOURS,
     autopilotEnabled: env.AUTOPILOT_ENABLED,
-    // 2, chosen by Tabish. At ~20 brands discovered per month the queue drains faster
-    // than it fills, so queue depth on the dashboard stays a real signal.
-    maxNewBrandTouchesPerDay: 2,
+    // Unlimited since 2026-08-18 ("Remove all caps", Tabish). The queue-depth bound
+    // below is what still bounds the draft backlog; delivered volume is bounded only
+    // by the per-pair rule and the fleet minimum gap.
+    maxNewBrandTouchesPerDay: Number.POSITIVE_INFINITY,
     maxWaitingNewBrandDrafts: 150,
-    // ON. The safe direction is the one that refuses to send.
-    personaGateChannels: true,
     fleetMaxPerHour: FLEET_MAX_PER_HOUR,
     // Unlimited. Tabish's decision, not an oversight — see the interface comment.
     fleetMaxPerDay: FLEET_MAX_PER_DAY,
@@ -334,23 +323,10 @@ export async function getSettings(): Promise<RuntimeSettings> {
   }
 
   return {
-    defaultCooldownDays: num(SETTING_KEYS.defaultCooldownDays, d.defaultCooldownDays),
-    /**
-     * The only cap that may be set to "unlimited" from a Setting row.
-     *
-     * Tabish reversed the earlier 1/day choice on 2026-08-04 — he considers it
-     * "laughingly low" — so this must be removable without a code change. It is NOT
-     * removed here: the effective value still comes from `MAX_PER_TARGET_PER_DAY` in
-     * `.env` (2 today), because switching the cap off changes who receives messages and
-     * Phase 0 changes nothing about that. Writing the row is now all it takes.
-     *
-     * The risk it protects against is stated rather than waved away: measured,
-     * @viralbhayani posts 11-14 paid posts a day, and uncapped rotation across 65 senders
-     * puts all of that into ONE inbox from a different page each time. Rotation solves
-     * SENDER risk and does nothing for RECIPIENT risk, and a recipient's spam report is
-     * what gets accounts banned.
-     */
-    maxPerTargetPerDay: num(SETTING_KEYS.maxPerTargetPerDay, d.maxPerTargetPerDay, { allowUnlimited: true }),
+    // The one volume rule left (2026-08-18). Deliberately NOT allowUnlimited: this is
+    // the single number Tabish chose to keep, and removing it should be a code change
+    // someone reads, not a row someone writes.
+    maxPerPairPerDay: num(SETTING_KEYS.maxPerPairPerDay, d.maxPerPairPerDay),
     hookMaxAgeHours: num(SETTING_KEYS.hookMaxAgeHours, d.hookMaxAgeHours),
     /**
      * Two different questions, deliberately not conflated:
@@ -365,9 +341,10 @@ export async function getSettings(): Promise<RuntimeSettings> {
      * chosen that. Granting permission must never be the same act as switching on.
      */
     autopilotEnabled: d.autopilotEnabled && bool(SETTING_KEYS.autopilotEnabled, false),
-    maxNewBrandTouchesPerDay: num(SETTING_KEYS.maxNewBrandTouchesPerDay, d.maxNewBrandTouchesPerDay),
+    maxNewBrandTouchesPerDay: num(SETTING_KEYS.maxNewBrandTouchesPerDay, d.maxNewBrandTouchesPerDay, {
+      allowUnlimited: true,
+    }),
     maxWaitingNewBrandDrafts: num(SETTING_KEYS.maxWaitingNewBrandDrafts, d.maxWaitingNewBrandDrafts),
-    personaGateChannels: bool(SETTING_KEYS.personaGateChannels, d.personaGateChannels),
     generateMessages: bool(SETTING_KEYS.generateMessages, d.generateMessages),
     singleTemplate: bool(SETTING_KEYS.singleTemplate, d.singleTemplate),
     singleTemplateBody: (() => {

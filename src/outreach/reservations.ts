@@ -1,6 +1,6 @@
 import { prisma } from '@/lib/db'
 import { log } from '@/lib/logger'
-import { istDateKey, istHourOfDay } from '@/lib/time'
+import { istDateKey, istDayStart, istHourOfDay } from '@/lib/time'
 
 /**
  * Claiming one unit of a daily allowance, atomically.
@@ -39,7 +39,7 @@ import { istDateKey, istHourOfDay } from '@/lib/time'
  * asymmetry is the point.
  */
 
-export type ReservationScope = 'target' | 'sender' | 'fleet'
+export type ReservationScope = 'target' | 'sender' | 'pair' | 'fleet'
 
 /**
  * The two fleet buckets, as subject ids under `scope: 'fleet'`.
@@ -223,7 +223,7 @@ export type ClaimResult =
   | { ok: true; held: Reservation[] }
   | {
       ok: false
-      reason: 'target-daily-cap' | 'sender-daily-cap' | 'fleet-hourly-pace' | 'fleet-daily-cap'
+      reason: 'pair-daily-cap' | 'fleet-hourly-pace' | 'fleet-daily-cap'
       detail: string
     }
 
@@ -245,10 +245,14 @@ export type ClaimResult =
  */
 export async function claimForAttempt(args: {
   attemptId: string
-  targetId: string
-  senderId: string
-  maxPerTargetPerDay: number
-  senderDailyCap: number
+  /**
+   * The pair (sender→target) this attempt belongs to. Since 2026-08-18 the ONE volume
+   * rule is per pair — at most `maxPerPairPerDay` (5) from one account to one recipient
+   * per IST day, Tabish's instruction — so the atomic claim is per pair too. The old
+   * per-target and per-sender daily claims were removed with the caps they enforced.
+   */
+  pairId: string
+  maxPerPairPerDay: number
   /**
    * Fleet-wide pacing, Phase 5. Both default to no ceiling so an omitted argument can
    * never be MORE permissive than an explicit one — the caller that forgets these gets
@@ -271,10 +275,8 @@ export async function claimForAttempt(args: {
 }): Promise<ClaimResult> {
   const {
     attemptId,
-    targetId,
-    senderId,
-    maxPerTargetPerDay,
-    senderDailyCap,
+    pairId,
+    maxPerPairPerDay,
     fleetMaxPerHour = Number.POSITIVE_INFINITY,
     fleetMaxPerDay = Number.POSITIVE_INFINITY,
     attended = false,
@@ -299,33 +301,18 @@ export async function claimForAttempt(args: {
     for (const r of held) await releaseReservation(r.id)
   }
 
-  const target = await claim('target', targetId, maxPerTargetPerDay)
-  if (!target.ok) {
+  const pair = await claim('pair', pairId, maxPerPairPerDay)
+  if (!pair.ok) {
     return {
       ok: false,
-      reason: 'target-daily-cap',
+      reason: 'pair-daily-cap',
       detail:
-        target.reason === 'cap-reached'
-          ? `this channel has already been sent ${target.used} message(s) today (limit ${target.limit})`
-          : `too many sends are being claimed for this channel at once — deferring`,
+        pair.reason === 'cap-reached'
+          ? `this account has already sent this recipient ${pair.used} message(s) today (limit ${pair.limit})`
+          : `too many sends are being claimed for this conversation at once — deferring`,
     }
   }
-  if (target.reservation) held.push(target.reservation)
-
-  const sender = await claim('sender', senderId, senderDailyCap)
-  if (!sender.ok) {
-    // Give the recipient's slot back. A cap the sender cannot use must not consume it.
-    await abandon()
-    return {
-      ok: false,
-      reason: 'sender-daily-cap',
-      detail:
-        sender.reason === 'cap-reached'
-          ? `this account has already sent ${sender.used} message(s) today (limit ${sender.limit})`
-          : `too many sends are being claimed for this account at once — deferring`,
-    }
-  }
-  if (sender.reservation) held.push(sender.reservation)
+  if (pair.reservation) held.push(pair.reservation)
 
   /**
    * ── THE FLEET BUCKETS ─────────────────────────────────────────────────
@@ -375,17 +362,28 @@ export async function claimForAttempt(args: {
 /**
  * How many messages the fleet has sent this IST hour, and today. For the dashboard.
  *
- * Read from the SAME reservation rows the claim writes, not recounted from
- * `OutreachAttempt`. A limit reported by a different rule than the one enforcing it is
- * worse than no limit shown, because it reads as headroom — this project shipped exactly
- * that bug with `MAX_TOTAL_SENDS`, where the page measured `SENT + REPLIED` while the
- * planner measured in-flight, and two days passed with nothing queued and no reason given.
+ * Counted from `OutreachAttempt` since 2026-08-18. It used to read the reservation rows
+ * the claim writes — the right source while the fleet buckets were finite — but with the
+ * buckets unlimited, `Infinity` deliberately writes no bookkeeping row, so a reservation
+ * count would read 0 forever while messages went out: a number that quietly stops meaning
+ * what its label says.
  */
 export async function fleetUsage(now: Date = new Date()): Promise<{ thisHour: number; today: number }> {
-  const day = istDateKey(now)
+  /**
+   * Counted from OutreachAttempt since 2026-08-18, not from reservation rows. With the
+   * fleet buckets unlimited (`Infinity` writes no bookkeeping row, by design), a count of
+   * reservation rows would read 0 forever while messages went out — a number that quietly
+   * stops meaning what its label says. DELIVERED_STATUSES, so a reply cannot lower it.
+   */
+  // The IST hour boundary, derived from the IST helpers rather than the host's own
+  // clock: the Linode does not run in IST, and a machine-local setMinutes(0,0,0) would
+  // floor to a boundary 30 minutes off (IST is +05:30).
+  const dayStart = istDayStart(now)
+  const hourStart = new Date(dayStart.getTime() + istHourOfDay(now) * 3_600_000)
+  const delivered = { in: ['SENT', 'REPLIED'] }
   const [thisHour, today] = await Promise.all([
-    prisma.dailyReservation.count({ where: { day, scope: 'fleet', subjectId: fleetHourSubject(now) } }),
-    prisma.dailyReservation.count({ where: { day, scope: 'fleet', subjectId: FLEET_DAY_SUBJECT } }),
+    prisma.outreachAttempt.count({ where: { status: delivered, sentAt: { gte: hourStart, lte: now } } }),
+    prisma.outreachAttempt.count({ where: { status: delivered, sentAt: { gte: dayStart, lte: now } } }),
   ])
   return { thisHour, today }
 }

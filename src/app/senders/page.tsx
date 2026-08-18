@@ -44,18 +44,6 @@ export default async function SendersPage() {
             <strong>{v.summary.ready}</strong>
             <span>sending on their own</span>
           </li>
-          {/*
-            "waiting for a click" IS GONE — one switch, 2026-08-08.
-
-            It counted accounts whose per-account auto-send bit was off, and there is no such bit.
-            Every account is now in exactly one of the four remaining buckets, so the row still
-            sums to the total; nothing is hidden by the removal.
-          */}
-          {/* "signature", not "persona" — the banner below and every row already say signature. */}
-          <li>
-            <strong>{v.summary.needsPersona}</strong>
-            <span>sharing a signature</span>
-          </li>
           <li>
             <strong>{v.summary.needsLogin}</strong>
             <span>need signing in</span>
@@ -65,14 +53,6 @@ export default async function SendersPage() {
             <span>need you now</span>
           </li>
         </ul>
-
-        {/* The binding constraint when it binds, stated once — not repeated per row. */}
-        {v.sharingPersona > 0 && v.personaGateCoversChannels && (
-          <div className="banner banner-warn">
-            <strong>Nothing is sending.</strong> {v.sharingPersona} of {v.total} accounts sign off identically. Give
-            each its own signature below.
-          </div>
-        )}
 
         {q.remaining > 0 && (
           <section className="group">

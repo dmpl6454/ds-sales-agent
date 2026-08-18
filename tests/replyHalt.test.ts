@@ -71,7 +71,7 @@ describe('replyHaltFloor', () => {
     expect(replyHaltFloor(1, now).toISOString()).toBe('2026-08-07T11:00:00.000Z')
   })
 
-  it('default is one day', () => {
-    expect(REPLY_RESUME_HOURS_DEFAULT).toBe(24)
+  it('default is two days — Tabish\'s "cooldown if conversation is ongoing" number (2026-08-18)', () => {
+    expect(REPLY_RESUME_HOURS_DEFAULT).toBe(48)
   })
 })

@@ -23,7 +23,7 @@ async function main() {
     orderBy: [{ target: { handle: 'asc' } }, { sender: { handle: 'asc' } }],
   })
 
-  console.log(`\n  DRY_RUN=${env.DRY_RUN ? '1 (nothing sends)' : '0 (LIVE)'}   cooldown=${settings.defaultCooldownDays}d   max/target/day=${describeCap(settings.maxPerTargetPerDay)}\n`)
+  console.log(`\n  DRY_RUN=${env.DRY_RUN ? '1 (nothing sends)' : '0 (LIVE)'}   max/pair/day=${describeCap(settings.maxPerPairPerDay)}\n`)
 
   for (const pair of pairs) {
     const hook = await prisma.detectedCampaign.findFirst({

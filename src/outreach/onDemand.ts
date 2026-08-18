@@ -45,20 +45,15 @@ export interface OnDemandFacts {
   /** Absolute-stop inputs. */
   senderStatus: string // ACTIVE | PAUSED | CHALLENGED
   senderHasSession: boolean
-  senderPersonaProblems: string[]
   targetOptedOut: boolean
-  targetSentTodayCount: number
-  senderSentTodayCount: number
-  senderDailyCap: number
-  maxPerTargetPerDay: number
+  /** DELIVERED from THIS account to THIS recipient today — the one volume rule left. */
+  pairSentTodayCount: number
+  maxPerPairPerDay: number
   /** A sender must never message itself; Instagram's self-thread is a different surface. */
   isSelfSend: boolean
 
   /** Warning inputs — everything the governor would have refused on. */
-  cooldownDays: number
-  lastSentAt: Date | null
   touchesSoFar: number
-  maxUnansweredTouches: number
   targetRepliedAt: Date | null
   pendingAttemptCount: number
   unusedCampaignCount: number
@@ -101,9 +96,7 @@ export interface OnDemandVerdict {
  */
 export const CROSSABLE_RULES = {
   TARGET_REPLIED: RESEND_BLOCKS.TARGET_REPLIED,
-  COOLDOWN_ACTIVE: 'cooldown-active',
   NO_NEW_MATERIAL: 'no-new-material',
-  UNANSWERED_TOUCH_LIMIT: 'unanswered-touch-limit',
   PENDING_ATTEMPT_EXISTS: 'pending-attempt-exists',
   LIFETIME_SEND_CAP_REACHED: 'lifetime-send-cap-reached',
 } as const
@@ -163,22 +156,10 @@ export function describeOnDemand(f: OnDemandFacts): OnDemandVerdict {
     })
   }
 
-  // A malformed persona would be reproduced in every message this account sends.
-  for (const problem of f.senderPersonaProblems) {
-    blocks.push({ reason: 'persona-invalid', text: `Contact details on this account are invalid: ${problem}` })
-  }
-
-  if (f.targetSentTodayCount >= f.maxPerTargetPerDay) {
+  if (f.pairSentTodayCount >= f.maxPerPairPerDay) {
     blocks.push({
-      reason: RESEND_BLOCKS.TARGET_DAILY_CAP,
-      text: `This channel has already received ${f.targetSentTodayCount} message${f.targetSentTodayCount === 1 ? '' : 's'} today (the daily limit is ${f.maxPerTargetPerDay}). Try again tomorrow.`,
-    })
-  }
-
-  if (f.senderSentTodayCount >= f.senderDailyCap) {
-    blocks.push({
-      reason: RESEND_BLOCKS.SENDER_DAILY_CAP,
-      text: `This account has already sent ${f.senderSentTodayCount} message${f.senderSentTodayCount === 1 ? '' : 's'} today (its daily limit is ${f.senderDailyCap}).`,
+      reason: RESEND_BLOCKS.PAIR_DAILY_CAP,
+      text: `This account has already sent this recipient ${f.pairSentTodayCount} message${f.pairSentTodayCount === 1 ? '' : 's'} today (the limit is ${f.maxPerPairPerDay} per day from one account to one recipient). Try again tomorrow.`,
     })
   }
 
@@ -193,29 +174,10 @@ export function describeOnDemand(f: OnDemandFacts): OnDemandVerdict {
     })
   }
 
-  if (f.lastSentAt !== null) {
-    const elapsed = f.now.getTime() - f.lastSentAt.getTime()
-    const required = f.cooldownDays * MS_PER_DAY
-    if (elapsed < required) {
-      const daysLeft = Math.ceil((required - elapsed) / MS_PER_DAY)
-      warnings.push({
-        reason: CROSSABLE_RULES.COOLDOWN_ACTIVE,
-        text: `You already messaged them ${agoLabel(f.now, f.lastSentAt)}. Normal spacing is ${f.cooldownDays} days, so this is ${daysLeft} day${daysLeft === 1 ? '' : 's'} early.`,
-      })
-    }
-  }
-
   if (f.touchesSoFar > 0 && f.unusedCampaignCount === 0) {
     warnings.push({
       reason: CROSSABLE_RULES.NO_NEW_MATERIAL,
       text: 'Nothing new has been detected from them since your last message, so this one repeats material they have already seen. Repetition is the thing Instagram penalises most.',
-    })
-  }
-
-  if (f.touchesSoFar >= f.maxUnansweredTouches) {
-    warnings.push({
-      reason: CROSSABLE_RULES.UNANSWERED_TOUCH_LIMIT,
-      text: `You have sent ${f.touchesSoFar} message${f.touchesSoFar === 1 ? '' : 's'} with no reply. Instagram does not deliver further requests to someone who has not accepted, so this may not arrive at all.`,
     })
   }
 
@@ -294,15 +256,8 @@ export async function prepareOnDemand(senderHandle: string, targetHandle: string
         }))
 
   const dayStart = istDayStart()
-  const [lastSent, touches, replied, targetToday, senderToday, pending, totalInFlight, unusedCampaigns] =
+  const [touches, replied, pairToday, pending, totalInFlight, unusedCampaigns] =
     await Promise.all([
-      pair
-        ? prisma.outreachAttempt.findFirst({
-            where: { pairId: pair.id, status: { in: [...DELIVERED_STATUSES] } },
-            orderBy: { sentAt: 'desc' },
-            select: { sentAt: true },
-          })
-        : null,
       pair
         ? prisma.outreachAttempt.count({ where: { pairId: pair.id, status: { in: [...DELIVERED_STATUSES] } } })
         : 0,
@@ -317,12 +272,12 @@ export async function prepareOnDemand(senderHandle: string, targetHandle: string
         orderBy: { repliedAt: 'desc' },
         select: { repliedAt: true },
       }),
-      prisma.outreachAttempt.count({
-        where: { pair: { targetId: target.id }, status: { in: [...DELIVERED_STATUSES] }, sentAt: { gte: dayStart } },
-      }),
-      prisma.outreachAttempt.count({
-        where: { pair: { senderId: sender.id }, status: { in: [...DELIVERED_STATUSES] }, sentAt: { gte: dayStart } },
-      }),
+      // The one volume rule left: five per day from THIS account to THIS recipient.
+      pair
+        ? prisma.outreachAttempt.count({
+            where: { pairId: pair.id, status: { in: [...DELIVERED_STATUSES] }, sentAt: { gte: dayStart } },
+          })
+        : 0,
       pair
         ? prisma.outreachAttempt.count({
             where: { pairId: pair.id, status: { in: ['QUEUED', 'READY', 'SENDING'] } },
@@ -352,17 +307,11 @@ export async function prepareOnDemand(senderHandle: string, targetHandle: string
       hasSessionOnDisk: profileStatus(sender.handle).hasSession,
       sessionInvalidAt: sender.sessionInvalidAt,
     }),
-    senderPersonaProblems: validatePersona(sender),
     targetOptedOut: target.optedOut,
-    targetSentTodayCount: targetToday,
-    senderSentTodayCount: senderToday,
-    senderDailyCap: sender.dailyCap,
-    maxPerTargetPerDay: settings.maxPerTargetPerDay,
+    pairSentTodayCount: pairToday,
+    maxPerPairPerDay: settings.maxPerPairPerDay,
     isSelfSend: sender.handle === target.handle,
-    cooldownDays: pair?.cooldownDays ?? env.DEFAULT_COOLDOWN_DAYS,
-    lastSentAt: lastSent?.sentAt ?? null,
     touchesSoFar: touches,
-    maxUnansweredTouches: pair?.maxUnansweredTouches ?? 3,
     targetRepliedAt: replied?.repliedAt ?? null,
     pendingAttemptCount: pending,
     unusedCampaignCount: unusedCampaigns,

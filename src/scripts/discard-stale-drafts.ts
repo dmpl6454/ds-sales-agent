@@ -73,7 +73,11 @@ async function main(): Promise<void> {
    * byte-identical to it", because editing a draft is explicitly allowed.
    */
   const settings = await getSettings()
-  const requiredPhrase = settings.singleTemplate ? (SINGLE_TEMPLATE_MIDDLE.split('\n')[0] ?? null) : null
+  // The EFFECTIVE template — the saved override when one exists, the shipped constant
+  // otherwise. Reading only the constant classified every current draft stale the moment
+  // an operator saved an edit, which is this broom pointed at exactly the wrong rows.
+  const effectiveTemplate = settings.singleTemplateBody ?? SINGLE_TEMPLATE_MIDDLE
+  const requiredPhrase = settings.singleTemplate ? (effectiveTemplate.split('\n')[0] ?? null) : null
   console.log(
     settings.singleTemplate
       ? 'One standard message is in force, so a body from the old variant pools is out of date.\n'

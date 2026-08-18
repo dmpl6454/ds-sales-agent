@@ -110,6 +110,21 @@ export function fleetRingOrder(
     .map((s, i) => ({ senderId: s.id, handle: s.handle, position: i, enabled: true }))
 }
 
+/**
+ * A stable, PURE index into a ring for a recipient with no send history — FNV-1a over the
+ * id, modulo the ring size. Not cryptographic and not meant to be: the property needed is
+ * that the same recipient always maps to the same ring position on every host, so the
+ * fleet's first touches spread across accounts instead of all electing the ring front.
+ */
+export function stableIndex(id: string, ringSize: number): number {
+  let h = 0x811c9dc5
+  for (let i = 0; i < id.length; i++) {
+    h ^= id.charCodeAt(i)
+    h = Math.imul(h, 0x01000193)
+  }
+  return ringSize <= 0 ? 0 : Math.abs(h) % ringSize
+}
+
 /** Enabled members in ring order. Ties on `position` break on handle, so it is total. */
 export function ringOrder(ring: readonly RingMember[]): RingMember[] {
   return ring
@@ -142,13 +157,23 @@ export function nextSender(input: RotationInput): RotationChoice {
   /**
    * Where to start walking.
    *
-   * `lastSenderId` may name a sender that has since left the ring — removed mid-cycle,
-   * or disabled. `indexOf` then returns -1 and the walk starts at 0, which is the right
-   * answer: with no known predecessor still present, the front of the ring is as fair a
-   * starting point as any, and it is deterministic.
+   * A recipient with history starts AFTER whoever wrote last, as always. A NEVER-MESSAGED
+   * recipient used to start at the ring front — which, fleet-wide, elected the SAME
+   * account for every fresh recipient: MEASURED 2026-08-18, all 72 waiting drafts
+   * belonged to @bollywoodchronicle while five other signed-in accounts held zero, so
+   * "hundreds a day" would have been hundreds a day FROM ONE ACCOUNT — the per-account
+   * ban pattern wearing rotation's clothes. Fresh recipients now start at a stable hash
+   * of the recipient's id, which spreads first touches evenly across the whole fleet
+   * while staying deterministic (the same recipient always maps to the same account, so
+   * two concurrent planners cannot disagree).
+   *
+   * `lastSenderId` may also name a sender that has since left the ring — removed
+   * mid-cycle, or disabled. `indexOf` then returns -1 and the same hash start applies:
+   * with no known predecessor still present, a deterministic spread beats the front.
    */
+  const spreadStart = targetId === null ? 0 : stableIndex(targetId, order.length)
   const lastIndex = lastSenderId === null ? -1 : order.findIndex((m) => m.senderId === lastSenderId)
-  const start = lastIndex === -1 ? 0 : (lastIndex + 1) % order.length
+  const start = lastIndex === -1 ? spreadStart : (lastIndex + 1) % order.length
 
   const blocked: string[] = []
   for (let step = 0; step < order.length; step++) {

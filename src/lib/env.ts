@@ -57,7 +57,13 @@ const schema = z.object({
     }),
 
   DEFAULT_COOLDOWN_DAYS: intish(7, 0, 365),
-  MAX_PER_TARGET_PER_DAY: intish(1, 1, 10),
+  /**
+   * The one volume rule left (2026-08-18, Tabish): messages one account may deliver to
+   * one recipient per IST day. Everything else is unlimited by his instruction.
+   * (Replaces MAX_PER_TARGET_PER_DAY, which counted across all senders — the rule is
+   * per account→recipient pair now, so the old key is ignored if still present.)
+   */
+  MAX_PER_PAIR_PER_DAY: intish(5, 1, 10),
   HOOK_MAX_AGE_HOURS: intish(72, 1, 720),
 
   SEND_JITTER_MIN_SECONDS: intish(45, 0, 3600),

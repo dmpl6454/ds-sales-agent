@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import { evaluatePair, SKIP_REASONS } from '@/outreach/governor'
 import { evaluateResend, RESEND_BLOCKS, OVERRIDABLE_BLOCKS } from '@/outreach/gate'
-import { BRAND_BLOCKS, checkNewBrandTouchCap, checkPersonaDistinct } from '@/outreach/brandGuards'
+import { BRAND_BLOCKS, checkNewBrandTouchCap, checkRecipientIsNotAPerson } from '@/outreach/brandGuards'
 import { decideDispatch, assessBreaker } from '@/outreach/pacing'
 import { FAILURE_CODES } from '@/lib/constants'
 import { asSentence, remedyFor, withoutShellCommand } from '@/app/messages/remedy'
@@ -14,11 +14,15 @@ const ROOT_DIR = resolve(__dirname, '..')
 /**
  * ── THE STOP INVENTORY — the safety net for the dashboard redesign ─────────
  *
- * Every refusal in this system is a SENTENCE ON A SCREEN. There are 11 governor stops, 10
- * gate stops, 2 brand guards, 7 pacing reasons and 8 failure codes, and each one exists
+ * Every refusal in this system is a SENTENCE ON A SCREEN. There are 7 governor stops, 8
+ * gate stops, 2 brand guards, 7 pacing reasons and 10 failure codes, and each one exists
  * because *"nothing happened" with no explanation* is the failure this project keeps
  * rediscovering. Three of those explanations were added or fixed on 2026-08-05 alone, and one
  * of them had never reached a screen at all despite a docblock claiming it did.
+ *
+ * (Counts shrank on 2026-08-18: "Remove all caps" — the cooldown, unanswered-touch limit,
+ * cross-sender recipient spacing, target/sender daily caps and both persona stops went, and
+ * the pair daily cap arrived. The INVENTORY discipline is unchanged.)
  *
  * So before the UI is rearranged, this asserts two things about every stop:
  *
@@ -55,17 +59,14 @@ const NOW = new Date('2026-08-20T12:00:00Z')
 function governorInput(over: Record<string, unknown> = {}) {
   return {
     now: NOW,
-    pair: { cooldownDays: 7, maxUnansweredTouches: 3 },
-    sender: { status: 'ACTIVE', dailyCap: 5 },
+    sender: { status: 'ACTIVE' },
     target: { optedOut: false },
-    lastSentAt: null,
     touchesSoFar: 0,
     targetRepliedAt: null,
     hasPendingAttempt: false,
     unusedCampaignCount: 5,
-    targetSentTodayCount: 0,
-    senderSentTodayCount: 0,
-    maxPerTargetPerDay: 2,
+    pairSentTodayCount: 0,
+    maxPerPairPerDay: 5,
     totalSentEver: 0,
     maxTotalSends: null,
     ...over,
@@ -79,17 +80,12 @@ const GOVERNOR_CASES: Array<[string, Record<string, unknown>]> = [
   // exist — so there is no per-route "off" for the governor to report. Retirement is
   // `target.optedOut`, which is the next case and is checked independently of any pair row.
   [SKIP_REASONS.TARGET_OPTED_OUT, { target: { optedOut: true } }],
-  [SKIP_REASONS.SENDER_NOT_ACTIVE, { sender: { status: 'CHALLENGED', dailyCap: 5 } }],
+  [SKIP_REASONS.SENDER_NOT_ACTIVE, { sender: { status: 'CHALLENGED' } }],
   [SKIP_REASONS.TARGET_REPLIED, { targetRepliedAt: new Date('2026-08-19T12:00:00Z') }],
   [SKIP_REASONS.PENDING_ATTEMPT, { hasPendingAttempt: true }],
-  [SKIP_REASONS.UNANSWERED_LIMIT, { touchesSoFar: 3 }],
-  [SKIP_REASONS.COOLDOWN_ACTIVE, { touchesSoFar: 1, lastSentAt: new Date('2026-08-19T12:00:00Z') }],
-  // The 2026-08-17 duplicate incident: a DIFFERENT page delivered to this recipient half
-  // an hour ago, so this pair — fresh, touchesSoFar 0 — must still wait out the window.
-  [SKIP_REASONS.TARGET_RECENTLY_CONTACTED, { targetLastDeliveredAt: new Date(NOW.getTime() - 30 * 60_000) }],
-  [SKIP_REASONS.NO_NEW_MATERIAL, { touchesSoFar: 1, lastSentAt: new Date('2026-08-01T12:00:00Z'), unusedCampaignCount: 0 }],
-  [SKIP_REASONS.TARGET_DAILY_CAP, { targetSentTodayCount: 2, maxPerTargetPerDay: 2 }],
-  [SKIP_REASONS.SENDER_DAILY_CAP, { senderSentTodayCount: 5 }],
+  [SKIP_REASONS.NO_NEW_MATERIAL, { touchesSoFar: 1, unusedCampaignCount: 0 }],
+  // The one volume rule left (2026-08-18): five per day from one account to one recipient.
+  [SKIP_REASONS.PAIR_DAILY_CAP, { pairSentTodayCount: 5, maxPerPairPerDay: 5 }],
 ]
 
 describe('every governor stop is reachable and explains itself', () => {
@@ -126,15 +122,11 @@ function gateInput(over: Record<string, unknown> = {}) {
     unattended: true,
     senderStatus: 'ACTIVE',
     senderHasSession: true,
-    senderDailyCap: 5,
     targetOptedOut: false,
     targetIsWatchOnly: false,
     targetRepliedAt: null,
-    targetSentTodayCount: 0,
-    senderSentTodayCount: 0,
-    maxPerTargetPerDay: 2,
-    personaSharedWithAnotherSender: false,
-    draftPersonaStale: false,
+    pairSentTodayCount: 0,
+    maxPerPairPerDay: 5,
     ...over,
   } as Parameters<typeof evaluateResend>[0]
 }
@@ -147,12 +139,8 @@ const GATE_CASES: Array<[string, Record<string, unknown>]> = [
   [RESEND_BLOCKS.TARGET_IS_WATCH_ONLY, { targetIsWatchOnly: true }],
   [RESEND_BLOCKS.TARGET_REPLIED, { targetRepliedAt: new Date('2026-08-19T12:00:00Z') }],
   [RESEND_BLOCKS.NO_SESSION, { senderHasSession: false }],
-  [RESEND_BLOCKS.PERSONA_NOT_DISTINCT, { personaSharedWithAnotherSender: true }],
-  [RESEND_BLOCKS.PERSONA_CHANGED_SINCE_DRAFT, { draftPersonaStale: true }],
-  [RESEND_BLOCKS.HOOK_STALE_SINCE_DRAFT, { draftHookStale: true }],
-  [RESEND_BLOCKS.TARGET_RECENTLY_CONTACTED, { targetRecentContact: { fromHandle: 'bollywoodchronicle', hoursAgo: 0.5 } }],
-  [RESEND_BLOCKS.TARGET_DAILY_CAP, { targetSentTodayCount: 2 }],
-  [RESEND_BLOCKS.SENDER_DAILY_CAP, { senderSentTodayCount: 5 }],
+  // The one volume rule left (2026-08-18): five per day from one account to one recipient.
+  [RESEND_BLOCKS.PAIR_DAILY_CAP, { pairSentTodayCount: 5, maxPerPairPerDay: 5 }],
 ]
 
 describe('every gate stop is reachable and explains itself', () => {
@@ -198,8 +186,8 @@ describe('every gate stop is reachable and explains itself', () => {
    * the map is TOTAL over `RESEND_BLOCKS`, which makes adding a stop force the question "and
    * what does a person do about this?" rather than leaving it to be noticed later.
    *
-   * `href: null` is a legitimate answer — a daily cap clears by waiting — so what is checked
-   * is that a DECISION EXISTS, not that a link does.
+   * `href: null` is a legitimate answer — the pair allowance clears by waiting — so what is
+   * checked is that a DECISION EXISTS, not that a link does.
    */
   it('every gate stop has a rendering path and a decided remedy', () => {
     const missing = Object.values(RESEND_BLOCKS).filter((code) => remedyFor(code) === null)
@@ -213,6 +201,13 @@ describe('every gate stop is reachable and explains itself', () => {
     }
   })
 
+  /** The pair cap clears by waiting, so its remedy is deliberately a sentence with no link. */
+  it('the pair daily cap has a decided no-link remedy', () => {
+    const r = remedyFor(RESEND_BLOCKS.PAIR_DAILY_CAP)!
+    expect(r.href).toBeNull()
+    expect(r.label).toBe('The allowance resets at midnight IST.')
+  })
+
   /** Not vacuous: an unknown code must come back with no remedy rather than a wrong one. */
   it('an unrecognised reason gets no link rather than a misleading one', () => {
     expect(remedyFor('something-nobody-has-written-yet')).toBeNull()
@@ -222,14 +217,14 @@ describe('every gate stop is reachable and explains itself', () => {
   /**
    * ── AND THE WHOLE SENTENCE, AS AN OPERATOR WOULD READ IT ──────────────────
    *
-   * Only ONE of these ten is reachable from the live database at a time, so the other
-   * nine can only be read here. That matters: the first version rendered
+   * Only ONE of these is reachable from the live database at a time, so the others
+   * can only be read here. That matters: the first version rendered
    *
    *     This cannot be sent yet. account is not connected Sign this account in
    *
    * — lowercase mid-sentence, no separator before the link — and every assertion in this file
    * was green. It was found by opening the page. This is the version of that reading which
-   * covers the eleven cases a browser cannot show today.
+   * covers the cases a browser cannot show today.
    */
   it.each(GATE_CASES)('%s reads as a finished sentence on the card', (reason, over) => {
     const r = evaluateResend(gateInput(over))
@@ -293,14 +288,12 @@ describe('every gate stop is reachable and explains itself', () => {
       RESEND_BLOCKS.SENDER_NOT_ACTIVE,
       RESEND_BLOCKS.TARGET_OPTED_OUT,
       RESEND_BLOCKS.NO_SESSION,
-      RESEND_BLOCKS.TARGET_DAILY_CAP,
-      RESEND_BLOCKS.SENDER_DAILY_CAP,
-      RESEND_BLOCKS.PERSONA_NOT_DISTINCT,
+      // The last bound on volume: crossing it has no bound at all.
+      RESEND_BLOCKS.PAIR_DAILY_CAP,
       RESEND_BLOCKS.COHORT_NOT_CLEARED,
-      RESEND_BLOCKS.PERSONA_CHANGED_SINCE_DRAFT,
-      // Same family: the message is wrong for its recipient, not merely early.
-      RESEND_BLOCKS.HOOK_STALE_SINCE_DRAFT,
       RESEND_BLOCKS.NOT_WAITING,
+      // WHO the recipient is, not WHEN — a watched competitor is never a prospect.
+      RESEND_BLOCKS.TARGET_IS_WATCH_ONLY,
     ]
     for (const code of absolute) {
       expect(OVERRIDABLE_BLOCKS, `${code} must never be crossable`).not.toContain(code)
@@ -326,37 +319,32 @@ describe('the brand guards explain themselves', () => {
     }
   })
 
-  it('the persona gate', () => {
-    const persona = {
-      personaName: 'Kapil Jain',
-      personaRole: 'Co-founder',
-      personaBrand: 'Bollywood Society',
-      personaPhone: '+91 60000 189766',
-      personaEmail: 'kapil@digitalsukoon.com',
-    }
-    const r = checkPersonaDistinct({
-      persona,
-      otherPersonas: [persona],
-      targetKind: 'CHANNEL',
-      gateChannels: true,
+  /**
+   * The category rule: a "brand" whose Instagram category names a PROFESSION is a person,
+   * and a media-buying pitch to a person is the wrong message. (The persona gate that used
+   * to sit beside this went on 2026-08-18 — nothing persona-shaped renders any more.)
+   */
+  it('the recipient-is-a-person guard', () => {
+    const r = checkRecipientIsNotAPerson({
+      targetKind: 'BRAND',
+      brandCategory: 'Film Director',
+      handle: 'somedirector',
     })
-    expect(r.ok, 'the persona gate did not fire on two identical personas').toBe(false)
+    expect(r.ok, 'the person guard did not fire on a Film Director category').toBe(false)
     if (!r.ok) {
-      expect(r.reason).toBe(BRAND_BLOCKS.PERSONA_NOT_DISTINCT)
-      assertReadable('brand:persona', r.detail, r.reason)
+      expect(r.reason).toBe(BRAND_BLOCKS.RECIPIENT_IS_A_PERSON)
+      assertReadable('brand:person', r.detail, r.reason)
     }
   })
 
-  it('permits a distinct persona', () => {
-    const mine = {
-      personaName: 'A Name',
-      personaRole: 'Founder',
-      personaBrand: 'Brand One',
-      personaPhone: '+91 90000 00001',
-      personaEmail: 'a@example.com',
-    }
-    const other = { ...mine, personaName: 'Another Name', personaEmail: 'b@example.com' }
-    expect(checkPersonaDistinct({ persona: mine, otherPersonas: [other], targetKind: 'BRAND', gateChannels: true }).ok).toBe(true)
+  it('permits a company category', () => {
+    expect(
+      checkRecipientIsNotAPerson({
+        targetKind: 'BRAND',
+        brandCategory: 'Grocery & Convenience Stores',
+        handle: 'royalcanin.india',
+      }).ok,
+    ).toBe(true)
   })
 })
 
@@ -470,6 +458,9 @@ describe('every failure code is documented for a person', () => {
  * is not in the set at all, which would be silently absent from the page. So this drives
  * every warning to fire and asserts each reason is a declared one.
  *
+ * (2026-08-18: COOLDOWN_ACTIVE and UNANSWERED_TOUCH_LIMIT left the set with the caps they
+ * described — four rules remain crossable.)
+ *
  * Mutation-tested: adding a warning with a fresh literal reason fails here, and removing an
  * entry from `CROSSABLE_RULES` fails here too.
  */
@@ -481,23 +472,23 @@ describe('every rule a person may cross is declared, and the page can name it', 
     now: NOW,
     senderStatus: 'ACTIVE',
     senderHasSession: true,
-    senderPersonaProblems: [],
     targetOptedOut: false,
-    targetSentTodayCount: 0,
-    senderSentTodayCount: 0,
-    senderDailyCap: 5,
-    maxPerTargetPerDay: 2,
+    pairSentTodayCount: 0,
+    maxPerPairPerDay: 5,
     isSelfSend: false,
-    cooldownDays: 7,
-    lastSentAt: new Date(NOW.getTime() - 86_400_000), // yesterday: inside the 7-day spacing
     touchesSoFar: 3,
-    maxUnansweredTouches: 3,
     targetRepliedAt: new Date(NOW.getTime() - 3_600_000),
     pendingAttemptCount: 1,
     unusedCampaignCount: 0,
     totalInFlight: 6,
     maxTotalSends: 6,
   }).warnings
+
+  it('the declared set is exactly the four surviving rules', () => {
+    expect([...DECLARED].sort()).toEqual(
+      ['target-replied', 'no-new-material', 'pending-attempt-exists', 'lifetime-send-cap-reached'].sort(),
+    )
+  })
 
   it('produces every declared rule, so none of them is unreachable', () => {
     const seen = new Set(allWarnings.map((w) => w.reason))

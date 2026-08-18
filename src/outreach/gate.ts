@@ -2,12 +2,9 @@ import { prisma } from '@/lib/db'
 import { istDayStart } from '@/lib/time'
 import { getSettings } from '@/lib/settings'
 import { mayArmAccount } from './cohorts'
-import { checkPersonaDistinct } from './brandGuards'
-import { signatureBlock } from './render'
 import { replyHaltFloor } from './replyHalt'
 import { profileStatus } from './browser/profile'
 import { sessionUsable } from './sessionHealth'
-import { assertedRecency, hookRecencyStale } from './brandPitch'
 import { DELIVERED_STATUSES } from '@/lib/constants'
 
 /**
@@ -61,7 +58,6 @@ export interface ResendInput {
   senderCohortCleared?: boolean
   senderCohortDetail?: string
   senderHasSession: boolean
-  senderDailyCap: number
 
   targetOptedOut: boolean
   /**
@@ -88,70 +84,15 @@ export interface ResendInput {
    */
   targetRepliedAt: Date | null
 
-  targetSentTodayCount: number
-  senderSentTodayCount: number
-  maxPerTargetPerDay: number
-
   /**
-   * The most recent DELIVERY to this recipient from ANY of our pages, when it falls
-   * inside the spacing window — null outside it, so the pure half needs no clock.
-   * Sender-blind on purpose: the incident this guards against is two different pages
-   * in one inbox, which no per-pair fact can see.
+   * DELIVERED messages from THIS account to THIS recipient today (IST) — the one volume
+   * rule left standing after the 2026-08-18 cap removal, chosen by Tabish: at most
+   * `maxPerPairPerDay` (5) from one account to one recipient in a day, everything else
+   * unbounded. Counted per PAIR, not per target: rotation may point several of our pages
+   * at one recipient, and each page carries its own allowance of five.
    */
-  targetRecentContact: { fromHandle: string; hoursAgo: number } | null
-
-  /**
-   * Does this account share its persona with another sending account?
-   *
-   * Checked at DELIVERY as well as at drafting, and that is the point of putting it
-   * here. The planner refuses to CREATE a message from a shared persona, but a draft
-   * written before the gate existed — or before decision 6 extended it to channels —
-   * is already sitting in READY with a Send button beside it. "Nothing sends until each
-   * account has its own persona" has to be true of those too, or the brake only applies
-   * to work that has not happened yet.
-   *
-   * NOT overridable, and deliberately absent from OVERRIDABLE_BLOCKS. Every stop a human
-   * may cross is about TIMING — too soon, nothing new to say, they already replied. This
-   * one is about the message being wrong for its recipient, and "I know something the
-   * agent does not" is not an argument that applies to a signature naming the wrong
-   * company. The fix is to give the account its own persona, which takes a minute.
-   */
-  personaSharedWithAnotherSender: boolean
-
-  /**
-   * The DRAFT no longer carries the identity this account now uses.
-   *
-   * OBSERVED IN PRODUCTION 2026-08-05, and it is this project's signature failure in a new
-   * place. The sequence, from the audit log:
-   *
-   *   15:10:54  a draft is prepared — the body is rendered with the persona AS IT IS
-   *   15:12:23  the operator gives the account its own identity
-   *   15:12:28  Send is pressed. The persona gate CHECKS THE ACCOUNT and passes, because
-   *             the account's identity is now distinct
-   *   15:13:15  delivered — still saying "I'm Kapil Jain, Co-founder of Bollywood Society"
-   *
-   * The gate was satisfied by a fact that had nothing to do with what was actually sent. The
-   * whole point of decision 3b is that a recipient must not receive a pitch signed by another
-   * company, and a message can now do exactly that WHILE the guard reports everything is fine.
-   *
-   * It is not hypothetical: at the moment this was found, all three waiting drafts said
-   * "Co-founder of Bollywood Society" while two of those accounts had become Mad About
-   * Marketing and Bollywood Chronicle.
-   *
-   * Refusing rather than re-rendering is deliberate. The stored body is the single source of
-   * truth downstream — the composer read-back compares against exactly it, and an operator may
-   * have edited it by hand. Silently rewriting someone's words at the moment of sending is a
-   * worse cure than a refusal that says what to do.
-   */
-  draftPersonaStale: boolean
-  /**
-   * The dated claim in the stored body no longer matches the campaign's age.
-   *
-   * A body is rendered once and frozen; `describeRecency` bands `days <= 10` as "last week".
-   * MEASURED 2026-08-13: a draft written on 11 August about a 9-day-old campaign still says
-   * "last week" about a placement now 11 days old, and is still queued.
-   */
-  draftHookStale: boolean
+  pairSentTodayCount: number
+  maxPerPairPerDay: number
 
   /**
    * Blocks a present human has explicitly acknowledged, from the on-demand dialog.
@@ -174,34 +115,22 @@ export const RESEND_BLOCKS = {
   TARGET_REPLIED: 'target-replied',
   NO_SESSION: 'no-session',
   /**
-   * ── ONE RECIPIENT, ONE CONVERSATION AT A TIME (2026-08-17) ─────────────────────────
+   * ── THE ONE VOLUME RULE LEFT (2026-08-18, Tabish's instruction) ─────────────────────
    *
-   * MEASURED the evening rotation went live with three recorded senders: @absolutejk
-   * heard from @bollywoodchronicle at 17:44 and from @bollywoodsocietyy at 18:13 —
-   * twenty-nine minutes apart, near-identical template bodies, different page names.
-   * Tabish spotted it from the dashboard before any code did.
+   * *"there must be only a limit of say 5 messages per target per same account in a day
+   * … rest unlimited. Remove all caps."* The cross-sender per-recipient cap, the
+   * per-sender daily cap, the 7-day sender-blind spacing window, the per-pair cooldown
+   * and the unanswered-touch limit were all removed the same day, on that instruction —
+   * the risk (hundreds of near-identical cold DMs a day is the documented ban pattern)
+   * was stated to him plainly and the call recorded as his.
    *
-   * Every spacing rule was PER PAIR — the 7-day cooldown, the first-touch exemption
-   * from new-material — so a second page writing to a fresh recipient was a "first
-   * touch" with no history, and the only cross-sender rule (2/recipient/day) PERMITS
-   * exactly one duplicate a day. Rotation then deliberately elects the NEXT page for
-   * the next touch. Nothing anywhere asked "has anyone written to this person lately?"
-   *
-   * Now something does, at delivery, where it cannot be drafted around: a recipient
-   * with a DELIVERED message from ANY of our pages inside the spacing window refuses
-   * every page. A blocked sender never locks a recipient — nothing was delivered — so
-   * the fallback Tabish described ("another page only if the first was blocked") still
-   * works by construction. Absolute like the daily caps: recipient protection is not a
-   * matter of operator judgement, and two of our pages in one inbox in one afternoon
-   * is the cross-account fingerprint half this design exists to avoid.
+   * What survives is exactly his rule: one account may deliver at most five messages to
+   * one recipient in one IST day. The reply halt (now two days), opt-out, watch-only,
+   * checkpoint handling and the circuit breaker are untouched — those are not volume
+   * caps, they are conversation and account safety.
    */
-  TARGET_RECENTLY_CONTACTED: 'target-recently-contacted',
-  TARGET_DAILY_CAP: 'target-daily-cap',
-  SENDER_DAILY_CAP: 'sender-daily-cap',
-  PERSONA_NOT_DISTINCT: 'persona-not-distinct',
+  PAIR_DAILY_CAP: 'pair-daily-cap',
   COHORT_NOT_CLEARED: 'cohort-not-cleared',
-  PERSONA_CHANGED_SINCE_DRAFT: 'persona-changed-since-draft',
-  HOOK_STALE_SINCE_DRAFT: 'hook-stale-since-draft',
 } as const
 
 /**
@@ -221,9 +150,8 @@ export const RESEND_BLOCKS = {
  *   TARGET_OPTED_OUT — "never contact again". Retirement is the one promise the UI
  *     makes that must survive every other feature.
  *   NO_SESSION — not a policy, a fact. There is no logged-in browser to type into.
- *   TARGET/SENDER_DAILY_CAP — the last bound on volume. Crossing cooldown sends one
- *     extra message to one person; crossing a daily cap has no bound at all, which is
- *     the difference between a deliberate follow-up and a stuck button.
+ *   PAIR_DAILY_CAP — the last bound on volume. Crossing it has no bound at all, which
+ *     is the difference between a deliberate follow-up and a stuck button.
  *   NOT_WAITING — idempotency, not policy. Overriding it would mean sending a
  *     message that is already gone.
  *
@@ -345,7 +273,7 @@ export function evaluateResend(input: ResendInput): ResendResult {
     return {
       ok: false,
       reason: RESEND_BLOCKS.TARGET_REPLIED,
-      detail: `they replied at ${input.targetRepliedAt.toISOString()} — messaging them pauses for a day, then resumes on its own`,
+      detail: `they replied at ${input.targetRepliedAt.toISOString()} — messaging them pauses for two days, then resumes on its own`,
     }
   }
 
@@ -353,76 +281,11 @@ export function evaluateResend(input: ResendInput): ResendResult {
     return { ok: false, reason: RESEND_BLOCKS.NO_SESSION, detail: 'account is not connected' }
   }
 
-  /**
-   * Decision 6. Absolute — this one is not in OVERRIDABLE_BLOCKS and must not be.
-   *
-   * 63 pages emitting one byte-identical contact block is the cross-account fingerprint
-   * decision 3 exists to prevent, and rotation sharpens it: a recipient hearing from a
-   * different page each time, with the same name and phone number underneath every one,
-   * is being told the pages are one operation.
-   */
-  if (input.personaSharedWithAnotherSender) {
+  if (input.pairSentTodayCount >= input.maxPerPairPerDay) {
     return {
       ok: false,
-      reason: RESEND_BLOCKS.PERSONA_NOT_DISTINCT,
-      detail: 'this account shares its persona with another sending account — give it its own first',
-    }
-  }
-
-  /**
-   * NOT overridable, for the same reason as the distinctness check beside it: this is about
-   * the message being wrong for its recipient, not about timing. "I know something the agent
-   * does not" is not an argument that applies to a signature naming the wrong company.
-   */
-  if (input.draftPersonaStale) {
-    return {
-      ok: false,
-      reason: RESEND_BLOCKS.PERSONA_CHANGED_SINCE_DRAFT,
-      detail:
-        'this account was given a new identity after this message was written, so the message still signs off as the old one — discard it and write a new one',
-    }
-  }
-
-  /**
-   * NOT overridable, and it sits directly after the persona staleness stop because it is
-   * the same shape of problem: the body was true when it was written and is not true now.
-   *
-   * "I know something the agent does not" is an argument about TIMING. It is not an argument
-   * for telling a company we saw their placement "last week" when it was three weeks ago —
-   * to the one team certain to know exactly when they ran it.
-   */
-  if (input.draftHookStale) {
-    return {
-      ok: false,
-      reason: RESEND_BLOCKS.HOOK_STALE_SINCE_DRAFT,
-      detail:
-        'this message says when we saw their placement, and it has been waiting long enough that the timing is no longer right — discard it and write a new one',
-    }
-  }
-
-  if (input.targetRecentContact != null) {
-    const { fromHandle, hoursAgo } = input.targetRecentContact
-    const when = hoursAgo < 24 ? `${Math.max(1, Math.round(hoursAgo))}h ago` : `${Math.round(hoursAgo / 24)} day(s) ago`
-    return {
-      ok: false,
-      reason: RESEND_BLOCKS.TARGET_RECENTLY_CONTACTED,
-      detail: `this recipient heard from @${fromHandle} ${when} — spacing applies across every page, not per account`,
-    }
-  }
-
-  if (input.targetSentTodayCount >= input.maxPerTargetPerDay) {
-    return {
-      ok: false,
-      reason: RESEND_BLOCKS.TARGET_DAILY_CAP,
-      detail: `channel already received ${input.targetSentTodayCount} today`,
-    }
-  }
-
-  if (input.senderSentTodayCount >= input.senderDailyCap) {
-    return {
-      ok: false,
-      reason: RESEND_BLOCKS.SENDER_DAILY_CAP,
-      detail: `account already sent ${input.senderSentTodayCount} today`,
+      reason: RESEND_BLOCKS.PAIR_DAILY_CAP,
+      detail: `this account already sent this recipient ${input.pairSentTodayCount} message(s) today — the limit is ${input.maxPerPairPerDay} per day for one account to one recipient`,
     }
   }
 
@@ -439,7 +302,7 @@ export interface ResendAttempt {
   pair: {
     senderId: string
     targetId: string
-    sender: { handle: string; status: string; dailyCap: number }
+    sender: { handle: string; status: string }
     target: { optedOut: boolean; role: string; kind?: string }
   }
 }
@@ -458,14 +321,13 @@ export async function recheckBeforeSend(
   const settings = await getSettings()
   const dayStart = istDayStart()
   const { sender, target, senderId, targetId } = attempt.pair
-  const targetKindOf = target.kind ?? 'CHANNEL'
 
-  const [replied, targetToday, targetRecent, senderToday, personaShared, ladder, draft, senderRow] = await Promise.all([
+  const [replied, pairToday, ladder, senderRow] = await Promise.all([
     prisma.outreachAttempt.findFirst({
       /**
        * `gte: replyHaltFloor(...)` rather than `not: null` since 2026-08-07: a reply
-       * halts its target for `replyResumeHours` (default one day) and then releases
-       * ITSELF — Tabish removed the manual-release requirement, with the risk stated.
+       * halts its target for `replyResumeHours` (two days since 2026-08-18, Tabish's
+       * "cooldown if conversation is ongoing" number) and then releases ITSELF.
        * "Handled" survives as an early release. See src/outreach/replyHalt.ts.
        */
       where: {
@@ -478,54 +340,10 @@ export async function recheckBeforeSend(
     }),
     // DELIVERED_STATUSES, matching plan.ts — a bare 'SENT' filter lets a reply
     // *lower* a daily count and so buy an extra send. See the note there.
+    // Counted per PAIR (this sender to this target): the one volume rule left.
     prisma.outreachAttempt.count({
-      where: { pair: { targetId }, status: { in: [...DELIVERED_STATUSES] }, sentAt: { gte: dayStart } },
+      where: { pair: { senderId, targetId }, status: { in: [...DELIVERED_STATUSES] }, sentAt: { gte: dayStart } },
     }),
-    /**
-     * The newest delivery to this RECIPIENT from any page, inside the spacing window.
-     * Sender-blind, unlike every other spacing fact here — see TARGET_RECENTLY_CONTACTED.
-     */
-    prisma.outreachAttempt.findFirst({
-      where: {
-        pair: { targetId },
-        status: { in: [...DELIVERED_STATUSES] },
-        sentAt: { gte: new Date(Date.now() - settings.defaultCooldownDays * 24 * 60 * 60 * 1000) },
-      },
-      orderBy: { sentAt: 'desc' },
-      select: { sentAt: true, pair: { select: { sender: { select: { handle: true } } } } },
-    }),
-    prisma.outreachAttempt.count({
-      where: { pair: { senderId }, status: { in: [...DELIVERED_STATUSES] }, sentAt: { gte: dayStart } },
-    }),
-    /**
-     * Is this account's persona shared with another sender?
-     *
-     * Computed by the SAME function the planner and the dashboard warning use. A page
-     * that worked this out its own way could disagree with the rule actually blocking
-     * the send, which is the failure `checkPersonaDistinct` was extracted to prevent.
-     */
-    (async () => {
-      const settings2 = await getSettings()
-      const all = await prisma.senderAccount.findMany({
-        select: {
-          id: true,
-          personaName: true,
-          personaRole: true,
-          personaBrand: true,
-          personaPhone: true,
-          personaEmail: true,
-        },
-      })
-      const me = all.find((s) => s.id === senderId)
-      if (!me) return false
-      const verdict = checkPersonaDistinct({
-        persona: me,
-        otherPersonas: all.filter((s) => s.id !== senderId),
-        targetKind: targetKindOf,
-        gateChannels: settings2.personaGateChannels,
-      })
-      return !verdict.ok
-    })(),
     /**
      * The cohort ladder, asked HERE rather than trusted from `autoSendEnabled`.
      *
@@ -533,26 +351,6 @@ export async function recheckBeforeSend(
      * Skipped entirely when attended, so a dashboard click costs no extra queries.
      */
     opts.unattended ? mayArmAccount(sender.handle) : Promise.resolve({ ok: true as const, reason: 'baseline' as const }),
-    /**
-     * The body as WRITTEN, plus the persona as it is NOW. Queried here rather than added to
-     * `ResendAttempt` so no caller has to be taught about it — and the answer must come from
-     * the live row, since the whole failure is that the two drifted apart.
-     */
-    prisma.outreachAttempt.findUnique({
-      where: { id: attempt.id },
-      select: {
-        renderedBody: true,
-        sender: {
-          select: { personaName: true, personaRole: true, personaBrand: true, personaPhone: true, personaEmail: true },
-        },
-        /**
-         * The campaign a channel follow-up's dated claim is about. A BRAND first touch gets
-         * its date from somewhere else entirely — see `hookCampaignPostedAt` below.
-         */
-        campaign: { select: { postedAt: true } },
-        target: { select: { discoveredFromCampaignId: true } },
-      },
-    }),
     /**
      * §3.5: has anything PROVED the on-disk session dead? Queried live rather than added
      * to `ResendAttempt`, so no caller has to be taught about it — and so an account
@@ -564,26 +362,8 @@ export async function recheckBeforeSend(
     }),
   ])
 
-  /**
-   * Computed with the SAME function that WROTE those lines, never by comparing fields. A page
-   * or a gate working this out its own way is how the two disagree — the mistake
-   * `checkPersonaDistinct` was extracted to prevent.
-   *
-   * Since 2026-08-07 the identity is the signature block alone (channel name, phone,
-   * email) — the "I'm Kapil Jain…" intro is gone from new messages. Drafts written under
-   * the OLD shape pass this probe when their contact block still matches, deliberately:
-   * their signature read "Co-founder, Bollywood Society ⏎ phone ⏎ email", which contains
-   * the new block as a substring, and the stop exists to catch a message signed as the
-   * WRONG identity, not one signed in last month's format.
-   */
-  const draftPersonaStale = draft !== null && !draft.renderedBody.includes(signatureBlock(draft.sender))
-
-  const draftHookStale = await isDraftHookStale(draft)
-
   return evaluateResend({
     attemptStatus: attempt.status,
-    draftPersonaStale,
-    draftHookStale,
     unattended: opts.unattended,
     senderStatus: sender.status,
     senderCohortCleared: ladder.ok,
@@ -599,70 +379,11 @@ export async function recheckBeforeSend(
       hasSessionOnDisk: profileStatus(sender.handle).hasSession,
       sessionInvalidAt: senderRow?.sessionInvalidAt ?? null,
     }),
-    senderDailyCap: sender.dailyCap,
     targetOptedOut: target.optedOut,
     targetIsWatchOnly: target.role === 'WATCH',
     targetRepliedAt: replied?.repliedAt ?? null,
-    targetSentTodayCount: targetToday,
-    targetRecentContact:
-      targetRecent?.sentAt != null
-        ? {
-            fromHandle: targetRecent.pair.sender.handle,
-            hoursAgo: (Date.now() - targetRecent.sentAt.getTime()) / 3_600_000,
-          }
-        : null,
-    senderSentTodayCount: senderToday,
-    maxPerTargetPerDay: settings.maxPerTargetPerDay,
-    personaSharedWithAnotherSender: personaShared,
+    pairSentTodayCount: pairToday,
+    maxPerPairPerDay: settings.maxPerPairPerDay,
     overrides: opts.overrides,
   })
-}
-
-/**
- * HAS THE DATED CLAIM IN THIS DRAFT DECAYED? Read out of the BODY, not recomputed.
- *
- * `hookRecencyStale` finds the band the stored text asserts and compares it against the band
- * that campaign's age would produce NOW. Reading the body is what makes this correct for a
- * draft an operator edited by hand: the stored bytes are what the recipient receives and what
- * the send guards compare against.
- *
- * ── THE DATE COMES FROM TWO DIFFERENT PLACES ──────────────────────────────
- *
- * A channel follow-up references the attempt's OWN campaign. A brand's FIRST TOUCH is built
- * from `TargetAccount.discoveredFromCampaignId` — the post that made them a prospect — and
- * MEASURED on the live drafts, every brand draft has `campaignId: null` while still asserting
- * "last week". Reading only `attempt.campaign` would have left this stop unreachable on
- * exactly the messages that have it wrong.
- *
- * ── THE QUERY IS ONLY PAID FOR WHEN THERE IS A CLAIM ──────────────────────
- *
- * `assertedRecency` is asked first, on a string already in hand. A body that names no date
- * cannot be stale, and that is most of them — the degraded opening claims no placement at
- * all — so the ordinary path adds no round trip to a gate the dashboard calls per draft.
- */
-async function isDraftHookStale(
-  draft: {
-    renderedBody: string
-    campaign: { postedAt: Date } | null
-    target: { discoveredFromCampaignId: string | null }
-  } | null,
-): Promise<boolean> {
-  if (draft === null) return false
-  if (assertedRecency(draft.renderedBody) === null) return false
-
-  let postedAt: Date | null = draft.campaign?.postedAt ?? null
-  if (postedAt === null && draft.target.discoveredFromCampaignId !== null) {
-    const discovered = await prisma.detectedCampaign.findUnique({
-      where: { id: draft.target.discoveredFromCampaignId },
-      select: { postedAt: true },
-    })
-    postedAt = discovered?.postedAt ?? null
-  }
-
-  /**
-   * A claim we can no longer date is STALE, not safe. The body says "last week" and we have
-   * lost the post it referred to — that is precisely the state in which the sentence cannot
-   * be stood behind. Absence of data must not harden into permission.
-   */
-  return hookRecencyStale({ body: draft.renderedBody, postedAt, now: new Date() })
 }

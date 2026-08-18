@@ -286,10 +286,8 @@ export async function deliverWaiting(opts: DeliverOptions = {}): Promise<Deliver
      */
     const claim = await claimForAttempt({
       attemptId: attempt.id,
-      targetId: attempt.targetId,
-      senderId: attempt.senderId,
-      maxPerTargetPerDay: settings.maxPerTargetPerDay,
-      senderDailyCap: sender.dailyCap,
+      pairId: attempt.pairId,
+      maxPerPairPerDay: settings.maxPerPairPerDay,
       fleetMaxPerHour: settings.fleetMaxPerHour,
       fleetMaxPerDay: settings.fleetMaxPerDay,
       attended: false,

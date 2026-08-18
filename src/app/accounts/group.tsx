@@ -2,7 +2,7 @@
 
 import { useState } from 'react'
 import { useRouter } from 'next/navigation'
-import { clearChallenge, setPersona } from '../actions'
+import { clearChallenge } from '../actions'
 import { useConnect } from './use-connect'
 import type { AccountGroup, AccountRow } from '../view-model/accounts-page'
 
@@ -14,7 +14,7 @@ import type { AccountGroup, AccountRow } from '../view-model/accounts-page'
  * equally visible is a list where nothing is.
  */
 export function AccountGroupView({ group }: { group: AccountGroup }) {
-  const needsAttention = group.key === 'broken' || group.key === 'needs-persona' || group.key === 'needs-login'
+  const needsAttention = group.key === 'broken' || group.key === 'needs-login'
   const [open, setOpen] = useState(needsAttention)
 
   return (
@@ -37,7 +37,6 @@ export function AccountGroupView({ group }: { group: AccountGroup }) {
 
 function AccountRowView({ row }: { row: AccountRow }) {
   const router = useRouter()
-  const [editing, setEditing] = useState(false)
   const [busyClear, setBusyClear] = useState(false)
   const [message, setMessage] = useState<string | null>(null)
   /**
@@ -54,10 +53,6 @@ function AccountRowView({ row }: { row: AccountRow }) {
           <h3>
             @{row.handle} <span className="account-name">{row.name}</span>
           </h3>
-          {/* The signature every message from this account carries: page name + contacts. */}
-          <p className="account-persona">
-            {row.persona.brand} · {row.persona.phone} · {row.persona.email}
-          </p>
         </div>
         <div className="account-figures">
           <span title="Delivered in the last 7 days">{row.sentThisWeek} this week</span>
@@ -131,10 +126,6 @@ function AccountRowView({ row }: { row: AccountRow }) {
               : 'Needs a one-time sign-in before it can send.'}
           </span>
         )}
-
-        <button onClick={() => setEditing(!editing)}>
-          {editing ? 'Close' : row.personaSharedWithAnother ? 'Give it its own signature' : 'Edit signature'}
-        </button>
       </div>
 
       {/* Outside the editor, so the success message is not unmounted by the save. */}
@@ -143,61 +134,7 @@ function AccountRowView({ row }: { row: AccountRow }) {
           {connect.detail ?? message}
         </p>
       )}
-
-      {editing && <PersonaEditor row={row} onSaved={(m) => setMessage(m)} />}
     </article>
   )
 }
 
-/**
- * Editing how an account signs off: the page name and its contact details — nothing
- * else, since 2026-08-07. Distinctness is deliberately NOT enforced on SAVE, only on
- * send, so accounts can be fixed one at a time.
- */
-function PersonaEditor({ row, onSaved }: { row: AccountRow; onSaved: (m: string) => void }) {
-  const [brand, setBrand] = useState(row.persona.brand)
-  const [phone, setPhone] = useState(row.persona.phone)
-  const [email, setEmail] = useState(row.persona.email)
-  const [saving, setSaving] = useState(false)
-
-  return (
-    <div className="persona-editor">
-      <p className="persona-preview-label">Every message from @{row.handle} signs off as:</p>
-      <pre className="evidence persona-preview">{`${brand}\n${phone}\n${email}`}</pre>
-      <div className="persona-fields">
-        <label>
-          Page name<input value={brand} onChange={(e) => setBrand(e.target.value)} />
-        </label>
-        <label>
-          Phone<input value={phone} onChange={(e) => setPhone(e.target.value)} />
-        </label>
-        <label>
-          Email<input value={email} onChange={(e) => setEmail(e.target.value)} />
-        </label>
-      </div>
-      <button
-        disabled={saving}
-        onClick={async () => {
-          setSaving(true)
-          /**
-           * Name and role still exist as columns and are passed through unchanged — they
-           * stopped rendering in messages on 2026-08-07, so the editor no longer offers
-           * them. Dropping them from the ACTION as well would be a schema decision, not a
-           * UI one.
-           */
-          const r = await setPersona(row.handle, {
-            name: row.persona.name,
-            role: row.persona.role,
-            brand,
-            phone,
-            email,
-          })
-          onSaved(r.message)
-          setSaving(false)
-        }}
-      >
-        {saving ? 'Saving…' : 'Save'}
-      </button>
-    </div>
-  )
-}

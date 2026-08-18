@@ -16,9 +16,16 @@ import { join } from 'node:path'
  * to catch — the bug was found by running the real Prisma client, not by the unit test.
  *
  * So this points the real client at a real (temporary) SQLite file and calls the real
- * exported function. What is under test is the ORDER of the four claims and the
+ * exported function. What is under test is the ORDER of the three claims and the
  * all-or-nothing release, and a mirror of that logic would agree with itself no matter
  * which way round it had the buckets.
+ *
+ * ── 2026-08-18: THE CLAIM IS PER PAIR NOW ─────────────────────────────────
+ *
+ * The per-target and per-sender daily claims went with the caps they enforced ("Remove
+ * all caps", Tabish). The one volume rule left is per PAIR — at most `maxPerPairPerDay`
+ * from one account to one recipient per IST day — so the atomic claim is per pair too:
+ * pair first, then the fleet day, then the fleet hour.
  *
  * DATABASE_URL is set before any import that reads it. `src/lib/env.ts` parses at module
  * scope and `dotenv` does not overwrite variables already present, so this wins.
@@ -42,6 +49,31 @@ bootstrap.exec(`
     ON "DailyReservation"("day", "scope", "subjectId", "seq");
   CREATE INDEX "DailyReservation_day_scope_subjectId_idx"
     ON "DailyReservation"("day", "scope", "subjectId");
+
+  CREATE TABLE "OutreachAttempt" (
+    "id" TEXT NOT NULL PRIMARY KEY,
+    "pairId" TEXT NOT NULL,
+    "senderId" TEXT NOT NULL,
+    "targetId" TEXT NOT NULL,
+    "campaignId" TEXT,
+    "variantId" TEXT NOT NULL,
+    "touchNumber" INTEGER NOT NULL,
+    "hookLine" TEXT,
+    "renderedBody" TEXT NOT NULL,
+    "status" TEXT NOT NULL DEFAULT 'QUEUED',
+    "queuedAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "sentAt" DATETIME,
+    "sentBy" TEXT,
+    "threadUrl" TEXT,
+    "error" TEXT,
+    "attempts" INTEGER NOT NULL DEFAULT 0,
+    "failureCode" TEXT,
+    "repliedAt" DATETIME,
+    "replyText" TEXT,
+    "replyCheckedAt" DATETIME,
+    "replyHandledAt" DATETIME,
+    "replyHandledBy" TEXT
+  );
 `)
 bootstrap.close()
 
@@ -65,6 +97,7 @@ async function rowsFor(scope: string, subjectId: string): Promise<number> {
 
 beforeEach(async () => {
   await prisma.dailyReservation.deleteMany({})
+  await prisma.outreachAttempt.deleteMany({})
 })
 
 afterAll(async () => {
@@ -73,10 +106,8 @@ afterAll(async () => {
 })
 
 const base = {
-  targetId: 'targ_viralbhayani',
-  senderId: 'send_alpha',
-  maxPerTargetPerDay: 99,
-  senderDailyCap: 99,
+  pairId: 'pair_alpha_to_viral',
+  maxPerPairPerDay: 99,
   now: NOW,
 }
 
@@ -143,10 +174,12 @@ describe('the default is no fleet ceiling at all', () => {
     await claimForAttempt({
       ...base,
       attemptId: 'a1',
+      maxPerPairPerDay: Number.POSITIVE_INFINITY,
       fleetMaxPerHour: Number.POSITIVE_INFINITY,
       fleetMaxPerDay: Number.POSITIVE_INFINITY,
     })
     expect(await rowsFor('fleet', FLEET_DAY_SUBJECT)).toBe(0)
+    expect(await rowsFor('pair', base.pairId)).toBe(0)
   })
 })
 
@@ -154,30 +187,28 @@ describe('all-or-nothing: a refused claim leaves NOTHING behind', () => {
   /**
    * THE PROPERTY THAT MATTERS MOST HERE.
    *
-   * The target's allowance is claimed first and the fleet's last. If a later bucket
-   * refuses and the earlier ones are not given back, the recipient's daily allowance is
+   * The pair's allowance is claimed first and the fleet's last. If a later bucket
+   * refuses and the earlier one is not given back, the pair's daily allowance is
    * consumed by a message nobody sent — a cap on messages RECEIVED quietly becomes a cap
-   * on ATTEMPTS MADE, and a paced fleet would lock every recipient out by lunchtime. That
-   * failure is invisible: everything looks like the caps working.
+   * on ATTEMPTS MADE, and a paced fleet would lock every conversation out by lunchtime.
+   * That failure is invisible: everything looks like the cap working.
    */
-  it('gives the target and sender slots back when the fleet hour is spent', async () => {
+  it('gives the pair slot back when the fleet hour is spent', async () => {
     await claimForAttempt({ ...base, attemptId: 'a1', fleetMaxPerHour: 1 })
-    const before = await rowsFor('target', base.targetId)
+    const before = await rowsFor('pair', base.pairId)
 
     const refused = await claimForAttempt({ ...base, attemptId: 'a2', fleetMaxPerHour: 1 })
     expect(refused.ok).toBe(false)
 
-    // Still exactly one target claim — the refused attempt consumed none of it.
-    expect(await rowsFor('target', base.targetId)).toBe(before)
-    expect(await rowsFor('sender', base.senderId)).toBe(1)
+    // Still exactly one pair claim — the refused attempt consumed none of it.
+    expect(await rowsFor('pair', base.pairId)).toBe(before)
   })
 
   it('gives everything back when the fleet DAY cap is spent', async () => {
     await claimForAttempt({ ...base, attemptId: 'a1', fleetMaxPerDay: 1 })
     const refused = await claimForAttempt({ ...base, attemptId: 'a2', fleetMaxPerDay: 1 })
     expect(refused.ok).toBe(false)
-    expect(await rowsFor('target', base.targetId)).toBe(1)
-    expect(await rowsFor('sender', base.senderId)).toBe(1)
+    expect(await rowsFor('pair', base.pairId)).toBe(1)
     expect(await rowsFor('fleet', FLEET_DAY_SUBJECT)).toBe(1)
   })
 
@@ -189,11 +220,11 @@ describe('all-or-nothing: a refused claim leaves NOTHING behind', () => {
     expect(refused.reason).toBe('fleet-daily-cap')
   })
 
-  it('does not consume a fleet slot when the TARGET cap refuses first', async () => {
-    await claimForAttempt({ ...base, attemptId: 'a1', maxPerTargetPerDay: 1, fleetMaxPerHour: 5 })
-    const refused = await claimForAttempt({ ...base, attemptId: 'a2', maxPerTargetPerDay: 1, fleetMaxPerHour: 5 })
+  it('does not consume a fleet slot when the PAIR cap refuses first', async () => {
+    await claimForAttempt({ ...base, attemptId: 'a1', maxPerPairPerDay: 1, fleetMaxPerHour: 5 })
+    const refused = await claimForAttempt({ ...base, attemptId: 'a2', maxPerPairPerDay: 1, fleetMaxPerHour: 5 })
     if (refused.ok) throw new Error('expected a refusal')
-    expect(refused.reason).toBe('target-daily-cap')
+    expect(refused.reason).toBe('pair-daily-cap')
     // One send happened, so exactly one hour slot is used — not two.
     expect(await rowsFor('fleet', fleetHourSubject(NOW))).toBe(1)
   })
@@ -214,34 +245,69 @@ describe('a retry reuses its own reservations', () => {
     expect(again.ok).toBe(true)
 
     const grouped = await counts()
+    expect(grouped.length).toBeGreaterThan(0)
     for (const g of grouped) {
       expect(g._count._all, `${g.scope}/${g.subjectId} should hold one row`).toBe(1)
     }
   })
 })
 
-describe('fleetUsage reports the same rows the claim writes', () => {
+describe('fleetUsage counts what was actually DELIVERED', () => {
   /**
-   * Read back from the reservation table, never recounted from `OutreachAttempt`. A limit
-   * reported by a different rule than the one enforcing it reads as headroom — this project
-   * shipped exactly that with `MAX_TOTAL_SENDS` and two days passed with nothing queued and
-   * no reason shown anywhere.
+   * Counted from `OutreachAttempt` since 2026-08-18, not from reservation rows. With the
+   * fleet buckets unlimited by default, an unlimited cap writes NO bookkeeping row — by
+   * design — so a count of reservation rows would read 0 forever while messages went out:
+   * a number that quietly stops meaning what its label says, which is the exact
+   * `MAX_TOTAL_SENDS` failure (a limit reported by a different rule than the one
+   * enforcing it reads as headroom).
    */
-  it('counts the hour and the day separately', async () => {
-    await claimForAttempt({ ...base, attemptId: 'a1', fleetMaxPerHour: 5, fleetMaxPerDay: 5 })
-    await claimForAttempt({ ...base, attemptId: 'a2', fleetMaxPerHour: 5, fleetMaxPerDay: 5 })
-    const usage = await fleetUsage(NOW)
+  async function delivered(id: string, sentAt: Date, status = 'SENT') {
+    await prisma.outreachAttempt.create({
+      data: {
+        id,
+        pairId: base.pairId,
+        senderId: 's_alpha',
+        targetId: 't_viral',
+        variantId: 'v_1',
+        touchNumber: 1,
+        renderedBody: 'body',
+        status,
+        sentAt,
+      },
+    })
+  }
+
+  /**
+   * IST is UTC+05:30, so the hour boundary sits at :30 UTC. NOW (09:30:00Z) is EXACTLY
+   * 15:00:00 IST — the very first instant of the hour — which is why usage is read a
+   * quarter of an hour later: rows before 09:30Z belong to the PREVIOUS IST hour. (This
+   * file pins TZ=Asia/Kolkata at the top; the hour floor is local time.)
+   */
+  const USAGE_NOW = new Date('2026-08-04T09:45:00.000Z') // 15:15 IST
+
+  it('counts the hour and the day separately, and a reply cannot LOWER the count', async () => {
+    await delivered('a1', new Date('2026-08-04T09:35:00.000Z'), 'SENT')
+    await delivered('a2', new Date('2026-08-04T09:40:00.000Z'), 'REPLIED')
+    const usage = await fleetUsage(USAGE_NOW)
     expect(usage.thisHour).toBe(2)
     expect(usage.today).toBe(2)
   })
 
   it('an earlier hour does not count toward this hour, but does toward today', async () => {
-    const anHourEarlier = new Date(NOW.getTime() - 60 * 60_000)
-    await claimForAttempt({ ...base, attemptId: 'a1', fleetMaxPerHour: 5, fleetMaxPerDay: 5, now: anHourEarlier })
-    await claimForAttempt({ ...base, attemptId: 'a2', fleetMaxPerHour: 5, fleetMaxPerDay: 5, now: NOW })
+    await delivered('a1', new Date('2026-08-04T09:20:00.000Z')) // 14:50 IST — the hour before
+    await delivered('a2', new Date('2026-08-04T09:40:00.000Z')) // 15:10 IST — this hour
 
-    const usage = await fleetUsage(NOW)
+    const usage = await fleetUsage(USAGE_NOW)
     expect(usage.thisHour).toBe(1)
     expect(usage.today).toBe(2)
+  })
+
+  /** Only what a recipient actually received counts — a parked failure is not a send. */
+  it('does not count drafts or failures, whatever their timestamps say', async () => {
+    await delivered('a1', new Date('2026-08-04T09:35:00.000Z'), 'FAILED')
+    await delivered('a2', new Date('2026-08-04T09:40:00.000Z'), 'READY')
+    const usage = await fleetUsage(USAGE_NOW)
+    expect(usage.thisHour).toBe(0)
+    expect(usage.today).toBe(0)
   })
 })

@@ -56,9 +56,8 @@ vi.mock('@/lib/db', () => ({
   },
 }))
 
-const { composeForPair, unusedCampaignCount, NoVariantsError, VariantsExhaustedError } = await import(
-  '@/outreach/compose'
-)
+const { composeForPair, unusedCampaignCount, NoVariantsError, VariantsExhaustedError, SINGLE_TEMPLATE_MIDDLE } =
+  await import('@/outreach/compose')
 const { newMaterialFloor } = await import('@/lib/cutoff')
 
 /** A variant body long enough that `distinctiveSlice` can find a needle in the render. */
@@ -122,15 +121,19 @@ describe('the standard template is what composing returns by default', () => {
    * "a harness whose default disagrees with production measures a pipeline that does not
    * exist" mistake, one layer down.
    */
-  it('returns the standard message, with no hook line and no bespoke body', async () => {
+  it('returns the template VERBATIM, with no hook line and no bespoke body', async () => {
     settingRows.mockReturnValue([])
     const r = await composeForPair({
       pair: pair({ bespokeBody: 'A hand-written first touch that must NOT be used.' }),
       senderHandle: 'bollywoodsocietyy',
       touchNumber: 1,
     })
-    expect(r.body).toContain("I'm Kapil Jain, Co-founder of")
-    expect(r.body).toContain('30 crore (300M)')
+    /**
+     * 2026-08-18, Tabish: the template IS the whole message. No greeting, no intro, no
+     * signature — `renderMessage` is not called at all on this path, so the body is
+     * byte-identical to the exported constant.
+     */
+    expect(r.body).toBe(SINGLE_TEMPLATE_MIDDLE)
     expect(r.body).not.toContain('hand-written first touch')
     expect(r.hookLine).toBeNull()
     expect(r.usedBespoke).toBe(false)

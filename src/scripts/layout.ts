@@ -72,7 +72,6 @@ const PAGES: Array<{ path: string; heading: string; queryBudget: number }> = [
   { path: '/senders', heading: 'Senders', queryBudget: 35 },
   { path: '/rules', heading: 'Rules', queryBudget: 30 },
   { path: '/cost', heading: 'Cost', queryBudget: 30 },
-  { path: '/settings', heading: 'Settings', queryBudget: 25 },
 ]
 
 /**

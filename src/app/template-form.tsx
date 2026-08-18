@@ -1,15 +1,17 @@
 'use client'
 
 import { useState, useTransition } from 'react'
-import { setSingleTemplateBody } from '../actions'
+import { setSingleTemplateBody } from './actions'
 
 /**
- * The standard message's editor. One textarea, one Save, one Reset — and the refusal
- * comes back VERBATIM from `checkTemplateBody`, because the rule being enforced (a
- * too-short template refuses every send in the system) is exactly the kind a person
- * would otherwise discover hours later as a sending outage.
+ * The standard message's editor — ON THE AUTOPILOT PAGE since 2026-08-18 (Tabish:
+ * "one universal [template] which can be adjusted in the autopilot page"; the /settings
+ * page it lived on is gone). One textarea, one Save, one Reset — and the refusal comes
+ * back VERBATIM from `checkTemplateBody`, because the rule being enforced (a too-short
+ * template refuses every send in the system) is exactly the kind a person would
+ * otherwise discover hours later as a sending outage.
  *
- * `initialBody` is the EFFECTIVE middle — the saved override or the shipped copy — so
+ * `initialBody` is the EFFECTIVE message — the saved override or the shipped copy — so
  * what the textarea shows is what a recipient would get, never a blank implying there
  * is no message.
  */
@@ -25,10 +27,9 @@ export function TemplateForm({ initialBody, edited }: { initialBody: string; edi
         <span className="eyebrow">{edited ? 'edited' : 'shipped copy'}</span>
       </div>
       <p className="settingrow-consequence">
-        Every first message is this text, with the greeting and your page&rsquo;s signature added
-        automatically — the recipient&rsquo;s name and your page name are the only two things that
-        vary. Messages already waiting keep the copy they were written with; if the old wording
-        should not go out, discard them from the Autopilot page after saving.
+        Every message is exactly this text — nothing is added, no greeting, no signature. Messages
+        already waiting keep the copy they were written with; if the old wording should not go
+        out, discard them after saving.
       </p>
       <textarea
         value={body}
@@ -36,7 +37,7 @@ export function TemplateForm({ initialBody, edited }: { initialBody: string; edi
           setBody(e.target.value)
           setOutcome(null)
         }}
-        rows={10}
+        rows={6}
         style={{ width: '100%', fontFamily: 'inherit', fontSize: '0.95rem', lineHeight: 1.5 }}
         aria-label="The standard message"
       />

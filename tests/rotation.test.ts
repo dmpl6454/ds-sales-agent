@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { nextSender, ringOrder, repeatsPreviousSender, type RingMember } from '@/outreach/rotation'
+import { nextSender, ringOrder, repeatsPreviousSender, stableIndex, type RingMember } from '@/outreach/rotation'
 
 /**
  * Phase 3 — the rotation ring.
@@ -51,8 +51,26 @@ describe('it never picks the same sender twice in a row', () => {
     expect(nextSender({ ring: RING, lastSenderId: 'id_charlie' })).toMatchObject({ handle: 'alpha' })
   })
 
-  it('starts at the front when nobody has written yet', () => {
-    expect(nextSender({ ring: RING, lastSenderId: null })).toMatchObject({ handle: 'alpha' })
+  it('starts at the front when nobody has written yet AND no recipient is known', () => {
+    // targetId null is the "no recipient in hand" case — there is nothing to hash, so
+    // position zero is the only deterministic answer left.
+    expect(nextSender({ ring: RING, lastSenderId: null, targetId: null })).toMatchObject({ handle: 'alpha' })
+  })
+
+  /**
+   * ── 2026-08-18: A NEVER-MESSAGED RECIPIENT STARTS AT A STABLE HASH ────────
+   *
+   * Ring-front elections meant every fresh recipient elected the SAME account: measured,
+   * all 72 waiting drafts belonged to @bollywoodchronicle while five signed-in accounts
+   * held zero. First touches now start at `stableIndex(targetId, ringSize)` — spread
+   * across the fleet, still deterministic per recipient.
+   */
+  it('starts a never-messaged recipient at the stable hash of its id', () => {
+    const targetId = 'targ_fresh_recipient'
+    const expected = RING[stableIndex(targetId, RING.length)]!
+    expect(nextSender({ ring: RING, lastSenderId: null, targetId })).toMatchObject({
+      handle: expected.handle,
+    })
   })
 
   /** Walk a full cycle and assert every account is used exactly once. */
@@ -87,14 +105,22 @@ describe('a sender added mid-cycle', () => {
 
 describe('a sender removed mid-cycle', () => {
   /**
-   * The last sender is gone from the ring, so there is no "position after" it. Starting
-   * at the front is deterministic and fair; the alternative — remembering a position for
-   * an account that no longer exists — is a cursor, which is the thing this design
-   * refuses.
+   * The last sender is gone from the ring, so there is no "position after" it. With no
+   * known predecessor the walk starts at the same deterministic spread point a fresh
+   * recipient gets — `stableIndex` when a recipient is known, the front otherwise. The
+   * alternative — remembering a position for an account that no longer exists — is a
+   * cursor, which is the thing this design refuses.
    */
-  it('falls back to the front of the ring rather than failing', () => {
+  it('falls back to a deterministic start rather than failing', () => {
     const shrunk = [member('bravo', 1), member('charlie', 2)]
-    expect(nextSender({ ring: shrunk, lastSenderId: 'id_alpha' })).toMatchObject({ handle: 'bravo' })
+    // No recipient in hand: the spread start is the front.
+    expect(nextSender({ ring: shrunk, lastSenderId: 'id_alpha', targetId: null })).toMatchObject({ handle: 'bravo' })
+    // With a recipient, the same hash start a never-messaged recipient would get.
+    const targetId = 'targ_someone'
+    const expected = ringOrder(shrunk)[stableIndex(targetId, shrunk.length)]!
+    expect(nextSender({ ring: shrunk, lastSenderId: 'id_alpha', targetId })).toMatchObject({
+      handle: expected.handle,
+    })
   })
 
   it('treats a DISABLED member the same as a removed one', () => {
@@ -244,6 +270,39 @@ describe('repeatsPreviousSender', () => {
   it('is false on a first touch', () => {
     const choice = nextSender({ ring: RING, lastSenderId: null })
     expect(repeatsPreviousSender(choice, null)).toBe(false)
+  })
+})
+
+describe('first touches spread across the fleet  [2026-08-18]', () => {
+  /**
+   * The property the hash start was built for, in both halves:
+   *
+   *   SPREAD — two different fresh recipients land on different ring members when the
+   *   hash says so. (The candidates are searched rather than hardcoded, so the test
+   *   asserts "when the hash says so" instead of baking in one FNV value.)
+   *
+   *   DETERMINISM — the same recipient always maps to the same member, on every host,
+   *   so two concurrent planners cannot disagree about whose turn a first touch is.
+   */
+  it('two fresh recipients map to different members when the hash differs', () => {
+    const candidates = Array.from({ length: 20 }, (_, i) => `targ_candidate_${i}`)
+    const t1 = candidates[0]!
+    const t2 = candidates.find((t) => stableIndex(t, RING.length) !== stableIndex(t1, RING.length))
+    expect(t2, 'twenty ids all hashed to one ring slot — the spread is broken').toBeDefined()
+
+    const c1 = nextSender({ ring: RING, lastSenderId: null, targetId: t1 })
+    const c2 = nextSender({ ring: RING, lastSenderId: null, targetId: t2! })
+    expect(c1.ok && c2.ok).toBe(true)
+    if (c1.ok && c2.ok) expect(c1.senderId).not.toBe(c2.senderId)
+  })
+
+  it('the same recipient always maps to the same member', () => {
+    const targetId = 'targ_agoracitycentre'
+    const first = nextSender({ ring: RING, lastSenderId: null, targetId })
+    for (let i = 0; i < 5; i++) {
+      expect(nextSender({ ring: RING, lastSenderId: null, targetId })).toEqual(first)
+    }
+    expect(stableIndex(targetId, RING.length)).toBe(stableIndex(targetId, RING.length))
   })
 })
 

@@ -2,7 +2,6 @@ import Link from 'next/link'
 import { prisma } from '@/lib/db'
 import { profileStatus } from '@/outreach/browser/profile'
 import { sessionUsable } from '@/outreach/sessionHealth'
-import { checkPersonaDistinct } from '@/outreach/brandGuards'
 import { getSettings } from '@/lib/settings'
 import { replyHaltFloor } from '@/outreach/replyHalt'
 import { daysAgo } from '@/lib/time'
@@ -53,8 +52,6 @@ interface NavCounts {
   prospects: number
   senders: number
   needSignIn: number
-  /** How many accounts cannot send because another account has the same identity. */
-  sharedPersona: number
   /** Anything at all that wants a person. Drives the marker on Today. */
   needsAttention: number
   /** Channels being watched. Volume, not attention. */
@@ -81,11 +78,6 @@ async function navCounts(): Promise<NavCounts> {
         handle: true,
         status: true,
         sessionInvalidAt: true,
-        personaName: true,
-        personaRole: true,
-        personaBrand: true,
-        personaPhone: true,
-        personaEmail: true,
       },
     }),
     prisma.outreachAttempt.count({ where: { status: 'FAILED', failureCode: 'not-in-thread' } }),
@@ -100,30 +92,13 @@ async function navCounts(): Promise<NavCounts> {
   ).length
   const challenged = senders.filter((s) => s.status === 'CHALLENGED').length
 
-  /**
-   * The persona clash is counted through the SAME function that blocks the send, not by
-   * comparing fields here. CLAUDE.md records why: a page working this out its own way can
-   * disagree with the rule actually refusing, and the dashboard then shows headroom that does
-   * not exist.
-   */
-  const sharedPersona = senders.filter(
-    (me) =>
-      !checkPersonaDistinct({
-        persona: me,
-        otherPersonas: senders.filter((o) => o.handle !== me.handle),
-        targetKind: 'CHANNEL',
-        gateChannels: settings.personaGateChannels,
-      }).ok,
-  ).length
-
   return {
     waiting,
     repliesToHandle,
     prospects,
     senders: senders.length,
     needSignIn,
-    sharedPersona,
-    needsAttention: repliesToHandle + uncertain + challenged + (sharedPersona > 0 ? 1 : 0),
+    needsAttention: repliesToHandle + uncertain + challenged,
     channels,
     paidPosts,
   }
@@ -180,7 +155,6 @@ const GROUPS = [
     entries: [
       { href: '/rules', label: 'Rules', code: 'RU' },
       { href: '/cost', label: 'Cost', code: 'CO' },
-      { href: '/settings', label: 'Settings', code: 'ST' },
     ],
   },
 ] as const satisfies ReadonlyArray<{ label: string | null; entries: readonly Entry[] }>
@@ -309,32 +283,11 @@ export async function Nav({ current, email }: { current: string; email?: string 
             </span>
           </div>
 
-          {/*
-            Autopilot's own line is DERIVED, never the switch position. Three accounts
-            sharing one signature means nothing can send whatever the switch says, and a
-            rail claiming "on" over a fleet that cannot move is the exact failure the
-            heartbeat line above exists to prevent, one level along.
-          */}
           <div className="rail-status-row">
-            <span className={`dot ${counts.sharedPersona > 0 ? 'dot-warn' : 'dot-idle'}`} />
-            <span className="muted">
-              {counts.sharedPersona > 0 ? 'Nothing can send' : 'Sending is clear to run'}
-            </span>
+            <span className="dot dot-idle" />
+            <span className="muted">Sending is clear to run</span>
           </div>
         </div>
-
-        {/*
-          The one sentence explaining why the whole dashboard looks idle, on every screen rather
-          than on one page someone might not open. CONDITIONAL on the clash actually existing —
-          a hardcoded "sending is paused" would become a lie the moment personas are fixed, and
-          a stale banner is how an operator learns to ignore the real one.
-        */}
-        {counts.sharedPersona > 0 && (
-          <p className="rail-note rail-when-open">
-            {counts.sharedPersona} accounts share one identity.{' '}
-            <Link href="/senders">Give each its own</Link>.
-          </p>
-        )}
 
         {/*
           SIGN OUT LIVES HERE, since step C.

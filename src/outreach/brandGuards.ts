@@ -1,4 +1,3 @@
-import type { RenderPersona } from './render'
 import { isPersonRoleCategory } from '@/detection/resolveBrand'
 
 /**
@@ -68,9 +67,16 @@ export interface BrandTouchInput {
 
 export const BRAND_BLOCKS = {
   NEW_BRAND_DAILY_CAP: 'new-brand-daily-cap',
-  PERSONA_NOT_DISTINCT: 'persona-not-distinct',
   RECIPIENT_IS_A_PERSON: 'recipient-is-a-person',
 } as const
+
+/*
+ * THE PERSONA GATE IS GONE (2026-08-18). The standard message is sent verbatim with no
+ * signature block ("no signature name whatsoever" — Tabish), so persona distinctness
+ * stopped being a property of anything a recipient sees. `checkPersonaDistinct` and
+ * `personaFingerprint` were deleted with it; the persona columns survive in the schema
+ * but render nowhere and gate nothing.
+ */
 
 export type BrandGuardResult = { ok: true } | { ok: false; reason: string; detail: string }
 
@@ -103,129 +109,6 @@ export function checkNewBrandTouchCap(input: BrandTouchInput): BrandGuardResult 
       detail:
         `${input.firstTouchesDeliveredToday} new brand(s) have already been contacted today ` +
         `(cap ${input.maxNewBrandTouchesPerDay}) — the rest of the queue waits for tomorrow`,
-    }
-  }
-  return { ok: true }
-}
-
-/* ─────────────────────────────── the persona gate ─────────────────────────────── */
-
-/**
- * Refuses a brand pitch from an account whose persona is not its own.
- *
- * THIS IS DECISION 3b, ENFORCED RATHER THAN DOCUMENTED.
- *
- * Every `SenderAccount` currently carries the identical block — *Kapil Jain, Co-founder,
- * Bollywood Society* — including `@madaboutmarketingg` and `@bollywoodchronicle`. So a DM
- * from Mad About Marketing introduces itself as the co-founder of a different company, and
- * three different pages emit a byte-identical four-line contact block.
- *
- * Why brands specifically, and not channels:
- *
- *   - A brand's social team reads pitches for a living and checks who is writing. A
- *     signature that does not match the sending account is the tell.
- *   - The contact block is the most trivially fingerprinted part of any message. Three
- *     pages sharing one is exactly the cross-account repetition decision 3 exists to
- *     prevent — the bespoke BODIES do not fix it, because the persona is not the body.
- *   - Channel outreach has already run this way and is not made worse by brand work. This
- *     gate is about not extending the problem to a new, more scrutinising audience.
- *
- * `validatePersona` checks SHAPE, not truthfulness, so it passes happily on four identical
- * blocks. This checks distinctness, which is the actual property that was missing.
- *
- * **Do not satisfy this gate by generating personas.** Who fronts each brand is a business
- * identity question and it is Tabish's to answer. A plausible invented name in a real DM
- * to a real company is worse than a blocked send.
- */
-export interface PersonaGateInput {
-  /** The persona the message will actually carry. */
-  persona: RenderPersona
-  /** Every OTHER sender's persona. Distinctness is a property of the set, not of one row. */
-  otherPersonas: readonly RenderPersona[]
-  /** 'BRAND' | 'CHANNEL'. Both are gated once `gateChannels` is on — see below. */
-  targetKind: string
-  /**
-   * Does this gate cover CHANNEL sends too?
-   *
-   * ── DECISION 6, TAKEN BY TABISH 2026-08-04 ────────────────────────────
-   *
-   * It used to cover brands only, on the reasoning that a brand's social team reads
-   * pitches for a living while a publisher is a softer audience — and that halting
-   * channel outreach was a bigger change than this guard was entitled to make alone.
-   *
-   * At 65 accounts that reasoning inverts. 63 pages emitting one byte-identical
-   * four-line contact block is not a soft-audience problem, it is the cross-account
-   * fingerprint decision 3 exists to prevent, at 63x the scale. Rotation makes it
-   * worse in the specific way that matters: the whole point is that a recipient hears
-   * from a different page each time, and an identical signature underneath every one
-   * of them announces that the pages are one operation. That is legible to a
-   * recipient, not just to Meta.
-   *
-   * THE CONSEQUENCE TABISH ACCEPTED: with every account still carrying *Kapil Jain,
-   * Co-founder, Bollywood Society*, this stops ALL outreach — channels included —
-   * until each account has a persona of its own. It is currently the strongest brake
-   * in the system, and that is deliberate rather than incidental.
-   *
-   * A FLAG, not a hardcode, because turning it on halts live outreach and whoever is
-   * mid-edit on 63 personas needs to be able to finish. Default ON: the safe direction
-   * is the one that refuses.
-   *
-   * **Never satisfy this gate by generating personas.** Who fronts each page is a
-   * business identity question and it is Tabish's to answer; a plausible invented
-   * person in a real DM to a real company is worse than a blocked send.
-   */
-  gateChannels?: boolean
-}
-
-/**
- * The identity a recipient actually sees: who is writing, from which page, and how to
- * reach them.
- *
- * Deliberately EXCLUDES nothing that appears in the message — and, symmetrically,
- * INCLUDES nothing that does not. Two senders differing only in a field the recipient
- * never sees are not distinct in any way that matters, which is why `personaName` and
- * `personaRole` left this list on 2026-08-07, the day they stopped rendering: keeping
- * them would let two accounts pass as "distinct" while their rendered signatures were
- * byte-identical.
- *
- * ── AND ON 2026-08-17 THEY CAME BACK, BECAUSE THE MESSAGE CHANGED ─────────
- *
- * Tabish's standard message opens *"I'm Kapil Jain, Co-founder of <page>."* and signs off
- * with the name and role above the contact block, so both fields render again and the
- * contract above puts them back here. The rule is the contract, not the list.
- *
- * Note this does NOT weaken the gate, and the direction is worth stating because it looks
- * like it might. All four accounts share the name, so adding a shared component to a
- * concatenation cannot make two different fingerprints equal — the PAGE NAME is still what
- * separates them, exactly as before.
- *
- * The standing warning is unchanged and is now sharper: all four still carry the identical
- * `+91 60000 189766` and `kapil@digitalsukoon.com`, which is 2 of the 4 signature lines,
- * and the gate cannot see it because it compares the whole block. At four accounts that is
- * cosmetic; at 65 it is one phone number under 63 pages. **Raise it before volume rises.**
- */
-function personaFingerprint(p: RenderPersona): string {
-  return [p.personaName, p.personaRole, p.personaBrand, p.personaPhone, p.personaEmail]
-    .map((s) => s.trim().toLowerCase())
-    .join('|')
-}
-
-export function checkPersonaDistinct(input: PersonaGateInput): BrandGuardResult {
-  const gateChannels = input.gateChannels ?? true
-  if (input.targetKind !== 'BRAND' && !gateChannels) return { ok: true }
-
-  const mine = personaFingerprint(input.persona)
-  const clash = input.otherPersonas.some((other) => personaFingerprint(other) === mine)
-
-  if (clash) {
-    const audience = input.targetKind === 'BRAND' ? 'a brand pitch' : 'a message'
-    return {
-      ok: false,
-      reason: BRAND_BLOCKS.PERSONA_NOT_DISTINCT,
-      detail:
-        `this account signs off exactly like another sending account (${input.persona.personaBrand} · ` +
-        `${input.persona.personaPhone} · ${input.persona.personaEmail}) — ${audience} must sign off as ` +
-        `the page that is actually sending it. Give this account its own signature first.`,
     }
   }
   return { ok: true }

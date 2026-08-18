@@ -30,8 +30,14 @@
  * that already hold the row. PURE, tested in both directions.
  */
 
-/** Default hours a reply pauses its target. A `Setting` row (`replyResumeHours`) overrides. */
-export const REPLY_RESUME_HOURS_DEFAULT = 24
+/**
+ * Default hours a reply pauses its target. A `Setting` row (`replyResumeHours`) overrides.
+ *
+ * TWO DAYS since 2026-08-18 — Tabish: "cooldown if conversation is ongoing to 2 days",
+ * given in the same instruction that removed every other volume cap. This is the one
+ * number that got MORE conservative that day.
+ */
+export const REPLY_RESUME_HOURS_DEFAULT = 48
 
 /** Replies at or after this instant still hold the halt; older ones have released. */
 export function replyHaltFloor(resumeHours: number, now: Date = new Date()): Date {
