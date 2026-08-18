@@ -40,6 +40,94 @@ first one's profiles.
 
 ---
 
+## 18 AUGUST — THE SECOND LOOK'S FIRST REAL BATCH SAYS IT CAUGHT NOTHING, AND THE REPLY SWEEP HAS NEVER RUN
+
+### THE M.O.M BACKFILL: 61 JUDGED, 3 ESCALATED, AND ALL THREE READ AS FALSE ALARMS
+
+`pnpm ig:second-look --run` on the server drained the backlog: **61 rule-negatives judged,
+3 escalated to CAMPAIGN, 56 confirmed ordinary, 2 calls failed and left retryable.** Then
+the escalations were READ, which is the only thing that settles them:
+
+| shortcode | the model's reason | the caption |
+|---|---|---|
+| `DcC_FG_TmJE` | "Zomato Independence Day promo with branded hashtag" | *"Gotta love it when creativity is this effortless! [Independence Day] [Zomato]"* |
+| `Db5fgpsE9eF` | "Promotes Rare Beauty's new fragrance billboard experience" | *"Rare Beauty has put up this billboard in New York where people can experience their new fragrance."* |
+| `Dbkq8sNE0n9` | "Promotes McDonald's outlet opening as marketing story" | *"Mcdonalds opened its first ever outlet in Mexico… Here's how they got the entire city's attention."* |
+
+**All three are a marketing publication writing ABOUT someone else's advertising** —
+third-person reportage and an admiring note on a creative. That is the documented hard case,
+and this file NAMES two of these three brands in its own false-alarm list from the 13 August
+audit: *"all four are M.O.M commentary about other brands' campaigns — McDonald's, Miu Miu,
+Netflix, Rare Beauty."* All three sit at **confidence 85**, the bottom of the model's
+eight-value vocabulary and its ORGANIC floor — so the number carries no information here.
+
+**So the honest score on the first real batch is 0 confirmed catches against 3 probable false
+alarms.** The predicted precision cost arrived; the hoped-for recall gain did not appear in
+61 posts. What that does NOT establish is that no undisclosed M.O.M paid post exists — a
+batch with no catch is not evidence of an empty population, and recall is the thing this
+project never trades. Both readings are on the table and **it is Tabish's call whether the
+second look stays on for M.O.M**; the mechanism, the command and the `--run` default are
+unchanged either way.
+
+**The blast radius was measured before it was reasoned about, and it is small.** None of the
+three carries an @mention or a tag, so `autoResolveBrands` cannot mint a prospect from any of
+them; with `singleTemplate` ON a CAMPAIGN verdict never reaches message copy; and the cross on
+`/paid-posts` undoes each one in a click. The cost is three wrong rows on a screen — plus a
+real cost that is easy to miss: **`ig:accuracy` now scores these as false positives**, which is
+the harness being correct rather than a regression to chase.
+
+### THE TWICE-DAILY REPLY SWEEP CANNOT RUN WHERE IT IS SCHEDULED. IT NEVER HAS
+
+**MEASURED: `replyCheckedAt` is non-null on ZERO attempts, ever.** `replyCheck.ts` asks
+`profileStatus(handle).hasSession` — a FILESYSTEM check — and it is scheduled inside `runSlot`,
+which runs on the **Linode**, which has no `~/.ds-sales-agent` at all. So the 11:00 and 20:00
+sweeps fire, find every account signed out, and skip every conversation. Not a bug in the
+sweep: it is the hosted split, and the same shape as the planner's `profileStatus` trap that
+nearly stopped drafting fleet-wide on 13 August — *a guard that mixes shared-database facts
+with per-host filesystem state answers differently depending on where it ran.*
+
+**What still holds, so this is a gap and not an open wound:** `ensureConversationChecked` runs
+on the DEVICE immediately before every FOLLOW-UP, which is the design's real answer (coverage
+proportional to messages sent, not to prospects held). All 7 deliveries so far are FIRST
+touches, which are exempt by construction — there is no conversation to read. And `optedOut`,
+the reply HALT and the 7-day spacing are all unaffected.
+
+**What is genuinely not happening: nobody is watching the 7 open conversations.** If a prospect
+replies today, nothing detects it until either a follow-up to that same pair is attempted or
+somebody runs `pnpm ig:replies` from the Mac. **NOT FIXED HERE, deliberately** — the fix is to
+move the sweep onto the device agent, and that means unattended browser sessions against
+revenue accounts, which is an exposure change to decide rather than to slip in. Until then
+`pnpm ig:replies` on the Mac is the answer and the reply rate on `/analytics` should be read as
+*"0 of 7, and nothing has looked"*, never as *"nobody replied"*.
+
+### "NO NEW DRAFTS IN SIXTEEN HOURS" IS SATURATION, NOT A STALL
+
+The planner runs every 15 minutes on the server and had written nothing since 18:15 the
+previous evening, which reads exactly like the drafting outage this file has recorded twice.
+It is not one. MEASURED: **82 live prospects — 72 hold a waiting draft, 5 have been messaged,
+and the 7 with neither are the PEOPLE** `checkRecipientIsNotAPerson` refuses (Rahul Dev,
+Karthik Subbaraj, Shalini Passi, a photographer, …). There is nothing left to draft *for*.
+
+The queue only grows when a new prospect appears, and new prospects only appear when somebody
+runs `pnpm ig:brands --run` from a home IP — the server is still 429'd on the profile endpoint.
+Newest prospect: 17 Aug 14:17 IST, from that run. **So the drafting cadence a person actually
+experiences is: within 15 minutes of a new PROSPECT existing, and prospects arrive at the pace
+of the home-IP command, not of detection.** Detection itself is unaffected and healthy.
+
+### THE REST OF THE SWEEP, ALL GREEN
+
+| | |
+|---|---|
+| detection | 26 @viralbhayani + 4 M.O.M posts in 18h, **median latency 9 minutes**; heartbeat `linode-detect` 1 min old |
+| the second look, live | all 4 new M.O.M posts carry `verdictSource: semantic` — before 17 Aug they would have read `rules`, so the pipeline half is confirmed running in production |
+| duplication | **still exactly the 2 pre-guard duplicates.** Zero new ones overnight; the 3 held drafts are still held |
+| in-flight | 0 SENDING, 0 FAILED, no stuck rows |
+| settings | 4 rows, none touched since 17 Aug 18:35 (autopilot OFF, by Tabish). **No `singleTemplateBody` row** — the template editor exists and nobody has overridden the shipped copy |
+| cost | **$0.2077 total, ever**; $0.0359 in 24h across 1,280 calls, cache hit **95%**, 4 failures in 8,063 calls |
+| unjudged | **1** in-window @viralbhayani post, `classifier:no-verdict` from 14 Aug — one failed call, retryable with `ig:classify` |
+
+---
+
 ## 17 AUGUST, EVENING — AUTOPILOT'S FIRST REAL SEND, AND WHY IT NEVER WORKED BEFORE
 
 **At 17:44 IST autopilot delivered its first unattended message from a revenue account
