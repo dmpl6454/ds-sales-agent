@@ -42,6 +42,87 @@ first one's profiles.
 
 ## 18 AUGUST — THE SECOND LOOK'S FIRST REAL BATCH SAYS IT CAUGHT NOTHING, AND THE REPLY SWEEP HAS NEVER RUN
 
+### `no-composer` WAS A DIALOG, AND THE RETRY LOOP BEHIND IT WAS THE REAL FIND
+
+**Instagram now shows business accounts an INTERSTITIAL instead of the composer** for some
+professional recipients — *"Partnership messages are more likely to get a response…"* with
+two buttons, "Send prioritised message" and "Send message request". Tabish supplied the
+screenshot; the send path had never seen it, so the composer lookup timed out behind the
+dialog and the outcome was filed `no-composer` — a name that reads "this account cannot be
+messaged" about an account that can. `sendDm.ts` now clicks **"Send message request"** —
+never "prioritised", Tabish's explicit instruction and the ordinary DM lane — in a
+four-second window between the Message click and the composer lookup. Expect this dialog on
+MORE of the queue: it is recipient-side Instagram behaviour, not a property of one account.
+
+**And the failure it produced exposed something worse than itself.** The generic failure
+branch returned the draft to READY — which is exactly what the dispatcher picks up — so the
+same draft was retried ONCE A MINUTE, each retry driving a real Chrome profile at
+Instagram, and each retry spending the whole per-tick bound so the other 73 drafts starved
+behind it. MEASURED live: four consecutive minutes of `delivering → anandpanditmotionpictures
+… failed=1` before a hand parked the row. **The `attempts` counter was incremented in four
+places and read by NOTHING** — this codebase's signature failure, in the loop whose entire
+job is pacing browser drives against revenue accounts.
+
+`MAX_DELIVERY_ATTEMPTS = 3` now parks a repeatedly-failing draft in FAILED — the
+`not-in-thread` treatment, for the same reason — and parking is only safe because it is
+VISIBLE: the landing page has **"Gave up after repeated failures"** with the failure named
+and two controls (`requeueParkedAttempt`, which resets the counter or the cap re-parks it
+on its first failure and the button appears dead; and Discard, `discardAttempt` widened to
+FAILED rows with `failureCode ≠ not-in-thread` — that one exclusion carries the safety,
+because a not-in-thread row may have REACHED the recipient and must go through its own
+two-button flow).
+
+### 15 AUGUST ON M.O.M, POST BY POST — THE DATA DOES NOT SUPPORT "MORE PAID"
+
+Tabish asked whether M.O.M should have more paid posts around 15 August. All 13 posts from
+14–16 Aug, read individually: **5 CAMPAIGN** (D'Décor×Ranveer Singh, ZEISS, The World at
+Jubilee Hills, LAVA — all four rule-disclosed with #Collaboration — plus the Zomato
+Independence-Day post the second look escalated) and **8 ORGANIC**, every one of which is
+M.O.M writing ABOUT someone else's campaign or pure filler: IKEA's co-worker-day campaign,
+a Mercedes gesture for a disabled dog, Netflix's horror-street stunt, a Ted Lasso quote, a
+meme. The classifier's stated reasons name the distinction each time ("commentary on a
+campaign, not a paid promotion"). **If Tabish believes any of those eight WAS paid, the
+label control on /paid-posts is the mechanism** — his answer becomes `verdictSource:
+'human'`, outranks the model, and joins the ground truth. In-window M.O.M now reads
+**25 CAMPAIGN / 86 posts** (22 rule + 3 second-look).
+
+### A PAID POST THAT NAMES NOBODY CANNOT SAFELY NAME A TARGET, AND THAT IS A MEASUREMENT
+
+Tabish asked how a channel is targeted when a paid post has no tag, no collaborator and no
+caption mention. The honest answer is structural: prospect handles come ONLY from handles
+**Instagram itself asserts on the post** — caption @mentions and media tags/collabs —
+because every path from a NAME to a handle was probed live and measured unsafe:
+constructing a handle from a name was wrong **4 times in 10, and 3 of those 4 wrong handles
+EXIST** (existence is not identity — `@philips` is the global HQ, `@philipsindia` ran the
+campaign), and there is no anonymous name→handle search (`topsearch` 401s). Frame text is
+additionally FORBIDDEN from naming brands — the salon control produced a DM claiming a
+collaboration with the signage behind a celebrity. So a fully anonymous paid post yields a
+CAMPAIGN verdict (it still counts, renders, and feeds accuracy) and NO prospect — by
+design, because the alternative is a media-buying pitch in a stranger's inbox from a
+revenue account. The lever that exists: `pnpm ig:brands --run` from a home IP widens the
+tag-derived candidates; anything further is a new data source, not a rule change.
+
+### AND THE REST OF THE 18 AUGUST QUESTIONS, VERIFIED RATHER THAN ASSERTED
+
+- **Rotation works as designed, and the design is per-recipient.** A never-messaged
+  recipient elects the ring front (cohort, then handle — chronicle first) and keeps
+  electing it until it cannot send; yesterday's tape shows exactly that: chronicle's 5,
+  then society took over at the cap. Fleet-level per-send round-robin across different
+  recipients is NOT the mechanism, and with recipient-level spacing each recipient hears
+  from ONE page per window anyway.
+- **A human "not paid" label cannot sabotage recognition.** `labelPost` is the one writer;
+  a human verdict outranks display and feeds `ig:accuracy` as ground truth, the classifier
+  itself is never retrained or re-prompted by it, `judgeWithFrame` refuses to re-judge
+  human-labelled posts (checked before every other branch), and the second-look backfill
+  selects `humanLabel: null` only. The cascade retires prospects discovered ONLY from the
+  re-labelled post and never touches one that has been written to.
+- **The two watched sends delivered**: 10:47 @amazonmgmstudios, 10:58 @asshnadevelopers,
+  both `autopilot:`, eleven minutes apart, no duplicate, no flag. Autopilot ON 10:45 and
+  OFF 11:00, both audited as Tabish.
+- **The dispatcher's "all N waiting messages were held" undercounts on purpose-shaped
+  wording** — N is how many it EVALUATED before the one-drive bound ended the tick, not the
+  queue depth. Known, not yet reworded.
+
 ### THE M.O.M BACKFILL: 61 JUDGED, 3 ESCALATED, AND ALL THREE READ AS FALSE ALARMS
 
 `pnpm ig:second-look --run` on the server drained the backlog: **61 rule-negatives judged,

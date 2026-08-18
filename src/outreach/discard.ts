@@ -44,7 +44,22 @@ export async function discardAttempt(args: {
    * attempt it would corrupt the state of a live browser send.
    */
   const claimed = await prisma.outreachAttempt.updateMany({
-    where: { id: args.attemptId, status: { in: ['READY', 'QUEUED'] } },
+    /**
+     * FAILED joined the discardable set on 2026-08-18, with ONE exclusion that carries
+     * the safety: `not-in-thread` means the recipient MAY HAVE the message, and
+     * discarding it would erase the only record of a possibly-delivered DM — spacing
+     * and the unanswered-touch cap are derived from delivery records, so the system
+     * would be free to write again to someone who already heard from us. Those rows
+     * have their own two-button resolution on the landing page and must go through it.
+     * Every other FAILED row is a message that provably never left the composer.
+     */
+    where: {
+      id: args.attemptId,
+      OR: [
+        { status: { in: ['READY', 'QUEUED'] } },
+        { status: 'FAILED', failureCode: { not: 'not-in-thread' } },
+      ],
+    },
     data: { status: 'SKIPPED', error: args.reason || 'skipped by operator' },
   })
 

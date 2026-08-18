@@ -707,6 +707,29 @@ export async function setAutopilot(on: boolean): Promise<{ ok: boolean; message:
 }
 
 /**
+ * Put a PARKED draft back in the queue, after a person has fixed what parked it.
+ *
+ * Reachable only for FAILED rows that are provably undelivered — `not-in-thread` is
+ * excluded exactly as it is in `discardAttempt`, because those may have reached the
+ * recipient and have their own two-button resolution. `attempts` resets to zero, or the
+ * retry cap would park the row again on its first failure and the button would appear
+ * to do nothing.
+ */
+export async function requeueParkedAttempt(attemptId: string): Promise<MutationResult> {
+  const user = await requireOperator()
+  const claimed = await prisma.outreachAttempt.updateMany({
+    where: { id: attemptId, status: 'FAILED', failureCode: { not: 'not-in-thread' } },
+    data: { status: 'READY', attempts: 0, error: null, failureCode: null },
+  })
+  if (claimed.count === 0) {
+    return { ok: false, message: 'That message is not parked — it may have moved, or it needs the check-the-conversation flow.' }
+  }
+  await audit(user.email, 'attempt.requeued', `OutreachAttempt:${attemptId}`, 'parked draft returned to the queue by an operator')
+  revalidatePath('/')
+  return { ok: true, message: 'Back in the queue. The next tick will try it again from the start.' }
+}
+
+/**
  * The standard message, editable — with the floor checked AT SAVE (2026-08-17, Tabish:
  * "provide a universal template editor").
  *

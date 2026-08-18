@@ -118,6 +118,38 @@ export async function sendDm(params: SendDmParams): Promise<SendDmResult> {
     await jitter(300, 900)
     await messageBtn.click()
 
+    /**
+     * 3b. THE BUSINESS-MESSAGING INTERSTITIAL (first seen 2026-08-18, from Tabish's own
+     * screenshot). Messaging another professional account can now open a dialog —
+     * "Partnership messages are more likely to get a response…" — offering
+     * "Send prioritised message" and "Send message request" INSTEAD of the composer.
+     * Before this branch existed the composer lookup timed out behind that dialog and
+     * the send was filed `no-composer`, which reads as "this account cannot be
+     * messaged" about an account that can.
+     *
+     * "Send message request" is clicked, never "Send prioritised message" — Tabish's
+     * explicit instruction, and the request path is the ordinary DM lane this whole
+     * design models. The four-second window costs nothing when the dialog is absent
+     * (the flow dwells deliberately anyway) and the click is a trusted locator.click(),
+     * like every other input here.
+     */
+    const requestBtn = await firstVisible(
+      page,
+      [
+        page.getByRole('button', { name: /^send message request$/i }),
+        page.locator('div[role="button"]', { hasText: /^Send message request$/ }),
+      ],
+      4_000,
+    )
+    if (requestBtn) {
+      log.step('business-messaging dialog appeared — choosing the plain message request', {
+        target: targetHandle,
+      })
+      await requestBtn.hover()
+      await jitter(300, 900)
+      await requestBtn.click()
+    }
+
     // 4. The composer.
     const composer = await firstVisible(
       page,
