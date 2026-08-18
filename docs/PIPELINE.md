@@ -2,6 +2,17 @@
 
 https://claude.ai/code/artifact/517b2e18-4c61-428c-a300-9b21de07d1c6
 
+> ## ⚠ STALE SINCE 2026-08-18 EVENING — the cap restructure invalidated its rules panel
+>
+> The drawing still shows twelve gate questions, the 7-day spacing, per-sender daily caps
+> and the persona stops. The gate now asks EIGHT questions (the one volume rule is
+> `pair-daily-cap`, 5/day per account→recipient), the message is one verbatim template
+> with no greeting or signature, the fleet hourly allowance is gone (the 5-minute gap
+> paces instead), rotation hash-spreads fresh recipients across all six accounts, and the
+> reply pause is two days. The three-clocks SPINE is unchanged. Rebuild figure 3's rules
+> panel from `gate.ts`/`governor.ts` before trusting the drawing, and republish to the
+> SAME URL above.
+
 > ## REBUILT 2026-08-17 AFTERNOON, from the deployed code and the live database. Title unchanged: **Three Clocks**.
 >
 > Same URL, same 🔁 favicon, `force: true`. The previous version was written on 13 August and
