@@ -146,6 +146,29 @@ There is no CI. `Host github.com` on this box is already taken by dashmani-platf
 this repo's HTTPS remote wants credentials, so the current path is an archive:
 
 ```bash
+bash scripts/deploy.sh
+```
+
+**USE THE SCRIPT.** The hand-typed archive command below is kept only because it explains
+what the script does; typing it sprang two traps in one command on 2026-08-18 and took the
+dashboard down for ten minutes:
+
+- **`tar` never deletes.** Three files removed from the repo hours earlier were still on
+  the server, still importing settings that no longer existed, and `next build` typechecks
+  everything it FINDS — so a deploy of correct code failed on code that was not in the repo.
+  The script removes stale files explicitly, comparing `git ls-files` against the server
+  with `LC_ALL=C sort` on both sides (macOS and GNU sort disagree on punctuation, and a
+  mismatched sort makes `comm` list files as present in both directions — acting on that
+  output deletes live files).
+- **A pipe masks the build's exit code.** `pnpm build 2>&1 | tail -1 && pm2 start` takes its
+  status from `tail`, which always succeeds, so pm2 started with no production build. That
+  exact failure was already documented here from the previous time it happened — a rule
+  written down is not a rule enforced. The script checks the build directly, leaves the
+  server STOPPED on failure, and prints the log.
+
+The archive form, for reference only:
+
+```bash
 # from the repo, with a clean working tree
 tar czf /tmp/ds-agent.tgz --exclude=node_modules --exclude=.next --exclude=.git \
     --exclude='prisma/dev.db*' --exclude='*.tsbuildinfo' --exclude='.env' .
