@@ -33,7 +33,6 @@ import { addSender } from '../actions'
 export function AddSenderForm() {
   const router = useRouter()
   const [handle, setHandle] = useState('')
-  const [name, setName] = useState('')
   const [busy, setBusy] = useState(false)
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null)
 
@@ -42,11 +41,10 @@ export function AddSenderForm() {
     setBusy(true)
     setMsg(null)
     try {
-      const r = await addSender(handle, name)
+      const r = await addSender(handle, '')
       setMsg({ ok: r.ok, text: r.message })
       if (r.ok) {
         setHandle('')
-        setName('')
         /* The new row, its group and its sign-in state all live on this page. */
         router.refresh()
       }
@@ -81,32 +79,21 @@ export function AddSenderForm() {
               spellCheck={false}
             />
           </label>
-          <label>
-            <span>Page name</span>
-            <input
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter') void submit()
-              }}
-              placeholder="Bollywood Chronicle"
-              autoComplete="off"
-            />
-          </label>
           <button type="button" onClick={() => void submit()} disabled={busy || handle.trim() === ''}>
             {busy ? 'Checking…' : 'Add account'}
           </button>
         </div>
 
         {/*
-          The handle is checked against Instagram before the row is created, so a typo is
-          refused rather than stored. Said here because the button takes a second and a
-          person should know what it is doing.
+          The handle is the whole form since 2026-08-18: messages carry no signature and no
+          page name (Tabish: "channels dont have unique names, only the template message"),
+          so there is nothing else to collect. The handle is checked against Instagram
+          before the row is created, so a typo is refused rather than stored.
         */}
         <p className="cardnote">
           The handle is checked against Instagram first — a page that does not exist is refused
-          rather than saved. The page name is what recipients see in the signature; leave it
-          blank to use the handle.
+          rather than saved. Every message it sends is the one standard template on the
+          Autopilot page.
         </p>
 
         {msg && <p className={msg.ok ? 'note-good' : 'note-warn'}>{msg.text}</p>}

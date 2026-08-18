@@ -161,7 +161,7 @@ process.env.DATABASE_URL = `file:${dbPath}`
 process.env.TZ = 'Asia/Kolkata'
 
 const { whoseTurn, describeRing, fleetRingFor } = await import('@/outreach/categories')
-const { fleetRingOrder } = await import('@/outreach/rotation')
+const { fleetRingOrder, stableIndex } = await import('@/outreach/rotation')
 const { sessionRecorded } = await import('@/outreach/sessionHealth')
 const { prisma } = await import('@/lib/db')
 
@@ -231,8 +231,11 @@ describe('whoseTurn on the fleet ring — a recipient in no group', () => {
     expect(turn.ring).toBe('fleet')
     expect(turn.categoryId).toBeNull()
     expect(turn.choice.ok).toBe(true)
-    // Deterministic: cohort, then handle. Not "whichever row came back first".
-    expect(turn.choice.ok && turn.choice.handle).toBe('alpha')
+    // Deterministic: the cohort-then-handle ring, entered at the recipient's stable hash
+    // (2026-08-18 — fresh recipients spread across the fleet instead of all electing the
+    // ring front). Not "whichever row came back first".
+    const sorted = ['alpha', 'bravo', 'charlie']
+    expect(turn.choice.ok && turn.choice.handle).toBe(sorted[stableIndex(TARGET, 3)])
   })
 
   it('never returns null, which is the whole fix — null meant "everybody writes"', async () => {
@@ -244,17 +247,21 @@ describe('whoseTurn on the fleet ring — a recipient in no group', () => {
     expect(turn.choice.ok).toBe(true)
   })
 
-  it('PASSES THE TURN ON when the first sender is unavailable', async () => {
+  it('PASSES THE TURN ON when the elected sender is unavailable', async () => {
     await addSender('alpha')
     await addSender('bravo')
     await addSender('charlie')
 
+    // Whoever the hash elects for this fresh recipient is marked unavailable, so the walk
+    // must continue to the NEXT ring member rather than refuse or restart.
+    const sorted = ['alpha', 'bravo', 'charlie']
+    const idx = stableIndex(TARGET, 3)
     const turn = await whoseTurn({
       targetId: TARGET,
-      unavailable: new Map([['s_alpha', 'never signed in']]),
+      unavailable: new Map([[`s_${sorted[idx]}`, 'never signed in']]),
     })
 
-    expect(turn.choice.ok && turn.choice.handle).toBe('bravo')
+    expect(turn.choice.ok && turn.choice.handle).toBe(sorted[(idx + 1) % 3])
   })
 
   it('REFUSES with all-unavailable when nobody can write, naming each reason', async () => {
@@ -289,11 +296,16 @@ describe('whoseTurn on the fleet ring — a recipient in no group', () => {
   it('a draft that was never DELIVERED does not advance the ring', async () => {
     await addSender('alpha')
     await addSender('bravo')
-    // READY, not SENT: prepared and waiting. The recipient has heard nothing.
-    await addDelivered('alpha', new Date('2026-08-10T09:00:00Z'), 'READY')
+    await addSender('charlie')
+
+    // The recipient has heard nothing, so the fresh-recipient election stands. A READY
+    // draft FROM that very account must not move the turn on — only delivery does.
+    const sorted = ['alpha', 'bravo', 'charlie']
+    const fresh = sorted[stableIndex(TARGET, 3)]!
+    await addDelivered(fresh, new Date('2026-08-10T09:00:00Z'), 'READY')
 
     const turn = await whoseTurn({ targetId: TARGET })
-    expect(turn.choice.ok && turn.choice.handle).toBe('alpha')
+    expect(turn.choice.ok && turn.choice.handle).toBe(fresh)
   })
 
   it('a REPLIED message still counts as delivered — a reply must not rewind the ring', async () => {
@@ -318,16 +330,25 @@ describe('whoseTurn on the fleet ring — a recipient in no group', () => {
     await addSender('alpha', { cohort: 2 })
     await addSender('zulu', { cohort: 1 })
 
+    // The RING ORDER is asserted directly — the hash start decides where a fresh
+    // recipient ENTERS the ring, never how the ring is ordered.
+    const ring = await fleetRingFor(TARGET)
+    expect(ring.map((m) => m.handle)).toEqual(['zulu', 'alpha'])
+
+    // And the election is the hash start over that sorted ring.
     const turn = await whoseTurn({ targetId: TARGET })
-    expect(turn.choice.ok && turn.choice.handle).toBe('zulu')
+    expect(turn.choice.ok && turn.choice.handle).toBe(['zulu', 'alpha'][stableIndex(TARGET, 2)])
   })
 
   it('breaks a cohort tie on handle, inserted in the opposite order', async () => {
     await addSender('zulu', { cohort: 1 })
     await addSender('alpha', { cohort: 1 })
 
+    const ring = await fleetRingFor(TARGET)
+    expect(ring.map((m) => m.handle)).toEqual(['alpha', 'zulu'])
+
     const turn = await whoseTurn({ targetId: TARGET })
-    expect(turn.choice.ok && turn.choice.handle).toBe('alpha')
+    expect(turn.choice.ok && turn.choice.handle).toBe(['alpha', 'zulu'][stableIndex(TARGET, 2)])
   })
 
   it('EXCLUDES a non-fleet sender — the burner has 70 pair rows and must never be elected', async () => {
@@ -411,14 +432,19 @@ describe('whoseTurn on a GROUP ring — unchanged by the fleet fallback', () => 
     await addSender('alpha')
     await addSender('bravo')
     await addSender('charlie')
-    // Group order deliberately disagrees with alphabetical, so a fleet fallback leaking in
-    // would be visible rather than coincidentally right.
-    await putInGroup(['charlie', 'bravo', 'alpha'])
+    // Group order deliberately disagrees with alphabetical AT EVERY POSITION, so a fleet
+    // fallback leaking in is visible whichever slot the hash start lands on.
+    await putInGroup(['charlie', 'alpha', 'bravo'])
+
+    const groupOrder = ['charlie', 'alpha', 'bravo']
+    const fleetOrder = ['alpha', 'bravo', 'charlie']
+    const idx = stableIndex(TARGET, 3)
+    expect(groupOrder[idx], 'the fixture no longer distinguishes the two rings').not.toBe(fleetOrder[idx])
 
     const turn = await whoseTurn({ targetId: TARGET })
     expect(turn.ring).toBe('group')
     expect(turn.categoryName).toBe('Bollywood')
-    expect(turn.choice.ok && turn.choice.handle).toBe('charlie')
+    expect(turn.choice.ok && turn.choice.handle).toBe(groupOrder[idx])
     expect(describeRing(turn)).toBe('Bollywood')
   })
 
@@ -520,10 +546,11 @@ describe('availability fed to rotation is machine-independent', () => {
 
   it('every caller of rotation asks that ONE reader, so a page cannot disagree with the planner', async () => {
     const { readFileSync } = await import('node:fs')
+    // messages-page.ts left this list on 2026-08-18: the cap restructure removed its
+    // rotation preview entirely, so it no longer consumes availability at all.
     const callers = [
       '../src/outreach/plan.ts',
       '../src/scripts/dedupe-drafts.ts',
-      '../src/app/view-model/messages-page.ts',
       '../src/app/view-model/prospects-page.ts',
     ]
     for (const rel of callers) {

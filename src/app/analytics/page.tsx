@@ -6,6 +6,8 @@ import { buildConversationsPage } from '../view-model/conversations-page'
 import { buildAnalyticsCharts } from '../view-model/charts'
 import { CoverageNote } from '../coverage'
 import { SentList } from '../messages/sent'
+import { ExportPanel } from './export-panel'
+import { prisma } from '@/lib/db'
 import { Nav } from '../nav'
 import { PageHead } from '../page-head'
 import { StackedBars, RunStrip, Funnel, WatchWindow, type Series } from '../charts'
@@ -52,11 +54,13 @@ export default async function AnalyticsPage({
   const { range } = await searchParams
   const picked = RANGES.find((r) => r.key === range) ?? RANGES[1]
 
-  const [v, c, charts] = await Promise.all([
+  const [v, c, charts, senderRows] = await Promise.all([
     buildTodayView(),
     buildConversationsPage(),
     buildAnalyticsCharts(picked.days),
+    prisma.senderAccount.findMany({ orderBy: { handle: 'asc' }, select: { handle: true } }),
   ])
+  const senderHandles = senderRows.map((s) => s.handle)
 
   /* Null, not 0%: "nothing sent" and "nobody replied" are different facts. */
   const replyRate = v.week.sent > 0 ? Math.round((v.week.replies / v.week.sent) * 100) : null
@@ -264,6 +268,8 @@ export default async function AnalyticsPage({
             </div>
           </section>
         )}
+
+        <ExportPanel senders={senderHandles} />
 
         <section>
           <SentList recent={c.recent} />

@@ -13,6 +13,9 @@ import { UncertainList } from './messages/uncertain'
 import { ParkedList } from './messages/parked'
 import { RepliesPanel } from './replies'
 import { OnDemandPanel } from './on-demand'
+import { TemplateForm } from './template-form'
+import { getSettings } from '@/lib/settings'
+import { SINGLE_TEMPLATE_MIDDLE } from '@/outreach/compose'
 import { currentUser } from '@/lib/session'
 import { Nav } from './nav'
 import { PageHead } from './page-head'
@@ -52,30 +55,21 @@ export default async function AutopilotPage() {
   const user = await currentUser()
   if (!user) redirect('/sign-in')
 
-  const [v, m, c, watch] = await Promise.all([
+  const [v, m, c, watch, settings] = await Promise.all([
     buildTodayView(),
     buildMessagesPage(),
     buildConversationsPage(),
     buildWatchChart(),
+    getSettings(),
   ])
 
   /**
-   * The refusal shared by the most held drafts.
-   *
-   * Eleven copies of "this account has no working session" is ONE problem, so the ranked
-   * list names it once. The individual verdicts are still rendered per draft further down
-   * — this is a summary of them, not a replacement, and it is built from the same
-   * `SendVerdict` objects rather than from a second opinion.
+   * Per-draft refusal summaries went with the per-draft cards (2026-08-18): every draft
+   * is the same standard template now, and the fleet-level reason nothing is moving comes
+   * from the dispatcher's own hold reason on the pace band — the enforcer's words, not a
+   * per-row re-derivation.
    */
-  const refusals = new Map<string, { detail: string; count: number; remedy: (typeof m.waiting)[number]['send']['remedy'] }>()
-  for (const w of m.waiting) {
-    if (w.send.ok || !w.send.detail) continue
-    const key = w.send.reason ?? w.send.detail
-    const seen = refusals.get(key)
-    if (seen) seen.count += 1
-    else refusals.set(key, { detail: w.send.detail, count: 1, remedy: w.send.remedy })
-  }
-  const topRefusal = [...refusals.values()].sort((a, b) => b.count - a.count)[0] ?? null
+  const topRefusal = null
 
   const blockers = rankBlockers({
     watch,
@@ -88,12 +82,8 @@ export default async function AutopilotPage() {
     pausedBy: m.pause,
     repliesWaiting: c.replies.length,
     uncertain: m.uncertain.length,
-    // The TOTAL, not the page size — the headline count must not shrink because the
-    // list below it is capped.
     draftsWaiting: m.waitingTotal,
-    topRefusal: topRefusal
-      ? { detail: topRefusal.detail, count: topRefusal.count, remedy: topRefusal.remedy }
-      : null,
+    topRefusal,
   })
 
   const now = new Date()
@@ -166,43 +156,20 @@ export default async function AutopilotPage() {
             <ParkedList parked={m.parked} />
 
             {/*
-              TODAY'S NEW-COMPANY ALLOWANCE — one line, and it replaces a per-recipient list.
-
-              That list showed "@x — 1 claimed today" per recipient, which duplicated
-              `TARGET_DAILY_CAP` — a gate stop whose remedy is deliberately `href: null`,
-              because offering "raise the cap" as the fix for hitting a cap is the one thing
-              this project's top rule forbids. So it was a wall of rows nobody could act on.
-
-              What was NOT on any screen was the cap that actually governs throughput.
-              MEASURED 2026-08-17: it was 2 a day, 61 companies had never been contacted, and
-              the fleet's own pacing permits 33 — a limit 16x tighter than the machinery
-              around it, with nothing saying so. Tabish asked for it to be raised "or make it
-              more apparent"; both happened.
-
-              Both counters, never merged: `created` is how many conversations were opened in
-              the queue, `delivered` is how many strangers actually heard from us. They
-              diverge, and merging them hides whichever is smaller.
+              NEW COMPANIES — a count, no cap. The per-day new-company cap was removed on
+              2026-08-18 (Tabish: "Remove all caps"); what bounds the queue now is its
+              depth, and what bounds deliveries is the 5-minute gap and the per-pair rule.
             */}
             <section>
               <h2>New companies today</h2>
               <p className="cardnote">
-                <strong>
-                  {m.newCompanies.delivered} of {m.newCompanies.cap}
-                </strong>{' '}
-                contacted today
-                {m.newCompanies.waiting > 0 ? (
-                  <>
-                    {' '}
-                    · {m.newCompanies.waiting} written and waiting to go out, room for {m.newCompanies.queueRoom}
-                  </>
-                ) : null}
+                <strong>{m.newCompanies.delivered}</strong> contacted today
+                {m.newCompanies.waiting > 0 ? <> · {m.newCompanies.waiting} written and waiting to go out</> : null}
                 {m.newCompanies.neverContacted > 0 ? (
                   <>
                     {' '}
                     · {m.newCompanies.neverContacted} company{m.newCompanies.neverContacted === 1 ? '' : 's'} still to
-                    reach, about {Math.ceil(m.newCompanies.neverContacted / Math.max(1, m.newCompanies.cap))} day
-                    {Math.ceil(m.newCompanies.neverContacted / Math.max(1, m.newCompanies.cap)) === 1 ? '' : 's'} at this
-                    rate
+                    reach
                   </>
                 ) : null}
               </p>
@@ -210,8 +177,17 @@ export default async function AutopilotPage() {
           </div>
         </section>
 
-        {/* The queue: each draft, why it cannot go out right now, and the button that sends it. */}
-        <WaitingList waiting={m.waiting} total={m.waitingTotal} autopilotOn={v.autopilot.on} />
+        {/* The queue as a summary — every draft is the same standard message now. */}
+        <WaitingList queue={m.queueBySender} total={m.waitingTotal} />
+
+        {/* THE standard message, editable here since /settings went (2026-08-18). */}
+        <section>
+          <h2>The message every recipient gets</h2>
+          <TemplateForm
+            initialBody={settings.singleTemplateBody ?? SINGLE_TEMPLATE_MIDDLE}
+            edited={settings.singleTemplateBody !== null}
+          />
+        </section>
 
         {/* Manual send: the same queue, one draft earlier. It writes a draft that appears above. */}
         <OnDemandPanel accounts={m.onDemandSenders} channels={m.onDemandRecipients} />

@@ -5,6 +5,13 @@ import { evaluatePair, SKIP_REASONS, type GovernorInput } from '@/outreach/gover
  * The governor is what stands between "12–18 campaigns detected today" and
  * "28 DMs into two inboxes". Every rule is tested, including the boundaries,
  * because a bug here is not a crash — it is spam sent to a real prospect.
+ *
+ * ── 2026-08-18: THE CAPS WERE REMOVED ON TABISH'S INSTRUCTION ──────────────
+ * The cooldown, the unanswered-touch limit and the target/sender daily caps are
+ * gone ("Remove all caps … rest unlimited"). What survives is his one rule —
+ * five per day from one account to one recipient — plus everything that was
+ * never a volume cap: opt-out, sender status, the reply halt, the pending-attempt
+ * check, the new-material rule and the lifetime ceiling.
  */
 
 const DAY = 86_400_000
@@ -14,18 +21,14 @@ const NOW = new Date('2026-07-29T09:30:00.000Z')
 function base(overrides: Partial<GovernorInput> = {}): GovernorInput {
   return {
     now: NOW,
-    pair: { cooldownDays: 5, maxUnansweredTouches: 3 },
-    sender: { status: 'ACTIVE', dailyCap: 5 },
+    sender: { status: 'ACTIVE' },
     target: { optedOut: false },
-    lastSentAt: null,
-    targetLastDeliveredAt: null,
     touchesSoFar: 0,
     targetRepliedAt: null,
-    targetSentTodayCount: 0,
-    senderSentTodayCount: 0,
-    maxPerTargetPerDay: 1,
-    hasPendingAttempt: false,
     unusedCampaignCount: 2,
+    pairSentTodayCount: 0,
+    maxPerPairPerDay: 5,
+    hasPendingAttempt: false,
     totalSentEver: 0,
     maxTotalSends: null,
     ...overrides,
@@ -39,11 +42,10 @@ describe('the happy path', () => {
     expect(d.eligible && d.touchNumber).toBe(1)
   })
 
-  it('re-opens a pair after spacing when there is fresh material', () => {
-    const d = evaluatePair(
-      base({ touchesSoFar: 1, lastSentAt: new Date(NOW.getTime() - 20 * DAY), unusedCampaignCount: 3 }),
-    )
+  it('allows a follow-up when there is fresh material', () => {
+    const d = evaluatePair(base({ touchesSoFar: 1, unusedCampaignCount: 3 }))
     expect(d.eligible).toBe(true)
+    expect(d.eligible && d.touchNumber).toBe(2)
   })
 })
 
@@ -61,7 +63,7 @@ describe('absolute stops', () => {
   })
 
   it.each(['PAUSED', 'CHALLENGED'])('skips a %s sender', (status) => {
-    const d = evaluatePair(base({ sender: { status, dailyCap: 5 } }))
+    const d = evaluatePair(base({ sender: { status } }))
     expect(d).toMatchObject({ eligible: false, reason: SKIP_REASONS.SENDER_NOT_ACTIVE })
   })
 
@@ -73,18 +75,22 @@ describe('absolute stops', () => {
 
 describe('a reply halts every sender to that target', () => {
   it('stops the pair once the target has replied', () => {
-    const d = evaluatePair(base({ targetRepliedAt: new Date(NOW.getTime() - 2 * DAY) }))
+    const d = evaluatePair(base({ targetRepliedAt: new Date(NOW.getTime() - DAY) }))
     expect(d).toMatchObject({ eligible: false, reason: SKIP_REASONS.TARGET_REPLIED })
   })
 
-  it('stops even when the cooldown has long since elapsed', () => {
+  it('names the two-day pause in its detail', () => {
+    // Tabish's "cooldown if conversation is ongoing" number: a reply pauses its
+    // target for two days, then messaging resumes on its own.
+    const d = evaluatePair(base({ targetRepliedAt: new Date(NOW.getTime() - DAY) }))
+    expect(!d.eligible && d.detail).toContain('two days')
+  })
+
+  it('stops even when the pair itself has plenty of allowance left', () => {
     // A human conversation has started. Continuing to fire templated pitches at
     // them from other accounts would be actively damaging.
     const d = evaluatePair(
-      base({
-        targetRepliedAt: new Date(NOW.getTime() - 90 * DAY),
-        lastSentAt: new Date(NOW.getTime() - 90 * DAY),
-      }),
+      base({ targetRepliedAt: new Date(NOW.getTime() - DAY), pairSentTodayCount: 0, maxPerPairPerDay: 5 }),
     )
     expect(d).toMatchObject({ eligible: false, reason: SKIP_REASONS.TARGET_REPLIED })
   })
@@ -100,24 +106,22 @@ describe('multiple touches, but only with something new to say', () => {
    *
    * What actually protects the account is that each follow-up must reference a
    * campaign not used before: Meta's written policy penalises repetition, not
-   * volume, and fresh material is what makes a second message a new one.
+   * volume, and fresh material is what makes a second message a new one. With the
+   * spacing caps gone (2026-08-18) this rule carries MORE weight, not less — it is
+   * what stops the planner re-drafting the identical template every day forever.
    */
   it('allows the first contact', () => {
-    expect(evaluatePair(base({ lastSentAt: null, touchesSoFar: 0 })).eligible).toBe(true)
+    expect(evaluatePair(base({ touchesSoFar: 0 })).eligible).toBe(true)
   })
 
-  it('allows a follow-up once spacing has elapsed AND there is new material', () => {
-    const d = evaluatePair(
-      base({ lastSentAt: new Date(NOW.getTime() - 6 * DAY), touchesSoFar: 1, unusedCampaignCount: 1 }),
-    )
+  it('allows a follow-up when there is new material', () => {
+    const d = evaluatePair(base({ touchesSoFar: 1, unusedCampaignCount: 1 }))
     expect(d.eligible).toBe(true)
     expect(d.eligible && d.touchNumber).toBe(2)
   })
 
   it('refuses a follow-up with NOTHING new to say — the repetition rule', () => {
-    const d = evaluatePair(
-      base({ lastSentAt: new Date(NOW.getTime() - 30 * DAY), touchesSoFar: 1, unusedCampaignCount: 0 }),
-    )
+    const d = evaluatePair(base({ touchesSoFar: 1, unusedCampaignCount: 0 }))
     expect(d).toMatchObject({ eligible: false, reason: SKIP_REASONS.NO_NEW_MATERIAL })
   })
 
@@ -126,86 +130,36 @@ describe('multiple touches, but only with something new to say', () => {
     expect(evaluatePair(base({ touchesSoFar: 0, unusedCampaignCount: 0 })).eligible).toBe(true)
   })
 
-  it('respects spacing even when new material exists', () => {
-    const d = evaluatePair(
-      base({ lastSentAt: new Date(NOW.getTime() - DAY), touchesSoFar: 1, unusedCampaignCount: 5 }),
-    )
-    expect(d).toMatchObject({ eligible: false, reason: SKIP_REASONS.COOLDOWN_ACTIVE })
-  })
-
-  it('allows exactly at the spacing boundary', () => {
-    expect(
-      evaluatePair(base({ lastSentAt: new Date(NOW.getTime() - 5 * DAY), touchesSoFar: 1, unusedCampaignCount: 1 }))
-        .eligible,
-    ).toBe(true)
-  })
-
-  it('stops after the unanswered-touch limit, even with new material', () => {
-    // Instagram will not deliver a further pending request, and continuing to
-    // contact someone who never responded is what the policy penalises.
-    const d = evaluatePair(
-      base({ lastSentAt: new Date(NOW.getTime() - 90 * DAY), touchesSoFar: 3, unusedCampaignCount: 9 }),
-    )
-    expect(d).toMatchObject({ eligible: false, reason: SKIP_REASONS.UNANSWERED_LIMIT })
-  })
-
-  it('honours a per-pair spacing override', () => {
-    const twoDaysAgo = new Date(NOW.getTime() - 2 * DAY)
-    const loose = base({
-      pair: { cooldownDays: 1, maxUnansweredTouches: 3 },
-      lastSentAt: twoDaysAgo,
-      touchesSoFar: 1,
-      unusedCampaignCount: 1,
-    })
-    const tight = base({
-      pair: { cooldownDays: 10, maxUnansweredTouches: 3 },
-      lastSentAt: twoDaysAgo,
-      touchesSoFar: 1,
-      unusedCampaignCount: 1,
-    })
-    expect(evaluatePair(loose).eligible).toBe(true)
-    expect(evaluatePair(tight).eligible).toBe(false)
-  })
-
   it('supports four messages for a channel that ran four campaigns', () => {
     // The scenario the one-shot rule got wrong.
-    for (const touch of [1, 2, 3]) {
-      const d = evaluatePair(
-        base({
-          lastSentAt: new Date(NOW.getTime() - 10 * DAY),
-          touchesSoFar: touch - 1,
-          unusedCampaignCount: 5 - touch,
-          pair: { cooldownDays: 5, maxUnansweredTouches: 4 },
-        }),
-      )
+    for (const touch of [1, 2, 3, 4]) {
+      const d = evaluatePair(base({ touchesSoFar: touch - 1, unusedCampaignCount: 5 - touch }))
       expect(d.eligible, `touch ${touch}`).toBe(true)
     }
   })
 })
 
-describe('daily caps', () => {
-  it('blocks when the target already received its allowance today', () => {
-    // The real scenario: two of our senders both target MOM. Without this,
-    // MOM receives two pitches on the same morning.
-    const d = evaluatePair(base({ targetSentTodayCount: 1, maxPerTargetPerDay: 1 }))
-    expect(d).toMatchObject({ eligible: false, reason: SKIP_REASONS.TARGET_DAILY_CAP })
+describe('the pair daily cap — the one volume rule left  [2026-08-18]', () => {
+  it('refuses the sixth message from one account to one recipient in a day', () => {
+    const d = evaluatePair(base({ pairSentTodayCount: 5, maxPerPairPerDay: 5 }))
+    expect(d).toMatchObject({ eligible: false, reason: SKIP_REASONS.PAIR_DAILY_CAP })
   })
 
-  it('allows a second send when the cap is raised', () => {
-    expect(evaluatePair(base({ targetSentTodayCount: 1, maxPerTargetPerDay: 2 })).eligible).toBe(true)
+  it('permits while allowance remains — 4 of 5 leaves room', () => {
+    expect(evaluatePair(base({ pairSentTodayCount: 4, maxPerPairPerDay: 5 })).eligible).toBe(true)
   })
 
-  it('blocks when the sender is at its own cap', () => {
-    const d = evaluatePair(base({ senderSentTodayCount: 5, sender: { status: 'ACTIVE', dailyCap: 5 } }))
-    expect(d).toMatchObject({ eligible: false, reason: SKIP_REASONS.SENDER_DAILY_CAP })
+  it('is counted per PAIR: a different account to the same recipient starts at zero', () => {
+    // Rotation may point several of our pages at one recipient; each page carries
+    // its own allowance of five. This fixture is the other page's pair.
+    expect(evaluatePair(base({ pairSentTodayCount: 0, maxPerPairPerDay: 5 })).eligible).toBe(true)
   })
 
-  it('reports the target cap before the sender cap when both are hit', () => {
-    // Recipient protection is the more important reason to surface.
+  it('a reply is reported ahead of the cap, because it is the more absolute stop', () => {
     const d = evaluatePair(
-      base({ targetSentTodayCount: 1, senderSentTodayCount: 5, sender: { status: 'ACTIVE', dailyCap: 5 } }),
+      base({ targetRepliedAt: new Date(NOW.getTime() - DAY), pairSentTodayCount: 9, maxPerPairPerDay: 5 }),
     )
-    expect(d).toMatchObject({ eligible: false, reason: SKIP_REASONS.TARGET_DAILY_CAP })
+    expect(d).toMatchObject({ eligible: false, reason: SKIP_REASONS.TARGET_REPLIED })
   })
 })
 
@@ -225,9 +179,7 @@ describe('the lifetime send ceiling', () => {
   })
 
   it('outranks every other rule, including a perfectly eligible pair', () => {
-    const d = evaluatePair(
-      base({ totalSentEver: 5, maxTotalSends: 1 }),
-    )
+    const d = evaluatePair(base({ totalSentEver: 5, maxTotalSends: 1 }))
     expect(d).toMatchObject({ eligible: false, reason: SKIP_REASONS.LIFETIME_CAP })
   })
 
@@ -239,7 +191,7 @@ describe('the lifetime send ceiling', () => {
   it('counts prepared-but-unsent messages too', () => {
     // With four routing pairs and a ceiling of 1, counting only delivered messages
     // would let all four be drafted before the ceiling bound.
-    const d = evaluatePair(base({ totalSentEver: 1, maxTotalSends: 1, lastSentAt: null, touchesSoFar: 0 }))
+    const d = evaluatePair(base({ totalSentEver: 1, maxTotalSends: 1, touchesSoFar: 0 }))
     expect(d).toMatchObject({ eligible: false, reason: SKIP_REASONS.LIFETIME_CAP })
   })
 
@@ -263,48 +215,5 @@ describe('pending attempts', () => {
     // queue of five by Friday.
     const d = evaluatePair(base({ hasPendingAttempt: true }))
     expect(d).toMatchObject({ eligible: false, reason: SKIP_REASONS.PENDING_ATTEMPT })
-  })
-})
-
-describe('the Phase 1 routing matrix, simulated over a week', () => {
-  /**
-   * Four pairs, 7-day cooldown, 1 DM per target per day. Confirms the design
-   * claim: ~2 DMs/day peak, and it never stops.
-   */
-  it('caps a single day at one DM per target even with two senders per target', () => {
-    // Both senders target MOM. First is eligible; second sees the same-day count.
-    const first = evaluatePair(base({ targetSentTodayCount: 0 }))
-    expect(first.eligible).toBe(true)
-
-    const second = evaluatePair(base({ targetSentTodayCount: 1 }))
-    expect(second.eligible).toBe(false)
-  })
-
-})
-
-describe('recipient-level spacing — whichever page reached them  [2026-08-17]', () => {
-  /**
-   * The duplicate incident as a governor fixture: chronicle delivered to a recipient,
-   * and half an hour later this pair — a DIFFERENT page, so lastSentAt is null and
-   * touchesSoFar is 0, a textbook "first touch" — asked to write to the same person.
-   * Everything per-pair said yes. The recipient's inbox said otherwise.
-   */
-  it('refuses a fresh pair when another page delivered inside the window', () => {
-    const d = evaluatePair(
-      base({ targetLastDeliveredAt: new Date(NOW.getTime() - 30 * 60_000) }),
-    )
-    expect(d.eligible).toBe(false)
-    if (!d.eligible) expect(d.reason).toBe(SKIP_REASONS.TARGET_RECENTLY_CONTACTED)
-  })
-
-  it('opens again once the recipient window has passed', () => {
-    const d = evaluatePair(
-      base({ targetLastDeliveredAt: new Date(NOW.getTime() - 6 * DAY) }),
-    )
-    expect(d.eligible).toBe(true)
-  })
-
-  it('a recipient nobody has reached is open — a BLOCKED first page never locks anyone', () => {
-    expect(evaluatePair(base({ targetLastDeliveredAt: null })).eligible).toBe(true)
   })
 })

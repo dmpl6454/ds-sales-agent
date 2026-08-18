@@ -73,12 +73,12 @@ describe('readNumericSetting — a Setting row overriding validated env  [defect
   })
 
   it('uses the fallback when no row exists', () => {
-    expect(readNumericSetting('maxPerTargetPerDay', undefined, 2)).toBe(2)
+    expect(readNumericSetting('maxPerPairPerDay', undefined, 2)).toBe(2)
     expect(warn).not.toHaveBeenCalled()
   })
 
   it('accepts a sane whole number', () => {
-    expect(readNumericSetting('maxPerTargetPerDay', '5', 2)).toBe(5)
+    expect(readNumericSetting('maxPerPairPerDay', '5', 2)).toBe(5)
     expect(warn).not.toHaveBeenCalled()
   })
 
@@ -89,7 +89,7 @@ describe('readNumericSetting — a Setting row overriding validated env  [defect
    * while the range-checked env value it replaced quietly stopped applying.
    */
   it('accepts a large value — the shape is clamped, not the ceiling', () => {
-    expect(readNumericSetting('maxPerTargetPerDay', '1000', 2)).toBe(1000)
+    expect(readNumericSetting('maxPerPairPerDay', '1000', 2)).toBe(1000)
   })
 
   it.each([
@@ -99,23 +99,23 @@ describe('readNumericSetting — a Setting row overriding validated env  [defect
     ['zero', '0'],
     ['negative', '-5'],
   ])('refuses a %s value, falls back, and says so loudly', (_label, raw) => {
-    expect(readNumericSetting('maxPerTargetPerDay', raw, 2)).toBe(2)
+    expect(readNumericSetting('maxPerPairPerDay', raw, 2)).toBe(2)
     expect(warn).toHaveBeenCalledOnce()
-    expect(String(warn.mock.calls[0]?.[0])).toContain('maxPerTargetPerDay')
+    expect(String(warn.mock.calls[0]?.[0])).toContain('maxPerPairPerDay')
   })
 
   describe('unlimited', () => {
     it('is accepted ONLY where the caller allows it', () => {
-      expect(readNumericSetting('maxPerTargetPerDay', 'unlimited', 2, { allowUnlimited: true })).toBe(Infinity)
+      expect(readNumericSetting('maxPerPairPerDay', 'unlimited', 2, { allowUnlimited: true })).toBe(Infinity)
       expect(readNumericSetting('unlimited', 'none', 2, { allowUnlimited: true })).toBe(Infinity)
-      // Not allowed here: cooldown has no meaningful "unlimited", so it is a typo.
-      expect(readNumericSetting('defaultCooldownDays', 'unlimited', 7)).toBe(7)
+      // Not allowed here: a minimum gap has no meaningful "unlimited", so it is a typo.
+      expect(readNumericSetting('fleetMinGapMinutes', 'unlimited', 5)).toBe(5)
       expect(warn).toHaveBeenCalledOnce()
     })
 
     /** Infinity beats every count, which is what "no cap" has to mean downstream. */
     it('makes every cap comparison pass', () => {
-      const cap = readNumericSetting('maxPerTargetPerDay', 'unlimited', 2, { allowUnlimited: true })
+      const cap = readNumericSetting('maxPerPairPerDay', 'unlimited', 2, { allowUnlimited: true })
       expect(0 >= cap).toBe(false)
       expect(14 >= cap).toBe(false)
       expect(1_000_000 >= cap).toBe(false)
@@ -123,7 +123,7 @@ describe('readNumericSetting — a Setting row overriding validated env  [defect
 
     /** ...and the other direction: a real cap still binds. */
     it('a real cap still binds', () => {
-      const cap = readNumericSetting('maxPerTargetPerDay', '2', 1)
+      const cap = readNumericSetting('maxPerPairPerDay', '2', 1)
       expect(1 >= cap).toBe(false)
       expect(2 >= cap).toBe(true)
     })

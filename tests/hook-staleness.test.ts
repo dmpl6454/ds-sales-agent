@@ -1,7 +1,5 @@
 import { describe, it, expect } from 'vitest'
 import { assertedRecency, hookRecencyStale, brandFirstTouch, describeRecency } from '@/outreach/brandPitch'
-import { evaluateResend, RESEND_BLOCKS, OVERRIDABLE_BLOCKS } from '@/outreach/gate'
-import type { ResendInput } from '@/outreach/gate'
 
 /**
  * A FROZEN BODY MUST NOT CARRY A DECAYING CLAIM.
@@ -10,6 +8,12 @@ import type { ResendInput } from '@/outreach/gate'
  * — "last week", correct at the time — and is still queued today about a placement 11 days
  * old. `describeRecency` bands `days <= 10` as "last week", so the sentence stopped being
  * true while the draft sat there. Autopilot being off is exactly what makes this accumulate.
+ *
+ * THE GATE STOP IS GONE (2026-08-18): with the single template sent verbatim, no dated
+ * recency claim reaches a recipient, so `HOOK_STALE_SINCE_DRAFT` left `RESEND_BLOCKS` in
+ * the cap removal. The PURE functions below still exist — `brandPitch.ts` still writes
+ * banded recency into bespoke brand copy when the template flag is off — so their tests
+ * stay, and only the gate wiring assertions were deleted.
  */
 
 const NOW = new Date('2026-08-13T12:00:00Z')
@@ -102,51 +106,5 @@ describe('hookRecencyStale', () => {
     const body = pitch(new Date('2026-07-10T12:00:00Z'))
     expect(assertedRecency(body)).toBe('recently')
     expect(hookRecencyStale({ body, postedAt: new Date('2026-08-12T12:00:00Z'), now: NOW })).toBe(true)
-  })
-})
-
-describe('the gate stop', () => {
-  const ok = (): ResendInput => ({
-    attemptStatus: 'READY',
-    unattended: false,
-    senderStatus: 'ACTIVE',
-    senderHasSession: true,
-    senderDailyCap: 5,
-    targetOptedOut: false,
-  targetIsWatchOnly: false,
-    targetRepliedAt: null,
-    targetRecentContact: null,
-    targetSentTodayCount: 0,
-    senderSentTodayCount: 0,
-    maxPerTargetPerDay: 2,
-    personaSharedWithAnotherSender: false,
-    draftPersonaStale: false,
-    draftHookStale: false,
-  })
-
-  it('permits when the claim is current', () => {
-    expect(evaluateResend(ok()).ok).toBe(true)
-  })
-
-  it('refuses when it is not', () => {
-    const r = evaluateResend({ ...ok(), draftHookStale: true })
-    expect(r.ok).toBe(false)
-    expect(r.ok === false && r.reason).toBe(RESEND_BLOCKS.HOOK_STALE_SINCE_DRAFT)
-  })
-
-  it('is NOT overridable — this is about the message being wrong, not about timing', () => {
-    /**
-     * "I know something the agent does not" is a good argument about spacing. It is no
-     * argument for telling a company we saw their placement "last week" when it was three
-     * weeks ago, to the one team certain to know when they ran it.
-     */
-    expect(OVERRIDABLE_BLOCKS).not.toContain(RESEND_BLOCKS.HOOK_STALE_SINCE_DRAFT)
-    const r = evaluateResend({
-      ...ok(),
-      draftHookStale: true,
-      overrides: [RESEND_BLOCKS.HOOK_STALE_SINCE_DRAFT],
-    })
-    expect(r.ok).toBe(false)
-    expect(r.ok === false && r.reason).toBe(RESEND_BLOCKS.HOOK_STALE_SINCE_DRAFT)
   })
 })

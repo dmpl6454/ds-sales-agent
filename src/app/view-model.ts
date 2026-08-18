@@ -38,7 +38,6 @@ import { getDetector } from '@/detection/detectors'
  * send — and `MAX_TOTAL_SENDS` was measured two different ways for two days, rendering
  * headroom that did not exist.
  */
-import { checkPersonaDistinct } from '@/outreach/brandGuards'
 
 /**
  * Everything the CEO page shows, assembled in one place.
@@ -254,30 +253,6 @@ export interface AccountCard {
   state: 'ready' | 'setup' | 'broken'
   note: string
 
-  /**
-   * Who this account says it is, in every message it sends.
-   *
-   * On screen because it is the one thing a recipient always reads and nobody could see
-   * without opening Prisma Studio. All four accounts currently carry the identical
-   * *Kapil Jain, Co-founder, Bollywood Society* block, so a DM from Mad About Marketing
-   * introduces the co-founder of a different company — invisible for weeks precisely
-   * because the dashboard never showed it.
-   */
-  persona: {
-    name: string
-    role: string
-    brand: string
-    phone: string
-    email: string
-  }
-  /**
-   * True when another sending account carries a byte-identical persona.
-   *
-   * Blocks BRAND outreach from this account (see `brandGuards.ts`) and is surfaced here
-   * because a blocked send with no visible cause is the failure this project keeps
-   * producing. Channel outreach is unaffected — it already runs this way.
-   */
-  personaSharedWithAnother: boolean
 }
 
 /**
@@ -738,24 +713,6 @@ export async function buildCeoView(): Promise<CeoView> {
       status: s.status,
       state,
       note,
-      persona: {
-        name: s.personaName,
-        role: s.personaRole,
-        brand: s.personaBrand,
-        phone: s.personaPhone,
-        email: s.personaEmail,
-      },
-      /**
-       * Computed from the same fingerprint the guard uses, so the page cannot disagree
-       * with the enforcer. A limit reported by a different rule than the one enforcing it
-       * is worse than no limit shown — `MAX_TOTAL_SENDS` was measured two different ways
-       * for two days and the dashboard rendered headroom that did not exist.
-       */
-      personaSharedWithAnother: !checkPersonaDistinct({
-        persona: s,
-        otherPersonas: senders.filter((o) => o.id !== s.id),
-        targetKind: 'BRAND',
-      }).ok,
     })
   }
 

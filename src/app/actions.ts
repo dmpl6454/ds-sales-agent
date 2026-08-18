@@ -192,10 +192,8 @@ export async function sendNow(attemptId: string, overrides?: readonly string[]):
   const sendSettings = await getSettings()
   const claim = await claimForAttempt({
     attemptId,
-    targetId: attempt.targetId,
-    senderId: attempt.senderId,
-    maxPerTargetPerDay: sendSettings.maxPerTargetPerDay,
-    senderDailyCap: sender.dailyCap,
+    pairId: attempt.pairId,
+    maxPerPairPerDay: sendSettings.maxPerPairPerDay,
     /**
      * `attended: true` skips the fleet's HOURLY bucket and only that one.
      *
@@ -753,7 +751,6 @@ export async function setSingleTemplateBody(body: string | null): Promise<{ ok: 
   if (body === null || body.trim().length === 0) {
     await prisma.setting.deleteMany({ where: { key: SETTING_KEYS.singleTemplateBody } })
     await audit(user.email, 'setting.changed', 'Setting:singleTemplateBody', 'reset to the shipped standard message')
-    revalidatePath('/settings')
     revalidatePath('/')
     return { ok: true, message: 'Back to the standard message. New drafts use the shipped copy.' }
   }
@@ -768,7 +765,6 @@ export async function setSingleTemplateBody(body: string | null): Promise<{ ok: 
     'Setting:singleTemplateBody',
     `standard message edited (${body.trim().length} chars)`,
   )
-  revalidatePath('/settings')
   revalidatePath('/')
   return {
     ok: true,

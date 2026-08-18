@@ -278,31 +278,20 @@ export async function composeForPair(args: {
    */
   if (settings.singleTemplate) {
     /**
-     * NO HOOK LINE AND NO OBSERVATION LINE (2026-08-17). *"The custom part must only be the
-     * target name being mentioned."* Both of those are extra custom sentences about the
-     * recipient, so both are gone: `hook: null` rather than passing `hook` through.
+     * THE TEMPLATE IS THE WHOLE MESSAGE, VERBATIM (2026-08-18, Tabish's instruction).
+     * No greeting is prepended ("no space after hi, it is all continuous" — the "Hi," is
+     * part of the template's own first characters), no persona/signature block is appended
+     * ("no signature name whatsoever"), no hook or observation line is added. Every
+     * recipient receives exactly the bytes stored here or in the `singleTemplateBody`
+     * Setting row — `renderMessage` is deliberately NOT called, because everything it adds
+     * (greeting, intro, closing, signature) is exactly what was removed.
      *
-     * This also retires a claim that was never true. The old comment here said the variable
-     * line "keeps the send guards working … a body byte-identical across touches would break
-     * `distinctiveSlice` / `bodyAppearedSince`". MEASURED: the hook line matches
-     * `ENVELOPE_PATTERNS`, so `proseLines` strips it and it could never have been the needle;
-     * and `bodyAppearedSince` is an occurrence-count DELTA, which an identical body satisfies
-     * correctly. The guards depend on the template having two prose paragraphs, nothing more.
+     * Consequences held elsewhere in the same change: the gate's persona-staleness probe
+     * is gone (nothing persona-shaped renders, so it was a probe about nothing), and
+     * `checkTemplateBody` validates the verbatim text — a single line over 40 characters
+     * satisfies `distinctiveSlice` via its single-line branch, which does not drop line 1.
      */
-    const { body } = renderMessage({
-      persona: pair.sender,
-      target: pair.target,
-      /**
-       * The operator-edited template when one is saved, the shipped copy otherwise.
-       * `setSingleTemplateBody` is the ONE writer of that row and refuses anything
-       * `checkTemplateBody` rejects, so by the time text reaches here it has already
-       * passed the same `distinctiveSlice` floor the send guards will apply to the
-       * rendered body — an unsendable template cannot be saved, rather than being
-       * discovered as a fleet-wide refusal hours later.
-       */
-      variantBody: settings.singleTemplateBody ?? SINGLE_TEMPLATE_MIDDLE,
-      hook: null,
-    })
+    const body = (settings.singleTemplateBody ?? SINGLE_TEMPLATE_MIDDLE).trim()
     return {
       body,
       hookLine: null,
@@ -436,46 +425,28 @@ export async function observationFor(
  * inventing one.
  */
 /**
- * THE STANDARD MESSAGE (2026-08-17, Tabish's copy).
+ * THE STANDARD MESSAGE (2026-08-18, Tabish's copy, verbatim).
  *
- * *"No custom message is required whatsoever. Same standard template message to be sent to
- * them … The custom part must only be the target name being mentioned."*
+ * *"we need only a single template message to be sent, no signature name whatsoever …
+ * and no there must be no space after hi, it is all continuous."*
  *
- * `renderMessage` supplies the greeting — which now runs INTO the first line rather than
- * sitting above a blank one — plus the closing line and the signature. Only two things vary
- * across every message this system sends: the recipient's name and the sending page's name.
+ * This IS the whole message. Nothing is prepended or appended — no greeting (the "Hi," is
+ * the template's own first characters, deliberately with no space after the comma), no
+ * closing line, no signature block. Every recipient of every account receives these exact
+ * bytes; the editable override lives in the `singleTemplateBody` Setting row, edited from
+ * the Autopilot page.
  *
  * ── THE CONSTRAINT THAT SHAPES THIS COPY, AND IT IS NOT EDITORIAL ─────────
  *
- * `proseLines` drops the FIRST line by POSITION — which, now the greeting and the
- * introduction are merged, is the opener — and strips the closing line and the signature.
- * `distinctiveSlice` then needs a SURVIVING LINE OF AT LEAST 40 CHARACTERS
- * (`MIN_NEEDLE_CHARS`) to build the needle both send guards search for. If none survives it
- * returns null, and null means every send is refused.
- *
- * MEASURED, and the result corrects the obvious guess. It is about paragraph LENGTH, not
- * paragraph COUNT:
- *
- *     three paragraphs (this copy)   prose=3   needle ok
- *     one LONG paragraph             prose=1   needle ok
- *     one SHORT paragraph            prose=1   NULL — every send refused
- *     two SHORT paragraphs           prose=2   NULL — every send refused
- *
- * So the rule to preserve when editing this copy is: **at least one paragraph must stay
- * comfortably over 40 characters.** Anyone shortening it toward a couple of terse lines —
- * which is exactly the direction "make it shorter" pushes — takes the fleet down, and it
- * presents as a sending outage rather than a copy change. `tests/single-template.test.ts`
- * asserts it against this exact constant rather than a fixture that could drift from it.
- *
- * Every figure is in `APPROVED_FIGURES` in qualityGate.ts (30 crore / 300M) — no new number
- * was invented for this, by design. Tabish's draft was longer and he invited it to be
- * shorter ("can be wayyy shorter"), so it is.
+ * `distinctiveSlice` needs a line of at least 40 characters (`MIN_NEEDLE_CHARS`) to build
+ * the needle both send guards search for — the composer read-back and the thread delta. A
+ * single-line body takes `proseLines`' single-line branch (nothing is dropped by position),
+ * so the rule when editing this copy is simply: **keep it over 40 characters.** Below that,
+ * `distinctiveSlice` returns null and null refuses every send in the system.
+ * `checkTemplateBody` applies the same floor at save time so an unsendable template cannot
+ * be stored.
  */
-export const SINGLE_TEMPLATE_MIDDLE = `We're a Bollywood and paparazzi network doing over 30 crore (300M) views a day, and we work with film studios and entertainment brands on year-round visibility rather than one-off campaigns.
-
-I'd like to explore an annual collaboration covering your releases, trailers, music launches and celebrity moments across our owned pages.
-
-Could we find 20 minutes for me to walk you through a plan?`
+export const SINGLE_TEMPLATE_MIDDLE = `Hi,We’re an Entertainment & Pop Culture Media Network generating over 300M views every day. We work with films, songs, celebrities, and brands to amplify campaigns and deliver extended reach at scale. Let’s connect - +916000189766 - Kapil`
 
 /**
  * The single template's variable line for a BRAND: the placement we discovered them in,

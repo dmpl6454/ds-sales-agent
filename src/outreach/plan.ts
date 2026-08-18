@@ -7,11 +7,10 @@ import { newMaterialFloor } from '@/lib/cutoff'
 import { DELIVERED_STATUSES, IN_FLIGHT_STATUSES } from '@/lib/constants'
 import { evaluatePair, type GovernorDecision } from './governor'
 import { routeAllowed } from './routes'
-import { validatePersona } from './render'
 import { composeForPair, usedCampaignIds } from './compose'
 import { describeRing, whoseTurn, type WhoseTurnResult } from './categories'
 import { fleetRingOrder } from './rotation'
-import { checkNewBrandTouchCap, checkPersonaDistinct, checkRecipientIsNotAPerson } from './brandGuards'
+import { checkNewBrandTouchCap, checkRecipientIsNotAPerson } from './brandGuards'
 import { readNewBrandTouchCounts } from './brandTouchCounts'
 /**
  * The ONLY sender this file imports, since Phase 5. `browserSender` was here too and is
@@ -249,20 +248,6 @@ export async function runOutreach(): Promise<PlanSummary> {
    * Every OTHER sender's persona, per sender. Distinctness is a property of the SET, so
    * the comparison needs all of them; loading once avoids a query per pair.
    */
-  const allSenders = await prisma.senderAccount.findMany({
-    select: {
-      id: true,
-      personaName: true,
-      personaRole: true,
-      personaBrand: true,
-      personaPhone: true,
-      personaEmail: true,
-    },
-  })
-  const otherPersonasBySender = new Map(
-    allSenders.map((s) => [s.id, allSenders.filter((o) => o.id !== s.id)]),
-  )
-
   /**
    * Which accounts rotation must SKIP, with the reason.
    *
@@ -340,40 +325,18 @@ export async function runOutreach(): Promise<PlanSummary> {
      */
     const alreadyUsedIds = await usedCampaignIds(pair.id)
 
-    const [lastSent, targetLastDelivered, touches, replied, targetToday, senderToday, pending, unusedCampaignCount] = await Promise.all([
+    const [touches, replied, pairToday, pending, unusedCampaignCount] = await Promise.all([
       /**
-       * All three of these count DELIVERED_STATUSES, not 'SENT'.
+       * Both counts here use DELIVERED_STATUSES, not 'SENT'.
        *
        * `REPLIED` replaces `SENT`, so a bare 'SENT' filter means **a reply loosens a
-       * guard** — precisely backwards. Two of the three were unreachable in that
-       * direction (a reply from this target trips TARGET_REPLIED first, which halts
-       * every sender to them), but `senderSentTodayCount` was genuinely reachable:
-       * the reply guard is per-TARGET while this cap is per-SENDER, so a reply from
-       * target X lowered the sender's day count and bought it one extra message to a
-       * different target Y. At a dailyCap of 5 against 1-2 actual sends that is
-       * academic today, and it would stop being academic exactly when volume rose.
+       * guard** — precisely backwards.
        */
-      prisma.outreachAttempt.findFirst({
-        where: { pairId: pair.id, status: { in: [...DELIVERED_STATUSES] } },
-        orderBy: { sentAt: 'desc' },
-        select: { sentAt: true },
-      }),
-      /**
-       * The newest delivery to this RECIPIENT from ANY page — the sender-blind fact the
-       * 2026-08-17 duplicate incident proved nothing was reading. Every other spacing
-       * fact here is per pair, and per-pair facts cannot see a second page writing into
-       * an inbox the first one reached half an hour earlier.
-       */
-      prisma.outreachAttempt.findFirst({
-        where: { pair: { targetId: pair.targetId }, status: { in: [...DELIVERED_STATUSES] } },
-        orderBy: { sentAt: 'desc' },
-        select: { sentAt: true },
-      }),
       prisma.outreachAttempt.count({
         where: { pairId: pair.id, status: { in: [...DELIVERED_STATUSES] } },
       }),
       prisma.outreachAttempt.findFirst({
-        // A reply halts for replyResumeHours, then releases itself — see replyHalt.ts.
+        // A reply halts for replyResumeHours (two days), then releases itself — see replyHalt.ts.
         where: {
           pair: { targetId: pair.targetId },
           repliedAt: { gte: replyHaltFloor(settings.replyResumeHours) },
@@ -382,16 +345,11 @@ export async function runOutreach(): Promise<PlanSummary> {
         orderBy: { repliedAt: 'desc' },
         select: { repliedAt: true },
       }),
+      // The one volume rule left (2026-08-18): five per day from THIS account to
+      // THIS recipient. Counted per pair, matching the gate.
       prisma.outreachAttempt.count({
         where: {
-          pair: { targetId: pair.targetId },
-          status: { in: [...DELIVERED_STATUSES] },
-          sentAt: { gte: dayStart },
-        },
-      }),
-      prisma.outreachAttempt.count({
-        where: {
-          pair: { senderId: pair.senderId },
+          pairId: pair.id,
           status: { in: [...DELIVERED_STATUSES] },
           sentAt: { gte: dayStart },
         },
@@ -424,19 +382,12 @@ export async function runOutreach(): Promise<PlanSummary> {
 
     const decision: GovernorDecision = evaluatePair({
       now,
-      pair: {
-        cooldownDays: pair.cooldownDays,
-        maxUnansweredTouches: pair.maxUnansweredTouches,
-      },
-      sender: { status: pair.sender.status, dailyCap: pair.sender.dailyCap },
+      sender: { status: pair.sender.status },
       target: { optedOut: pair.target.optedOut },
-      lastSentAt: lastSent?.sentAt ?? null,
-      targetLastDeliveredAt: targetLastDelivered?.sentAt ?? null,
       touchesSoFar: touches,
       targetRepliedAt: replied?.repliedAt ?? null,
-      targetSentTodayCount: targetToday,
-      senderSentTodayCount: senderToday,
-      maxPerTargetPerDay: settings.maxPerTargetPerDay,
+      pairSentTodayCount: pairToday,
+      maxPerPairPerDay: settings.maxPerPairPerDay,
       hasPendingAttempt: pending > 0,
       unusedCampaignCount,
       totalSentEver,
@@ -498,55 +449,15 @@ export async function runOutreach(): Promise<PlanSummary> {
       continue
     }
 
-    // A malformed persona would be reproduced in every message this sender ever
-    // sends, so it blocks the send rather than producing a flawed one.
-    const personaProblems = validatePersona(pair.sender)
-    if (personaProblems.length > 0) {
-      log.alarm('sender persona is invalid — refusing to send', {
-        sender: pair.sender.handle,
-        problems: personaProblems,
-      })
-      outcomes.push({
-        pairKey,
-        eligible: false,
-        skipReason: 'invalid-persona',
-        skipDetail: personaProblems.join('; '),
-      })
-      continue
-    }
-
     /**
-     * The two guards that exist only for brands. AFTER the governor, never instead of it:
-     * a brand target has already passed cooldown, new-material, the unanswered-touch cap,
-     * both daily caps, opt-out, replies and the lifetime ceiling to get here.
+     * ── THE PERSONA GATE AND PERSONA VALIDATION ARE GONE (2026-08-18) ──────────
      *
-     * Both are pure functions in `brandGuards.ts` so each is tested firing AND permitting.
+     * The standard message is sent verbatim with no greeting and no signature (Tabish:
+     * "no signature name whatsoever"), so nothing persona-shaped renders in any message.
+     * A guard about fields no recipient sees is a guard about nothing — the same
+     * reasoning that removed `validatePersona`'s name/role checks on 2026-08-07 when the
+     * intro line went, now applied to the whole block.
      */
-    /**
-     * ── THE PERSONA GATE, now covering CHANNELS too (decision 6) ──────────
-     *
-     * Checked for every target kind, before the brand-only guards below. It used to sit
-     * inside the `kind === 'BRAND'` block, which is why it is lifted out here rather
-     * than duplicated: one call, one rule, both audiences.
-     *
-     * With every account still carrying *Kapil Jain, Co-founder, Bollywood Society*
-     * this stops everything. That is the accepted consequence, not a bug — and it is
-     * visible on the dashboard rather than silent.
-     */
-    const personaGate = checkPersonaDistinct({
-      persona: pair.sender,
-      otherPersonas: otherPersonasBySender.get(pair.senderId) ?? [],
-      targetKind: pair.target.kind,
-      gateChannels: settings.personaGateChannels,
-    })
-    if (!personaGate.ok) {
-      log.step('held — this account\'s persona is not its own', {
-        sender: pair.sender.handle,
-        target: pair.target.handle,
-      })
-      outcomes.push({ pairKey, eligible: false, skipReason: personaGate.reason, skipDetail: personaGate.detail })
-      continue
-    }
 
     if (pair.target.kind === 'BRAND') {
       /**

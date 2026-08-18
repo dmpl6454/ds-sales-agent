@@ -13,17 +13,11 @@ function clean(): OnDemandFacts {
     now: NOW,
     senderStatus: 'ACTIVE',
     senderHasSession: true,
-    senderPersonaProblems: [],
     targetOptedOut: false,
-    targetSentTodayCount: 0,
-    senderSentTodayCount: 0,
-    senderDailyCap: 5,
-    maxPerTargetPerDay: 2,
+    pairSentTodayCount: 0,
+    maxPerPairPerDay: 5,
     isSelfSend: false,
-    cooldownDays: 7,
-    lastSentAt: null,
     touchesSoFar: 0,
-    maxUnansweredTouches: 3,
     targetRepliedAt: null,
     pendingAttemptCount: 0,
     unusedCampaignCount: 2,
@@ -48,10 +42,8 @@ describe('describeOnDemand — absolute stops', () => {
     ['a paused account', { senderStatus: 'PAUSED' }, RESEND_BLOCKS.SENDER_NOT_ACTIVE],
     ['a retired channel', { targetOptedOut: true }, RESEND_BLOCKS.TARGET_OPTED_OUT],
     ['an unconnected account', { senderHasSession: false }, RESEND_BLOCKS.NO_SESSION],
-    ['the channel daily cap', { targetSentTodayCount: 2 }, RESEND_BLOCKS.TARGET_DAILY_CAP],
-    ['the account daily cap', { senderSentTodayCount: 5 }, RESEND_BLOCKS.SENDER_DAILY_CAP],
+    ['the pair daily cap', { pairSentTodayCount: 5 }, RESEND_BLOCKS.PAIR_DAILY_CAP],
     ['messaging itself', { isSelfSend: true }, 'self-send'],
-    ['invalid contact details', { senderPersonaProblems: ['phone is empty'] }, 'persona-invalid'],
   ])('blocks %s', (_label, patch, reason) => {
     const v = describeOnDemand({ ...clean(), ...patch })
     expect(reasons(v.blocks)).toContain(reason)
@@ -68,9 +60,21 @@ describe('describeOnDemand — absolute stops', () => {
     )
   })
 
-  it('does not block on a cap that is approached but not reached', () => {
-    const v = describeOnDemand({ ...clean(), targetSentTodayCount: 1, maxPerTargetPerDay: 2 })
+  /**
+   * ── THE ONE VOLUME RULE LEFT (2026-08-18) — both directions ──────────────
+   * A cap that cannot refuse is an off switch; one that cannot permit is an outage.
+   */
+  it('does not block on a pair allowance that is approached but not reached', () => {
+    const v = describeOnDemand({ ...clean(), pairSentTodayCount: 4, maxPerPairPerDay: 5 })
     expect(v.blocks).toEqual([])
+  })
+
+  it('blocks at the pair allowance, and the sentence names both numbers', () => {
+    const v = describeOnDemand({ ...clean(), pairSentTodayCount: 5, maxPerPairPerDay: 5 })
+    const block = v.blocks.find((b) => b.reason === RESEND_BLOCKS.PAIR_DAILY_CAP)
+    expect(block).toBeDefined()
+    expect(block!.text).toContain('5')
+    expect(block!.text).toContain('one account to one recipient')
   })
 })
 
@@ -85,21 +89,11 @@ describe('describeOnDemand — warnings', () => {
     const v = describeOnDemand({
       ...clean(),
       targetRepliedAt: new Date('2026-08-02T10:00:00Z'),
-      lastSentAt: new Date('2026-08-01T10:00:00Z'),
+      touchesSoFar: 1,
+      unusedCampaignCount: 0,
+      pendingAttemptCount: 1,
     })
     expect(v.warnings[0]!.reason).toBe(RESEND_BLOCKS.TARGET_REPLIED)
-  })
-
-  it('warns inside the cooldown and names the shortfall', () => {
-    const v = describeOnDemand({ ...clean(), lastSentAt: new Date('2026-08-01T10:00:00Z'), cooldownDays: 7 })
-    const w = v.warnings.find((x) => x.reason === 'cooldown-active')
-    expect(w).toBeDefined()
-    expect(w!.text).toContain('5 days early')
-  })
-
-  it('does NOT warn once the cooldown has elapsed', () => {
-    const v = describeOnDemand({ ...clean(), lastSentAt: new Date('2026-07-20T10:00:00Z'), cooldownDays: 7 })
-    expect(reasons(v.warnings)).not.toContain('cooldown-active')
   })
 
   it('warns about repetition only after a first message exists', () => {
@@ -113,15 +107,6 @@ describe('describeOnDemand — warnings', () => {
   it('does not warn about repetition when fresh material exists', () => {
     const v = describeOnDemand({ ...clean(), touchesSoFar: 1, unusedCampaignCount: 3 })
     expect(reasons(v.warnings)).not.toContain('no-new-material')
-  })
-
-  it('warns at the unanswered-touch limit but not below it', () => {
-    expect(reasons(describeOnDemand({ ...clean(), touchesSoFar: 2, maxUnansweredTouches: 3 }).warnings)).not.toContain(
-      'unanswered-touch-limit',
-    )
-    expect(reasons(describeOnDemand({ ...clean(), touchesSoFar: 3, maxUnansweredTouches: 3 }).warnings)).toContain(
-      'unanswered-touch-limit',
-    )
   })
 
   it('warns when a draft is already waiting', () => {
@@ -153,8 +138,8 @@ describe('the two vocabularies agree', () => {
    * confusing, and impossible to diagnose from the screen.
    *
    * Only the stops `evaluateResend` actually enforces need to be crossable. The rest
-   * (cooldown, repetition, the ceiling) are governor rules that the on-demand path
-   * bypasses by construction, because it never asks the governor.
+   * (repetition, the pending draft, the ceiling) are governor rules that the on-demand
+   * path bypasses by construction, because it never asks the governor.
    *
    * ONE SWITCH, 2026-08-08: this was two entries. `pair-disabled` went with the per-route
    * chips — routes are automatic now, so there is nothing for a human to acknowledge.
@@ -170,8 +155,7 @@ describe('the two vocabularies agree', () => {
       RESEND_BLOCKS.SENDER_NOT_ACTIVE,
       RESEND_BLOCKS.TARGET_OPTED_OUT,
       RESEND_BLOCKS.NO_SESSION,
-      RESEND_BLOCKS.TARGET_DAILY_CAP,
-      RESEND_BLOCKS.SENDER_DAILY_CAP,
+      RESEND_BLOCKS.PAIR_DAILY_CAP,
       RESEND_BLOCKS.NOT_WAITING,
     ]) {
       expect(OVERRIDABLE_BLOCKS).not.toContain(absolute)
@@ -186,10 +170,8 @@ describe('the two vocabularies agree', () => {
       senderStatus: 'CHALLENGED',
       targetOptedOut: true,
       senderHasSession: false,
-      targetSentTodayCount: 9,
-      senderSentTodayCount: 9,
+      pairSentTodayCount: 9,
       targetRepliedAt: new Date('2026-08-01T10:00:00Z'),
-      lastSentAt: new Date('2026-08-02T10:00:00Z'),
       touchesSoFar: 4,
       unusedCampaignCount: 0,
       pendingAttemptCount: 2,

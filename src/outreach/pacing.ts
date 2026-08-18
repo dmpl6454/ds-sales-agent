@@ -54,14 +54,16 @@ export const ACTIVE_TO_HOUR = 21
 export const FLEET_MIN_GAP_MINUTES = 5
 
 /**
- * Fleet sends allowed per IST hour. PACING, not a volume ceiling.
- *
- * 3/hour across the active window is ~33/day of headroom against a measured need of
- * 11-14, so at today's volume nothing is refused — it is DEFERRED, and the draft stays
- * READY with its Send button. That distinction is what makes this compatible with the
- * decision below.
+ * Fleet sends allowed per IST hour. UNLIMITED since 2026-08-18, Tabish's instruction
+ * ("Remove all caps … no ceiling to send messages"). What paces the fleet now is the
+ * minimum gap above — one send every FLEET_MIN_GAP_MINUTES inside the active window,
+ * which works out to roughly 130 sends a day at the 5-minute default. The mechanism is
+ * kept wired (a `fleetMaxPerHour` Setting row re-binds it in one write), because the
+ * alternative is discovering at 2 a.m. that the only way to slow the fleet is a code
+ * change. The risk of removing the hourly allowance was stated to Tabish plainly and
+ * the call recorded as his.
  */
-export const FLEET_MAX_PER_HOUR = 3
+export const FLEET_MAX_PER_HOUR = Number.POSITIVE_INFINITY
 
 /**
  * Fleet sends allowed per IST day. UNLIMITED by default, deliberately.

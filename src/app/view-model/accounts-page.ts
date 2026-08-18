@@ -1,8 +1,7 @@
 import { prisma } from '@/lib/db'
 import { DELIVERED_STATUSES } from '@/lib/constants'
 import { daysAgo, istDateKey, relativeLabel } from '@/lib/time'
-import { validatePersona, operatorName } from '@/outreach/render'
-import { checkPersonaDistinct } from '@/outreach/brandGuards'
+import { operatorName } from '@/outreach/render'
 import { cohortSoakDays, mayArmCohort, readCohortStates } from '@/outreach/cohorts'
 import { profileStatus } from '@/outreach/browser/profile'
 import { sessionUsable } from '@/outreach/sessionHealth'
@@ -53,17 +52,13 @@ export interface AccountRow {
   sentToday: number
   dailyCap: number
   categories: string[]
-  persona: { name: string; role: string; brand: string; phone: string; email: string }
-  /** Another sending account carries a byte-identical persona. Now blocks ALL sending. */
-  personaSharedWithAnother: boolean
-  personaProblems: string[]
   /** One sentence naming the single next thing a person must do, or null. */
   todo: string | null
 }
 
 export interface AccountGroup {
-  /** `not-armed` is gone with the per-account toggle — one switch, 2026-08-08. */
-  key: 'broken' | 'needs-login' | 'needs-persona' | 'ready' | 'out-of-fleet'
+  /** `needs-persona` went with the persona gate (2026-08-18) — nothing persona-shaped renders. */
+  key: 'broken' | 'needs-login' | 'ready' | 'out-of-fleet'
   title: string
   rows: AccountRow[]
 }
@@ -72,11 +67,7 @@ export interface AccountsPageView {
   total: number
   groups: AccountGroup[]
   /** Headline counts, so the shape of the fleet is legible before any row is read. */
-  summary: { ready: number; needsLogin: number; needsPersona: number; broken: number }
-  /** True when the persona gate is halting channel sends as well as brand sends. */
-  personaGateCoversChannels: boolean
-  /** How many accounts still share a persona with another. The fleet's binding constraint. */
-  sharingPersona: number
+  summary: { ready: number; needsLogin: number; broken: number }
 }
 
 export async function buildAccountsPage(connectingHandles: readonly string[] = []): Promise<AccountsPageView> {
@@ -114,21 +105,6 @@ export async function buildAccountsPage(connectingHandles: readonly string[] = [
      * logged in" — both true at once, and the dashboard was the half that lied.
      */
     const usable = sessionUsable({ hasSessionOnDisk: profile.hasSession, sessionInvalidAt: s.sessionInvalidAt })
-    const personaProblems = validatePersona(s)
-    /**
-     * The SAME function the gate uses, never a second implementation.
-     *
-     * A page computing this its own way could disagree with the rule actually blocking
-     * the send — which is precisely the failure `checkPersonaDistinct` was extracted to
-     * prevent. `targetKind: 'CHANNEL'` is asked deliberately: since decision 6 that is
-     * the broader question, and an account that passes for channels passes for brands.
-     */
-    const shared = !checkPersonaDistinct({
-      persona: s,
-      otherPersonas: senders.filter((o) => o.id !== s.id),
-      targetKind: 'CHANNEL',
-      gateChannels: true,
-    }).ok
 
     /**
      * ONE SWITCH, 2026-08-08. This used to require `s.autoSendEnabled` as well.
@@ -139,8 +115,7 @@ export async function buildAccountsPage(connectingHandles: readonly string[] = [
      * healthy account nobody had flipped was never unable to. Autopilot is the one
      * permission; this is capability.
      */
-    const state: AccountState =
-      s.status === 'CHALLENGED' || personaProblems.length > 0 ? 'broken' : usable && !shared ? 'ready' : 'setup'
+    const state: AccountState = s.status === 'CHALLENGED' ? 'broken' : usable ? 'ready' : 'setup'
 
     /**
      * ONE next action, not a list.
@@ -152,9 +127,7 @@ export async function buildAccountsPage(connectingHandles: readonly string[] = [
     const todo =
       s.status === 'CHALLENGED'
         ? 'Instagram flagged this account. Check it by hand, then release the halt here.'
-        : personaProblems.length > 0
-          ? `Contact details are invalid: ${personaProblems[0]}`
-          : /**
+        : /**
              * ONE SWITCH, 2026-08-08. Every session-less row ends the same way now — the
              * sign-in IS the onboarding, and there is no second step to mention. It used to
              * be followed by "Auto-send is off", which named a control that no longer exists.
@@ -163,29 +136,20 @@ export async function buildAccountsPage(connectingHandles: readonly string[] = [
              * between "a cookie was never written" and "Instagram revoked one we had", and
              * those are not the same fact about an account.
              */
-            s.sessionInvalidAt !== null
-            ? `Found signed out ${relativeLabel(s.sessionInvalidAt)}. Sign in once — the switch does the rest.`
-            : /**
+          s.sessionInvalidAt !== null
+          ? `Found signed out ${relativeLabel(s.sessionInvalidAt)}. Sign in once — the switch does the rest.`
+          : /**
                * `initialised` is still distinguished, and deliberately so: a profile directory
                * WITHOUT a session already holds the device identity a hand login wrote (`mid`,
                * `ig_did`), so that re-login is cheaper AND safer than a first one — Instagram
                * sees a device it already knows. Collapsing the two would hide the difference
                * between "expired" and "never", which is a real fact about the account.
                */
-              !profile.hasSession
-              ? profile.initialised
-                ? 'Signed out. Sign in once — the switch does the rest.'
-                : 'Sign in once — the switch does the rest.'
-              : shared
-                ? 'Signs off exactly like another account — give it its own signature.'
-                : /**
-                   * ONE SWITCH, 2026-08-08. The last branch here read "Auto-send is off —
-                   * messages wait for a click", which named a control that no longer exists.
-                   * A signed-in, unshared, unflagged account has nothing left to do: whether
-                   * anything is SENT is the Autopilot switch's answer, and it is stated on the
-                   * page that owns it rather than repeated per row.
-                   */
-                  null
+            !profile.hasSession
+            ? profile.initialised
+              ? 'Signed out. Sign in once — the switch does the rest.'
+              : 'Sign in once — the switch does the rest.'
+            : null
 
     return {
       id: s.id,
@@ -200,15 +164,6 @@ export async function buildAccountsPage(connectingHandles: readonly string[] = [
       sentToday: todayUsed.get(s.id) ?? 0,
       dailyCap: s.dailyCap,
       categories: s.categories.filter((c) => c.enabled).map((c) => c.category.name),
-      persona: {
-        name: s.personaName,
-        role: s.personaRole,
-        brand: s.personaBrand,
-        phone: s.personaPhone,
-        email: s.personaEmail,
-      },
-      personaSharedWithAnother: shared,
-      personaProblems,
       todo,
     }
   })
@@ -234,9 +189,8 @@ export async function buildAccountsPage(connectingHandles: readonly string[] = [
     happens to be signed out is described by the thing that matters.
   */
   const outOfFleet = take((r) => !r.fleetMember)
-  const broken = take((r) => r.status === 'CHALLENGED' || r.personaProblems.length > 0)
+  const broken = take((r) => r.status === 'CHALLENGED')
   const needsLogin = take((r) => !r.connected)
-  const needsPersona = take((r) => r.personaSharedWithAnother)
   /**
    * "Ready, but waiting for a click" IS GONE — one switch, 2026-08-08.
    *
@@ -260,11 +214,6 @@ export async function buildAccountsPage(connectingHandles: readonly string[] = [
       rows: needsLogin,
     },
     {
-      key: 'needs-persona',
-      title: 'Sharing a signature',
-      rows: needsPersona,
-    },
-    {
       key: 'ready',
       title: 'Sending on their own',
       rows: ready,
@@ -282,11 +231,8 @@ export async function buildAccountsPage(connectingHandles: readonly string[] = [
     summary: {
       ready: ready.length,
       needsLogin: needsLogin.length,
-      needsPersona: needsPersona.length,
       broken: broken.length,
     },
-    personaGateCoversChannels: settings.personaGateChannels,
-    sharingPersona: rows.filter((r) => r.personaSharedWithAnother).length,
   }
 }
 

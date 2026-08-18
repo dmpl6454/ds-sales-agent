@@ -6,14 +6,6 @@ import { replyCoverage } from '@/outreach/replyCheck'
 import { profileUrl } from '@/lib/urls'
 // Never a raw `displayName` — see the note on the import in `view-model.ts`.
 import { operatorName } from '@/outreach/render'
-/**
- * The SAME gate `sendNow` and `deliverWaiting` call. Not a copy of its rules, and not a
- * summary of them — see the docblock on `SendVerdict` for why that distinction is the whole
- * point of this import.
- */
-import { recheckBeforeSend } from '@/outreach/gate'
-import { describeRing, whoseTurnForMany, type WhoseTurnResult } from '@/outreach/categories'
-import { readSenderAvailability } from '@/outreach/availability'
 import { getSettings } from '@/lib/settings'
 /**
  * The SAME counters `checkNewBrandTouchCap` reads in the planner. Not recomputed here —
@@ -22,8 +14,6 @@ import { getSettings } from '@/lib/settings'
  * new-brand cap itself).
  */
 import { readNewBrandTouchCounts } from '@/outreach/brandTouchCounts'
-// WHERE to fix a refusal. The gate says why; this says where. See the docblock in remedy.ts.
-import { asSentence, remedyFor, withoutShellCommand, type Remedy } from '../messages/remedy'
 import type { OnDemandRecipient, OnDemandSender } from '../on-demand'
 
 /**
@@ -35,116 +25,17 @@ import type { OnDemandRecipient, OnDemandSender } from '../on-demand'
  */
 
 /**
- * Why this draft cannot be sent — from the gate that would refuse it, never re-derived.
+ * ── THE QUEUE IS A SUMMARY NOW (2026-08-18, Tabish) ─────────────────────────
  *
- * ── THE DEFECT THIS FIXES ───────────────────────────────────────────────────
- *
- * A waiting draft rendered its body and a "Send from @x" button and said NOTHING about
- * whether that button would work. Measured against the live database on 2026-08-06, all four
- * waiting drafts would have been refused:
- *
- *     3 drafts   no-session      the account has never been logged in
- *     1 draft    target-replied  that channel answered on 31 July
- *
- * So the most prominent control on the page was, for every single row, a button that could
- * only produce an error — on a screen whose whole design principle is that *"nothing happened"
- * with no explanation is the failure this project keeps rediscovering*. The dispatcher panel
- * explains why the FLEET is idle; nothing explained why THIS message is.
- *
- * ── WHY IT IS COMPUTED AND NOT DESCRIBED ────────────────────────────────────
- *
- * `recheckBeforeSend` is the function `sendNow` and `deliverWaiting` both call. This page
- * calls the same one and renders its own `detail` sentence verbatim. Working the answer out
- * here instead would be the exact mistake `checkPersonaDistinct` was extracted to prevent, and
- * that `MAX_TOTAL_SENDS` made for two silent days: a page reporting a limit by a different
- * rule than the one enforcing it reads as headroom that does not exist.
- *
- * ── TWO VERDICTS, BECAUSE THEY ARE TWO QUESTIONS ────────────────────────────
- *
- * `attended` answers *would the button work* and `unattended` answers *will autopilot ever
- * send this*. They can still differ, because the unattended path checks a strict superset —
- * the cohort ladder — and discards overrides. (Until 2026-08-08 the per-account auto-send
- * switch was the other half of that superset; one-switch removed it.)
- *
- * That superset is also why `unattended` is only computed when `attended` permits: anything
- * refused with a human present is refused at least as hard without one, so a second pass in
- * the blocked case would cost six queries to learn nothing.
+ * *"we do not need to see every draft as now we need only a single template message."*
+ * Every draft carries the identical standard template, so twenty cards showing twenty
+ * copies of one body earned nothing — and each card cost a real `recheckBeforeSend`
+ * (~7 queries). The queue renders as counts per sender; the dispatcher's own hold
+ * reasons (the pace band) say why nothing is moving, from the enforcer itself.
  */
-export interface SendVerdict {
-  ok: boolean
-  /** The machine code, e.g. `no-session`. Never displayed — it is what `REMEDIES` is keyed on. */
-  reason: string | null
-  /**
-   * The gate's own sentence, capitalised and terminated by `asSentence` and otherwise
-   * VERBATIM. Formatted here rather than in the card so all twelve refusal codes are
-   * testable — `tests/stopInventory.test.ts` reads every one of them as prose.
-   */
-  detail: string | null
-  /**
-   * Where an operator fixes it, resolved HERE rather than in the card.
-   *
-   * Two reasons, and the first is not stylistic. `waiting.tsx` is a `'use client'` module, so
-   * importing `remedy.ts` from it pulled `gate.ts` -> `profile.ts` -> `better-sqlite3` -> `fs`
-   * into the browser bundle: HTTP 500 on every route, invisible to `pnpm typecheck`. Second,
-   * the view model is where this codebase puts interpretation — "the page itself does no
-   * querying and no interpretation".
-   */
-  remedy: Remedy | null
-}
-
-export interface WaitingMessage {
-  id: string
-  senderHandle: string
-  targetHandle: string
-  targetName: string
-  targetKind: string
-  chars: number
-  body: string
-  hookLine: string | null
-  queuedAt: Date
-  touchNumber: number
-  /** SENDING means a browser is driving it right now — visible so a crash is not a vanishing. */
-  inFlight: boolean
-  /** Failed before and still waiting. `attempts` exists so a stuck draft is countable. */
-  attempts: number
-  failureCode: string | null
-  /**
-   * The stored failure message, with any shell command stripped for the screen.
-   *
-   * The database keeps the exact bytes — in a log `Run: pnpm ig:login <handle>` is the useful
-   * part. On a page for a CEO it is a developer instruction for something the Connect button
-   * already does. See `withoutShellCommand`.
-   */
-  error: string | null
-  /** Would "Send from @x" work right now, and if not, why not. */
-  send: SendVerdict
-  /**
-   * Would autopilot ever send it. Only asked when `send.ok` — see the note above.
-   * `null` means "not asked", which is NOT the same as "yes" and must not render as one.
-   */
-  auto: SendVerdict | null
-  /**
-   * Whose turn it is to write to THIS recipient, from `whoseTurn` — the same function the
-   * planner asks, never re-derived here.
-   *
-   * Until 2026-08-13 this page implied rotation was happening and it was not: `whoseTurn`
-   * returned null for every recipient, so every sender drafted to every one of them. A
-   * reader could see three near-identical drafts to one company and had nothing on screen
-   * saying whether that was the design.
-   */
-  rotation: RotationNote
-}
-
-export interface RotationNote {
-  /** One sentence, already written. The page renders it and adds nothing. */
-  sentence: string
-  /**
-   * Is this draft's sender the one rotation would choose right now?
-   *
-   * False on a draft written before the fix, or on one whose sender has since been signed
-   * out — both are worth seeing, and neither is an error.
-   */
-  isTurn: boolean
+export interface QueueBySender {
+  handle: string
+  count: number
 }
 
 export interface SentMessage {
@@ -190,15 +81,8 @@ export interface UncertainMessage {
 }
 
 export interface MessagesPageView {
-  waiting: WaitingMessage[]
-  /**
-   * How many are waiting IN TOTAL, which `waiting.length` no longer is.
-   *
-   * The list is capped so the per-draft gate loop cannot make the page's query count grow
-   * with the queue (see `WAITING_SHOWN`). A capped list with no total is how a screen comes
-   * to under-report quietly as the system succeeds, which is the failure the coverage
-   * caveat and the posts table's "showing the newest 100 of 223" both exist to prevent.
-   */
+  /** Waiting drafts per sending account. The queue as counts, not cards. */
+  queueBySender: QueueBySender[]
   waitingTotal: number
   uncertain: UncertainMessage[]
   /** Parked by the retry cap: repeated failures, provably undelivered. */
@@ -229,14 +113,6 @@ export interface MessagesPageView {
   sentToday: number
   sentThisWeek: number
   /**
-   * Recipients that have used part of today's allowance, and how much.
-   *
-   * Read from the RESERVATION table rather than recomputed, so the page reports the same
-   * number the guard enforces. A limit displayed by a different rule than the one
-   * enforcing it is worse than showing no limit at all — it reads as headroom.
-   */
-  todayByRecipient: { handle: string; used: number }[]
-  /**
    * TODAY'S NEW-COMPANY ALLOWANCE — the cap that actually governs how many strangers hear
    * from us, and until 2026-08-17 it appeared on no screen an operator looks at.
    *
@@ -266,68 +142,35 @@ export interface MessagesPageView {
   onDemandRecipients: OnDemandRecipient[]
 }
 
-/**
- * How many waiting drafts the page renders at once.
- *
- * Not a display preference: each rendered draft costs a real `recheckBeforeSend` — about
- * seven queries — so this number IS the page's query budget. 20 keeps `/` well inside the
- * ceiling `pnpm ig:layout` asserts while showing more than anyone works through in a
- * sitting, and the total is always printed beside it so a bounded list can never read as an
- * empty queue.
- */
-const WAITING_SHOWN = 20
 
 export async function buildMessagesPage(): Promise<MessagesPageView> {
   const weekStart = daysAgo(7)
   const today = istDateKey()
 
   const [
-    waitingRaw,
+    waitingBySenderRaw,
     waitingTotal,
     uncertainRaw,
     parkedRaw,
     recentRaw,
     sentThisWeek,
-    reservations,
     dispatch,
     pause,
     coverage,
     sendersRaw,
     recipientsRaw,
   ] = await Promise.all([
-    prisma.outreachAttempt.findMany({
-      // SENDING included, so a send interrupted by a crash stays visible rather than
-      // vanishing from the tray with no way to reach it.
+    /**
+     * The queue as COUNTS PER SENDER. The per-draft card list — and the per-draft gate
+     * loop behind it, ~7 queries a row — went on 2026-08-18 when every draft became the
+     * same standard template: twenty copies of one body is not information, and the
+     * refusal that matters fleet-wide is the dispatcher's own hold reason on the pace
+     * band, which comes from the enforcer rather than from a per-row re-check.
+     */
+    prisma.outreachAttempt.groupBy({
+      by: ['senderId'],
       where: { status: { in: ['READY', 'QUEUED', 'SENDING'] } },
-      /**
-       * `pair` with both sides included, because `recheckBeforeSend` takes a `ResendAttempt`
-       * and that is deliberately a STRUCTURAL type — so this page satisfies the same gate
-       * `sendNow` does, with no second shape to keep in step.
-       */
-      include: { sender: { select: { handle: true } }, target: true, pair: { include: { sender: true, target: true } } },
-      orderBy: { queuedAt: 'asc' },
-      /**
-       * ── BOUNDED, AND THE GATE LOOP BELOW IS WHY ───────────────────────────────────
-       *
-       * FOUND BY THE QUERY BUDGET on its first real run (repair plan 3.4): `/` issued
-       * **559 queries** to render, measured twice at 1,577 ms. `buildBrandsPanel`'s N+1
-       * was killed this week and the page still had one — the per-draft gate loop below,
-       * ~7 queries each, sequential, over every waiting draft there is. At the 26 drafts
-       * live today that is most of the page.
-       *
-       * The loop itself is correct and must not be summarised: every draft states why it
-       * cannot be sent, from the gate that would refuse it, never re-derived. What was
-       * wrong is that the list had no bound, and its comment claimed one — *"the list is
-       * small by construction, `maxUnansweredTouches` and the daily caps bound it"*. Those
-       * bound SENDS. Nothing bounded DRAFTS, and removing the autopilot gate on
-       * `detectThenDraft` the same day takes drafting from 4 passes a day to 96.
-       *
-       * So the fix is the one this codebase already uses for the posts table and for the
-       * brands panel: take a page, show the total beside it. That makes the query count a
-       * property of the LIMIT rather than of the queue, which is exactly the property the
-       * budget in `ig:layout` is asserting.
-       */
-      take: WAITING_SHOWN,
+      _count: { _all: true },
     }),
     prisma.outreachAttempt.count({ where: { status: { in: ['READY', 'QUEUED', 'SENDING'] } } }),
     /**
@@ -346,9 +189,7 @@ export async function buildMessagesPage(): Promise<MessagesPageView> {
     /**
      * Drafts the retry cap PARKED — repeated failures, provably undelivered (every code
      * except not-in-thread is in that class). Rendered with the failure named and two
-     * controls, because parking is only safe while it is visible: the cap stops a
-     * failing draft driving a browser once a minute, and this list is what stops the
-     * park from becoming a silent grave.
+     * controls, because parking is only safe while it is visible.
      */
     prisma.outreachAttempt.findMany({
       where: { status: 'FAILED', failureCode: { not: 'not-in-thread' } },
@@ -363,11 +204,6 @@ export async function buildMessagesPage(): Promise<MessagesPageView> {
     }),
     prisma.outreachAttempt.count({
       where: { status: { in: [...DELIVERED_STATUSES] }, sentAt: { gte: weekStart } },
-    }),
-    prisma.dailyReservation.groupBy({
-      by: ['subjectId'],
-      where: { day: today, scope: 'target' },
-      _count: { _all: true },
     }),
     dispatchStatus(),
     readPause(),
@@ -408,128 +244,21 @@ export async function buildMessagesPage(): Promise<MessagesPageView> {
     prisma.targetAccount.count({ where: { role: 'PROSPECT', attempts: { none: {} } } }),
   ])
 
-  const targetHandles = new Map(
+  /** Handles for the per-sender queue counts — one lookup for the whole group. */
+  const senderHandles = new Map(
     (
-      await prisma.targetAccount.findMany({
-        where: { id: { in: reservations.map((r) => r.subjectId) } },
+      await prisma.senderAccount.findMany({
+        where: { id: { in: waitingBySenderRaw.map((r) => r.senderId) } },
         select: { id: true, handle: true },
       })
-    ).map((t) => [t.id, t.handle]),
+    ).map((x) => [x.id, x.handle]),
   )
-
-  /**
-   * Ask the real gate about every waiting draft.
-   *
-   * Sequential rather than concurrent on purpose: `journal_mode = delete` takes a fresh shared
-   * lock per read, and firing six queries × two verdicts × every draft at once is how
-   * `SQLITE_BUSY` is provoked on a file three processes already share. The list is small by
-   * construction — `maxUnansweredTouches` and the daily caps bound it — and a page that is
-   * already `force-dynamic` can afford the round trips.
-   */
-  const verdicts = new Map<string, { send: SendVerdict; auto: SendVerdict | null }>()
-  for (const a of waitingRaw) {
-    const attended = await recheckBeforeSend(a, { unattended: false })
-    const send: SendVerdict = attended.ok
-      ? { ok: true, reason: null, detail: null, remedy: null }
-      : { ok: false, reason: attended.reason, detail: asSentence(attended.detail), remedy: remedyFor(attended.reason) }
-
-    /*
-      Only when the button would work — anything refused with a human present is refused at
-      least as hard without one, so the second pass would cost six queries to learn nothing.
-
-      ── AND ONLY WHEN AUTOPILOT IS ON (2026-08-17) ──────────────────────────────
-      `pnpm ig:layout` failed at **611 queries against a 520 budget** the first time this page
-      was measured with a FULL queue — 77 drafts, 20 rendered. The budget is a ceiling over a
-      bounded design and raising it to make the check pass is the one thing not to do, so the
-      question is what the second call BUYS.
-
-      With autopilot OFF it buys one sentence: "Ready to send by hand, it will not go out on
-      its own" instead of "Ready, and waiting for you". Both mean press the button — nothing
-      goes out unattended either way, because the dispatcher is not running. So it was seven
-      queries per draft to choose between two phrasings of the same instruction.
-
-      With autopilot ON the distinction is real — "this one will go on its own" against "this
-      one will not" — so the call is still made. `Refusal` already falls through to the
-      autopilot-off sentence when `auto` is null, which is why this needs no change there.
-    */
-    let auto: SendVerdict | null = null
-    if (attended.ok && settings.autopilotEnabled) {
-      const r = await recheckBeforeSend(a, { unattended: true })
-      auto = r.ok
-        ? { ok: true, reason: null, detail: null, remedy: null }
-        : { ok: false, reason: r.reason, detail: asSentence(r.detail), remedy: remedyFor(r.reason) }
-    }
-    verdicts.set(a.id, { send, auto })
-  }
-
-  /**
-   * Whose turn it is, ONCE PER RECIPIENT.
-   *
-   * `whoseTurn` is a function of the target, so asking it per draft would repeat the same
-   * three queries for every sender holding one — and the duplicate drafts this page exists
-   * to make visible are precisely the case where several drafts share a target. The batch
-   * loader answers for all of them in four queries.
-   *
-   * The availability map is the SHARED reader the planner uses. A page that computed its own
-   * could name an account the planner will never choose, which is the drift `gate.ts` was
-   * extracted to stop.
-   */
-  let rotationByTarget = new Map<string, WhoseTurnResult>()
-  if (waitingRaw.length > 0) {
-    rotationByTarget = await whoseTurnForMany(
-      waitingRaw.map((a) => a.targetId),
-      await readSenderAvailability(),
-    )
-  }
-
-  /** The sentence a person reads. Written here so the client component adds no logic. */
-  function rotationNote(targetId: string, senderHandle: string): RotationNote {
-    const turn = rotationByTarget.get(targetId)
-    if (turn === undefined) {
-      // Not asked. Says so, rather than implying this sender is the chosen one.
-      return { sentence: 'Whose turn it is could not be read.', isTurn: false }
-    }
-    if (!turn.choice.ok) {
-      return {
-        sentence:
-          turn.choice.reason === 'empty-ring'
-            ? 'No account is in the rotation for this recipient.'
-            : `No account can write to this recipient right now — ${turn.choice.detail}`,
-        isTurn: false,
-      }
-    }
-    const isTurn = turn.choice.handle === senderHandle
-    return {
-      sentence: isTurn
-        ? `@${turn.choice.handle} is next for this recipient, in ${describeRing(turn)}.`
-        : `@${turn.choice.handle} is next for this recipient in ${describeRing(turn)}, not @${senderHandle}.`,
-      isTurn,
-    }
-  }
 
   return {
     waitingTotal,
-    waiting: waitingRaw.map((a) => ({
-      id: a.id,
-      senderHandle: a.sender.handle,
-      targetHandle: a.target.handle,
-      targetName: operatorName(a.target.displayName),
-      targetKind: a.target.kind,
-      chars: a.renderedBody.length,
-      body: a.renderedBody,
-      hookLine: a.hookLine,
-      queuedAt: a.queuedAt,
-      touchNumber: a.touchNumber,
-      inFlight: a.status === 'SENDING',
-      attempts: a.attempts,
-      failureCode: a.failureCode,
-      error: withoutShellCommand(a.error),
-      // Non-null by construction: every waiting row was put in the map above. The fallback is
-      // deliberately the REFUSING shape — a missing verdict must never render as permission.
-      send: verdicts.get(a.id)?.send ?? { ok: false, reason: null, detail: 'The send checks could not be read.', remedy: null },
-      auto: verdicts.get(a.id)?.auto ?? null,
-      rotation: rotationNote(a.targetId, a.sender.handle),
-    })),
+    queueBySender: waitingBySenderRaw
+      .map((r) => ({ handle: senderHandles.get(r.senderId) ?? r.senderId, count: r._count._all }))
+      .sort((a, b) => b.count - a.count),
     uncertain: uncertainRaw.map((a) => ({
       id: a.id,
       senderHandle: a.sender.handle,
@@ -569,9 +298,6 @@ export async function buildMessagesPage(): Promise<MessagesPageView> {
       name: operatorName(x.displayName),
       retired: x.optedOut,
     })),
-    todayByRecipient: reservations
-      .map((r) => ({ handle: targetHandles.get(r.subjectId) ?? r.subjectId, used: r._count._all }))
-      .sort((a, b) => b.used - a.used),
     newCompanies: {
       cap: settings.maxNewBrandTouchesPerDay,
       waiting: newTouchCounts.waiting,

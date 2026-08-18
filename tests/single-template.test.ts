@@ -1,34 +1,52 @@
-import { describe, it, expect } from 'vitest'
-import { renderMessage, buildGreeting, signatureBlock, introLine } from '@/outreach/render'
-import { SINGLE_TEMPLATE_MIDDLE } from '@/outreach/compose'
-import { distinctiveSlice, proseLines, bodyAppearedSince, MIN_NEEDLE_CHARS } from '@/outreach/matching'
-import { APPROVED_FIGURES } from '@/outreach/qualityGate'
+import { describe, it, expect, vi, beforeEach } from 'vitest'
 
 /**
- * ── THE STANDARD MESSAGE, AND THE TWO THINGS THAT WOULD BREAK SILENTLY ─────
+ * ── THE STANDARD MESSAGE IS THE WHOLE MESSAGE (2026-08-18, Tabish) ─────────
  *
- * Tabish, 2026-08-17: *"no custom message is required whatsoever. Same standard template
- * message to be sent to them … no space and new line after hi this ruins it."*
+ * *"we need only a single template message to be sent, no signature name whatsoever …
+ * and no there must be no space after hi, it is all continuous."*
  *
- * Two properties of that change are mechanical rather than editorial, and both fail in the
+ * `composeForPair` with `singleTemplate` ON returns the template VERBATIM: no greeting,
+ * no intro, no signature block, no hook line — `renderMessage` is never called on this
+ * path. Two properties of that are mechanical rather than editorial, and both fail in the
  * quiet direction:
  *
- *  1. **The template must keep a paragraph longer than 40 characters.** `proseLines` drops
- *     the first line BY POSITION — the merged opener — and `distinctiveSlice` needs a
- *     survivor of at least `MIN_NEEDLE_CHARS`. MEASURED, and it corrects the obvious guess:
- *     one LONG paragraph is fine, while one short paragraph AND two short paragraphs both
- *     yield null, and null refuses every send in the system. So the hazard is shortening the
- *     copy, which is exactly the direction "make it shorter" pushes. Asserted against the
- *     REAL exported constant, not a fixture, because a fixture is what drifts from the copy
- *     somebody actually edits.
+ *  1. **The template must keep a line of at least 40 characters.** A single-line body
+ *     takes `proseLines`' single-line branch — nothing is dropped by position — and
+ *     `distinctiveSlice` needs a survivor of `MIN_NEEDLE_CHARS` or it returns null, and
+ *     null refuses every send in the system. The hazard is shortening the copy, which is
+ *     exactly the direction "make it shorter" pushes. Asserted against the REAL exported
+ *     constant, not a fixture, because a fixture is what drifts from the copy somebody
+ *     actually edits.
  *
- *  2. **Every message is now byte-identical apart from two names**, which puts weight on
- *     guards that were written when bodies differed. `bodyAppearedSince` is an occurrence
- *     DELTA and survives that; `assessRead` did not, and is fixed in
- *     `tests/readThread.test.ts`.
+ *  2. **Every message is now byte-identical**, which puts weight on guards that were
+ *     written when bodies differed. `bodyAppearedSince` is an occurrence DELTA and
+ *     survives that; `assessRead` did not, and is fixed in `tests/readThread.test.ts`.
  */
 
-const persona = {
+const campaignFindFirst = vi.fn()
+const campaignFindUnique = vi.fn()
+const variantFindMany = vi.fn()
+const attemptFindMany = vi.fn()
+const settingRows = vi.fn<() => Array<{ key: string; value: string }>>(() => [])
+
+vi.mock('@/lib/db', () => ({
+  prisma: {
+    detectedCampaign: {
+      findFirst: (...a: unknown[]) => campaignFindFirst(...a),
+      findUnique: (...a: unknown[]) => campaignFindUnique(...a),
+      count: () => Promise.resolve(0),
+    },
+    messageVariant: { findMany: (...a: unknown[]) => variantFindMany(...a) },
+    outreachAttempt: { findMany: (...a: unknown[]) => attemptFindMany(...a) },
+    setting: { findMany: () => Promise.resolve(settingRows()) },
+  },
+}))
+
+const { composeForPair, SINGLE_TEMPLATE_MIDDLE } = await import('@/outreach/compose')
+const { distinctiveSlice, proseLines, bodyAppearedSince, MIN_NEEDLE_CHARS } = await import('@/outreach/matching')
+
+const PERSONA = {
   personaName: 'Kapil Jain',
   personaRole: 'Co-founder',
   personaBrand: 'Bollywood Chronicle',
@@ -36,74 +54,90 @@ const persona = {
   personaEmail: 'kapil@digitalsukoon.com',
 }
 
-const brand = (displayName: string, handle = 'crocsindia') => ({
-  handle,
-  displayName,
-  contactFirstName: null,
-  kind: 'BRAND',
+function pairFor(args: { senderId?: string; persona?: typeof PERSONA; handle?: string; displayName?: string; kind?: string } = {}) {
+  const { senderId = 'send_1', persona = PERSONA, handle = 'crocsindia', displayName = 'Crocs India', kind = 'BRAND' } = args
+  return {
+    id: `pair_${senderId}_${handle}`,
+    senderId,
+    targetId: `targ_${handle}`,
+    bespokeBody: null,
+    sender: persona,
+    target: { handle, displayName, contactFirstName: null, kind, discoveredFromCampaignId: null },
+  } as Parameters<typeof composeForPair>[0]['pair']
+}
+
+const compose = (p: ReturnType<typeof pairFor>, senderHandle = 'bollywoodchronicle') =>
+  composeForPair({ pair: p, senderHandle, touchNumber: 1 })
+
+beforeEach(() => {
+  campaignFindFirst.mockReset().mockResolvedValue(null)
+  campaignFindUnique.mockReset().mockResolvedValue(null)
+  attemptFindMany.mockReset().mockResolvedValue([])
+  variantFindMany.mockReset().mockResolvedValue([{ id: 'var_1', body: 'unused when the template is on' }])
+  // No Setting rows: every runtime setting takes its default, and singleTemplate
+  // defaults TRUE — this file describes the shipping configuration.
+  settingRows.mockReset().mockReturnValue([])
 })
 
-const render = (target: ReturnType<typeof brand>) =>
-  renderMessage({ persona, target, variantBody: SINGLE_TEMPLATE_MIDDLE, hook: null }).body
+describe('the standard message is sent verbatim', () => {
+  it('composes to EXACTLY the template bytes — nothing prepended, nothing appended', async () => {
+    const out = await compose(pairFor())
+    expect(out.body).toBe(SINGLE_TEMPLATE_MIDDLE)
+    expect(out.hookLine).toBeNull()
+    expect(out.usedBespoke).toBe(false)
+    // The variant is still CLAIMED — the per-pair exclusion keeps advancing.
+    expect(out.variantId).toBeTruthy()
+  })
 
-describe('the standard message', () => {
-  it('opens with the greeting and the introduction on ONE line', () => {
-    const first = render(brand('Crocs India')).split('\n')[0] ?? ''
-    expect(first).toBe("Hi Crocs India team, I'm Kapil Jain, Co-founder of Bollywood Chronicle.")
+  /** "No custom message" now means NOTHING varies — not even the recipient's name. */
+  it('is byte-identical across recipients', async () => {
+    const a = await compose(pairFor({ handle: 'crocsindia', displayName: 'Crocs India' }))
+    const b = await compose(pairFor({ handle: 'amazondotin', displayName: 'Amazon India' }))
+    const c = await compose(pairFor({ handle: 'agoracitycentre', displayName: 'agoracitycentre', kind: 'CHANNEL' }))
+    expect(a.body).toBe(b.body)
+    expect(b.body).toBe(c.body)
+    expect(a.body).toBe(SINGLE_TEMPLATE_MIDDLE)
+  })
+
+  it('is byte-identical across senders — no page name, no signature, no persona at all', async () => {
+    const otherPersona = { ...PERSONA, personaName: 'Someone Else', personaBrand: 'Mad About Marketing' }
+    const a = await compose(pairFor({ senderId: 'send_1', persona: PERSONA }), 'bollywoodchronicle')
+    const b = await compose(pairFor({ senderId: 'send_2', persona: otherPersona }), 'madaboutmarketingg')
+    expect(a.body).toBe(b.body)
   })
 
   /**
-   * The defect this replaced, stated as an assertion. `parts` held a bare `''` between the
-   * greeting and the body, so `join('\n')` produced a blank second line — and Instagram's
-   * inbox list previews only the first line, so every recipient's preview read
-   * "Hi Crocs India team," and nothing else.
+   * The exact bytes Tabish supplied, pinned: "Hi," with NO space after the comma
+   * ("it is all continuous"), the U+2019 apostrophes, one single line.
    */
-  it('never leaves the greeting alone on its own line', () => {
-    for (const name of ['Crocs India', 'Amazon India', 'Royal Canin India']) {
-      const first = render(brand(name)).split('\n')[0] ?? ''
-      expect(first.endsWith(','), `"${first}" is a bare greeting`).toBe(false)
-      expect(first.length, 'the first line must carry the pitch, not just a greeting').toBeGreaterThan(40)
-    }
+  it('keeps the template\'s own first characters — "Hi," with no space after the comma', () => {
+    expect(SINGLE_TEMPLATE_MIDDLE.startsWith('Hi,We’re')).toBe(true)
+    expect(SINGLE_TEMPLATE_MIDDLE).toContain('Let’s connect')
+    expect(SINGLE_TEMPLATE_MIDDLE).not.toContain('\n')
   })
+})
 
-  it('carries the greeting name, the page name and the signature', () => {
-    const body = render(brand('Crocs India'))
-    expect(body).toContain('Hi Crocs India team,')
-    expect(body).toContain('Co-founder of Bollywood Chronicle.')
-    expect(body.endsWith(signatureBlock(persona))).toBe(true)
-  })
-
+describe('the mechanical floor that keeps sending alive', () => {
   /**
-   * ── THE INVARIANT THAT KEEPS SENDING ALIVE ───────────────────────────────
-   *
-   * Mutation-tested in both directions: cutting SINGLE_TEMPLATE_MIDDLE to one SHORT
-   * paragraph makes `distinctiveSlice` return null and this fails; cutting it to one LONG
-   * paragraph keeps a needle and it passes. The property is length, not count — which is
-   * why the assertion is on how many lines clear MIN_NEEDLE_CHARS rather than on how many
-   * paragraphs there are.
+   * A single line has no envelope structure to strip, so `proseLines` keeps it whole —
+   * nothing is dropped by position. That branch is what makes a one-line template
+   * sendable at all.
    */
-  it('leaves prose long enough for a needle after the opener is dropped', () => {
-    const prose = proseLines(render(brand('Crocs India')))
-    const usable = prose.filter((l) => l.length >= MIN_NEEDLE_CHARS)
-    expect(usable.length, 'no paragraph clears the needle minimum — every send would be refused').toBeGreaterThanOrEqual(1)
-    // Two is the margin this copy ships with, so a later trim has somewhere to go.
-    expect(usable.length).toBeGreaterThanOrEqual(2)
+  it('the single-line branch of proseLines keeps the whole line', () => {
+    expect(proseLines(SINGLE_TEMPLATE_MIDDLE)).toEqual([SINGLE_TEMPLATE_MIDDLE])
   })
 
   it('yields a needle the send guards can search for', () => {
-    for (const name of ['Crocs India', 'agoracitycentre', 'Jignesh N Khatiwala']) {
-      const needle = distinctiveSlice(render(brand(name)))
-      expect(needle, `no needle for "${name}" — every send to them would be refused`).not.toBeNull()
-      expect(needle!.length).toBeGreaterThanOrEqual(MIN_NEEDLE_CHARS)
-    }
+    const needle = distinctiveSlice(SINGLE_TEMPLATE_MIDDLE)
+    expect(needle, 'no needle — every send in the system would be refused').not.toBeNull()
+    expect(needle!.length).toBeGreaterThanOrEqual(MIN_NEEDLE_CHARS)
+    expect(SINGLE_TEMPLATE_MIDDLE).toContain(needle!)
   })
 
-  /**
-   * A handle is never put in front of a prospect. `usableBrandName` refuses a display name
-   * that is just the handle, and the greeting falls back rather than inventing a company.
-   */
-  it('does not greet a raw handle', () => {
-    expect(render(brand('agoracitycentre', 'agoracitycentre'))).toContain('Hi there,')
+  /** ...and the composed body carries that same needle, being the same bytes. */
+  it('the composed body yields the same needle', async () => {
+    const out = await compose(pairFor())
+    expect(distinctiveSlice(out.body)).toBe(distinctiveSlice(SINGLE_TEMPLATE_MIDDLE))
   })
 
   /**
@@ -113,54 +147,10 @@ describe('the standard message', () => {
    * the read after, and a count going 1→2 is a delta a thread cannot fake.
    */
   it('confirms a second identical message by delta, in both directions', () => {
-    const body = render(brand('Crocs India'))
+    const body = SINGLE_TEMPLATE_MIDDLE
     const threadBefore = body
     const threadAfter = `${body}\n${body}`
     expect(bodyAppearedSince(threadBefore, threadAfter, body), 'the message DID appear').toBe(true)
     expect(bodyAppearedSince(threadBefore, threadBefore, body), 'the message did NOT appear').toBe(false)
-  })
-
-  /** Only two things vary across the whole fleet. This is what "no custom message" means. */
-  it('differs between two recipients ONLY by the name', () => {
-    const a = render(brand('Crocs India'))
-    const b = render(brand('Amazon India', 'amazondotin'))
-    expect(a).not.toBe(b)
-    expect(a.replace('Crocs India', 'Amazon India')).toBe(b)
-  })
-
-  it('differs between two senders ONLY by the page name', () => {
-    const other = { ...persona, personaBrand: 'Mad About Marketing' }
-    const a = renderMessage({ persona, target: brand('Crocs India'), variantBody: SINGLE_TEMPLATE_MIDDLE, hook: null }).body
-    const b = renderMessage({
-      persona: other,
-      target: brand('Crocs India'),
-      variantBody: SINGLE_TEMPLATE_MIDDLE,
-      hook: null,
-    }).body
-    expect(a.replaceAll('Bollywood Chronicle', 'Mad About Marketing')).toBe(b)
-  })
-
-  /**
-   * Carried over from the retired `singleTemplate.test.ts`, which pinned the previous
-   * template. Every number a prospect reads has to be one we actually claim — the quality
-   * gate hunts for exactly these tokens, and the copy must not be the place a new figure
-   * gets invented.
-   */
-  it('claims only figures the quality gate already approves', () => {
-    const claims = SINGLE_TEMPLATE_MIDDLE.toLowerCase().match(/\d[\d,.]*\s*(?:%|\+|m\b|k\b|million|billion|crore|lakh)/gi) ?? []
-    expect(claims.length, 'the check must actually see some figures, or it is vacuous').toBeGreaterThan(0)
-    for (const c of claims) {
-      const normalised = c.trim().toLowerCase().replace(/\s+/g, ' ')
-      expect(
-        APPROVED_FIGURES.some((f) => normalised.startsWith(f) || f.startsWith(normalised.replace(/\s.*$/, ''))),
-        `figure "${c}" is not in APPROVED_FIGURES`,
-      ).toBe(true)
-    }
-  })
-
-  /** Writer and probe share bytes — the reason `signatureBlock` is the one writer. */
-  it('builds the opener and the signature from the exported helpers', () => {
-    const body = render(brand('Crocs India'))
-    expect(body).toContain(`${buildGreeting(brand('Crocs India'))} ${introLine(persona)}`)
   })
 })

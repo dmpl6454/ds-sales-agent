@@ -31,7 +31,6 @@ import { RESEND_BLOCKS } from '@/outreach/gate'
 export const REMEDIES = {
   [RESEND_BLOCKS.NO_SESSION]: { href: '/senders', label: 'Sign this account in' },
   [RESEND_BLOCKS.SENDER_NOT_ACTIVE]: { href: '/senders', label: 'Look at this account' },
-  [RESEND_BLOCKS.PERSONA_NOT_DISTINCT]: { href: '/senders', label: 'Give this account its own identity' },
   [RESEND_BLOCKS.COHORT_NOT_CLEARED]: { href: '/senders', label: 'See where this account is in the queue' },
 
   /**
@@ -69,35 +68,8 @@ export const REMEDIES = {
     label: 'We watch this page to find who is buying from them — discard this draft',
   },
 
-  // Both clear by waiting. See the note above on why neither links to /settings.
-  [RESEND_BLOCKS.TARGET_RECENTLY_CONTACTED]: {
-    href: null,
-    label: 'Waits by itself — the spacing window opens again a week after the last message this recipient received from any of our pages.',
-  },
-  [RESEND_BLOCKS.TARGET_DAILY_CAP]: { href: null, label: 'The allowance resets at midnight IST.' },
-  [RESEND_BLOCKS.SENDER_DAILY_CAP]: { href: null, label: 'The allowance resets at midnight IST.' },
-
-  /**
-   * The control is already on the card: discard it, and a fresh one is written with the
-   * identity the account carries now. Re-rendering the stored body instead is refused on
-   * purpose — it is what the send guards compare against, and an operator may have edited it.
-   */
-  [RESEND_BLOCKS.PERSONA_CHANGED_SINCE_DRAFT]: {
-    href: null,
-    label: 'Discard it below and a fresh one will be written.',
-  },
-
-  /**
-   * Same remedy as the persona stop above and for the same reason: the fix is a NEW body,
-   * not an edit to this one. `href: null` is the real answer — there is no page to visit,
-   * because nothing is misconfigured. The draft simply waited too long, and the next planning
-   * pass writes a replacement with the right wording (or none, if the placement is now too
-   * old to be worth naming, which `describeRecency` decides by returning null past 120 days).
-   */
-  [RESEND_BLOCKS.HOOK_STALE_SINCE_DRAFT]: {
-    href: null,
-    label: 'Discard it below; the next one will describe the timing correctly.',
-  },
+  // Clears by waiting — the one volume rule left (5/day per account to one recipient).
+  [RESEND_BLOCKS.PAIR_DAILY_CAP]: { href: null, label: 'The allowance resets at midnight IST.' },
 
   /**
    * Reachable here for exactly one reason: a draft in SENDING is in the waiting list so that a

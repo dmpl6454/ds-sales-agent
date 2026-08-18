@@ -46,17 +46,10 @@ const STOP_LABELS: Record<(typeof RESEND_BLOCKS)[keyof typeof RESEND_BLOCKS], st
   [RESEND_BLOCKS.SENDER_NOT_ACTIVE]: 'Instagram flagged the account',
   [RESEND_BLOCKS.TARGET_OPTED_OUT]: 'the recipient is retired — never contacted again',
   [RESEND_BLOCKS.TARGET_IS_WATCH_ONLY]: 'this is a page we watch for paid posts, not a company we message',
-  [RESEND_BLOCKS.TARGET_REPLIED]: 'they replied — paused for a day, then resumes',
-  [RESEND_BLOCKS.HOOK_STALE_SINCE_DRAFT]:
-    'the message says when we saw their placement, and it has waited long enough that the timing is no longer right',
+  [RESEND_BLOCKS.TARGET_REPLIED]: 'they replied — paused for two days, then resumes',
   [RESEND_BLOCKS.NO_SESSION]: 'the account is not signed in',
-  [RESEND_BLOCKS.TARGET_RECENTLY_CONTACTED]:
-    'another of our pages wrote to this recipient within the spacing window — one inbox never hears from two of our pages back to back',
-  [RESEND_BLOCKS.TARGET_DAILY_CAP]: 'the recipient reached today’s cap',
-  [RESEND_BLOCKS.SENDER_DAILY_CAP]: 'the account reached today’s cap',
-  [RESEND_BLOCKS.PERSONA_NOT_DISTINCT]: 'the account shares its identity with another account',
+  [RESEND_BLOCKS.PAIR_DAILY_CAP]: 'this account already sent this recipient five messages today',
   [RESEND_BLOCKS.COHORT_NOT_CLEARED]: 'the account’s onboarding group is not cleared yet',
-  [RESEND_BLOCKS.PERSONA_CHANGED_SINCE_DRAFT]: 'the account’s identity changed after the message was written',
 }
 
 /**
@@ -71,9 +64,7 @@ const STOP_LABELS: Record<(typeof RESEND_BLOCKS)[keyof typeof RESEND_BLOCKS], st
  */
 const CROSSABLE_LABELS: Record<CrossableRule, string> = {
   [CROSSABLE_RULES.TARGET_REPLIED]: 'they replied — and the dialog shows the reply itself first',
-  [CROSSABLE_RULES.COOLDOWN_ACTIVE]: 'spacing — it is sooner than the 7 days between messages to one recipient',
   [CROSSABLE_RULES.NO_NEW_MATERIAL]: 'nothing new to say — no paid post has been found since the last message',
-  [CROSSABLE_RULES.UNANSWERED_TOUCH_LIMIT]: 'the unanswered-message cap is reached',
   [CROSSABLE_RULES.PENDING_ATTEMPT_EXISTS]: 'a message to them is already written and waiting',
   [CROSSABLE_RULES.LIFETIME_SEND_CAP_REACHED]: 'the overall send limit is reached, where one is set',
 }
@@ -81,9 +72,7 @@ const CROSSABLE_LABELS: Record<CrossableRule, string> = {
 /** The dialog's own order: the most consequential thing a person can cross is first. */
 const CROSSABLE_ORDER: CrossableRule[] = [
   CROSSABLE_RULES.TARGET_REPLIED,
-  CROSSABLE_RULES.COOLDOWN_ACTIVE,
   CROSSABLE_RULES.NO_NEW_MATERIAL,
-  CROSSABLE_RULES.UNANSWERED_TOUCH_LIMIT,
   CROSSABLE_RULES.PENDING_ATTEMPT_EXISTS,
   CROSSABLE_RULES.LIFETIME_SEND_CAP_REACHED,
 ]
@@ -120,51 +109,22 @@ export default async function RulesPage() {
 
   const rows: Array<{ group: string; lines: string[] }> = [
     {
-      group: 'Spacing',
-      lines: [
-        `${env.DEFAULT_COOLDOWN_DAYS} days between messages to the same recipient from the same account.`,
-        'A follow-up must reference a paid post not used before for that conversation — fresh material is what makes a second message new rather than a repeat, which is what Instagram penalises.',
-        'At most 3 unanswered messages to one recipient, ever.',
-      ],
-    },
-    {
       group: 'Volume',
       lines: [
-        `${settings.maxPerTargetPerDay} per recipient per day, whoever sends.`,
-        `${perAccount} per account per day.`,
-        `${FLEET_MAX_PER_HOUR} per hour across all accounts together.`,
+        /*
+          THE ONE VOLUME RULE (2026-08-18, Tabish's instruction). Every other cap — the
+          cross-sender per-recipient cap, the per-account daily cap, the 7-day spacing, the
+          unanswered-message cap, the hourly fleet allowance, the new-brand daily cap — was
+          removed the same day on his instruction ("Remove all caps … rest unlimited").
+        */
+        `${settings.maxPerPairPerDay} messages per day from one account to one recipient — the one volume rule. Everything else is uncapped, by explicit decision.`,
+        'A follow-up must reference a paid post not used before for that conversation — fresh material is what makes a second message new rather than a repeat, which is what Instagram penalises.',
         settings.fleetMaxPerDay === Number.POSITIVE_INFINITY
           ? 'No fleet-wide daily cap — chosen deliberately, one setting away from binding.'
           : `${settings.fleetMaxPerDay} per day across all accounts together.`,
-        `All together: the pace allows at most ${paceCeiling} deliveries a day, and the ` +
-          `${fleetCaps._count} accounts' own caps allow ${fleetCaps._sum.dailyCap ?? 0} between them — ` +
-          `whichever is smaller is the real daily ceiling. The per-recipient number above is not a ` +
-          `throughput limit; it protects one inbox from hearing from several of our pages in one day.`,
         env.MAX_TOTAL_SENDS === null
           ? 'No lifetime ceiling — chosen deliberately.'
           : `${env.MAX_TOTAL_SENDS} messages lifetime, counting ones still waiting.`,
-        /*
-          TWO NUMBERS, NEVER ONE. The cap on opening conversations with new brands is
-          measured twice — messages WRITTEN today and messages DELIVERED today — and either
-          reaching the cap stops the rest. They are shown separately because they answer
-          different questions and today they read 6 and 0: merging them would report the
-          smaller and hide the one actually binding.
-
-          Both come from `readNewBrandTouchCounts`, the same function the planner asks. This
-          page promises at the top that every number on it is read from the module that
-          enforces it, and this rule is exactly where that promise had failed: the cap
-          counted DELIVERED messages only, nothing has ever been delivered, so "2 a day" was
-          enforced as "2 a run" — and a page reporting a limit by a different rule than the
-          one enforcing it reads as headroom.
-        */
-        `${settings.maxNewBrandTouchesPerDay} brands contacted for the first time per day, across all accounts — ` +
-          `${brandTouches.delivered} delivered so far today.`,
-        /*
-          A SEPARATE NUMBER SINCE 2026-08-17, because it answers a different question. A draft
-          reaches nobody, so how many are WAITING is a queue-depth concern, not a rule about
-          strangers' inboxes. While the two shared one number the delivery cap above could
-          never be reached at all: creation was checked first and stopped the queue growing.
-        */
         `Room for ${settings.maxWaitingNewBrandDrafts} first messages waiting at once — ${brandTouches.waiting} in the queue now. ` +
           `Sending or discarding one makes room immediately.`,
       ],
@@ -173,7 +133,7 @@ export default async function RulesPage() {
       group: 'Hours and pace',
       lines: [
         `${ACTIVE_FROM_HOUR}:00–${ACTIVE_TO_HOUR}:00 IST only.`,
-        `At most ${MAX_SENDS_PER_TICK} message every ${DISPATCH_INTERVAL_MINUTES} minutes, and never two sends within ${FLEET_MIN_GAP_MINUTES} minutes of each other.`,
+        `Never two sends within ${FLEET_MIN_GAP_MINUTES} minutes of each other — across the ${fleetCaps._count} accounts together that works out to roughly ${Math.floor(((ACTIVE_TO_HOUR - ACTIVE_FROM_HOUR) * 60) / FLEET_MIN_GAP_MINUTES)} deliveries a day at full pace.`,
         'Nothing is refused by pacing — a held message keeps its Send button and waits its turn.',
       ],
     },
