@@ -40,6 +40,100 @@ first one's profiles.
 
 ---
 
+## 18 AUGUST, LATE — SPACING CAME BACK, DISCOVERY RUNS ITSELF, AND `/` WAS 500 FOR AN HOUR
+
+**Read this before the section below it: it CORRECTS three things that section shipped.**
+All three were found by running the system rather than by reading it, and one of them was
+in front of Tabish as a broken page.
+
+### `Infinity` REACHED `Array.from`, AND EVERY PAGE RETURNED 500
+
+`FLEET_MAX_PER_HOUR = Number.POSITIVE_INFINITY` was correct as a rule and fatal as a
+drawing: `pace.tsx` renders one pip per allowed send, so `Array.from({ length: Infinity })`
+threw `RangeError: Invalid array length` and `/` was HTTP 500 on every request. The console
+error Tabish screenshotted (*"Encountered a script tag while rendering React component"*) is
+NOT this — it is a pre-existing dev-only notice about the theme boot script in `layout.tsx`,
+and it is noise. The 500 was in the server log, one line above it.
+
+**The fix is not a null check.** `PaceBand` now takes `perHour` and `minGapMinutes` from
+`dispatchStatus().limits` — *the values the dispatcher actually enforces*, which are the
+`Setting` rows where they exist and the constants otherwise. Importing the constant was one
+source short of correct all along: a Setting row overriding it would have made the page
+state a limit nobody was enforcing, which is the `MAX_TOTAL_SENDS` failure with the roles
+reversed. With no allowance the row draws the rule that IS in force — the 5-minute gap and
+the ceiling it implies (~130/day).
+
+**This shipped because `pnpm ig:layout` was never run after the restructure** (it needs the
+server up, and the server was mid-deploy). Running it then found two MORE things, both
+pre-existing and both general: `.grid-2` was a hard `1fr 1fr` that could not collapse, and
+the history table had no `.table-wrap` — together they scrolled `/analytics` 108px sideways
+at 800px. `/`'s query budget also drops **520 → 160**, because the per-draft gate loop it
+was sized for is gone and a ceiling four times the real figure cannot catch the regression
+it exists for.
+
+### CROSS-ACCOUNT SPACING IS BACK, AND IT EXCLUDES THE SENDER ITSELF
+
+Tabish, within the hour, watching it run: *"add back cross account spacing, we do not want 3
+accounts to send the same message to the individual 3 times."* MEASURED when he said it:
+**6 recipients had been reached by more than one of our accounts, and @absolutejk by three**
+(@bollywoodchronicle, @bollywoodsocietyy, @madaboutmarketingg). The morning's removal
+reproduced the 2026-08-17 duplicate incident within hours — which is the strongest evidence
+this file can offer that the rule was load-bearing rather than decorative.
+
+`TARGET_RECENTLY_CONTACTED` is restored at the governor AND the gate, absolute, with the
+window from `settings.defaultCooldownDays` (7 days, restored to settings with it).
+
+**ONE DELIBERATE DIFFERENCE, and it must not be "simplified" away:** the lookup now carries
+`senderId: { not: senderId }` — it asks whether ANOTHER of our pages wrote, not whether
+anyone did. It used to include self, which was harmless while a 7-day per-pair cooldown said
+the same thing; that cooldown is gone and Tabish's rule is FIVE A DAY from one account, so
+including self would silently reinstate a seven-day pair cooldown and contradict the number
+he chose — presenting as "the queue stopped draining", days later, pointing at nothing.
+`tests/cross-account-spacing.test.ts` is a SOURCE GREP over both call sites for exactly that,
+mutation-tested; the boundary is tested in both directions in `governor.test.ts`.
+
+**VERIFIED LIVE by executing the gate against the real queue**, not by reading it: 10 waiting
+drafts now held with *"this recipient heard from @bollywoodchronicle 6h ago — spacing applies
+across every page, not per account"*, and **64 still clear to send** — a rule that binds
+without becoming an outage. The 6 duplicates cannot be unsent; all 6 are now inside the
+window, so no seventh is possible.
+
+### BRAND DISCOVERY RUNS ITSELF NOW, ON THE DEVICE AGENT
+
+Tabish: *"this should run automatically, nothing should be manually run."* He is right, and
+this file already had the principle: *a feature that works only when someone runs a command
+is not running.* `autoResolveBrands` — **the same function the server calls**, not a copy —
+now runs on the device agent every **30 minutes** at **25 lookups a pass**, which puts it on
+the home IP where the profile endpoint answers instead of 429ing. It is on its own timer
+rather than inside the send tick (6-second lookup spacing would delay delivery by minutes),
+guarded against overlapping passes, never able to fail the agent, and NOT gated on autopilot
+— discovering who bought a placement is reading public data, and gating it on the send
+switch would mean turning autopilot on to a queue that stopped being filled hours ago.
+
+**VERIFIED: the first automatic pass ran at 17:54 IST — `looked=9 created=4 unsure=1
+unreached=0 haltedEarly=false`.** Four prospects nobody typed a command for.
+
+### AND THE DEPLOY SPRANG BOTH OF ITS DOCUMENTED TRAPS, IN ONE COMMAND
+
+The server dashboard was down for ten minutes because I typed the archive deploy instead of
+following this file's own procedure. Both traps are already written down here, and both
+still fired:
+
+1. **`tar xzf` never deletes.** Three files deleted from the repo hours earlier
+   (`src/app/settings/{actions,form,template-form}.ts[x]`) were still on the server, still
+   importing settings that no longer exist — and `next build` typechecks what it FINDS, so a
+   deploy of correct code failed on code that was not in the repo at all.
+2. **`pnpm build | tail -1` masks the exit code**, so pm2 started with no production build.
+   That exact failure is documented two sections down, verbatim, from the last time.
+
+**`bash scripts/deploy.sh` is the answer** — the file list comes from `git ls-files`, stale
+files are removed explicitly (`LC_ALL=C sort` on both sides), the build's status is read
+directly, and pm2 is restarted ONLY on success; on failure the server is left STOPPED with
+the log printed, because a running old build beats a started new one with nothing behind it.
+A rule written down is not a rule enforced; this one is a script now.
+
+---
+
 ## 18 AUGUST, EVENING — EVERY VOLUME CAP BUT ONE IS GONE, ON TABISH'S INSTRUCTION
 
 **Read this before trusting anything below it about caps, spacing, personas or the message.**
