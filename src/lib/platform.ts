@@ -215,7 +215,20 @@ export function openUrlCommand(platform: Platform, url: string, browser: string 
 /** Runs a Cmd, piping `stdin` when supplied. Explicit utf8 so multi-byte survives. */
 export function run(cmd: Cmd, stdin?: string): Promise<void> {
   return new Promise((resolve, reject) => {
-    const p = spawn(cmd.command, cmd.args)
+    /**
+     * LANG is forced to UTF-8, and this is load-bearing, not cosmetic. FOUND LIVE
+     * 2026-08-18, first non-ASCII template: `pbcopy` interprets its stdin using the
+     * locale, and the launchd-spawned device agent has NO locale set — so the U+2019
+     * apostrophes in the standard message (bytes E2 80 99) were read as MacRoman and
+     * staged in Instagram's composer as `‚Äô`, three characters each. The composer
+     * read-back correctly refused every send (242 chars staged vs 238 drafted), from
+     * the agent only: a terminal shell exports LANG, which is why the identical code
+     * delivered when run from the CLI. Same trap as Windows' clip.exe corrupting
+     * em-dashes, one platform over — the reason clip.exe was already rejected.
+     */
+    const p = spawn(cmd.command, cmd.args, {
+      env: { ...process.env, LANG: 'en_US.UTF-8', LC_ALL: 'en_US.UTF-8' },
+    })
     p.on('error', reject)
     p.on('close', (code) => (code === 0 ? resolve() : reject(new Error(`${cmd.command} exited ${code}`))))
     if (stdin !== undefined) {
