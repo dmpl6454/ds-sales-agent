@@ -62,6 +62,12 @@ bootstrap.exec(`
   );
   CREATE UNIQUE INDEX "SenderAccount_handle_key" ON "SenderAccount"("handle");
 
+  CREATE TABLE "Setting" (
+    "key" TEXT NOT NULL PRIMARY KEY,
+    "value" TEXT NOT NULL,
+    "updatedAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+  );
+
   CREATE TABLE "TargetAccount" (
     "id" TEXT NOT NULL PRIMARY KEY,
     "handle" TEXT NOT NULL,
@@ -75,6 +81,9 @@ bootstrap.exec(`
     "importNote" TEXT,
     "discoveredFromCampaignId" TEXT,
     "brandCategory" TEXT,
+    "isVerified" BOOLEAN,
+    "followerCount" INTEGER,
+    "campaignTalent" BOOLEAN NOT NULL DEFAULT false,
     "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "updatedAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
   );
