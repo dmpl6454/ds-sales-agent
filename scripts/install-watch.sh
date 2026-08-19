@@ -20,15 +20,25 @@
 # launchd restarts the worker if it crashes, and starts it at login. That covers the
 # failure that actually happened here: a process that was killed and never restarted.
 #
-# It does NOT wake a sleeping Mac, and it must not be described as if it does. A closed
-# lid suspends the process; `KeepAlive` does not resume it early. The scheduler's own
-# `execution:missed` handler recovers a slot slept through inside CATCHUP_WINDOW_MINUTES,
-# which is why a short sleep is survivable and an overnight one is not.
+# ── IDLE SLEEP WAS HALTING SENDS, AND caffeinate FIXES IT (2026-08-19) ───────
 #
-# The real answer to "survives a closed laptop" is the server — see
-# docs/specs/2026-08-08-hosted-product-plan.md. This is the stop-gap that protects the
-# corpus while that is built, and saying otherwise would be the same
-# "toggle promises behaviour with nothing behind it" failure this project keeps finding.
+# MEASURED from watch.log: overnight the device agent went SILENT for 50-68 minutes at a
+# stretch while it polls every 30s — the Mac idle-slept and SUSPENDED the process. Since
+# the sender lives on this machine (the server cannot send), a suspended agent is a
+# suspended fleet, and Tabish saw exactly this: "messages were halted and resumed only
+# after I landed on the page." launchd cannot wake a sleeping Mac, so the fix is not to
+# wake it but to STOP it idle-sleeping while there is sending to do.
+#
+# The agent now runs under `caffeinate -i`, which holds a "prevent idle system sleep"
+# power assertion for as long as the agent lives (and dies with it, so the Mac sleeps
+# normally once the agent is uninstalled). `ProcessType=Interactive` additionally exempts
+# it from the timer-throttling launchd applies to background jobs.
+#
+# THE ONE CASE THIS STILL DOES NOT COVER is a CLOSED LID: clamshell sleep is a hardware
+# power state that no assertion overrides on battery, so keep the lid open (or on external
+# power + display). The real answer to "survives a closed laptop" is the server — see
+# docs/specs/2026-08-08-hosted-product-plan.md — but the server cannot hold the Instagram
+# sessions, so for sending, an awake Mac with the lid open is the design.
 
 set -euo pipefail
 
@@ -60,6 +70,11 @@ if [[ -z "$PNPM" ]]; then
 fi
 NODE_BIN="$(dirname "$(command -v node)")"
 
+# caffeinate is a system binary; being explicit about the path keeps it working under
+# launchd's minimal PATH. `-i` = prevent idle SYSTEM sleep (not display sleep — the screen
+# may still dim), held only while the wrapped command runs.
+CAFFEINATE="/usr/bin/caffeinate"
+
 case "${1:-install}" in
   install)
     mkdir -p "$HOME/Library/LaunchAgents" "$LOG_DIR"
@@ -72,14 +87,23 @@ case "${1:-install}" in
   <key>Label</key>
   <string>${LABEL}</string>
 
+  <!-- Wrapped in \`caffeinate -i\` so the Mac does not idle-sleep and suspend the sender
+       while there is sending to do. The assertion is released when the agent exits. -->
   <key>ProgramArguments</key>
   <array>
+    <string>${CAFFEINATE}</string>
+    <string>-i</string>
     <string>${PNPM}</string>
     <string>${MODE}</string>
   </array>
 
   <key>WorkingDirectory</key>
   <string>${REPO}</string>
+
+  <!-- Interactive so launchd does not throttle its timers as a background job; the 30s
+       poll must fire on time for the 1-minute send pace to hold. -->
+  <key>ProcessType</key>
+  <string>Interactive</string>
 
   <!-- launchd's PATH omits Homebrew, so pnpm's own child processes (node, tsx) would
        not resolve. This is the single most common reason a working command fails

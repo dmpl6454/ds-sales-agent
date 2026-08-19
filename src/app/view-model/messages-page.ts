@@ -15,6 +15,7 @@ import { getSettings } from '@/lib/settings'
  */
 import { readNewBrandTouchCounts } from '@/outreach/brandTouchCounts'
 import { recheckBeforeSend } from '@/outreach/gate'
+import { replyHaltFloor } from '@/outreach/replyHalt'
 import type { OnDemandRecipient, OnDemandSender } from '../on-demand'
 
 /**
@@ -40,16 +41,22 @@ export interface QueueBySender {
 }
 
 /**
- * ── "UP NEXT" (2026-08-19, Tabish: "the queue must be visible as an 'Up next' in the
- * UI such that users can see who is sending next in our round format") ──────────────
+ * ── "UP NEXT" — WHAT ACTUALLY SENDS NEXT, NOT WHAT SITS AT THE FRONT ─────────
  *
- * The dispatcher's own order — READY drafts, oldest first, exactly the query
- * `deliverWaiting` runs — so the page can never name a different order than the one
- * that will actually send. The HEAD row also carries the gate's live verdict, from the
- * same `recheckBeforeSend` the dispatcher will ask: one draft's worth of queries buys
- * the answer to "why is the front of the queue not moving", which is the blocker a
- * reader actually needs. Re-checking all eight would octuple the cost to answer a
- * question nobody asked about row six.
+ * (2026-08-19, Tabish: "the queue must be visible as an 'Up next' … I just want a queue
+ * that updates like the number after every message is sent.")
+ *
+ * THE BUG THIS FIXES: the dispatcher drains READY oldest-first but HOLDS every draft that
+ * fails the gate, and sends the first that passes. Most of the queue's front is held by
+ * cross-page spacing ("heard from @X a day ago"), so those rows never move — while sends
+ * happen from further down. Showing the raw oldest-first list therefore showed eight
+ * permanently-stuck rows whose count dropped but whose faces never changed.
+ *
+ * So "Up next" is now the SENDABLE drafts in dispatch order — the ones whose target is not
+ * spacing-held and not reply-halted — which is what the dispatcher will actually take. As
+ * each sends (and as each fresh contact spacing-holds a target's other drafts), the list
+ * advances, matching the count. The two dominant holds are computed in bulk (one query
+ * each); rarer per-sender holds (cohort, session) are left to the head row's real gate.
  */
 export interface UpNextRow {
   position: number
@@ -108,8 +115,10 @@ export interface UncertainMessage {
 export interface MessagesPageView {
   /** Waiting drafts per sending account. The queue as counts, not cards. */
   queueBySender: QueueBySender[]
-  /** The front of the queue in dispatch order, with the head's live gate verdict. */
+  /** The SENDABLE front of the queue in dispatch order, with the head's live gate verdict. */
   upNext: UpNextRow[]
+  /** Drafts waiting but held right now for cross-page spacing or a reply. */
+  heldWaiting: number
   waitingTotal: number
   uncertain: UncertainMessage[]
   /** Parked by the retry cap: repeated failures, provably undelivered. */
@@ -262,16 +271,23 @@ export async function buildMessagesPage(): Promise<MessagesPageView> {
       select: { handle: true, displayName: true, optedOut: true },
     }),
     /**
-     * "Up next": the dispatcher's exact pick order (`deliverWaiting` reads READY by
-     * `queuedAt` ascending), bounded to the front of the queue. The full attempt row
-     * with its pair is fetched because the head of the list is put through the REAL
-     * gate below — never a re-derivation.
+     * "Up next": ALL READY drafts in the dispatcher's pick order (`deliverWaiting` reads
+     * READY by `queuedAt` ascending). Light select — the held/sendable partition below
+     * needs only who-to-whom and the queue time, not the 238-char body. Fetching the whole
+     * READY set is exactly what the dispatcher does, so this cannot claim an order the
+     * dispatcher will not follow.
      */
     prisma.outreachAttempt.findMany({
       where: { status: 'READY' },
-      include: { pair: { include: { sender: true, target: true } } },
+      select: {
+        id: true,
+        status: true,
+        queuedAt: true,
+        senderId: true,
+        targetId: true,
+        pair: { include: { sender: true, target: true } },
+      },
       orderBy: { queuedAt: 'asc' },
-      take: 8,
     }),
     prisma.outreachAttempt.findFirst({
       where: { status: { in: [...DELIVERED_STATUSES] }, sentAt: { not: null } },
@@ -291,30 +307,77 @@ export async function buildMessagesPage(): Promise<MessagesPageView> {
   ])
 
   /**
-   * The head of the queue through the REAL gate — the same call the dispatcher makes
-   * on its next tick, so the "Up next" panel's blocker is the enforcer's own sentence.
-   * One draft only: the head is the one whose refusal stalls everything behind it.
+   * THE TWO DOMINANT HOLDS, COMPUTED IN BULK so "Up next" shows only what will actually
+   * send. Both mirror `gate.ts` exactly:
+   *
+   *   spacing — a target contacted by ANOTHER of our pages within `defaultCooldownDays`
+   *             is off-limits (TARGET_RECENTLY_CONTACTED, `senderId: { not: … }`).
+   *   reply   — a target that replied within `replyResumeHours`, not yet handled
+   *             (TARGET_REPLIED).
+   *
+   * Per (target → set of senders who delivered recently), so a draft S→T is spacing-held
+   * iff some sender ≠ S is in that set — the same "another page wrote" question the gate
+   * asks. One query each.
    */
-  const headVerdict =
-    upNextRaw.length > 0 ? await recheckBeforeSend(upNextRaw[0]!, { unattended: true }) : null
+  const cooldownFloor = new Date(Date.now() - settings.defaultCooldownDays * 24 * 60 * 60 * 1000)
+  const [recentDeliveries, repliedRows] = await Promise.all([
+    prisma.outreachAttempt.findMany({
+      where: { status: { in: [...DELIVERED_STATUSES] }, sentAt: { gte: cooldownFloor } },
+      select: { targetId: true, senderId: true },
+    }),
+    prisma.outreachAttempt.findMany({
+      where: { repliedAt: { gte: replyHaltFloor(settings.replyResumeHours) }, replyHandledAt: null },
+      select: { targetId: true },
+    }),
+  ])
+  const contactedBy = new Map<string, Set<string>>()
+  for (const r of recentDeliveries) {
+    const s = contactedBy.get(r.targetId) ?? new Set<string>()
+    s.add(r.senderId)
+    contactedBy.set(r.targetId, s)
+  }
+  const repliedTargets = new Set(repliedRows.map((r) => r.targetId))
+
+  const isHeld = (draft: { senderId: string; targetId: string }): boolean => {
+    if (repliedTargets.has(draft.targetId)) return true
+    const senders = contactedBy.get(draft.targetId)
+    if (senders && [...senders].some((sid) => sid !== draft.senderId)) return true
+    return false
+  }
+
+  const sendableDrafts = upNextRaw.filter((a) => !isHeld(a))
+  const heldWaiting = upNextRaw.length - sendableDrafts.length
 
   /**
-   * When each row's turn comes at the current pace. An estimate, and presented as one:
-   * the head goes as soon as the gap since the last delivery has passed (or immediately
-   * if it already has), and each later row is one gap further on. Holds, active hours
-   * and the switch all stretch this — the panel says so rather than pretending.
+   * The head SENDABLE draft through the REAL gate — the same call the dispatcher makes on
+   * its next tick, so the panel's status is the enforcer's own words and catches the rarer
+   * holds (cohort, dead session) the two bulk checks above do not. One draft only.
+   */
+  const headVerdict =
+    sendableDrafts.length > 0 ? await recheckBeforeSend(sendableDrafts[0]!, { unattended: true }) : null
+
+  /**
+   * When each row's turn comes at the current pace. An estimate, and presented as one: the
+   * head goes as soon as the gap since the last delivery has passed (or immediately if it
+   * already has), and each later row is one gap further on. The reply sweep and the switch
+   * both stretch this — the panel says so rather than pretending.
    */
   const gapMinutes = dispatch.limits.minGapMinutes
   const sinceLastSend =
     lastSendRow?.sentAt == null ? null : Math.floor((Date.now() - lastSendRow.sentAt.getTime()) / 60_000)
   const headWait = sinceLastSend === null ? 0 : Math.max(0, gapMinutes - sinceLastSend)
 
-  const upNext: UpNextRow[] = upNextRaw.map((a, i) => ({
+  const upNext: UpNextRow[] = sendableDrafts.slice(0, 8).map((a, i) => ({
     position: i + 1,
     senderHandle: a.pair.sender.handle,
     targetHandle: a.pair.target.handle,
     etaMinutes: headWait + i * gapMinutes,
-    note: i === 0 && headVerdict ? (headVerdict.ok ? 'clear to send on the next tick' : (headVerdict.detail ?? headVerdict.reason)) : null,
+    note:
+      i === 0 && headVerdict
+        ? headVerdict.ok
+          ? 'clear to send on the next tick'
+          : (headVerdict.detail ?? headVerdict.reason)
+        : null,
     held: i === 0 && headVerdict !== null && !headVerdict.ok,
   }))
 
@@ -331,6 +394,7 @@ export async function buildMessagesPage(): Promise<MessagesPageView> {
   return {
     waitingTotal,
     upNext,
+    heldWaiting,
     queueBySender: waitingBySenderRaw
       .map((r) => ({ handle: senderHandles.get(r.senderId) ?? r.senderId, count: r._count._all }))
       .sort((a, b) => b.count - a.count),

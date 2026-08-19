@@ -7,8 +7,6 @@ import { profileStatus } from '@/outreach/browser/profile'
 import { reconcileSessionRecords } from './reconcile'
 import { autoResolveBrands } from '@/detection/autoResolve'
 import { checkForReplies } from '@/outreach/replyCheck'
-import { withinActiveHours } from '@/outreach/pacing'
-import { istHourOfDay } from '@/lib/time'
 
 /**
  *   pnpm agent:device
@@ -252,7 +250,8 @@ async function replyPass(): Promise<void> {
     log.step('the reply sweep is still running from the last pass — skipping this one')
     return
   }
-  if (!withinActiveHours(istHourOfDay(new Date()))) return
+  // No active-hours gate since 2026-08-19: Tabish removed the time window for sending AND
+  // checking, so replies are read around the clock too.
   replyPassRunning = true
   try {
     const summary = await withSendLock('reply-sweep', () => checkForReplies())

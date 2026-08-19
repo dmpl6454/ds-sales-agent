@@ -19,18 +19,26 @@ import type { MessagesPageView } from '../view-model/messages-page'
 export function WaitingList({
   queue,
   upNext,
+  heldWaiting,
   total,
 }: {
   queue: MessagesPageView['queueBySender']
   upNext: MessagesPageView['upNext']
+  heldWaiting: number
   total: number
 }) {
+  const sendable = total - heldWaiting
   return (
     <section>
       <h2>Up next ({total} waiting)</h2>
       {total === 0 ? (
         <p className="cardnote">
           Nothing is waiting. New drafts are written automatically when there is someone new to write to.
+        </p>
+      ) : upNext.length === 0 ? (
+        <p className="cardnote">
+          All {total} waiting {total === 1 ? 'draft is' : 'drafts are'} held right now &mdash; their recipients
+          heard from one of our pages recently (spacing) or replied. They send themselves as each window clears.
         </p>
       ) : (
         <>
@@ -60,9 +68,14 @@ export function WaitingList({
             </tbody>
           </table>
           <p className="cardnote">
-            {total > upNext.length ? <>{total - upNext.length} more wait behind these. </> : null}
-            Times assume Autopilot is on, inside sending hours (10:00&ndash;21:00 IST), one message per
-            gap. Each recipient&rsquo;s account was chosen by the rotation; oldest draft goes first.
+            These are the drafts that will actually go, oldest first &mdash; one every minute while Autopilot is
+            on, any time of day. {sendable > upNext.length ? <>{sendable - upNext.length} more are clear behind them. </> : null}
+            {heldWaiting > 0 ? (
+              <>
+                {heldWaiting} other {heldWaiting === 1 ? 'draft is' : 'drafts are'} held for spacing or a reply and
+                will join the queue as each window clears.
+              </>
+            ) : null}
           </p>
 
           <h3>Waiting per account</h3>

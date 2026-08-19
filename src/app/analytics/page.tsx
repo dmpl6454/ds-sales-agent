@@ -8,8 +8,10 @@ import { CoverageNote } from '../coverage'
 import { SentList } from '../messages/sent'
 import { ExportPanel } from './export-panel'
 import { prisma } from '@/lib/db'
+import { DELIVERED_STATUSES } from '@/lib/constants'
 import { Nav } from '../nav'
 import { PageHead } from '../page-head'
+import { AutoRefresh } from '../auto-refresh'
 import { StackedBars, RunStrip, Funnel, WatchWindow, type Series } from '../charts'
 
 export const dynamic = 'force-dynamic'
@@ -54,13 +56,36 @@ export default async function AnalyticsPage({
   const { range } = await searchParams
   const picked = RANGES.find((r) => r.key === range) ?? RANGES[1]
 
-  const [v, c, charts, senderRows] = await Promise.all([
+  const [v, c, charts, senderRows, sentBySender, repliedBySender] = await Promise.all([
     buildTodayView(),
     buildConversationsPage(),
     buildAnalyticsCharts(picked.days),
-    prisma.senderAccount.findMany({ orderBy: { handle: 'asc' }, select: { handle: true } }),
+    prisma.senderAccount.findMany({ orderBy: { handle: 'asc' }, select: { id: true, handle: true } }),
+    /**
+     * PER-ACCOUNT SENT AND REPLIED (2026-08-19, Tabish: "clearly see the amount of messages
+     * sent to which channels, how many have replied"). Two group-bys, lifetime: which of our
+     * pages has done how much, and how much came back. Per-RECIPIENT detail is the recent
+     * list below and the CSV export; this is the per-SENDER view that had no home.
+     */
+    prisma.outreachAttempt.groupBy({
+      by: ['senderId'],
+      where: { status: { in: [...DELIVERED_STATUSES] } },
+      _count: { _all: true },
+    }),
+    prisma.outreachAttempt.groupBy({
+      by: ['senderId'],
+      where: { repliedAt: { not: null } },
+      _count: { _all: true },
+    }),
   ])
   const senderHandles = senderRows.map((s) => s.handle)
+
+  const sentById = new Map(sentBySender.map((r) => [r.senderId, r._count._all]))
+  const repliedById = new Map(repliedBySender.map((r) => [r.senderId, r._count._all]))
+  const perAccount = senderRows
+    .map((s) => ({ handle: s.handle, sent: sentById.get(s.id) ?? 0, replied: repliedById.get(s.id) ?? 0 }))
+    .filter((r) => r.sent > 0)
+    .sort((a, b) => b.sent - a.sent)
 
   /* Null, not 0%: "nothing sent" and "nobody replied" are different facts. */
   const replyRate = v.week.sent > 0 ? Math.round((v.week.replies / v.week.sent) * 100) : null
@@ -68,6 +93,8 @@ export default async function AnalyticsPage({
   return (
     <>
       <Nav current="/analytics" email={user.email} />
+      {/* Sends land every minute; keep the counts fresh without a manual reload. */}
+      <AutoRefresh seconds={45} />
       <div className="page">
         <PageHead title="Analytics" sub="Last 7 days, and the whole history underneath." />
 
@@ -146,6 +173,34 @@ export default async function AnalyticsPage({
             </p>
           )}
         </section>
+
+        {perAccount.length > 0 && (
+          <section>
+            <h2>Messages sent, by account</h2>
+            <p className="blurb">
+              Lifetime, per sending page: how many have gone out and how many came back. Per-recipient detail is
+              the recent list below and the CSV export.
+            </p>
+            <table className="table">
+              <thead>
+                <tr>
+                  <th>From account</th>
+                  <th>Sent</th>
+                  <th>Replied</th>
+                </tr>
+              </thead>
+              <tbody>
+                {perAccount.map((r) => (
+                  <tr key={r.handle}>
+                    <td>@{r.handle}</td>
+                    <td>{r.sent}</td>
+                    <td>{r.replied > 0 ? <span className="note-good">{r.replied}</span> : 0}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </section>
+        )}
 
         <section className="grid-2">
           <Funnel
