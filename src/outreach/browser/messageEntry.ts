@@ -108,3 +108,35 @@ export async function clickMessageEntry(page: Page, targetHandle: string): Promi
   await sendMessage.click()
   return { ok: true, via: 'options-menu' }
 }
+
+/**
+ * ── BLOCKER 2: THE BUSINESS-MESSAGING INTERSTITIAL ─────────────────────────
+ *
+ * After the entry click, some professional recipients get a dialog INSTEAD of the
+ * composer — "Partnership messages are more likely to get a response…" — with
+ * "Send prioritised message" and "Send message request". First seen on the SEND path
+ * 2026-08-18 (handled there since); Tabish's 2026-08-19 screenshot (@cameratakefilms)
+ * caught it blocking the READ path too, where it made a reply check file the thread
+ * as unreadable. It lives here now so both paths bypass it from one implementation.
+ *
+ * "Send message request" is clicked, NEVER "Send prioritised message" — Tabish's
+ * explicit instruction, and the request path is the ordinary DM lane this design
+ * models. The anchored regex cannot match the prioritised button. The wait costs
+ * nothing when the dialog is absent: both flows dwell deliberately anyway.
+ */
+export async function passBusinessInterstitial(page: Page, targetHandle: string): Promise<void> {
+  const requestBtn = await firstVisible(
+    page,
+    [
+      page.getByRole('button', { name: /^send message request$/i }),
+      page.locator('div[role="button"]', { hasText: /^Send message request$/ }),
+      page.locator('button', { hasText: /^Send message request$/ }),
+    ],
+    4_000,
+  )
+  if (!requestBtn) return
+  log.step('business-messaging dialog appeared — choosing the plain message request', { target: targetHandle })
+  await requestBtn.hover()
+  await jitter(300, 900)
+  await requestBtn.click()
+}
