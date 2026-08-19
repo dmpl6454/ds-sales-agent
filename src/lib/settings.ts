@@ -32,6 +32,9 @@ export const SETTING_KEYS = {
   singleTemplateBody: 'singleTemplateBody',
   tagsAsEvidence: 'tagsAsEvidence',
   replyResumeHours: 'replyResumeHours',
+  crossPageGapHours: 'crossPageGapHours',
+  officialMinFollowers: 'officialMinFollowers',
+  celebrityMinFollowers: 'celebrityMinFollowers',
 } as const
 
 export interface RuntimeSettings {
@@ -117,6 +120,29 @@ export interface RuntimeSettings {
    * away: any very large number.
    */
   replyResumeHours: number
+
+  /**
+   * Hours between DIFFERENT pages writing to ONE recipient (the ring rule, 2026-08-19).
+   * The ring rule lets every page contact a recipient inside the 7-day window; without
+   * this gap the planner would walk all five pages through one inbox in an afternoon —
+   * five near-identical templates in five minutes is the recipient-side ban pattern.
+   * The ban-pattern risk was stated to Tabish and recorded as his; this is HIS lever:
+   * 0 disables the gap entirely, one Setting row.
+   */
+  crossPageGapHours: number
+  /**
+   * Followers at which an UNVERIFIED business account with an exactly-matching name may
+   * be auto-accepted as the official page for a brand name (ig:find-official). Verified
+   * accounts pass on the badge + name match instead. "Never guess a handle" was measured
+   * (wrong 4/10, 3 of 4 wrong handles EXIST); this bar is identity, not existence.
+   */
+  officialMinFollowers: number
+  /**
+   * Followers at which an UNVERIFIED person tagged on a CAMPAIGN post is admitted as a
+   * messageable target (campaignTalent). Verified people pass on the badge. Tabish,
+   * 2026-08-19: message celebrities who are part of the paid campaign, when legitimate.
+   */
+  celebrityMinFollowers: number
 
   /**
    * ── PHASE 8: may a MODEL write the message body? ──────────────────────
@@ -251,8 +277,12 @@ function defaults(): RuntimeSettings {
     // OFF, because the harness measured precision falling 90% -> 83% with it on while
     // recall held. See the interface comment for all three runs and why it is kept.
     tagsAsEvidence: false,
-    // One day. Tabish's decision, 2026-08-07 — see the interface comment.
+    // Seven days since 2026-08-19 (was 48h) — see replyHalt.ts for whose call and why.
     replyResumeHours: REPLY_RESUME_HOURS_DEFAULT,
+    // 24h between different pages to one recipient — the ring rule's one mitigation.
+    crossPageGapHours: 24,
+    officialMinFollowers: 100_000,
+    celebrityMinFollowers: 500_000,
   }
 }
 
@@ -379,6 +409,9 @@ export async function getSettings(): Promise<RuntimeSettings> {
     fleetMinGapMinutes: num(SETTING_KEYS.fleetMinGapMinutes, d.fleetMinGapMinutes),
     maxSendsPerTick: num(SETTING_KEYS.maxSendsPerTick, d.maxSendsPerTick),
     replyResumeHours: num(SETTING_KEYS.replyResumeHours, d.replyResumeHours),
+    crossPageGapHours: num(SETTING_KEYS.crossPageGapHours, d.crossPageGapHours),
+    officialMinFollowers: num(SETTING_KEYS.officialMinFollowers, d.officialMinFollowers),
+    celebrityMinFollowers: num(SETTING_KEYS.celebrityMinFollowers, d.celebrityMinFollowers),
   }
 }
 

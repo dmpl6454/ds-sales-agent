@@ -43,3 +43,21 @@ export async function readSenderAvailability(): Promise<Map<string, string>> {
   }
   return unavailable
 }
+
+/**
+ * THE SENDERS THE RING RULE COUNTS AS "ALL OUR PAGES" (crossSpacing.ts, 2026-08-19).
+ *
+ * "All pages have written to this recipient" is only meaningful over pages that COULD
+ * write — counting a signed-out account would make ring-complete unreachable and the
+ * 7-day rest would never fire. Machine-independent on purpose: the governor asks on the
+ * Linode and the gate asks on the Mac, and a filesystem fact here would make the two
+ * enforcers disagree (the profileStatus trap). Built ON readSenderAvailability so "who
+ * rotation skips" and "who the ring counts" can never drift apart.
+ */
+export async function eligibleFleetSenderIds(): Promise<string[]> {
+  const [fleet, unavailable] = await Promise.all([
+    prisma.senderAccount.findMany({ where: { fleetMember: true, status: 'ACTIVE' }, select: { id: true } }),
+    readSenderAvailability(),
+  ])
+  return fleet.map((s) => s.id).filter((id) => !unavailable.has(id))
+}
