@@ -30,26 +30,30 @@ function HeldList({ heldUpNext, heldWaiting }: { heldUpNext: MessagesPageView['h
   return (
     <>
       <h3>Resting ({heldWaiting} held)</h3>
-      <table className="table">
-        <thead>
-          <tr>
-            <th>From account</th>
-            <th>To</th>
-            <th>Why it waits</th>
-            <th>Frees up</th>
-          </tr>
-        </thead>
-        <tbody>
-          {heldUpNext.map((row) => (
-            <tr key={`${row.senderHandle}-${row.targetHandle}`}>
-              <td>@{row.senderHandle}</td>
-              <td>@{row.targetHandle}</td>
-              <td>{row.why}</td>
-              <td>{whenIst(row.resumesAt)} IST</td>
+      {/* .table-wrap: the "why" column carries whole sentences, and a wide table must
+          scroll inside its own container — the page body must never scroll sideways. */}
+      <div className="table-wrap">
+        <table className="table">
+          <thead>
+            <tr>
+              <th>From account</th>
+              <th>To</th>
+              <th>Why it waits</th>
+              <th>Frees up</th>
             </tr>
-          ))}
-        </tbody>
-      </table>
+          </thead>
+          <tbody>
+            {heldUpNext.map((row) => (
+              <tr key={`${row.senderHandle}-${row.targetHandle}`}>
+                <td>@{row.senderHandle}</td>
+                <td>@{row.targetHandle}</td>
+                <td>{row.why}</td>
+                <td>{whenIst(row.resumesAt)} IST</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
       {heldWaiting > heldUpNext.length ? (
         <p className="cardnote">
           {heldWaiting - heldUpNext.length} more are resting behind these, on the same two rules.
