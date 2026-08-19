@@ -1,7 +1,8 @@
-import type { Locator, Page } from 'patchright'
+import type { Page } from 'patchright'
 import { isOneOfOurs, normalise } from '@/outreach/matching'
 import { profileUrl } from '@/lib/urls'
 import { assertLoggedInAs, assertNoCheckpoint, launchProfile } from './session'
+import { clickMessageEntry, firstVisible, jitter } from './messageEntry'
 
 /**
  * Opening a real conversation and reading it back.
@@ -61,25 +62,14 @@ export type ReadThreadResult =
    */
   | { ok: false; reason: 'unreadable' | 'incomplete' | 'no-message-button' | 'checkpoint'; detail?: string }
 
-export function jitter(minMs: number, maxMs: number): Promise<void> {
-  const ms = minMs + Math.floor(Math.random() * (maxMs - minMs))
-  return new Promise((r) => setTimeout(r, ms))
-}
-
-export async function firstVisible(page: Page, candidates: Locator[], timeoutMs: number): Promise<Locator | null> {
-  const deadline = Date.now() + timeoutMs
-  while (Date.now() < deadline) {
-    for (const c of candidates) {
-      try {
-        if (await c.first().isVisible({ timeout: 250 })) return c.first()
-      } catch {
-        // not attached yet
-      }
-    }
-    await jitter(200, 400)
-  }
-  return null
-}
+/**
+ * `jitter` and `firstVisible` moved to `messageEntry.ts` (2026-08-19) so that module —
+ * which both this file and `sendDm.ts` call — never has to import back into this one.
+ * Re-exported here because `scripts/thread.ts` imports them from this path, and an
+ * import path that silently stops resolving is how that CLI drifted onto its own copy
+ * once before.
+ */
+export { jitter, firstVisible } from './messageEntry'
 
 /** Behavioural telemetry: a person scrolls before acting. Not decoration. */
 export async function browseBriefly(page: Page): Promise<void> {
@@ -354,16 +344,12 @@ export async function openAndReadThread(
     assertNoCheckpoint(page, senderHandle)
     await jitter(1500, 3200)
 
-    const messageBtn = await firstVisible(
-      page,
-      [page.getByRole('button', { name: /^message$/i }), page.locator('div[role="button"]', { hasText: /^Message$/ })],
-      15_000,
-    )
-    if (!messageBtn) return { ok: false, reason: 'no-message-button' }
-
-    await messageBtn.hover()
-    await jitter(300, 900)
-    await messageBtn.click()
+    // The button when the profile shows one, the "…" menu's "Send message" when it does
+    // not — the same door the send path uses, from the same implementation. A profile
+    // that hides the button (measured: @dharmaticent, 2026-08-19) must stay READABLE,
+    // or its conversation can never be checked for a reply.
+    const entry = await clickMessageEntry(page, targetHandle)
+    if (!entry.ok) return { ok: false, reason: 'no-message-button' }
 
     /**
      * The dwell is now spent INSIDE the read rather than before it. Same wall-clock pause, so

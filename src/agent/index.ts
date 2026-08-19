@@ -1,11 +1,14 @@
 import { prisma } from '@/lib/db'
 import { env } from '@/lib/env'
 import { log } from '@/lib/logger'
-import { dispatchTick } from '@/outreach/dispatcher'
+import { dispatchTick, withSendLock } from '@/outreach/dispatcher'
 import { deviceId } from './claim'
 import { profileStatus } from '@/outreach/browser/profile'
 import { reconcileSessionRecords } from './reconcile'
 import { autoResolveBrands } from '@/detection/autoResolve'
+import { checkForReplies } from '@/outreach/replyCheck'
+import { withinActiveHours } from '@/outreach/pacing'
+import { istHourOfDay } from '@/lib/time'
 
 /**
  *   pnpm agent:device
@@ -92,6 +95,32 @@ const BRAND_INTERVAL_MS = 30 * 60_000
  * pass here would be a burst against the one IP every account also logs in from.
  */
 const BRAND_LOOKUPS_PER_PASS = 25
+
+/**
+ * ── THE REPLY SWEEP RUNS HERE NOW, BECAUSE HERE IS WHERE THE SESSIONS ARE ──
+ *
+ * MEASURED 2026-08-18 and again 2026-08-19: `replyCheckedAt` was non-null on ZERO
+ * attempts, ever. The 11:00/20:00 sweep is scheduled inside `runSlot` on the LINODE,
+ * which has no `~/.ds-sales-agent` at all — so it fired twice a day, found every
+ * account signed out, and skipped every conversation. The same hosted-split shape as
+ * brand discovery above, fixed the same way: the SAME function the server calls
+ * (`checkForReplies` — one implementation, its caps and checkpoint handling intact),
+ * on the machine whose disk actually holds the profiles. Tabish, 2026-08-19: "Make
+ * sure replies are being detected."
+ *
+ * Three properties keep it from costing sends:
+ *
+ *   1. It holds the fleet-wide SEND LOCK while it reads. Reading drives the same
+ *      Chrome profiles the send path drives, and two contexts on one profile is how
+ *      cookies get corrupted. A dispatch tick that lands mid-sweep returns
+ *      `lockBusy` and loses nothing — the next tick is sixty seconds away.
+ *   2. It is bounded (MAX_REPLY_CHECKS_PER_RUN conversations per pass) and half-hourly,
+ *      so the worst case is a few minutes of read time per half hour.
+ *   3. It runs inside active hours only. Reading is lower-risk than sending, but a
+ *      browser touring conversations at 03:00 from an Indian business page is a
+ *      behavioural signal for no benefit — the old slot times were daytime too.
+ */
+const REPLY_INTERVAL_MS = 30 * 60_000
 
 /** `Setting` key holding the last time each device checked in. */
 export const DEVICE_PRESENCE_KEY = 'devicePresence'
@@ -204,6 +233,45 @@ async function brandPass(): Promise<void> {
   }
 }
 
+/** One reply sweep at a time on this machine — same reasoning as `brandPassRunning`. */
+let replyPassRunning = false
+
+async function replyPass(): Promise<void> {
+  if (replyPassRunning) {
+    log.step('the reply sweep is still running from the last pass — skipping this one')
+    return
+  }
+  if (!withinActiveHours(istHourOfDay(new Date()))) return
+  replyPassRunning = true
+  try {
+    const summary = await withSendLock('reply-sweep', () => checkForReplies())
+    if (summary === null) {
+      // A send holds the lock. Nothing is lost: the next pass is half an hour away and
+      // the just-in-time check still reads any thread a follow-up is about to land in.
+      log.step('a send is in progress — the reply sweep waits for the next pass')
+      return
+    }
+    /**
+     * Logged every pass, including the empty one — "nothing new" and "the sweep never
+     * ran" are different facts, and for reply detection that difference was invisible
+     * for eleven days.
+     */
+    log.info('reply sweep', {
+      checked: summary.checked,
+      repliesFound: summary.repliesFound,
+      unreadable: summary.unreadable,
+      incomplete: summary.incomplete,
+      deferred: summary.deferred,
+    })
+  } catch (err) {
+    // Never allowed to take the agent down: reply reading is a guard, and a guard
+    // failing must not stop the deliveries it guards.
+    log.error('reply sweep failed', { error: err instanceof Error ? err.message : String(err) })
+  } finally {
+    replyPassRunning = false
+  }
+}
+
 async function tick(): Promise<void> {
   const handles = await localSenderHandles()
   await writePresence(handles)
@@ -269,6 +337,16 @@ export async function runDeviceAgent(): Promise<void> {
   const brands = setInterval(() => void brandPass(), BRAND_INTERVAL_MS)
   brands.unref?.()
 
+  /**
+   * The reply sweep, on its own clock like brand discovery, and NOT gated on autopilot:
+   * a reply to a hand-sent message halts outreach exactly the same way, and the halt is
+   * only as good as the last time anything looked. Fired once at startup so a restart
+   * does not mean half an hour of unwatched conversations.
+   */
+  void replyPass()
+  const replies = setInterval(() => void replyPass(), REPLY_INTERVAL_MS)
+  replies.unref?.()
+
   while (!stopping) {
     try {
       await tick()
@@ -282,6 +360,7 @@ export async function runDeviceAgent(): Promise<void> {
 
   clearInterval(presence)
   clearInterval(brands)
+  clearInterval(replies)
 }
 
 export function stopDeviceAgent(): void {

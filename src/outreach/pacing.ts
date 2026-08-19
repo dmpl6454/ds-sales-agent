@@ -50,14 +50,23 @@ export const ACTIVE_TO_HOUR = 21
  * (a slot and a dispatcher tick, or a tick and the dashboard) happen to align. The send
  * lock serialises them so they cannot interleave, and without this they would simply
  * queue up and run back to back — serialised, and still a cluster.
+ *
+ * 3 MINUTES SINCE 2026-08-19, Tabish's instruction ("reduce the time from every 5 mins
+ * to 3 mins or lesser … we are using multiple accounts, messaging should be faster").
+ * That is ~220 deliveries of headroom inside the 10:00-21:00 window, against a queue
+ * whose depth is bounded by prospect inflow. The risk was stated when the caps went and
+ * is unchanged in kind: a tighter gap concentrates identical-template sends from one
+ * home IP, and the recipient-side pattern is what draws reports. Going FASTER is one
+ * Setting row (`fleetMinGapMinutes` = 1 — the device agent polls every 60s, so one
+ * minute is the effective floor); going slower is the same row. Neither needs a deploy.
  */
-export const FLEET_MIN_GAP_MINUTES = 5
+export const FLEET_MIN_GAP_MINUTES = 3
 
 /**
  * Fleet sends allowed per IST hour. UNLIMITED since 2026-08-18, Tabish's instruction
  * ("Remove all caps … no ceiling to send messages"). What paces the fleet now is the
  * minimum gap above — one send every FLEET_MIN_GAP_MINUTES inside the active window,
- * which works out to roughly 130 sends a day at the 5-minute default. The mechanism is
+ * which works out to roughly 220 sends a day at the 3-minute default. The mechanism is
  * kept wired (a `fleetMaxPerHour` Setting row re-binds it in one write), because the
  * alternative is discovering at 2 a.m. that the only way to slow the fleet is a code
  * change. The risk of removing the hourly allowance was stated to Tabish plainly and

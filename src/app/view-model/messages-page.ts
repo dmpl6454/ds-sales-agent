@@ -14,6 +14,7 @@ import { getSettings } from '@/lib/settings'
  * new-brand cap itself).
  */
 import { readNewBrandTouchCounts } from '@/outreach/brandTouchCounts'
+import { recheckBeforeSend } from '@/outreach/gate'
 import type { OnDemandRecipient, OnDemandSender } from '../on-demand'
 
 /**
@@ -36,6 +37,30 @@ import type { OnDemandRecipient, OnDemandSender } from '../on-demand'
 export interface QueueBySender {
   handle: string
   count: number
+}
+
+/**
+ * ── "UP NEXT" (2026-08-19, Tabish: "the queue must be visible as an 'Up next' in the
+ * UI such that users can see who is sending next in our round format") ──────────────
+ *
+ * The dispatcher's own order — READY drafts, oldest first, exactly the query
+ * `deliverWaiting` runs — so the page can never name a different order than the one
+ * that will actually send. The HEAD row also carries the gate's live verdict, from the
+ * same `recheckBeforeSend` the dispatcher will ask: one draft's worth of queries buys
+ * the answer to "why is the front of the queue not moving", which is the blocker a
+ * reader actually needs. Re-checking all eight would octuple the cost to answer a
+ * question nobody asked about row six.
+ */
+export interface UpNextRow {
+  position: number
+  senderHandle: string
+  targetHandle: string
+  /** Minutes until this row's turn at the current pace, while autopilot is on. */
+  etaMinutes: number
+  /** Head of the queue only: the gate's verdict right now. Null further down. */
+  note: string | null
+  /** Head only: whether that verdict was a refusal. */
+  held: boolean
 }
 
 export interface SentMessage {
@@ -83,6 +108,8 @@ export interface UncertainMessage {
 export interface MessagesPageView {
   /** Waiting drafts per sending account. The queue as counts, not cards. */
   queueBySender: QueueBySender[]
+  /** The front of the queue in dispatch order, with the head's live gate verdict. */
+  upNext: UpNextRow[]
   waitingTotal: number
   uncertain: UncertainMessage[]
   /** Parked by the retry cap: repeated failures, provably undelivered. */
@@ -159,6 +186,8 @@ export async function buildMessagesPage(): Promise<MessagesPageView> {
     coverage,
     sendersRaw,
     recipientsRaw,
+    upNextRaw,
+    lastSendRow,
   ] = await Promise.all([
     /**
      * The queue as COUNTS PER SENDER. The per-draft card list — and the per-draft gate
@@ -232,6 +261,23 @@ export async function buildMessagesPage(): Promise<MessagesPageView> {
       orderBy: [{ kind: 'asc' }, { handle: 'asc' }],
       select: { handle: true, displayName: true, optedOut: true },
     }),
+    /**
+     * "Up next": the dispatcher's exact pick order (`deliverWaiting` reads READY by
+     * `queuedAt` ascending), bounded to the front of the queue. The full attempt row
+     * with its pair is fetched because the head of the list is put through the REAL
+     * gate below — never a re-derivation.
+     */
+    prisma.outreachAttempt.findMany({
+      where: { status: 'READY' },
+      include: { pair: { include: { sender: true, target: true } } },
+      orderBy: { queuedAt: 'asc' },
+      take: 8,
+    }),
+    prisma.outreachAttempt.findFirst({
+      where: { status: { in: [...DELIVERED_STATUSES] }, sentAt: { not: null } },
+      orderBy: { sentAt: 'desc' },
+      select: { sentAt: true },
+    }),
   ])
 
   /**
@@ -243,6 +289,34 @@ export async function buildMessagesPage(): Promise<MessagesPageView> {
     readNewBrandTouchCounts(),
     prisma.targetAccount.count({ where: { role: 'PROSPECT', attempts: { none: {} } } }),
   ])
+
+  /**
+   * The head of the queue through the REAL gate — the same call the dispatcher makes
+   * on its next tick, so the "Up next" panel's blocker is the enforcer's own sentence.
+   * One draft only: the head is the one whose refusal stalls everything behind it.
+   */
+  const headVerdict =
+    upNextRaw.length > 0 ? await recheckBeforeSend(upNextRaw[0]!, { unattended: true }) : null
+
+  /**
+   * When each row's turn comes at the current pace. An estimate, and presented as one:
+   * the head goes as soon as the gap since the last delivery has passed (or immediately
+   * if it already has), and each later row is one gap further on. Holds, active hours
+   * and the switch all stretch this — the panel says so rather than pretending.
+   */
+  const gapMinutes = dispatch.limits.minGapMinutes
+  const sinceLastSend =
+    lastSendRow?.sentAt == null ? null : Math.floor((Date.now() - lastSendRow.sentAt.getTime()) / 60_000)
+  const headWait = sinceLastSend === null ? 0 : Math.max(0, gapMinutes - sinceLastSend)
+
+  const upNext: UpNextRow[] = upNextRaw.map((a, i) => ({
+    position: i + 1,
+    senderHandle: a.pair.sender.handle,
+    targetHandle: a.pair.target.handle,
+    etaMinutes: headWait + i * gapMinutes,
+    note: i === 0 && headVerdict ? (headVerdict.ok ? 'clear to send on the next tick' : (headVerdict.detail ?? headVerdict.reason)) : null,
+    held: i === 0 && headVerdict !== null && !headVerdict.ok,
+  }))
 
   /** Handles for the per-sender queue counts — one lookup for the whole group. */
   const senderHandles = new Map(
@@ -256,6 +330,7 @@ export async function buildMessagesPage(): Promise<MessagesPageView> {
 
   return {
     waitingTotal,
+    upNext,
     queueBySender: waitingBySenderRaw
       .map((r) => ({ handle: senderHandles.get(r.senderId) ?? r.senderId, count: r._count._all }))
       .sort((a, b) => b.count - a.count),

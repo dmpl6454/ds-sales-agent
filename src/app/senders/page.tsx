@@ -6,6 +6,7 @@ import { PageHead } from '../page-head'
 import { AccountGroupView } from '../accounts/group'
 import { LoginQueue } from '../accounts/login/queue'
 import { AddSenderForm } from './add-form'
+import { RemoveSenderForm } from './remove-form'
 
 export const dynamic = 'force-dynamic'
 
@@ -139,6 +140,15 @@ export default async function SendersPage() {
           send", and adding one is the rarer act.
         */}
         <AddSenderForm />
+
+        {/*
+          Removal, with the queue handed off by rotation — see remove-form.tsx. Only
+          accounts still IN the rotation are offered: removing one that is already out
+          is a no-op wearing a control's clothes.
+        */}
+        <RemoveSenderForm
+          handles={v.groups.flatMap((g) => g.rows.filter((r) => r.fleetMember).map((r) => r.handle))}
+        />
       </div>
     </>
   )

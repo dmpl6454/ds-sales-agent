@@ -84,14 +84,40 @@ export default async function PaidPostsPage() {
               </>
             )}
           </p>
+          {/*
+            TWO BOXES ONLY — paid and ordinary (2026-08-19, Tabish: "remove the 1 not
+            judged and other boxes from UI, only paid and ordinary must be displayed").
+            A post is paid or it is ordinary; the rare not-judged remainder (a failed
+            call, retryable) is the one quiet sentence above, never a box that reads
+            like a category of post.
+          */}
           <ul className="statgrid">
-            {v.byVerdict.map((r) => (
-              <li key={r.verdict}>
-                <strong>{r.count}</strong>
-                <span>{verdictLabel(r.verdict)}</span>
-              </li>
-            ))}
+            {v.byVerdict
+              .filter((r) => r.verdict === 'CAMPAIGN' || r.verdict === 'ORGANIC')
+              .map((r) => (
+                <li key={r.verdict}>
+                  <strong>{r.count}</strong>
+                  <span>{verdictLabel(r.verdict)}</span>
+                </li>
+              ))}
           </ul>
+
+          {/*
+            THE FUNNEL — the answer to "356 paid posts, why only 75 messages?", asked
+            2026-08-19. Live counts, one sentence each, because the honest answer is a
+            chain: prospect handles come ONLY from companies Instagram itself names on a
+            post, many posts name nobody or repeat the same company, and people are
+            refused by the person guard.
+          */}
+          <p className="cardnote">
+            <strong>From paid posts to messages:</strong> {v.funnel.paidPosts} paid posts have yielded{' '}
+            {v.funnel.prospectsLive + v.funnel.retired} companies — a post only names a company when
+            Instagram itself asserts one (caption @mentions and tags), many posts name nobody, and many
+            name the same company twice. {v.funnel.retired} were retired as people or our own pages.
+            Of the {v.funnel.prospectsLive} live companies, <strong>{v.funnel.queued} have a message queued</strong>,{' '}
+            {v.funnel.contacted} have already been contacted, and the rest are held by the person guard
+            or spacing. A message is written within 15 minutes of a company being identified.
+          </p>
           {/*
             Said once, quietly, rather than counted as outstanding work: the older corpus
             is what the free hashtag filter learns each channel's normal vocabulary from,
