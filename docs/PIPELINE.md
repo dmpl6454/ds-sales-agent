@@ -2,6 +2,18 @@
 
 https://claude.ai/code/artifact/517b2e18-4c61-428c-a300-9b21de07d1c6
 
+> ## ⚠ ALSO STALE SINCE 2026-08-20 — SPACING AND PROSPECT SOURCES CHANGED AGAIN
+>
+> - **Cross-page spacing is the RING RULE** (crossSpacing.ts): a recipient rests 7 days
+>   only once EVERY page has written (or on a reply — now a 7-day halt), with a 24h gap
+>   between DIFFERENT pages to one recipient (`crossPageGapHours`, Tabish's lever). The
+>   diagram's "7-day sender-blind spacing" box is wrong in both name and shape.
+> - **Two new prospect sources**: `ig:find-official` (brand NAMES on anonymous CAMPAIGN
+>   posts → official pages, verified-badge/size identity bar) and the TALENT door
+>   (verified or 500k+ people on CAMPAIGN evidence → `campaignTalent` targets the person
+>   guard admits). Both are arrows into the prospect pool the drawing has no notion of.
+> - "Up next" now renders the RESTING half of the queue with resume times.
+>
 > ## ⚠ STALE SINCE 2026-08-18 EVENING, AND MORE SO SINCE 2026-08-19 — the SPINE changed too
 >
 > The drawing still shows twelve gate questions, the 7-day spacing, per-sender daily caps
