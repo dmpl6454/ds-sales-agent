@@ -159,24 +159,21 @@ describe('assessBreaker — a person can stop it, and that outranks everything i
 })
 
 describe('withinActiveHours', () => {
-  it('allows the configured daytime window', () => {
-    for (let h = ACTIVE_FROM_HOUR; h < ACTIVE_TO_HOUR; h++) {
-      expect(withinActiveHours(h)).toBe(true)
-    }
+  it('is 24/7 in production since 2026-08-19 — every hour is allowed', () => {
+    // Tabish removed the time window. The constants are a zero-width window, which the
+    // function reads as "no restriction". This asserts the production default, not the
+    // mechanism, so that a future change back to a real window is a deliberate edit here.
+    expect(ACTIVE_FROM_HOUR).toBe(ACTIVE_TO_HOUR)
+    for (let h = 0; h < 24; h++) expect(withinActiveHours(h)).toBe(true)
   })
 
-  it('refuses the night — the guard that used to be implicit in the slot list', () => {
-    expect(withinActiveHours(3)).toBe(false)
-    expect(withinActiveHours(9)).toBe(false)
-    expect(withinActiveHours(ACTIVE_TO_HOUR)).toBe(false)
-    expect(withinActiveHours(23)).toBe(false)
-  })
-
-  it('covers every slot the scheduler fires, so nothing that used to send is now refused', () => {
-    for (const slot of ['11:00', '15:00', '17:00', '20:00']) {
-      const hour = Number(slot.split(':')[0])
-      expect(withinActiveHours(hour)).toBe(true)
-    }
+  it('STILL ENFORCES a window when one is passed explicitly — the mechanism is intact', () => {
+    // The branch is not dead: a caller (or a future re-enabled window) that passes real
+    // hours must still be honoured, so the guard can be restored with two numbers.
+    expect(withinActiveHours(15, 10, 21)).toBe(true)
+    expect(withinActiveHours(3, 10, 21)).toBe(false)
+    expect(withinActiveHours(21, 10, 21)).toBe(false)
+    expect(withinActiveHours(23, 10, 21)).toBe(false)
   })
 
   it('handles a wrapping window rather than silently meaning "never"', () => {
@@ -241,11 +238,17 @@ describe('decideDispatch', () => {
     expect(v.reason).toBe('nothing-waiting')
   })
 
-  it('holds outside active hours, with a draft waiting and everything else green', () => {
-    const v = decideDispatch({ ...ok, istHour: 4 })
+  it('holds outside a window WHEN ONE IS SET — the mechanism, exercised with explicit hours', () => {
+    // Production is 24/7 now (ACTIVE_*_HOUR are zero-width), so the branch is reached by
+    // passing a real window, which is exactly how it would be re-enabled.
+    const v = decideDispatch({ ...ok, istHour: 4, activeFromHour: 10, activeToHour: 21 })
     if (v.action !== 'hold') throw new Error('expected a hold')
     expect(v.reason).toBe('outside-active-hours')
     expect(v.detail).toContain('04:xx')
+  })
+
+  it('sends at 4am now, because there is no window in production', () => {
+    expect(decideDispatch({ ...ok, istHour: 4 })).toEqual({ action: 'send' })
   })
 
   it('holds when the previous send was too recent', () => {

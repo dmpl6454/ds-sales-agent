@@ -183,8 +183,8 @@ export default async function AutopilotPage() {
           </div>
         </section>
 
-        {/* The queue: who sends next, in the dispatcher's own order, then counts per account. */}
-        <WaitingList queue={m.queueBySender} upNext={m.upNext} total={m.waitingTotal} />
+        {/* The queue: who sends next (sendable drafts in dispatch order), then counts per account. */}
+        <WaitingList queue={m.queueBySender} upNext={m.upNext} heldWaiting={m.heldWaiting} total={m.waitingTotal} />
 
         {/* THE standard message, editable here since /settings went (2026-08-18). */}
         <section>

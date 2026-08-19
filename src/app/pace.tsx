@@ -55,30 +55,40 @@ export function PaceBand({
   /** What the dispatcher did last, in its own words. Null when it has never run. */
   lastTick: string | null
 }) {
-  const span = ACTIVE_TO_HOUR - ACTIVE_FROM_HOUR
+  /**
+   * NO TIME WINDOW SINCE 2026-08-19 (Tabish). `ACTIVE_FROM_HOUR === ACTIVE_TO_HOUR` is a
+   * zero-width window, which `withinActiveHours` reads as "always on". So the band spans a
+   * full 24 hours, `now` always sits inside it, and a span of 0 never reaches the division
+   * below — which would otherwise be NaN and draw nothing.
+   */
+  const allDay = ACTIVE_FROM_HOUR === ACTIVE_TO_HOUR
+  const fromHour = allDay ? 0 : ACTIVE_FROM_HOUR
+  const toHour = allDay ? 24 : ACTIVE_TO_HOUR
+  const span = toHour - fromHour
   const nowHours = istHour + istMinute / 60
-  const inside = nowHours >= ACTIVE_FROM_HOUR && nowHours < ACTIVE_TO_HOUR
+  const inside = allDay || (nowHours >= fromHour && nowHours < toHour)
   const capped = Number.isFinite(perHour)
   /* Pips only while they are both meaningful and readable — see MAX_PIPS. */
   const pips = capped && perHour <= MAX_PIPS ? perHour : 0
 
-  /* Clamped so a 03:40 "now" does not draw the marker off the left edge and imply 10:00. */
-  const pos = Math.min(100, Math.max(0, ((nowHours - ACTIVE_FROM_HOUR) / span) * 100))
+  /* Clamped so a 03:40 "now" does not draw the marker off the left edge. */
+  const pos = Math.min(100, Math.max(0, ((nowHours - fromHour) / span) * 100))
   const clock = `${String(istHour).padStart(2, '0')}:${String(istMinute).padStart(2, '0')}`
 
   /**
-   * What paces the fleet when there is no hourly allowance: the minimum gap, which is a
-   * REFUSAL like the allowance was, not a suggestion. Stated as the ceiling it implies so
-   * the sentence answers the question the allowance used to — "how much can go out".
+   * What paces the fleet when there is no hourly allowance: the minimum gap. Stated
+   * honestly rather than as a theoretical maximum — a send itself takes ~1 minute and the
+   * reply sweep pauses sending while it reads, so the real rate is well under one a minute.
    */
-  const gapCeiling = minGapMinutes > 0 ? Math.floor((span * 60) / minGapMinutes) : null
   const usedPhrase = capped
     ? `${sentThisHour} of ${perHour} fleet sends used this hour`
-    : `${sentThisHour} sent this hour — no hourly limit; one message every ${minGapMinutes} minutes at most`
+    : `${sentThisHour} sent this hour — no hourly limit; one message every ${minGapMinutes} minute${minGapMinutes === 1 ? '' : 's'} at most`
 
-  const label = inside
-    ? `Inside sending hours. It is ${clock} IST; the window runs ${ACTIVE_FROM_HOUR}:00 to ${ACTIVE_TO_HOUR}:00 IST. ${usedPhrase}.`
-    : `Outside sending hours. It is ${clock} IST; the window runs ${ACTIVE_FROM_HOUR}:00 to ${ACTIVE_TO_HOUR}:00 IST, so nothing will go out until it opens.`
+  const label = allDay
+    ? `Sends any time of day — no window. It is ${clock} IST. ${usedPhrase}.`
+    : inside
+      ? `Inside sending hours. It is ${clock} IST; the window runs ${fromHour}:00 to ${toHour}:00 IST. ${usedPhrase}.`
+      : `Outside sending hours. It is ${clock} IST; the window runs ${fromHour}:00 to ${toHour}:00 IST, so nothing will go out until it opens.`
 
   return (
     <figure className="chartbox pacebox">
@@ -95,11 +105,11 @@ export function PaceBand({
         {inside && <span className="pace-now" style={{ left: `${pos}%` }} />}
       </div>
       <div className="pace-scale" aria-hidden="true">
-        <span>{ACTIVE_FROM_HOUR}:00</span>
+        <span>{fromHour}:00</span>
         <span className={inside ? 'note-good' : 'note-warn'}>
           {inside ? `now ${clock}` : `${clock} — outside`}
         </span>
-        <span>{ACTIVE_TO_HOUR}:00</span>
+        <span>{allDay ? '24:00' : `${toHour}:00`}</span>
       </div>
 
       {/*
@@ -122,9 +132,11 @@ export function PaceBand({
         <span className="muted">{usedPhrase}</span>
       </div>
 
-      {!capped && gapCeiling !== null && (
+      {!capped && (
         <p className="cardnote">
-          At that spacing the window allows about {gapCeiling} messages a day across every account.
+          One message a minute whenever there is a draft clear to send &mdash; any time of day. A send itself takes
+          about a minute and the reply sweep pauses sending while it reads, so the real rate settles around 25&ndash;35
+          an hour, not 60.
         </p>
       )}
 

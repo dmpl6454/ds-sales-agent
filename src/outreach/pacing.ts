@@ -37,10 +37,23 @@
  * possible place for that: a breaker that cannot trip reads as a healthy one.
  */
 
-/** IST hour (inclusive) from which unattended sending is allowed. */
-export const ACTIVE_FROM_HOUR = 10
-/** IST hour (EXCLUSIVE) at which unattended sending stops. 21 = last send by 20:59. */
-export const ACTIVE_TO_HOUR = 21
+/**
+ * ── NO TIME WINDOW SINCE 2026-08-19, Tabish's instruction ──────────────────
+ *
+ * *"there is no limit or time constraint … the message can be sent at any time, no matter
+ * if it is morning or past midnight."* So the window is the whole day: `from === to` makes
+ * `withinActiveHours` return true for every hour, and the reply sweep (which reads these
+ * same constants) runs around the clock too.
+ *
+ * **This reverses a load-bearing safety property and is recorded as his call**, like the
+ * caps and the 1-minute gap before it. "We never DM at 4 a.m. from an Indian business
+ * page" was a behavioural signal that cost nothing to keep; sending at 03:00 IST is a
+ * pattern a person does not produce, and it is the recipient-side pattern that draws
+ * reports. The lever to restore a window is these two numbers (e.g. 10 and 21) — one edit,
+ * no schema change — and it was offered. He chose 24/7.
+ */
+export const ACTIVE_FROM_HOUR = 0
+export const ACTIVE_TO_HOUR = 0
 
 /**
  * Minimum minutes between two consecutive fleet sends.

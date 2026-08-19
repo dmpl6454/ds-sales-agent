@@ -384,7 +384,12 @@ describe('every dispatcher hold explains itself', () => {
 
   const CASES: Array<[string, Record<string, unknown>]> = [
     ['autopilot-off', { autopilotEnabled: false }],
-    ['outside-active-hours', { istHour: 3 }],
+    /**
+     * Production is 24/7 since 2026-08-19 (Tabish removed the window), so the stop is
+     * reached by passing an explicit window rather than by relying on the constants — the
+     * branch still exists and must still explain itself if the window is ever restored.
+     */
+    ['outside-active-hours', { istHour: 3, activeFromHour: 10, activeToHour: 21 }],
     ['nothing-waiting', { waitingCount: 0 }],
     /**
      * DERIVED FROM THE CONSTANT, not the literal `1` it used to be. That literal produced
