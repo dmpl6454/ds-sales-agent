@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { evaluatePair, SKIP_REASONS, type GovernorInput } from '@/outreach/governor'
+import { crossSpacingVerdict } from '@/outreach/crossSpacing'
 
 /**
  * The governor is what stands between "12–18 campaigns detected today" and
@@ -28,8 +29,7 @@ function base(overrides: Partial<GovernorInput> = {}): GovernorInput {
     unusedCampaignCount: 2,
     pairSentTodayCount: 0,
     maxPerPairPerDay: 5,
-    otherPageLastDeliveredAt: null,
-    cooldownDays: 7,
+    crossSpacing: { held: false },
     hasPendingAttempt: false,
     totalSentEver: 0,
     maxTotalSends: null,
@@ -81,11 +81,11 @@ describe('a reply halts every sender to that target', () => {
     expect(d).toMatchObject({ eligible: false, reason: SKIP_REASONS.TARGET_REPLIED })
   })
 
-  it('names the two-day pause in its detail', () => {
-    // Tabish's "cooldown if conversation is ongoing" number: a reply pauses its
-    // target for two days, then messaging resumes on its own.
+  it('names the seven-day pause in its detail', () => {
+    // Tabish, 2026-08-19: a reply pauses its
+    // target for seven days, then messaging resumes on its own (or on "I have replied").
     const d = evaluatePair(base({ targetRepliedAt: new Date(NOW.getTime() - DAY) }))
-    expect(!d.eligible && d.detail).toContain('two days')
+    expect(!d.eligible && d.detail).toContain('seven days')
   })
 
   it('stops even when the pair itself has plenty of allowance left', () => {
@@ -225,32 +225,69 @@ describe('pending attempts', () => {
  * well as at the gate so a duplicate is never written at all — a draft that exists only to
  * be refused later is the "why is nothing sending" noise the reason codes exist to prevent.
  */
-describe('cross-account spacing, at drafting', () => {
+describe('cross-account spacing at drafting (the ring rule since 2026-08-19)', () => {
   const HOUR = 60 * 60 * 1000
-  const DAY = 24 * HOUR
 
-  it('refuses while another of our pages is inside the window', () => {
-    const d = evaluatePair(base({ otherPageLastDeliveredAt: new Date(NOW.getTime() - 2 * DAY), cooldownDays: 7 }))
+  /**
+   * Fixtures are built by the REAL predicate, never hand-written verdict literals — a
+   * fixture that pins a shape the rule owns goes stale GREEN the first time the rule
+   * changes (the stopInventory lesson, verbatim).
+   */
+  const ring = (args: { eligible: string[]; deliveredHoursAgo: Array<[string, number]> }) =>
+    crossSpacingVerdict({
+      now: NOW,
+      windowDays: 7,
+      crossPageGapHours: 24,
+      thisSenderId: 's1',
+      eligibleSenderIds: args.eligible,
+      lastDeliveryBySender: new Map(
+        args.deliveredHoursAgo.map(([id, h]) => [id, { sentAt: new Date(NOW.getTime() - h * HOUR), handle: id }]),
+      ),
+    })
+
+  it('refuses while a DIFFERENT page is inside the inter-page gap', () => {
+    const d = evaluatePair(base({ crossSpacing: ring({ eligible: ['s1', 's2'], deliveredHoursAgo: [['s2', 3]] }) }))
     expect(d.eligible).toBe(false)
     if (!d.eligible) expect(d.reason).toBe(SKIP_REASONS.TARGET_RECENTLY_CONTACTED)
   })
 
-  /** The releasing direction: past the window, the recipient is available again. */
-  it('permits once the window has passed', () => {
-    const d = evaluatePair(base({ otherPageLastDeliveredAt: new Date(NOW.getTime() - 8 * DAY), cooldownDays: 7 }))
-    expect(d.eligible, 'the spacing window never released').toBe(true)
-  })
-
-  it('permits when no other page has ever written to them', () => {
-    expect(evaluatePair(base({ otherPageLastDeliveredAt: null })).eligible).toBe(true)
-  })
-
   /**
-   * THE BOUNDARY, exactly on it. `elapsed < required` is the comparison, so a delivery
-   * exactly `cooldownDays` old has released — off by one here is a duplicate DM.
+   * THE RULE TABISH REVERSED, in the permitting direction: one other page wrote three
+   * days ago and this draft must be ELIGIBLE. Under the pre-2026-08-19 rule this exact
+   * case held — and 33/33 waiting drafts were frozen for five days.
    */
-  it('releases exactly at the window, not a day later', () => {
-    expect(evaluatePair(base({ otherPageLastDeliveredAt: new Date(NOW.getTime() - 7 * DAY), cooldownDays: 7 })).eligible).toBe(true)
-    expect(evaluatePair(base({ otherPageLastDeliveredAt: new Date(NOW.getTime() - 7 * DAY + HOUR), cooldownDays: 7 })).eligible).toBe(false)
+  it('permits when ONE other page wrote days ago — the old any-page hold must not survive', () => {
+    const d = evaluatePair(base({ crossSpacing: ring({ eligible: ['s1', 's2', 's3'], deliveredHoursAgo: [['s2', 72]] }) }))
+    expect(d.eligible, 'the deleted any-other-page rule is still holding drafts').toBe(true)
+  })
+
+  it('refuses when EVERY eligible page has written inside the window (ring-complete)', () => {
+    const d = evaluatePair(
+      base({
+        crossSpacing: ring({
+          eligible: ['s1', 's2', 's3'],
+          deliveredHoursAgo: [['s1', 6 * 24], ['s2', 4 * 24], ['s3', 2 * 24]],
+        }),
+      }),
+    )
+    expect(d.eligible).toBe(false)
+    if (!d.eligible) expect(d.reason).toBe(SKIP_REASONS.TARGET_RECENTLY_CONTACTED)
+  })
+
+  /** The releasing direction: one page's delivery ages out and the ring reopens. */
+  it('releases the moment the oldest page ages out of the window', () => {
+    const d = evaluatePair(
+      base({
+        crossSpacing: ring({
+          eligible: ['s1', 's2', 's3'],
+          deliveredHoursAgo: [['s1', 2 * 24], ['s2', 8 * 24], ['s3', 3 * 24]],
+        }),
+      }),
+    )
+    expect(d.eligible, 'the ring never reopened after a delivery aged out').toBe(true)
+  })
+
+  it('permits when no page has ever written to them', () => {
+    expect(evaluatePair(base({ crossSpacing: ring({ eligible: ['s1', 's2'], deliveredHoursAgo: [] }) })).eligible).toBe(true)
   })
 })

@@ -16,6 +16,8 @@ import { getSettings } from '@/lib/settings'
 import { readNewBrandTouchCounts } from '@/outreach/brandTouchCounts'
 import { recheckBeforeSend } from '@/outreach/gate'
 import { replyHaltFloor } from '@/outreach/replyHalt'
+import { crossSpacingVerdict, crossSpacingDetail } from '@/outreach/crossSpacing'
+import { eligibleFleetSenderIds } from '@/outreach/availability'
 import type { OnDemandRecipient, OnDemandSender } from '../on-demand'
 
 /**
@@ -112,6 +114,14 @@ export interface UncertainMessage {
   profileUrl: string
 }
 
+/** A waiting draft that is resting, with the enforcer's sentence and when it frees up. */
+export interface HeldRow {
+  senderHandle: string
+  targetHandle: string
+  why: string
+  resumesAt: Date
+}
+
 export interface MessagesPageView {
   /** Waiting drafts per sending account. The queue as counts, not cards. */
   queueBySender: QueueBySender[]
@@ -119,6 +129,8 @@ export interface MessagesPageView {
   upNext: UpNextRow[]
   /** Drafts waiting but held right now for cross-page spacing or a reply. */
   heldWaiting: number
+  /** The first held drafts, soonest release first — so "33 waiting" is never an invisible list. */
+  heldUpNext: HeldRow[]
   waitingTotal: number
   uncertain: UncertainMessage[]
   /** Parked by the retry cap: repeated failures, provably undelivered. */
@@ -307,46 +319,83 @@ export async function buildMessagesPage(): Promise<MessagesPageView> {
   ])
 
   /**
-   * THE TWO DOMINANT HOLDS, COMPUTED IN BULK so "Up next" shows only what will actually
-   * send. Both mirror `gate.ts` exactly:
+   * THE TWO DOMINANT HOLDS, COMPUTED IN BULK so "Up next" shows what will actually send
+   * AND why the rest is resting. Both are the ENFORCERS' own rules, never a mirror:
    *
-   *   spacing — a target contacted by ANOTHER of our pages within `defaultCooldownDays`
-   *             is off-limits (TARGET_RECENTLY_CONTACTED, `senderId: { not: … }`).
+   *   spacing — `crossSpacingVerdict`, the same shared predicate the gate and the
+   *             planner call (the ring rule, 2026-08-19). The UI holding a private
+   *             copy of this rule is exactly how the old shape drifted.
    *   reply   — a target that replied within `replyResumeHours`, not yet handled
-   *             (TARGET_REPLIED).
+   *             (TARGET_REPLIED), resume time from the same arithmetic as replyHalt.ts.
    *
-   * Per (target → set of senders who delivered recently), so a draft S→T is spacing-held
-   * iff some sender ≠ S is in that set — the same "another page wrote" question the gate
-   * asks. One query each.
+   * Three reads for the whole queue: deliveries-in-window, replies-in-window, and the
+   * eligible-sender set.
    */
-  const cooldownFloor = new Date(Date.now() - settings.defaultCooldownDays * 24 * 60 * 60 * 1000)
-  const [recentDeliveries, repliedRows] = await Promise.all([
+  const now = new Date()
+  const cooldownFloor = new Date(now.getTime() - settings.defaultCooldownDays * 24 * 60 * 60 * 1000)
+  const [recentDeliveries, repliedRows, eligibleSenderIds] = await Promise.all([
     prisma.outreachAttempt.findMany({
       where: { status: { in: [...DELIVERED_STATUSES] }, sentAt: { gte: cooldownFloor } },
-      select: { targetId: true, senderId: true },
+      select: { targetId: true, sentAt: true, pair: { select: { senderId: true, sender: { select: { handle: true } } } } },
+      orderBy: { sentAt: 'asc' },
     }),
     prisma.outreachAttempt.findMany({
       where: { repliedAt: { gte: replyHaltFloor(settings.replyResumeHours) }, replyHandledAt: null },
-      select: { targetId: true },
+      select: { targetId: true, repliedAt: true },
     }),
+    eligibleFleetSenderIds(),
   ])
-  const contactedBy = new Map<string, Set<string>>()
+  /** target → (senderId → that page's newest in-window delivery). Asc order: later rows win. */
+  const deliveriesByTarget = new Map<string, Map<string, { sentAt: Date; handle: string }>>()
   for (const r of recentDeliveries) {
-    const s = contactedBy.get(r.targetId) ?? new Set<string>()
-    s.add(r.senderId)
-    contactedBy.set(r.targetId, s)
+    if (r.sentAt === null) continue
+    const m = deliveriesByTarget.get(r.targetId) ?? new Map<string, { sentAt: Date; handle: string }>()
+    m.set(r.pair.senderId, { sentAt: r.sentAt, handle: r.pair.sender.handle })
+    deliveriesByTarget.set(r.targetId, m)
   }
-  const repliedTargets = new Set(repliedRows.map((r) => r.targetId))
-
-  const isHeld = (draft: { senderId: string; targetId: string }): boolean => {
-    if (repliedTargets.has(draft.targetId)) return true
-    const senders = contactedBy.get(draft.targetId)
-    if (senders && [...senders].some((sid) => sid !== draft.senderId)) return true
-    return false
+  /** target → when its reply halt releases (newest reply wins, matching replyHalt.ts). */
+  const replyResumesAt = new Map<string, Date>()
+  for (const r of repliedRows) {
+    if (r.repliedAt === null) continue
+    const resumes = new Date(r.repliedAt.getTime() + settings.replyResumeHours * 3_600_000)
+    const prev = replyResumesAt.get(r.targetId)
+    if (prev === undefined || resumes > prev) replyResumesAt.set(r.targetId, resumes)
   }
 
-  const sendableDrafts = upNextRaw.filter((a) => !isHeld(a))
-  const heldWaiting = upNextRaw.length - sendableDrafts.length
+  /** Reply first, then spacing — the gate's own order, so the sentence names the deeper stop. */
+  const holdFor = (draft: { senderId: string; targetId: string }): { why: string; resumesAt: Date } | null => {
+    const replyResume = replyResumesAt.get(draft.targetId)
+    if (replyResume !== undefined) {
+      return { why: 'they replied — resumes on its own, or the moment "I have replied" is pressed', resumesAt: replyResume }
+    }
+    const v = crossSpacingVerdict({
+      now,
+      windowDays: settings.defaultCooldownDays,
+      crossPageGapHours: settings.crossPageGapHours,
+      thisSenderId: draft.senderId,
+      eligibleSenderIds,
+      lastDeliveryBySender: deliveriesByTarget.get(draft.targetId) ?? new Map(),
+    })
+    return v.held ? { why: crossSpacingDetail(v)!, resumesAt: v.resumesAt } : null
+  }
+
+  const sendableDrafts: typeof upNextRaw = []
+  const heldRows: HeldRow[] = []
+  for (const a of upNextRaw) {
+    const hold = holdFor(a)
+    if (hold === null) sendableDrafts.push(a)
+    else
+      heldRows.push({
+        senderHandle: a.pair.sender.handle,
+        targetHandle: a.pair.target.handle,
+        why: hold.why,
+        resumesAt: hold.resumesAt,
+      })
+  }
+  const heldWaiting = heldRows.length
+  /** Soonest-releasing first: the row a reader wants is "what frees up next". */
+  heldRows.sort((a, b) => a.resumesAt.getTime() - b.resumesAt.getTime())
+  const heldUpNext = heldRows.slice(0, 8)
 
   /**
    * The head SENDABLE draft through the REAL gate — the same call the dispatcher makes on
@@ -395,6 +444,7 @@ export async function buildMessagesPage(): Promise<MessagesPageView> {
     waitingTotal,
     upNext,
     heldWaiting,
+    heldUpNext,
     queueBySender: waitingBySenderRaw
       .map((r) => ({ handle: senderHandles.get(r.senderId) ?? r.senderId, count: r._count._all }))
       .sort((a, b) => b.count - a.count),

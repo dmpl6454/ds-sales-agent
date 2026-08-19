@@ -16,18 +16,64 @@ import type { MessagesPageView } from '../view-model/messages-page'
  * The per-draft card wall stays gone (2026-08-18): every draft is the same standard
  * template, so beyond WHO sends to WHOM next there is nothing per-row to show.
  */
+const whenIst = (d: Date) =>
+  d.toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })
+
+/**
+ * The RESTING half of the queue, each row with the enforcer's own sentence and when it
+ * frees up. Added 2026-08-19 after "the number changes but the list below it remains the
+ * same" became "the count says 33 and the list is empty": a held draft that appears
+ * nowhere reads as a stuck system, and the honest answer was one table away.
+ */
+function HeldList({ heldUpNext, heldWaiting }: { heldUpNext: MessagesPageView['heldUpNext']; heldWaiting: number }) {
+  if (heldUpNext.length === 0) return null
+  return (
+    <>
+      <h3>Resting ({heldWaiting} held)</h3>
+      <table className="table">
+        <thead>
+          <tr>
+            <th>From account</th>
+            <th>To</th>
+            <th>Why it waits</th>
+            <th>Frees up</th>
+          </tr>
+        </thead>
+        <tbody>
+          {heldUpNext.map((row) => (
+            <tr key={`${row.senderHandle}-${row.targetHandle}`}>
+              <td>@{row.senderHandle}</td>
+              <td>@{row.targetHandle}</td>
+              <td>{row.why}</td>
+              <td>{whenIst(row.resumesAt)} IST</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      {heldWaiting > heldUpNext.length ? (
+        <p className="cardnote">
+          {heldWaiting - heldUpNext.length} more are resting behind these, on the same two rules.
+        </p>
+      ) : null}
+    </>
+  )
+}
+
 export function WaitingList({
   queue,
   upNext,
   heldWaiting,
+  heldUpNext,
   total,
 }: {
   queue: MessagesPageView['queueBySender']
   upNext: MessagesPageView['upNext']
   heldWaiting: number
+  heldUpNext: MessagesPageView['heldUpNext']
   total: number
 }) {
   const sendable = total - heldWaiting
+  const firstFree = heldUpNext[0]
   return (
     <section>
       <h2>Up next ({total} waiting)</h2>
@@ -36,10 +82,15 @@ export function WaitingList({
           Nothing is waiting. New drafts are written automatically when there is someone new to write to.
         </p>
       ) : upNext.length === 0 ? (
-        <p className="cardnote">
-          All {total} waiting {total === 1 ? 'draft is' : 'drafts are'} held right now &mdash; their recipients
-          heard from one of our pages recently (spacing) or replied. They send themselves as each window clears.
-        </p>
+        <>
+          <p className="cardnote">
+            Nothing is sendable right now{firstFree ? <> until {whenIst(firstFree.resumesAt)} IST</> : null} &mdash; all{' '}
+            {total} waiting {total === 1 ? 'draft is' : 'drafts are'} resting (spacing or a reply). Not a fault:
+            Autopilot is on and the dispatcher checks every minute; each draft below sends itself when its window
+            clears.
+          </p>
+          <HeldList heldUpNext={heldUpNext} heldWaiting={heldWaiting} />
+        </>
       ) : (
         <>
           <table className="table">
@@ -72,11 +123,12 @@ export function WaitingList({
             on, any time of day. {sendable > upNext.length ? <>{sendable - upNext.length} more are clear behind them. </> : null}
             {heldWaiting > 0 ? (
               <>
-                {heldWaiting} other {heldWaiting === 1 ? 'draft is' : 'drafts are'} held for spacing or a reply and
-                will join the queue as each window clears.
+                {heldWaiting} other {heldWaiting === 1 ? 'draft is' : 'drafts are'} resting and listed below.
               </>
             ) : null}
           </p>
+
+          <HeldList heldUpNext={heldUpNext} heldWaiting={heldWaiting} />
 
           <h3>Waiting per account</h3>
           <table className="table">

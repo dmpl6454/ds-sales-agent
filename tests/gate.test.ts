@@ -16,9 +16,24 @@ function ok(): ResendInput {
     targetRepliedAt: null,
     pairSentTodayCount: 0,
     maxPerPairPerDay: 5,
-    targetRecentContact: null,
+    crossSpacing: { held: false as const },
   }
 }
+
+/** A ring-rule hold, in the exact shape crossSpacingVerdict produces (typechecked). */
+const gapHold = (otherHandle: string, hoursAgo: number) => ({
+  held: true as const,
+  kind: 'inter-page-gap' as const,
+  otherHandle,
+  hoursAgo,
+  resumesAt: new Date(Date.now() + (24 - hoursAgo) * 3_600_000),
+})
+const ringHold = (senderCount: number) => ({
+  held: true as const,
+  kind: 'ring-complete' as const,
+  senderCount,
+  resumesAt: new Date(Date.now() + 24 * 3_600_000),
+})
 
 describe('evaluateResend — the permitted case', () => {
   it('allows a READY attempt when nothing has changed', () => {
@@ -215,9 +230,9 @@ describe('evaluateResend — watch-only targets', () => {
  * `null` means nobody else has written, and that MUST still send — a spacing rule that
  * refuses everything is an outage, not a guard.
  */
-describe('cross-account spacing', () => {
-  it('refuses when another of our pages wrote to this recipient inside the window', () => {
-    const r = evaluateResend({ ...ok(), targetRecentContact: { fromHandle: 'bollywoodchronicle', hoursAgo: 3 } })
+describe('cross-account spacing (the ring rule since 2026-08-19)', () => {
+  it('refuses when a different page wrote inside the inter-page gap', () => {
+    const r = evaluateResend({ ...ok(), crossSpacing: gapHold('bollywoodchronicle', 3) })
     expect(r.ok).toBe(false)
     if (r.ok) return
     expect(r.reason).toBe(RESEND_BLOCKS.TARGET_RECENTLY_CONTACTED)
@@ -225,8 +240,16 @@ describe('cross-account spacing', () => {
     expect(r.detail).toContain('@bollywoodchronicle')
   })
 
-  it('permits when no other page has written', () => {
-    expect(evaluateResend({ ...ok(), targetRecentContact: null })).toEqual({ ok: true })
+  it('refuses when every page has written inside the window (ring-complete)', () => {
+    const r = evaluateResend({ ...ok(), crossSpacing: ringHold(5) })
+    expect(r.ok).toBe(false)
+    if (r.ok) return
+    expect(r.reason).toBe(RESEND_BLOCKS.TARGET_RECENTLY_CONTACTED)
+    expect(r.detail).toContain('all 5')
+  })
+
+  it('permits when the ring is open and no page wrote inside the gap', () => {
+    expect(evaluateResend({ ...ok(), crossSpacing: { held: false } })).toEqual({ ok: true })
   })
 
   /**
@@ -237,7 +260,7 @@ describe('cross-account spacing', () => {
   it('is reported ahead of this account\'s own daily allowance', () => {
     const r = evaluateResend({
       ...ok(),
-      targetRecentContact: { fromHandle: 'bollywoodsocietyy', hoursAgo: 1 },
+      crossSpacing: gapHold('bollywoodsocietyy', 1),
       pairSentTodayCount: 5,
       maxPerPairPerDay: 5,
     })
@@ -250,7 +273,7 @@ describe('cross-account spacing', () => {
     const r = evaluateResend({
       ...ok(),
       unattended: false,
-      targetRecentContact: { fromHandle: 'totalfilmii', hoursAgo: 2 },
+      crossSpacing: gapHold('totalfilmii', 2),
       overrides: [RESEND_BLOCKS.TARGET_RECENTLY_CONTACTED],
     })
     expect(r.ok, 'an absolute stop was crossed by passing its own code as an override').toBe(false)

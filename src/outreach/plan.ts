@@ -6,6 +6,8 @@ import { istDayStart } from '@/lib/time'
 import { newMaterialFloor } from '@/lib/cutoff'
 import { DELIVERED_STATUSES, IN_FLIGHT_STATUSES } from '@/lib/constants'
 import { evaluatePair, type GovernorDecision } from './governor'
+import { crossSpacingVerdict } from './crossSpacing'
+import { eligibleFleetSenderIds } from './availability'
 import { routeAllowed } from './routes'
 import { composeForPair, usedCampaignIds } from './compose'
 import { describeRing, whoseTurn, type WhoseTurnResult } from './categories'
@@ -307,6 +309,12 @@ export async function runOutreach(): Promise<PlanSummary> {
   /** One answer per target, reused across that target's pairs. See above. */
   const turnByTarget = new Map<string, WhoseTurnResult>()
 
+  /**
+   * The ring rule's "all our pages" set — ONE query per run, not per pair. `/`'s query
+   * budget is a ceiling over a bounded design, and this loop already runs per pair.
+   */
+  const eligibleSenderIds = await eligibleFleetSenderIds()
+
   for (const pair of pairs) {
     const pairKey = `${pair.sender.handle}→${pair.target.handle}`
 
@@ -325,7 +333,7 @@ export async function runOutreach(): Promise<PlanSummary> {
      */
     const alreadyUsedIds = await usedCampaignIds(pair.id)
 
-    const [touches, replied, pairToday, otherPageLastDelivered, pending, unusedCampaignCount] = await Promise.all([
+    const [touches, replied, pairToday, ringDeliveries, pending, unusedCampaignCount] = await Promise.all([
       /**
        * Both counts here use DELIVERED_STATUSES, not 'SENT'.
        *
@@ -336,7 +344,7 @@ export async function runOutreach(): Promise<PlanSummary> {
         where: { pairId: pair.id, status: { in: [...DELIVERED_STATUSES] } },
       }),
       prisma.outreachAttempt.findFirst({
-        // A reply halts for replyResumeHours (two days), then releases itself — see replyHalt.ts.
+        // A reply halts for replyResumeHours (seven days since 2026-08-19), then releases itself — see replyHalt.ts.
         where: {
           pair: { targetId: pair.targetId },
           repliedAt: { gte: replyHaltFloor(settings.replyResumeHours) },
@@ -354,17 +362,19 @@ export async function runOutreach(): Promise<PlanSummary> {
         },
       }),
       /**
-       * The newest delivery to this recipient from ANOTHER of our pages — the sender-blind
-       * fact that keeps three of our accounts out of one inbox. Excludes this sender, for
-       * the reason spelled out in gate.ts.
+       * Every page's newest in-window delivery to this recipient — the ring rule's input
+       * (crossSpacing.ts, 2026-08-19). Self INCLUDED on purpose: the predicate needs it to
+       * answer "has EVERY page written", and never holds on self alone. Ascending order so
+       * the map keeps each sender's newest.
        */
-      prisma.outreachAttempt.findFirst({
+      prisma.outreachAttempt.findMany({
         where: {
-          pair: { targetId: pair.targetId, senderId: { not: pair.senderId } },
+          pair: { targetId: pair.targetId },
           status: { in: [...DELIVERED_STATUSES] },
+          sentAt: { gte: new Date(now.getTime() - settings.defaultCooldownDays * 86_400_000) },
         },
-        orderBy: { sentAt: 'desc' },
-        select: { sentAt: true },
+        orderBy: { sentAt: 'asc' },
+        select: { sentAt: true, pair: { select: { senderId: true, sender: { select: { handle: true } } } } },
       }),
       // SENDING included: a browser mid-send is the most pending an attempt gets.
       prisma.outreachAttempt.count({ where: { pairId: pair.id, status: { in: ['QUEUED', 'READY', 'SENDING'] } } }),
@@ -400,8 +410,18 @@ export async function runOutreach(): Promise<PlanSummary> {
       targetRepliedAt: replied?.repliedAt ?? null,
       pairSentTodayCount: pairToday,
       maxPerPairPerDay: settings.maxPerPairPerDay,
-      otherPageLastDeliveredAt: otherPageLastDelivered?.sentAt ?? null,
-      cooldownDays: settings.defaultCooldownDays,
+      crossSpacing: crossSpacingVerdict({
+        now,
+        windowDays: settings.defaultCooldownDays,
+        crossPageGapHours: settings.crossPageGapHours,
+        thisSenderId: pair.senderId,
+        eligibleSenderIds,
+        lastDeliveryBySender: new Map(
+          ringDeliveries
+            .filter((r) => r.sentAt !== null)
+            .map((r) => [r.pair.senderId, { sentAt: r.sentAt!, handle: r.pair.sender.handle }]),
+        ),
+      }),
       hasPendingAttempt: pending > 0,
       unusedCampaignCount,
       totalSentEver,

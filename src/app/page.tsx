@@ -184,7 +184,7 @@ export default async function AutopilotPage() {
         </section>
 
         {/* The queue: who sends next (sendable drafts in dispatch order), then counts per account. */}
-        <WaitingList queue={m.queueBySender} upNext={m.upNext} heldWaiting={m.heldWaiting} total={m.waitingTotal} />
+        <WaitingList queue={m.queueBySender} upNext={m.upNext} heldWaiting={m.heldWaiting} heldUpNext={m.heldUpNext} total={m.waitingTotal} />
 
         {/* THE standard message, editable here since /settings went (2026-08-18). */}
         <section>

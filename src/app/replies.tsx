@@ -71,7 +71,7 @@ function ReplyItem({ reply }: { reply: ReplyCard }) {
           <a className="btn" href={dmInboxUrl()} target="_blank" rel="noreferrer">
             Open inbox
           </a>
-          <button onClick={handled} disabled={pending} title="Messaging resumes by itself after a day — this resumes it now">
+          <button onClick={handled} disabled={pending} title="Messaging resumes by itself after seven days — this resumes it now">
             {pending ? 'Saving…' : 'I have replied'}
           </button>
         </div>

@@ -3,21 +3,22 @@ import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 
 /**
- * ── THE SPACING QUERY MUST EXCLUDE THE SENDER ITSELF ──────────────────────
+ * ── ONE SPACING RULE, THREE CALL SITES (the ring rule, 2026-08-19) ─────────
  *
- * A SOURCE GREP, because the failure mode is a query nobody has written yet and no
+ * A SOURCE GREP, because the failure mode is a call site nobody has written yet and no
  * behavioural test can fail for a shape that reads perfectly.
  *
- * Cross-account spacing asks "has a DIFFERENT page of ours written to this person
- * recently". Before 2026-08-18 it was sender-BLIND including self, which was correct then
- * because a 7-day per-pair cooldown said the same thing anyway. That cooldown is gone and
- * Tabish's rule is FIVE A DAY from one account to one recipient — so dropping
- * `senderId: { not: … }` would silently reinstate a seven-day pair cooldown and contradict
- * the number he chose, while every test here and every page still read as healthy. It
- * would present as "the queue stopped draining", days later, pointing at nothing.
+ * Cross-page spacing is `crossSpacingVerdict` (crossSpacing.ts): hold only when EVERY
+ * eligible page has written to the recipient inside the window, plus the
+ * `crossPageGapHours` gap between different pages. Tabish's instruction — "the 7 day
+ * constraint … only if target has been contacted by all targets" — replaced the
+ * any-other-page rule that halted the whole fleet on 2026-08-19 (MEASURED: 33/33
+ * waiting drafts held, first clear five days out, 76 recipients locked by ONE page).
  *
- * Both halves are checked: the planner refuses to WRITE the duplicate, the gate refuses to
- * SEND it. One without the other is the gap `gate.ts` itself was extracted to close.
+ * Three sites must share the ONE predicate — the gate (delivery), the planner
+ * (drafting) and the messages page (the screen). A rule fixed on one path and not the
+ * others is this codebase's most repeated defect, and the UI mirroring the rule by
+ * hand is exactly how the old shape drifted.
  */
 const read = (rel: string): string => readFileSync(join(process.cwd(), rel), 'utf8')
 
@@ -26,34 +27,60 @@ function codeOnly(src: string): string {
   return src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')
 }
 
-describe('cross-account spacing asks about OTHER pages, not this one', () => {
-  it.each([
-    ['the gate, at delivery', 'src/outreach/gate.ts'],
-    ['the planner, at drafting', 'src/outreach/plan.ts'],
-  ])('%s excludes this sender from the spacing lookup', (_label, file) => {
-    const src = codeOnly(read(file))
+const CALL_SITES = [
+  ['the gate, at delivery', 'src/outreach/gate.ts'],
+  ['the planner, at drafting', 'src/outreach/plan.ts'],
+  ['the screen, in Up next', 'src/app/view-model/messages-page.ts'],
+] as const
 
-    /*
-      The spacing query is the one that reads DELIVERED attempts for a target while naming
-      a senderId exclusion. Matched loosely on purpose — formatting drifts, the property
-      does not.
-    */
-    const excludesSelf = /senderId:\s*\{\s*not:/.test(src)
+describe('the ring rule has ONE implementation and every enforcer calls it', () => {
+  it.each(CALL_SITES)('%s calls crossSpacingVerdict', (_label, file) => {
+    const src = codeOnly(read(file))
+    // A grep that matches nothing reports success — assert the POSITIVE presence.
     expect(
-      excludesSelf,
-      `${file}: the recipient-spacing lookup no longer excludes this sender, so one account's own ` +
-        `delivery now blocks it for the whole window — a per-pair cooldown reinstated by accident, ` +
-        `contradicting the five-a-day rule`,
+      src.includes('crossSpacingVerdict'),
+      `${file}: no longer calls the shared spacing predicate — a private copy here is how ` +
+        `the gate, the planner and the screen come to disagree about who may be messaged`,
     ).toBe(true)
   })
 
   /**
-   * And the window itself comes from the SETTING, not a literal. A number typed here would
-   * be a second copy of a rule the dashboard also states — the drift `/rules` exists to
-   * prevent by importing every value from the module that enforces it.
+   * The OLD rule's query shape must not come back in any enforcement path.
+   * `senderId: { not: … }` was the any-other-page lookup; reintroducing it inline
+   * reinstates the fleet-halting rule beside the new one, and whichever site holds it
+   * wins quietly.
    */
-  it('takes the window from settings rather than a hardcoded number of days', () => {
-    const gate = codeOnly(read('src/outreach/gate.ts'))
-    expect(gate).toContain('settings.defaultCooldownDays')
+  it.each(CALL_SITES)('%s does not rebuild the old any-other-page query inline', (_label, file) => {
+    const src = codeOnly(read(file))
+    expect(
+      /senderId:\s*\{\s*not:/.test(src),
+      `${file}: an inline senderId-exclusion spacing query has come back — the pre-2026-08-19 ` +
+        `rule that held 33/33 drafts, living beside the ring rule and quietly overruling it`,
+    ).toBe(false)
   })
+
+  /**
+   * The predicate itself must keep asking "did EVERY eligible page write" — `some` is
+   * the deleted rule wearing the new one's name. `tests/cross-spacing.test.ts` catches
+   * it behaviourally; this catches it structurally with a readable failure.
+   */
+  it('crossSpacing.ts holds ring-complete on every(), never some()', () => {
+    const src = codeOnly(read('src/outreach/crossSpacing.ts'))
+    expect(src).toContain('.every((id) => inWindow.has(id))')
+  })
+
+  /**
+   * And the window and the gap come from SETTINGS, not literals. A number typed at a
+   * call site would be a second copy of a rule the dashboard also states — the drift
+   * `/rules` exists to prevent by importing every value from the module that enforces
+   * it.
+   */
+  it.each([['src/outreach/gate.ts'], ['src/outreach/plan.ts']])(
+    '%s takes the window and the gap from settings',
+    (file) => {
+      const src = codeOnly(read(file))
+      expect(src).toContain('settings.defaultCooldownDays')
+      expect(src).toContain('settings.crossPageGapHours')
+    },
+  )
 })

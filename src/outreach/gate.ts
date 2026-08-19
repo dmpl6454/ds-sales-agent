@@ -5,6 +5,8 @@ import { mayArmAccount } from './cohorts'
 import { replyHaltFloor } from './replyHalt'
 import { profileStatus } from './browser/profile'
 import { sessionUsable } from './sessionHealth'
+import { crossSpacingVerdict, crossSpacingDetail, type CrossSpacingVerdict } from './crossSpacing'
+import { eligibleFleetSenderIds } from './availability'
 import { DELIVERED_STATUSES } from '@/lib/constants'
 
 /**
@@ -111,8 +113,21 @@ export interface ResendInput {
    * It does NOT bound throughput: it bounds how many of our pages reach ONE recipient.
    * The same account may still follow up (the per-pair rule above governs that), and
    * every other recipient is untouched.
+   *
+   * ── RESHAPED 2026-08-19 INTO THE RING RULE (Tabish's instruction) ────────
+   *
+   * "there is no limit except the 7 day constraint which should occur only if target has
+   * been contacted by all targets or a reply has been detected." The any-other-page form
+   * above halted the entire fleet the day after the 1-minute pace shipped — MEASURED:
+   * 33/33 waiting drafts held, first clear five days out, 76 recipients locked by ONE
+   * page each. The rule is now `crossSpacingVerdict` (crossSpacing.ts, the ONE
+   * implementation shared with the planner and the dashboard): hold only when EVERY
+   * eligible page has written inside the window, plus a short inter-page gap
+   * (`crossPageGapHours`, default 24h, Tabish's lever) so the ring cannot walk through
+   * one inbox in an afternoon. The ban-pattern risk of up to five near-identical
+   * templates per inbox per week was stated and is recorded as his call.
    */
-  targetRecentContact: { fromHandle: string; hoursAgo: number } | null
+  crossSpacing: CrossSpacingVerdict
 
   /**
    * Blocks a present human has explicitly acknowledged, from the on-demand dialog.
@@ -145,7 +160,7 @@ export const RESEND_BLOCKS = {
    * was stated to him plainly and the call recorded as his.
    *
    * What survives is exactly his rule: one account may deliver at most five messages to
-   * one recipient in one IST day. The reply halt (now two days), opt-out, watch-only,
+   * one recipient in one IST day. The reply halt (seven days since 2026-08-19), opt-out, watch-only,
    * checkpoint handling and the circuit breaker are untouched — those are not volume
    * caps, they are conversation and account safety.
    */
@@ -306,7 +321,7 @@ export function evaluateResend(input: ResendInput): ResendResult {
     return {
       ok: false,
       reason: RESEND_BLOCKS.TARGET_REPLIED,
-      detail: `they replied at ${input.targetRepliedAt.toISOString()} — messaging them pauses for two days, then resumes on its own`,
+      detail: `they replied at ${input.targetRepliedAt.toISOString()} — messaging them pauses for seven days, then resumes on its own (or the moment "I have replied" is pressed)`,
     }
   }
 
@@ -319,13 +334,11 @@ export function evaluateResend(input: ResendInput): ResendResult {
    * else already wrote to this person" is a fact about the recipient, while the pair cap
    * is a fact about this one conversation. A refusal should name the deeper reason.
    */
-  if (input.targetRecentContact != null) {
-    const { fromHandle, hoursAgo } = input.targetRecentContact
-    const when = hoursAgo < 24 ? `${Math.max(1, Math.round(hoursAgo))}h ago` : `${Math.round(hoursAgo / 24)} day(s) ago`
+  if (input.crossSpacing.held) {
     return {
       ok: false,
       reason: RESEND_BLOCKS.TARGET_RECENTLY_CONTACTED,
-      detail: `this recipient heard from @${fromHandle} ${when} — spacing applies across every page, not per account`,
+      detail: crossSpacingDetail(input.crossSpacing)!,
     }
   }
 
@@ -370,12 +383,12 @@ export async function recheckBeforeSend(
   const dayStart = istDayStart()
   const { sender, target, senderId, targetId } = attempt.pair
 
-  const [replied, pairToday, otherPageRecently, ladder, senderRow] = await Promise.all([
+  const [replied, pairToday, ringDeliveries, eligibleSenderIds, ladder, senderRow] = await Promise.all([
     prisma.outreachAttempt.findFirst({
       /**
        * `gte: replyHaltFloor(...)` rather than `not: null` since 2026-08-07: a reply
-       * halts its target for `replyResumeHours` (two days since 2026-08-18, Tabish's
-       * "cooldown if conversation is ongoing" number) and then releases ITSELF.
+       * halts its target for `replyResumeHours` (seven days since 2026-08-19, Tabish's
+       * "resume after 7 days automatically or manually" instruction) and then releases ITSELF.
        * "Handled" survives as an early release. See src/outreach/replyHalt.ts.
        */
       where: {
@@ -393,25 +406,23 @@ export async function recheckBeforeSend(
       where: { pair: { senderId, targetId }, status: { in: [...DELIVERED_STATUSES] }, sentAt: { gte: dayStart } },
     }),
     /**
-     * The newest delivery to this recipient from ANOTHER of our pages, inside the window.
-     *
-     * `senderId: { not: senderId }` is the one deliberate difference from the rule as it
-     * stood before 2026-08-18. It used to include this account's own sends, because the
-     * per-pair 7-day cooldown said the same thing anyway. That cooldown is gone and Tabish's
-     * rule is five a day from one account to one recipient — so including self here would
-     * silently reinstate a 7-day pair cooldown and contradict the number he chose. The
-     * question this rule exists to ask is "has a DIFFERENT page of ours written to this
-     * person recently", and now it asks exactly that.
+     * Every page's newest delivery to this recipient inside the window — the ring rule's
+     * input (crossSpacing.ts). Self-deliveries are INCLUDED on purpose: the predicate
+     * needs them to answer "has EVERY page written", and it never holds on self alone —
+     * excluding self here would make ring-complete unreachable for the one page that has
+     * already gone. Ascending order so later rows overwrite: the map keeps each sender's
+     * newest.
      */
-    prisma.outreachAttempt.findFirst({
+    prisma.outreachAttempt.findMany({
       where: {
-        pair: { targetId, senderId: { not: senderId } },
+        pair: { targetId },
         status: { in: [...DELIVERED_STATUSES] },
         sentAt: { gte: new Date(Date.now() - settings.defaultCooldownDays * 24 * 60 * 60 * 1000) },
       },
-      orderBy: { sentAt: 'desc' },
-      select: { sentAt: true, pair: { select: { sender: { select: { handle: true } } } } },
+      orderBy: { sentAt: 'asc' },
+      select: { sentAt: true, pair: { select: { senderId: true, sender: { select: { handle: true } } } } },
     }),
+    eligibleFleetSenderIds(),
     /**
      * The cohort ladder, asked HERE rather than trusted from `autoSendEnabled`.
      *
@@ -452,13 +463,18 @@ export async function recheckBeforeSend(
     targetRepliedAt: replied?.repliedAt ?? null,
     pairSentTodayCount: pairToday,
     maxPerPairPerDay: settings.maxPerPairPerDay,
-    targetRecentContact:
-      otherPageRecently?.sentAt != null
-        ? {
-            fromHandle: otherPageRecently.pair.sender.handle,
-            hoursAgo: (Date.now() - otherPageRecently.sentAt.getTime()) / 3_600_000,
-          }
-        : null,
+    crossSpacing: crossSpacingVerdict({
+      now: new Date(),
+      windowDays: settings.defaultCooldownDays,
+      crossPageGapHours: settings.crossPageGapHours,
+      thisSenderId: senderId,
+      eligibleSenderIds,
+      lastDeliveryBySender: new Map(
+        ringDeliveries
+          .filter((r) => r.sentAt !== null)
+          .map((r) => [r.pair.senderId, { sentAt: r.sentAt!, handle: r.pair.sender.handle }]),
+      ),
+    }),
     overrides: opts.overrides,
   })
 }

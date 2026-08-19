@@ -51,8 +51,8 @@ export async function readSenderAvailability(): Promise<Map<string, string>> {
  * write — counting a signed-out account would make ring-complete unreachable and the
  * 7-day rest would never fire. Machine-independent on purpose: the governor asks on the
  * Linode and the gate asks on the Mac, and a filesystem fact here would make the two
- * enforcers disagree (the profileStatus trap). Built ON readSenderAvailability so "who
- * rotation skips" and "who the ring counts" can never drift apart.
+ * enforcers disagree (the trap this file's header documents). Built ON
+ * readSenderAvailability so "who rotation skips" and "who the ring counts" never drift.
  */
 export async function eligibleFleetSenderIds(): Promise<string[]> {
   const [fleet, unavailable] = await Promise.all([
