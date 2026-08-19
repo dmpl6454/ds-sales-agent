@@ -60,7 +60,9 @@
     "ig:fix-timestamps": "tsx src/scripts/fix-timestamp-offset.ts",
     "ig:prune-pairs": "tsx src/scripts/prune-pairs.ts",
     "ig:purge-watch-drafts": "tsx src/scripts/purge-watch-drafts.ts",
-    "ig:clear-bulk-labels": "tsx src/scripts/clear-bulk-labels.ts"
+    "ig:clear-bulk-labels": "tsx src/scripts/clear-bulk-labels.ts",
+    "ig:audit-targets": "tsx src/scripts/audit-targets.ts",
+    "ig:find-official": "tsx src/scripts/find-official.ts"
   },
   "dependencies": {
     "@prisma/adapter-better-sqlite3": "^7.9.1",

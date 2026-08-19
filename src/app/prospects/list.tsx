@@ -242,6 +242,7 @@ function Row({ p, sendersAble }: { p: ProspectRow; sendersAble: number }) {
       </div>
 
       {msg && <p className="account-message">{msg}</p>}
+      {p.legitimacy && <p className={p.legitimacy.includes('— review:') ? 'account-message' : 'muted'}>{p.legitimacy}</p>}
       {p.importNote && <p className="muted">{p.importNote}</p>}
     </div>
   )

@@ -18,6 +18,7 @@ import { profileStatus } from '@/outreach/browser/profile'
 import { sessionUsable } from '@/outreach/sessionHealth'
 import { describeRing, whoseTurnForMany } from '@/outreach/categories'
 import { readSenderAvailability } from '@/outreach/availability'
+import { auditTarget, AUDIT_WHY_SENTENCE } from '@/outreach/targetAudit'
 // PURE, and the same function `plan.ts` asks. Imported rather than mirrored: a page that
 // re-derives a guard its own way is how a dashboard comes to disagree with the enforcer.
 import { checkRecipientIsNotAPerson } from '@/outreach/brandGuards'
@@ -129,6 +130,8 @@ export interface ProspectRow {
   /** Set once anyone answers. Halts every sender to them until a person takes over. */
   replied: boolean
   importNote: string | null
+  /** "verified · 1.2M followers", with a review suffix when the audit rule flags it. Null = never looked. */
+  legitimacy: string | null
 }
 
 export interface ProspectsPageView {
@@ -334,6 +337,39 @@ export async function buildProspectsPage(): Promise<ProspectsPageView> {
       : 'One of our own pages, and reading it is off. That is a real saving, and it is also the only source of new ground truth we have besides M.O.M\u2019s disclosure hashtag \u2014 while it is off, that record stops growing.'
   }
 
+  /**
+   * The legitimacy line (Tabish, 2026-08-19: "targets identified should not be faulty").
+   * NULL facts render NOTHING — "never looked" must not read as a verdict; the facts
+   * arrive when `pnpm ig:audit-targets --run` is run from a home IP. The review suffix
+   * comes from the same pure rule the audit command uses, so the page can never flag a
+   * row the audit would pass.
+   */
+  function legitimacy(t: {
+    role: string
+    optedOut: boolean
+    brandCategory: string | null
+    isVerified: boolean | null
+    followerCount: number | null
+    campaignTalent: boolean
+  }): string | null {
+    if (t.role !== 'PROSPECT' || t.optedOut) return null
+    if (t.isVerified === null && t.followerCount === null) return null
+    const fmt = (n: number) =>
+      n >= 1_000_000 ? `${(n / 1_000_000).toFixed(1)}M` : n >= 1_000 ? `${Math.round(n / 1_000)}k` : String(n)
+    const parts = [
+      t.isVerified === true ? 'verified' : t.isVerified === false ? 'unverified' : null,
+      t.followerCount !== null ? `${fmt(t.followerCount)} followers` : null,
+    ].filter(Boolean)
+    const audit = auditTarget({
+      brandCategory: t.brandCategory,
+      isVerified: t.isVerified,
+      followerCount: t.followerCount,
+      exists: true,
+      campaignTalent: t.campaignTalent,
+    })
+    return `${parts.join(' · ')}${audit.flag ? ` — review: ${AUDIT_WHY_SENTENCE[audit.why]}` : ''}`
+  }
+
   const prospects: ProspectRow[] = targets.map((t) => {
     const next = nextSenderSentence(t)
     return {
@@ -351,6 +387,7 @@ export async function buildProspectsPage(): Promise<ProspectsPageView> {
     delivered: deliveredBy.get(t.id) ?? 0,
     replied: repliedSet.has(t.id),
     importNote: t.importNote,
+    legitimacy: legitimacy(t),
     }
   })
 

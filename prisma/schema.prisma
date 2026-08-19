@@ -176,6 +176,18 @@ model TargetAccount {
   /// Hard stop: never contact again, regardless of pairs.
   optedOut  Boolean @default(false)
 
+  /// From web_profile_info at last enrichment (ig:audit-targets / ig:find-official).
+  /// NULL = never looked, never "false"/"0" — absence of data must not harden into a
+  /// negative verdict about a target's legitimacy.
+  isVerified    Boolean?
+  followerCount Int?
+  /// TRUE only for a person DELIBERATELY admitted as a target because Instagram itself
+  /// asserted them (tag/collab/mention) on a CAMPAIGN post AND they passed the
+  /// verified-or-size bar (Tabish, 2026-08-19: message celebrities who are part of the
+  /// paid campaign). checkRecipientIsNotAPerson exempts these rows and ONLY these —
+  /// accidental people (a vanity category on a BRAND row) are still refused.
+  campaignTalent Boolean @default(false)
+
   /// Is this account's feed READ four times a day?
   ///
   /// Separate from whether it may be MESSAGED, which is what pairs decide. Detection
