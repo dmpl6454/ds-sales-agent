@@ -147,8 +147,17 @@ export function checkRecipientIsNotAPerson(input: {
   /** `TargetAccount.brandCategory` — what Instagram said this account is. */
   brandCategory: string | null
   handle: string
+  /**
+   * TRUE only for a person DELIBERATELY admitted (Tabish, 2026-08-19: message
+   * celebrities who are part of the paid campaign) — Instagram itself asserted them on a
+   * CAMPAIGN post AND they passed the verified-or-size bar (`admitsAsTalent`). The guard
+   * still refuses ACCIDENTAL people: a vanity category on an ordinary BRAND row is
+   * exactly what it was built for, and that half is unchanged.
+   */
+  campaignTalent: boolean
 }): BrandGuardResult {
   if (input.targetKind !== 'BRAND') return { ok: true }
+  if (input.campaignTalent) return { ok: true }
   if (!isPersonRoleCategory(input.brandCategory)) return { ok: true }
   return {
     ok: false,

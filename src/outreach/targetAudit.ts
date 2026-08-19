@@ -41,3 +41,20 @@ export const AUDIT_WHY_SENTENCE: Record<Exclude<TargetAudit, { flag: false }>['w
   'tiny-unverified': 'unverified with under 1,000 followers — unlikely to be a media buyer',
   'no-category-thin': 'no category, unverified, small — nothing says this is a real company',
 }
+
+/**
+ * May a PERSON tagged on a CAMPAIGN post become a messageable target? (Tabish,
+ * 2026-08-19: "send messages to celebrities as well if they are part of the paid
+ * campaign … which is a legitimate and verified (sometimes might not be the case)
+ * account" — the badge admits, and for the unverified the bar is size,
+ * `celebrityMinFollowers`, default 500k.)
+ *
+ * NULL follower counts never admit — absence of size is not size.
+ */
+export function admitsAsTalent(
+  e: { isVerified: boolean | null; followerCount: number | null },
+  minFollowers: number,
+): boolean {
+  if (e.isVerified === true) return true
+  return e.followerCount !== null && e.followerCount >= minFollowers
+}

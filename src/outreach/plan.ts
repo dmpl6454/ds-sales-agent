@@ -505,6 +505,7 @@ export async function runOutreach(): Promise<PlanSummary> {
         targetKind: pair.target.kind,
         brandCategory: pair.target.brandCategory,
         handle: pair.target.handle,
+        campaignTalent: pair.target.campaignTalent,
       })
       if (!personGate.ok) {
         log.step('held — this recipient looks like a person, not a company', {
