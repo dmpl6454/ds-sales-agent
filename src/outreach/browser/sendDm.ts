@@ -6,7 +6,7 @@ import { pasteShortcut } from '@/lib/platform'
 import { bodyAppearedSince, messageMatchesOurs } from '@/outreach/matching'
 import type { FailureCode } from '@/lib/constants'
 import { assertLoggedInAs, assertNoCheckpoint, assertNoEnforcement, launchProfile } from './session'
-import { clickMessageEntry, passBusinessInterstitial } from './messageEntry'
+import { clickMessageEntry, passBusinessInterstitial, dismissBlockingDialog, clickPastDialogs } from './messageEntry'
 
 /**
  * Sending one DM from the account's own logged-in Chrome profile.
@@ -93,12 +93,16 @@ export async function sendDm(params: SendDmParams): Promise<SendDmResult> {
     await page.goto('https://www.instagram.com/', { waitUntil: 'domcontentloaded', timeout: 60_000 })
     assertNoCheckpoint(page)
     await assertLoggedInAs(page, senderHandle)
+    // Blocker 3: the "Turn on notifications" dialog most often lands on the feed. Cleared
+    // here so it is not still sitting there when the profile loads.
+    await dismissBlockingDialog(page)
     await browseBriefly(page)
 
     // 2. Then the target's profile — not the thread.
     await page.goto(profileUrl(targetHandle), { waitUntil: 'domcontentloaded', timeout: 60_000 })
     assertNoCheckpoint(page)
     await jitter(1500, 3200)
+    await dismissBlockingDialog(page)
     await browseBriefly(page)
 
     // 3. Message — the button when the profile shows one, the "…" menu's "Send message"
@@ -150,7 +154,19 @@ export async function sendDm(params: SendDmParams): Promise<SendDmResult> {
      */
     const threadBefore = (await page.locator('body').textContent()) ?? ''
 
-    await composer.click()
+    /**
+     * THE CLICK THAT FAILED ON @dharmaticent, 2026-08-19. The composer was visible and the
+     * lookup above passed; a "Turn on notifications" modal was over it, so a plain
+     * `click()` waited out its whole 30-second timeout and the send was filed `unknown`.
+     * `clickPastDialogs` dismisses any such dialog and retries — same total budget.
+     */
+    if (!(await clickPastDialogs(page, composer, 'the message box'))) {
+      return {
+        ok: false,
+        reason: 'the message box could not be clicked — a dialog kept covering it',
+        failureCode: 'no-composer',
+      }
+    }
     await jitter(600, 1400)
 
     // 5. Paste. The OS clipboard plus a real modifier+V is a user action; the paste
@@ -192,6 +208,32 @@ export async function sendDm(params: SendDmParams): Promise<SendDmResult> {
         // Not a failure at all; DRY_RUN never presses Enter. Coded so the union stays closed.
         failureCode: 'still-staged',
       }
+    }
+
+    /**
+     * 6b. A dialog landing in THIS gap is the dangerous one, and not because it delays the
+     * send: a modal holds focus, so `Enter` would go to ITS default button — which on the
+     * notifications dialog is **Turn On** — instead of to the composer. So it is dismissed,
+     * and if one was there the composer is re-focused and re-verified, because a keystroke
+     * aimed at the wrong element is exactly what the read-back guard exists to catch.
+     */
+    if (await dismissBlockingDialog(page)) {
+      if (!(await clickPastDialogs(page, composer, 'the message box (refocus after a dialog)'))) {
+        return {
+          ok: false,
+          reason: 'a dialog appeared just before sending and the message box could not be re-focused',
+          failureCode: 'still-staged',
+        }
+      }
+      const restaged = ((await composer.textContent()) ?? '').trim()
+      if (!messageMatchesOurs(restaged, body)) {
+        return {
+          ok: false,
+          reason: `a dialog appeared just before sending and the message box no longer holds our message (${restaged.length} chars) — nothing sent`,
+          failureCode: 'composer-mismatch',
+        }
+      }
+      await jitter(600, 1200)
     }
 
     // 7. Send.
