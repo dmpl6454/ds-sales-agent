@@ -2,7 +2,14 @@ import type { Page } from 'patchright'
 import { isOneOfOurs, normalise } from '@/outreach/matching'
 import { profileUrl } from '@/lib/urls'
 import { assertLoggedInAs, assertNoCheckpoint, launchProfile } from './session'
-import { clickMessageEntry, passBusinessInterstitial, dismissBlockingDialog, firstVisible, jitter } from './messageEntry'
+import {
+  clickMessageEntry,
+  openThreadViaInbox,
+  passBusinessInterstitial,
+  dismissBlockingDialog,
+  firstVisible,
+  jitter,
+} from './messageEntry'
 
 /**
  * Opening a real conversation and reading it back.
@@ -354,7 +361,12 @@ export async function openAndReadThread(
     // that hides the button (measured: @dharmaticent, 2026-08-19) must stay READABLE,
     // or its conversation can never be checked for a reply.
     const entry = await clickMessageEntry(page, targetHandle)
-    if (!entry.ok) return { ok: false, reason: 'no-message-button' }
+    if (!entry.ok) {
+      // Blocker 4: a profile with no door at all still has a conversation worth reading —
+      // the inbox-compose route reaches the same thread the send path would use.
+      const viaInbox = await openThreadViaInbox(page, targetHandle)
+      if (!viaInbox) return { ok: false, reason: 'no-message-button' }
+    }
 
     // And the business-messaging dialog, which blocks READS exactly as it blocks sends —
     // Tabish's 2026-08-19 screenshot caught it over @cameratakefilms while the first
