@@ -5,6 +5,7 @@ import { buildConversationsPage } from './view-model/conversations-page'
 import { buildWatchChart } from './view-model/charts'
 import { rankBlockers, blockersSummary } from './view-model/blockers'
 import { SyncButton } from './sync-button'
+import { AutoRefresh } from './auto-refresh'
 import { AutopilotPanel } from './autopilot'
 import { BlockerList } from './blockers'
 import { PaceBand } from './pace'
@@ -99,6 +100,8 @@ export default async function AutopilotPage() {
   return (
     <>
       <Nav current="/" email={user.email} />
+      {/* One message a minute means the page is stale before it is read; see auto-refresh.tsx. */}
+      <AutoRefresh seconds={30} />
       <div className="page">
         <PageHead title="Autopilot" sub={`${v.nowLabel} IST`} />
 
@@ -171,8 +174,8 @@ export default async function AutopilotPage() {
                 {m.newCompanies.neverContacted > 0 ? (
                   <>
                     {' '}
-                    · {m.newCompanies.neverContacted} company{m.newCompanies.neverContacted === 1 ? '' : 's'} still to
-                    reach
+                    · {m.newCompanies.neverContacted}{' '}
+                    {m.newCompanies.neverContacted === 1 ? 'company' : 'companies'} still to reach
                   </>
                 ) : null}
               </p>

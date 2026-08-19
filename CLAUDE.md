@@ -5,21 +5,36 @@ changing anything that touches sending.
 
 ---
 
-## THREE RECIPIENT-SIDE BLOCKERS STAND BETWEEN A PROFILE AND THE COMPOSER — ALL THREE ARE BYPASSED
+## FOUR RECIPIENT-SIDE BLOCKERS STAND BETWEEN A PROFILE AND THE COMPOSER — ALL FOUR ARE BYPASSED
 
 **Read this before touching `sendDm.ts` or `readThread.ts`.** Instagram no longer offers one
-reliable path from a profile to a DM box. Three different obstacles were found IN FIVE DAYS,
-each by Tabish from a screenshot rather than by a test, and each one previously filed as a
-failure code that asserted something false about the recipient. All three now live in ONE
-module — `src/outreach/browser/messageEntry.ts` — and BOTH paths that open a conversation
-(the send path and the reply reader) call it, because a blocker fixed on one path and not
-the other is this codebase's most repeated defect.
+reliable path from a profile to a DM box. Four different obstacles were found IN FIVE DAYS,
+each by Tabish from a screenshot or screen recording rather than by a test, and each one
+previously filed as a failure code that asserted something false about the recipient. All
+four now live in ONE module — `src/outreach/browser/messageEntry.ts` — and BOTH paths that
+open a conversation (the send path and the reply reader) call it, because a blocker fixed on
+one path and not the other is this codebase's most repeated defect.
 
 | # | what appears | what it looked like | what we do |
 |---|---|---|---|
 | 1 | **no Message button** — "Send message" is inside the "…" options menu (@dharmaticent) | `no-message-button`, i.e. "this account cannot be messaged" about one a person messages in a click | open the … menu, click **"Send message"** |
 | 2 | **the business interstitial** — "Partnership messages are more likely to get a response…" (@anandpanditmotionpictures, @cameratakefilms) | `no-composer` on the send path; `unreadable` on the read path | click **"Send message request"**, NEVER "Send prioritised message" (Tabish's instruction) |
 | 3 | **"Turn on notifications"** — a modal that can appear AT ANY MOMENT | `locator.click: Timeout 30000ms exceeded` on a composer that was found and visible | click **"Not Now"**, never "Turn On" |
+| 4 | **no door at all** — no Message button AND no "Send message" in the … menu (@idfreshfood, from Tabish's screen recording) | `no-message-button` twice, WITH the …-menu fallback already live | the INBOX route: open Messages → compose ("New message") → type the handle into To: → click the EXACT username → Chat |
+
+**BLOCKER 4 IS THE FALLBACK OF LAST RESORT (`openThreadViaInbox`), tried only after 1-3's
+answers all failed** — it is the longest path and the least profile-shaped. Its one dangerous
+step is the search-result click, and it is guarded the way "existence is not identity"
+demands: the result row must match the username EXACTLY (anchored regex, dots escaped —
+handles like @audionirvana.in would otherwise wildcard), and no exact match means REFUSE,
+never a fuzzy click. A wrong row here is a DM to a stranger from a revenue account.
+
+**THE RETRY DISCIPLINE, Tabish's rule stated in full:** at most three tries per draft — the
+existing `MAX_DELIVERY_ATTEMPTS` cap, which parks the draft in FAILED where the landing page
+shows it ("Gave up after repeated failures") with re-queue and discard — **and the queue no
+longer waits behind a failing draft**: a retryable failure now re-queues to the BACK
+(`queuedAt` bumped), so the very next tick takes the next recipient instead of driving the
+same blocked profile three ticks in a row.
 
 **BLOCKER 3 IS THE ONE THAT TAUGHT SOMETHING GENERAL: VISIBILITY IS NOT CLICKABILITY.** The
 composer lookup passed — `isVisible()` is about CSS and layout, not about what is on top —
@@ -45,11 +60,31 @@ On** — rather than to the composer. So that gap gets its own dismissal, and if
 the composer is re-focused AND the staged text re-verified, because a keystroke aimed at the
 wrong element is exactly what the read-back guard exists to catch.
 
-**Expect a fourth.** Three in five days is a rate, not a coincidence: these are
+**Expect a fifth.** Four in five days is a rate, not a coincidence: these are
 recipient-side and account-side experiments Instagram is running, so the next one will also
 arrive as a screenshot. The shape of the fix is now established — add it to `messageEntry.ts`
 so both paths get it at once, and never let a failure code assert something about the
 recipient that it has not established.
+
+**ALSO CORRECTED THE SAME DAY (2026-08-19 afternoon), from Tabish's live observations:**
+
+- **Autopilot OFF now stops the NEXT send too.** He flipped it off and watched another
+  message go out: settings were read once at the top of the tick, and the gate plus a
+  just-in-time conversation read can take a minute at the new pace. One fresh
+  `getSettings()` immediately before the SENDING claim closes that window; the only tail
+  left is a browser already mid-paste, which must finish — interrupting a paste in flight
+  is how a message lands with no record of it.
+- **The landing page updates itself now** (`auto-refresh.tsx`, every 30s, paused while the
+  tab is hidden, refreshed the moment it becomes visible). At one message a minute a
+  server-rendered page was stale before it was read.
+- **The ring resize left cross-sender duplicate drafts.** Removing @madaboutmarketingg
+  changed the hash spread (`stableIndex` mod 5, not mod 6), so the planner elected NEW
+  senders for recipients that already held drafts from the old mapping — MEASURED: 36
+  surplus drafts, one recipient at a time. `pnpm ig:dedupe-drafts --run` swept them
+  (audited, keeps rotation's choice). **Any future ring-size change will do this again**;
+  run the broom after removing or adding a sender.
+- "16 companys" on the landing page — the pluraliser wrote `company` + `s`. Now
+  "companies".
 
 **VERIFIED LIVE, AND BLOCKERS 1 AND 3 FIRED ON THE SAME SEND:**
 

@@ -260,6 +260,20 @@ export async function deliverWaiting(opts: DeliverOptions = {}): Promise<Deliver
       }
     }
 
+    /**
+     * THE SWITCH, RE-READ AT THE LAST MOMENT (2026-08-19). Settings were read once at
+     * the top of this call, and everything between that read and here — the gate, a
+     * just-in-time conversation read that opens a real browser — can take a minute. At
+     * the one-minute pace Tabish observed the tail: he flipped autopilot OFF and a send
+     * that had already passed the top-of-call check still went out. One fresh query
+     * closes that window to the only gap nothing can close: a browser already mid-paste,
+     * which must finish or a message lands with no record of it.
+     */
+    if (!(await getSettings()).autopilotEnabled) {
+      log.step('autopilot was switched off mid-tick — stopping before the claim, nothing sent')
+      break
+    }
+
     // SENDING is the lock: it stops the dashboard button and this loop from both
     // driving the same attempt.
     const claimed = await prisma.outreachAttempt.updateMany({
@@ -506,7 +520,22 @@ export async function deliverWaiting(opts: DeliverOptions = {}): Promise<Deliver
     const park = totalAttempts >= MAX_DELIVERY_ATTEMPTS
     await prisma.outreachAttempt.update({
       where: { id: attempt.id },
-      data: { status: park ? 'FAILED' : 'READY', error, failureCode, attempts: { increment: 1 } },
+      /**
+       * A retryable failure goes to the BACK of the queue (2026-08-19, Tabish: "even if
+       * it fails … proceed to next item"). The queue is drained oldest-first, so a draft
+       * that kept its original `queuedAt` sat at the FRONT after failing and the next
+       * tick drove the same recipient again — three minutes of the whole fleet waiting
+       * on one blocked profile. Bumping `queuedAt` means the very next tick takes the
+       * next recipient, and the failed one retries after everything currently ahead of
+       * it. The cap still parks it for a person after MAX_DELIVERY_ATTEMPTS in total.
+       */
+      data: {
+        status: park ? 'FAILED' : 'READY',
+        error,
+        failureCode,
+        attempts: { increment: 1 },
+        ...(park ? {} : { queuedAt: new Date() }),
+      },
     })
     out.failed += 1
     out.outcomes.push({

@@ -51,6 +51,16 @@ export type MessageEntry =
   | { ok: true; via: 'button' | 'options-menu' }
   | { ok: false }
 
+/**
+ * The To:-search result must be the EXACT account, or we refuse. PURE and exported so the
+ * "existence is not identity" property is TESTED rather than trusted to an inline literal:
+ * a search for `crocs` must never click `crocsindia`, and a handle's dots
+ * (@audionirvana.in) must not become regex wildcards that match @audionirvanaXin.
+ */
+export function exactHandleMatcher(handle: string): RegExp {
+  return new RegExp(`^${handle.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i')
+}
+
 export async function clickMessageEntry(page: Page, targetHandle: string): Promise<MessageEntry> {
   // A dialog can be sitting over the profile header before we look at all (blocker 3).
   await dismissBlockingDialog(page)
@@ -176,6 +186,120 @@ export async function clickPastDialogs(page: Page, target: Locator, what: string
     }
   }
   return false
+}
+
+/**
+ * ── BLOCKER 4: NO WAY INTO THE DM FROM THE PROFILE AT ALL ──────────────────
+ *
+ * Some pages show NO Message button and their "…" menu has NO "Send message" item —
+ * @idfreshfood, 2026-08-19, from Tabish's own screen recording: the profile simply does
+ * not link to a conversation. MEASURED before this existed: the draft to it failed twice
+ * as `no-message-button` WITH the …-menu fallback already live.
+ *
+ * The route a person takes instead, and the one this follows: open the INBOX, press
+ * compose ("New message"), type the handle into the To: search, pick the exact account,
+ * Chat. Tried only after blockers 1-3's answers have all failed, because it is the
+ * longest path and the least profile-shaped.
+ *
+ * ── EXACT MATCH OR NOTHING ──────────────────────────────────────────────────
+ *
+ * The search-result click is the one step here that can reach a WRONG PERSON, and
+ * "existence is not identity" is a measured rule in this repo (a guessed handle was the
+ * right company 6 times in 10). So the result row is matched on the username EXACTLY —
+ * anchored, case-insensitive, dots escaped — and no fuzzy row is ever clicked. No exact
+ * match within the wait is a refusal, not a guess.
+ *
+ * Navigation note: this clicks the rail's own Inbox link and the dialog's own buttons —
+ * trusted clicks on visible controls, the same rule as everywhere else. The standing ban
+ * is on deep-linking a THREAD (`/direct/t/<id>`) out of nowhere; arriving at the inbox by
+ * clicking Instagram's own entry point is what a person does.
+ */
+export async function openThreadViaInbox(page: Page, targetHandle: string): Promise<boolean> {
+  await dismissBlockingDialog(page)
+
+  // 1. Into the inbox, via Instagram's own controls: the rail's Direct link, or the
+  //    floating bottom-right "Messages" chip.
+  const inboxEntry = await firstVisible(
+    page,
+    [
+      page.locator('a[href*="/direct/inbox"]'),
+      page.locator('div[role="button"]', { hasText: /^Messages\b/ }),
+      page.locator('svg[aria-label="Direct"]'),
+    ],
+    8_000,
+  )
+  if (!inboxEntry) return false
+  if (!(await clickPastDialogs(page, inboxEntry, 'the inbox'))) return false
+  await jitter(1200, 2200)
+  await dismissBlockingDialog(page)
+
+  // 2. Compose. The pencil — "New message" — in the inbox header (or the chip's panel).
+  const compose = await firstVisible(
+    page,
+    [
+      page.locator('div[role="button"]:has(svg[aria-label="New message"])'),
+      page.locator('svg[aria-label="New message"]'),
+      page.getByRole('button', { name: /^new message$/i }),
+    ],
+    8_000,
+  )
+  if (!compose) return false
+  if (!(await clickPastDialogs(page, compose, 'the compose button'))) return false
+  await jitter(800, 1500)
+
+  // 3. Type the handle into the To: search — real keystrokes, so the results are the
+  //    same ones a person would see.
+  const toBox = await firstVisible(
+    page,
+    [
+      page.locator('div[role="dialog"] input[name="queryBox"]'),
+      page.locator('div[role="dialog"] input[placeholder*="Search" i]'),
+      page.locator('input[name="queryBox"]'),
+    ],
+    8_000,
+  )
+  if (!toBox) return false
+  await toBox.click()
+  await jitter(300, 700)
+  await page.keyboard.type(targetHandle, { delay: 90 })
+  await jitter(1500, 2600)
+
+  // 4. The exact account, or nothing.
+  const exact = exactHandleMatcher(targetHandle)
+  const row = await firstVisible(
+    page,
+    [
+      page.locator('div[role="dialog"] span', { hasText: exact }),
+      page.locator('div[role="dialog"]').getByText(targetHandle, { exact: true }),
+    ],
+    10_000,
+  )
+  if (!row) {
+    log.step('the To: search offered no exact match for the handle — refusing to guess', { target: targetHandle })
+    await page.keyboard.press('Escape').catch(() => undefined)
+    return false
+  }
+  if (!(await clickPastDialogs(page, row, 'the exact account in the search results'))) return false
+  await jitter(600, 1200)
+
+  // 5. Chat.
+  const chat = await firstVisible(
+    page,
+    [
+      page.locator('div[role="dialog"] div[role="button"]', { hasText: /^(Chat|Next)$/ }),
+      page.locator('div[role="dialog"] button', { hasText: /^(Chat|Next)$/ }),
+      page.getByRole('button', { name: /^(chat|next)$/i }),
+    ],
+    8_000,
+  )
+  if (!chat) return false
+  if (!(await clickPastDialogs(page, chat, 'the Chat button'))) return false
+  await jitter(1200, 2200)
+
+  log.step('opened the conversation through the inbox — the profile offered no door at all', {
+    target: targetHandle,
+  })
+  return true
 }
 
 /**

@@ -6,7 +6,13 @@ import { pasteShortcut } from '@/lib/platform'
 import { bodyAppearedSince, messageMatchesOurs } from '@/outreach/matching'
 import type { FailureCode } from '@/lib/constants'
 import { assertLoggedInAs, assertNoCheckpoint, assertNoEnforcement, launchProfile } from './session'
-import { clickMessageEntry, passBusinessInterstitial, dismissBlockingDialog, clickPastDialogs } from './messageEntry'
+import {
+  clickMessageEntry,
+  openThreadViaInbox,
+  passBusinessInterstitial,
+  dismissBlockingDialog,
+  clickPastDialogs,
+} from './messageEntry'
 
 /**
  * Sending one DM from the account's own logged-in Chrome profile.
@@ -111,10 +117,22 @@ export async function sendDm(params: SendDmParams): Promise<SendDmResult> {
     //    this and the thread reader: `clickMessageEntry`.
     const entry = await clickMessageEntry(page, targetHandle)
     if (!entry.ok) {
-      return {
-        ok: false,
-        reason: 'no Message button on the profile, and the … menu offered no "Send message" either',
-        failureCode: 'no-message-button',
+      /**
+       * BLOCKER 4 (@idfreshfood, 2026-08-19): no Message button AND no "Send message" in
+       * the … menu — the profile offers no door at all. The inbox-compose route is the
+       * one a person takes instead, and it is tried only after both profile doors failed.
+       * If IT fails too, the failure code is honest about how much was tried, and the
+       * retry cap (3) parks the draft visibly and lets the queue move on.
+       */
+      log.step('the profile offers no way into the DM — trying the inbox route', { target: targetHandle })
+      const viaInbox = await openThreadViaInbox(page, targetHandle)
+      if (!viaInbox) {
+        return {
+          ok: false,
+          reason:
+            'no Message button, no "Send message" in the … menu, and the inbox route could not reach the account either',
+          failureCode: 'no-message-button',
+        }
       }
     }
 
