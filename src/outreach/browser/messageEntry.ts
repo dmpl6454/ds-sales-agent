@@ -52,6 +52,9 @@ export type MessageEntry =
   | { ok: false }
 
 export async function clickMessageEntry(page: Page, targetHandle: string): Promise<MessageEntry> {
+  // A dialog can be sitting over the profile header before we look at all (blocker 3).
+  await dismissBlockingDialog(page)
+
   const messageBtn = await firstVisible(
     page,
     [
@@ -64,7 +67,7 @@ export async function clickMessageEntry(page: Page, targetHandle: string): Promi
   if (messageBtn) {
     await messageBtn.hover()
     await jitter(300, 900)
-    await messageBtn.click()
+    if (!(await clickPastDialogs(page, messageBtn, 'Message button'))) return { ok: false }
     return { ok: true, via: 'button' }
   }
 
@@ -84,7 +87,7 @@ export async function clickMessageEntry(page: Page, targetHandle: string): Promi
 
   await options.hover()
   await jitter(300, 900)
-  await options.click()
+  if (!(await clickPastDialogs(page, options, 'the … options menu'))) return { ok: false }
 
   const sendMessage = await firstVisible(
     page,
@@ -105,8 +108,74 @@ export async function clickMessageEntry(page: Page, targetHandle: string): Promi
   log.step('Message button hidden — using "Send message" from the … menu', { target: targetHandle })
   await sendMessage.hover()
   await jitter(300, 900)
-  await sendMessage.click()
+  if (!(await clickPastDialogs(page, sendMessage, '"Send message" in the … menu'))) return { ok: false }
   return { ok: true, via: 'options-menu' }
+}
+
+/**
+ * ── BLOCKER 3: A DIALOG THAT CAN APPEAR AT ANY MOMENT ──────────────────────
+ *
+ * *"Turn on notifications — Know straight away when people follow you…"*, with **Turn On**
+ * and **Not Now**. Tabish's screenshot, 2026-08-19: it landed over the open @dharmaticent
+ * conversation AFTER the … menu had been navigated successfully, and the send failed with
+ * `locator.click: Timeout 30000ms exceeded` on the composer — the box was visible, so
+ * every lookup passed, and the modal simply ate the click. **Visibility is not
+ * clickability**, which is why this could not be caught by the selector list that already
+ * handles the other two blockers.
+ *
+ * Unlike the … menu and the interstitial, this one is NOT tied to a step: Instagram raises
+ * it on its own schedule. So it is not a step in the flow — it is checked at every dwell
+ * point AND it is retried around the one click that must land (`clickPastDialogs`).
+ *
+ * **"Not Now" is the only button ever clicked, and never "Turn On".** Declining is the
+ * conservative direction for every dialog Instagram phrases this way (notifications, "save
+ * your login info?", "add to home screen"): accepting changes the profile's state, and the
+ * profile is the credential this whole design protects. A single fast pass, because this
+ * runs several times per send and the dialog is either in the DOM or it is not.
+ */
+export async function dismissBlockingDialog(page: Page): Promise<boolean> {
+  const candidates = [
+    page.getByRole('button', { name: /^not now$/i }),
+    page.locator('button', { hasText: /^Not Now$/ }),
+    page.locator('div[role="dialog"] [role="button"]', { hasText: /^Not Now$/ }),
+  ]
+  for (const c of candidates) {
+    try {
+      const first = c.first()
+      if (await first.isVisible({ timeout: 300 })) {
+        await first.click({ timeout: 5_000 })
+        log.step('an Instagram dialog appeared — dismissed it with "Not Now"')
+        await jitter(400, 900)
+        return true
+      }
+    } catch {
+      // Not present, or it vanished on its own between the check and the click. Either
+      // way there is nothing to dismiss and nothing to report.
+    }
+  }
+  return false
+}
+
+/**
+ * Click something that MUST be clicked, surviving a dialog that lands mid-flow.
+ *
+ * The failed @dharmaticent send is the whole argument: one `click()` with a 30-second
+ * timeout against an element a modal was covering burns the entire budget and then fails,
+ * three times over, parking the draft. Same total budget here, spent as three attempts
+ * with a dismissal before each — so a dialog that appears at any point during the click
+ * costs a retry instead of a delivery.
+ */
+export async function clickPastDialogs(page: Page, target: Locator, what: string): Promise<boolean> {
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    await dismissBlockingDialog(page)
+    try {
+      await target.click({ timeout: 9_000 })
+      return true
+    } catch {
+      log.step('a click did not land — looking for a dialog over it and retrying', { what, attempt })
+    }
+  }
+  return false
 }
 
 /**

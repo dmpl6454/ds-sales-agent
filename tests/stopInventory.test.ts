@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest'
 import { evaluatePair, SKIP_REASONS } from '@/outreach/governor'
 import { evaluateResend, RESEND_BLOCKS, OVERRIDABLE_BLOCKS } from '@/outreach/gate'
 import { BRAND_BLOCKS, checkNewBrandTouchCap, checkRecipientIsNotAPerson } from '@/outreach/brandGuards'
-import { decideDispatch, assessBreaker } from '@/outreach/pacing'
+import { decideDispatch, assessBreaker, FLEET_MIN_GAP_MINUTES } from '@/outreach/pacing'
 import { FAILURE_CODES } from '@/lib/constants'
 import { asSentence, remedyFor, withoutShellCommand } from '@/app/messages/remedy'
 import { describeOnDemand, CROSSABLE_RULES } from '@/outreach/onDemand'
@@ -386,7 +386,14 @@ describe('every dispatcher hold explains itself', () => {
     ['autopilot-off', { autopilotEnabled: false }],
     ['outside-active-hours', { istHour: 3 }],
     ['nothing-waiting', { waitingCount: 0 }],
-    ['too-soon', { minutesSinceLastSend: 1 }],
+    /**
+     * DERIVED FROM THE CONSTANT, not the literal `1` it used to be. That literal produced
+     * `too-soon` only while the gap was larger than one minute, and it stopped doing so
+     * the moment Tabish asked for one-minute sending (2026-08-19) — so this case silently
+     * stopped exercising the stop it names. A fixture that pins a number the rule owns
+     * goes stale the first time the rule changes.
+     */
+    ['too-soon', { minutesSinceLastSend: FLEET_MIN_GAP_MINUTES - 1 }],
   ]
 
   it.each(CASES)('produces %s, with a readable reason', (reason, over) => {

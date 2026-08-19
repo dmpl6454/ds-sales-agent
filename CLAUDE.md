@@ -5,6 +5,69 @@ changing anything that touches sending.
 
 ---
 
+## THREE RECIPIENT-SIDE BLOCKERS STAND BETWEEN A PROFILE AND THE COMPOSER — ALL THREE ARE BYPASSED
+
+**Read this before touching `sendDm.ts` or `readThread.ts`.** Instagram no longer offers one
+reliable path from a profile to a DM box. Three different obstacles were found IN FIVE DAYS,
+each by Tabish from a screenshot rather than by a test, and each one previously filed as a
+failure code that asserted something false about the recipient. All three now live in ONE
+module — `src/outreach/browser/messageEntry.ts` — and BOTH paths that open a conversation
+(the send path and the reply reader) call it, because a blocker fixed on one path and not
+the other is this codebase's most repeated defect.
+
+| # | what appears | what it looked like | what we do |
+|---|---|---|---|
+| 1 | **no Message button** — "Send message" is inside the "…" options menu (@dharmaticent) | `no-message-button`, i.e. "this account cannot be messaged" about one a person messages in a click | open the … menu, click **"Send message"** |
+| 2 | **the business interstitial** — "Partnership messages are more likely to get a response…" (@anandpanditmotionpictures, @cameratakefilms) | `no-composer` on the send path; `unreadable` on the read path | click **"Send message request"**, NEVER "Send prioritised message" (Tabish's instruction) |
+| 3 | **"Turn on notifications"** — a modal that can appear AT ANY MOMENT | `locator.click: Timeout 30000ms exceeded` on a composer that was found and visible | click **"Not Now"**, never "Turn On" |
+
+**BLOCKER 3 IS THE ONE THAT TAUGHT SOMETHING GENERAL: VISIBILITY IS NOT CLICKABILITY.** The
+composer lookup passed — `isVisible()` is about CSS and layout, not about what is on top —
+and then `click()` waited out its entire 30-second timeout because a modal was over it. So
+the selector-list approach that solves blockers 1 and 2 is structurally unable to see this
+one. Two mechanisms answer it, and both are needed:
+
+- `dismissBlockingDialog` is checked at EVERY dwell point (feed, profile, after the entry
+  click, before Enter) rather than at one step, because Instagram raises this dialog on its
+  own schedule and not in response to anything we did.
+- `clickPastDialogs` wraps the click that must land: three attempts of 9s, each preceded by
+  a dismissal. **Same total budget as the one 30-second click it replaces**, spent so that a
+  dialog arriving mid-click costs a retry instead of a delivery.
+
+**"Not Now" is the only button ever clicked.** Every dialog Instagram phrases this way
+(notifications, "save your login info?", "add to home screen") is safe to DECLINE and unsafe
+to accept: accepting changes the Chrome profile's state, and that profile is the credential
+the whole design protects.
+
+**AND A DIALOG LANDING JUST BEFORE `Enter` IS THE DANGEROUS CASE.** A modal holds focus, so
+the keystroke would go to ITS default button — which on the notifications dialog is **Turn
+On** — rather than to the composer. So that gap gets its own dismissal, and if one was found
+the composer is re-focused AND the staged text re-verified, because a keystroke aimed at the
+wrong element is exactly what the read-back guard exists to catch.
+
+**Expect a fourth.** Three in five days is a rate, not a coincidence: these are
+recipient-side and account-side experiments Instagram is running, so the next one will also
+arrive as a screenshot. The shape of the fix is now established — add it to `messageEntry.ts`
+so both paths get it at once, and never let a failure code assert something about the
+recipient that it has not established.
+
+**VERIFIED LIVE, AND BLOCKERS 1 AND 3 FIRED ON THE SAME SEND:**
+
+```
+13:26  an Instagram dialog appeared — dismissed it with "Not Now"
+13:27  Message button hidden — using "Send message" from the … menu   target=dharmaticent
+13:27  dm delivered  bachelorssociety → dharmaticent
+       threadUrl=https://www.instagram.com/direct/t/115517513167735
+```
+
+@dharmaticent had failed **six times across two days** — three as `no-message-button` under
+@madaboutmarketingg, then three more once the … menu was solved and the notifications modal
+ate the composer click. One send, both doors, delivered with a real thread URL. The second
+message went out **1m49s later** (`bollywoodpaparazzii → @discoveryplusin`), which is the
+1-minute pace working end to end.
+
+---
+
 ## 19 AUGUST — A SENDER CAN LEAVE, THE QUEUE CANNOT; THE SWEEP FINALLY RUNS WHERE THE SESSIONS ARE
 
 All on Tabish's instruction, all deployed and verified live the same day.
@@ -74,6 +137,55 @@ carries the live gate verdict from the same `recheckBeforeSend` the dispatcher w
 Per-sender counts sit under it. The 18/15/12-style split Tabish asked about is
 `stableIndex` (FNV-1a) spreading never-messaged recipients across the ring —
 deterministic and roughly even, never exactly even; nothing to fix.
+
+### THE PACE IS ONE MINUTE NOW, WHICH IS THE ARCHITECTURE'S FLOOR
+
+Tabish, twice in one day: 5 minutes was "too much", then *"make sending every 1 min"*.
+`FLEET_MIN_GAP_MINUTES = 1` and the device agent's poll went **60s → 30s**, because the poll
+interval was the real ceiling — one send per tick means a 60-second poll can never beat
+60 seconds and on average waits half a poll past the moment the gap clears. Sends themselves
+take 30-60s, so the observed cadence is one message every 1-2 minutes.
+
+**There is nothing below this without changing `MAX_SENDS_PER_TICK`**, and that is the
+number that cannot cluster — so "faster" from here means concurrent browser drives against
+revenue accounts, which is a different decision entirely. The ban-pattern risk was stated
+again when he asked and is recorded as his, like the caps.
+
+**`tests/stopInventory.test.ts` had a fixture that went stale the moment the gap changed** —
+`['too-soon', { minutesSinceLastSend: 1 }]` stopped producing `too-soon` once the gap became
+1, so the case silently stopped exercising the stop it names. It reads
+`FLEET_MIN_GAP_MINUTES - 1` now. A fixture that pins a number the rule owns goes stale the
+first time the rule changes, and it goes stale GREEN.
+
+### "I HAVE REPLIED" RELEASES EVERYTHING IMMEDIATELY — NOW PROVEN BY EXECUTION
+
+Tabish: *"The moment a human clicks on 'I have replied' manually all messages to that account
+must resume."* It already did — all three enforcers (`gate.ts`, `plan.ts`, `onDemand.ts`)
+scope the halt with `replyHandledAt: null` — but **nothing executed that claim.**
+`tests/replyHalt.test.ts` covers `replyHaltActive`, the PURE predicate, and no enforcer calls
+it: they each express the halt as a QUERY, and a query filter is a property of the generated
+Prisma client (the `skipDuplicates` gotcha, one door along).
+
+`tests/reply-release-live.test.ts` runs the real `recheckBeforeSend` against a real database,
+both directions, and was MUTATION-TESTED: dropping `replyHandledAt: null` from the gate's
+query fails it. It asserts the reply stop is GONE rather than `ok: true`, because
+`CREDENTIAL_ROOT` is not overridable and a seeded account can therefore never hold a session —
+and TARGET_REPLIED is evaluated before NO_SESSION, so its absence is the release. The reply,
+its text and the REPLIED status all survive being handled; history is never erased.
+
+### THE DISK FILLED COMPLETELY, MID-SESSION, AND THE PROJECT'S OWN TOOL FIXED IT
+
+`ENOSPC: no space left on device` on an ordinary file write. MEASURED: **172 MB free of
+228 GB**, the Data volume at 100%. This is the growth `ig:prune`'s docblock projected in
+August (26 GB free then, "44.7 GB unpruned at 65 profiles") arriving in full.
+
+`pnpm ig:prune --run` freed **1,321.8 MB across 7 profiles (1,814 MB → 492 MB)**, and all
+7 sessions verified byte-identical afterwards. **Stop the device agent first** — the pruner
+refuses while Chrome holds a profile, which is correct and which means a running agent
+blocks the one command that unblocks the disk. Two things worth knowing: the reply sweep
+makes cache growth proportional to conversations READ as well as messages sent, and
+`~/Library` (1.4 TB by `du`, i.e. mostly cloud placeholders) is where the machine-wide
+problem actually lives — that half is Tabish's to decide, not this project's to delete.
 
 ### PAID POSTS: TWO BOXES, AND THE FUNNEL IS ON THE PAGE
 

@@ -2,7 +2,7 @@ import type { Page } from 'patchright'
 import { isOneOfOurs, normalise } from '@/outreach/matching'
 import { profileUrl } from '@/lib/urls'
 import { assertLoggedInAs, assertNoCheckpoint, launchProfile } from './session'
-import { clickMessageEntry, passBusinessInterstitial, firstVisible, jitter } from './messageEntry'
+import { clickMessageEntry, passBusinessInterstitial, dismissBlockingDialog, firstVisible, jitter } from './messageEntry'
 
 /**
  * Opening a real conversation and reading it back.
@@ -338,11 +338,16 @@ export async function openAndReadThread(
     await page.goto('https://www.instagram.com/', { waitUntil: 'domcontentloaded', timeout: 60_000 })
     assertNoCheckpoint(page, senderHandle)
     await assertLoggedInAs(page, senderHandle)
+    // Blocker 3: a dialog over the conversation would be read as page text and, worse,
+    // hide the bubbles the completeness check needs — an incomplete read must never be
+    // caused by something we could have clicked away.
+    await dismissBlockingDialog(page)
     await browseBriefly(page)
 
     await page.goto(profileUrl(targetHandle), { waitUntil: 'domcontentloaded', timeout: 60_000 })
     assertNoCheckpoint(page, senderHandle)
     await jitter(1500, 3200)
+    await dismissBlockingDialog(page)
 
     // The button when the profile shows one, the "…" menu's "Send message" when it does
     // not — the same door the send path uses, from the same implementation. A profile
@@ -356,6 +361,7 @@ export async function openAndReadThread(
     // sweep filed that thread unreadable. "Send message request" opens the ordinary
     // conversation; nothing is typed and nothing is sent by this module, as ever.
     await passBusinessInterstitial(page, targetHandle)
+    await dismissBlockingDialog(page)
 
     /**
      * The dwell is now spent INSIDE the read rather than before it. Same wall-clock pause, so

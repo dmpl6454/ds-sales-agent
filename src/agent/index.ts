@@ -61,8 +61,19 @@ import { istHourOfDay } from '@/lib/time'
  * dispatcher design exists to avoid. `dispatchTick` enforces that for us.
  */
 
-/** How often the device asks whether there is anything to send. */
-const POLL_INTERVAL_MS = 60_000
+/**
+ * How often the device asks whether there is anything to send.
+ *
+ * 30 SECONDS SINCE 2026-08-19, because the fleet gap became ONE minute the same day and
+ * the poll interval is the real ceiling: one send per tick means a 60-second poll delivers
+ * at best every 60s, and on average waits half a poll past the moment the gap clears. At
+ * 30s the gap is what paces the fleet rather than this timer, which is where the decision
+ * belongs — `pacing.ts` is the file with the rules and the tests in it.
+ *
+ * It does NOT widen anything: `dispatchTick` still sends at most one message and still
+ * asks every guard. A tick with nothing to do is a handful of cheap queries.
+ */
+const POLL_INTERVAL_MS = 30_000
 
 /** Written this often so the dashboard can say how long a device has been away. */
 const PRESENCE_INTERVAL_MS = 30_000
