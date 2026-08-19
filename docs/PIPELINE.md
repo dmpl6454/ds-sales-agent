@@ -2,15 +2,30 @@
 
 https://claude.ai/code/artifact/517b2e18-4c61-428c-a300-9b21de07d1c6
 
-> ## ⚠ STALE SINCE 2026-08-18 EVENING — the cap restructure invalidated its rules panel
+> ## ⚠ STALE SINCE 2026-08-18 EVENING, AND MORE SO SINCE 2026-08-19 — the SPINE changed too
 >
 > The drawing still shows twelve gate questions, the 7-day spacing, per-sender daily caps
 > and the persona stops. The gate now asks EIGHT questions (the one volume rule is
 > `pair-daily-cap`, 5/day per account→recipient), the message is one verbatim template
-> with no greeting or signature, the fleet hourly allowance is gone (the 5-minute gap
-> paces instead), rotation hash-spreads fresh recipients across all six accounts, and the
-> reply pause is two days. The three-clocks SPINE is unchanged. Rebuild figure 3's rules
-> panel from `gate.ts`/`governor.ts` before trusting the drawing, and republish to the
+> with no greeting or signature, the fleet hourly allowance is gone (the gap paces
+> instead), rotation hash-spreads fresh recipients across all six accounts, and the
+> reply pause is two days.
+>
+> **2026-08-19 additionally changed the CLOCKS, which is the spine itself:**
+>
+> - **the reply reads are NOT at 11:00/20:00 on the server any more** — they run on the
+>   DEVICE AGENT every 30 minutes inside 10:00-21:00 IST, under the send lock (the
+>   server schedule still fires and still no-ops; the device is where the sessions are).
+> - **the fleet gap is 3 minutes** (was 5), device tick every 60s — so the send lane's
+>   ceiling line is wrong.
+> - **a sender leaving the rotation hands its queue off by rotation**
+>   (`handOffWaitingDrafts`) — a new arrow the drawing has no notion of; and
+>   @madaboutmarketingg is out (5 accounts in the ring, not 6).
+> - the Message click has TWO doors now (the button, or the … menu's "Send message") —
+>   one box, but its caption claims one.
+>
+> Rebuild the clock lanes and figure 3's rules panel from `agent/index.ts`,
+> `pacing.ts`, `gate.ts`/`governor.ts` before trusting the drawing, and republish to the
 > SAME URL above.
 
 > ## REBUILT 2026-08-17 AFTERNOON, from the deployed code and the live database. Title unchanged: **Three Clocks**.
