@@ -111,7 +111,7 @@ describe('the planner refuses a recipient already filed as a BRAND but categoris
    * protection, which is the lesson of the 166 cover frames saved and never read.
    */
   it.each(PEOPLE)('holds a draft to @%s… ', (category, handle) => {
-    const r = checkRecipientIsNotAPerson({ targetKind: 'BRAND', brandCategory: category, handle })
+    const r = checkRecipientIsNotAPerson({ targetKind: 'BRAND', brandCategory: category, handle, campaignTalent: false })
     expect(r.ok).toBe(false)
     expect(r.ok === false && r.reason).toBe(BRAND_BLOCKS.RECIPIENT_IS_A_PERSON)
     // The refusal names the category, so an operator can see what to correct.
@@ -119,19 +119,19 @@ describe('the planner refuses a recipient already filed as a BRAND but categoris
   })
 
   it.each(COMPANIES)('permits a draft to a "%s" (@%s)', (category, handle) => {
-    expect(checkRecipientIsNotAPerson({ targetKind: 'BRAND', brandCategory: category, handle }).ok).toBe(true)
+    expect(checkRecipientIsNotAPerson({ targetKind: 'BRAND', brandCategory: category, handle, campaignTalent: false }).ok).toBe(true)
   })
 
   it('says nothing about CHANNELS — this guard is brand-only, like the other two', () => {
     expect(
-      checkRecipientIsNotAPerson({ targetKind: 'CHANNEL', brandCategory: 'Film Director', handle: 'viralbhayani' }).ok,
+      checkRecipientIsNotAPerson({ targetKind: 'CHANNEL', brandCategory: 'Film Director', handle: 'viralbhayani', campaignTalent: false }).ok,
     ).toBe(true)
   })
 
   it('permits a brand with no category at all rather than refusing on absence', () => {
     // 38 of the 68 live BRAND rows have no category. Refusing them would retire more than
     // half the prospect list on the basis of missing data.
-    expect(checkRecipientIsNotAPerson({ targetKind: 'BRAND', brandCategory: null, handle: 'agoracitycentre' }).ok).toBe(
+    expect(checkRecipientIsNotAPerson({ targetKind: 'BRAND', brandCategory: null, handle: 'agoracitycentre', campaignTalent: false }).ok).toBe(
       true,
     )
   })

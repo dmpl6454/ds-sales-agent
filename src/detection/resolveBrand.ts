@@ -256,7 +256,19 @@ const NEVER_A_PROSPECT = new Set(['instagram', 'explore', 'reels'])
 
 export type BrandVerdict =
   | { kind: 'BRAND'; handle: string; displayName: string; category: string | null; followers: number | null }
-  | { kind: 'PERSON'; handle: string; category: string | null }
+  | {
+      kind: 'PERSON'
+      handle: string
+      category: string | null
+      /**
+       * Carried so a CALLER can apply the talent bar (Tabish, 2026-08-19: verified or
+       * truly-big people tagged on CAMPAIGN posts become messageable). Optional and
+       * nullable: a cached PERSON predates these facts, and NULL never admits.
+       */
+      isVerified?: boolean | null
+      followers?: number | null
+      displayName?: string
+    }
   | { kind: 'MISSING'; handle: string }
   /**
    * We READ the profile and still cannot tell — no category, not a business account.
@@ -322,6 +334,8 @@ export function classifyProfile(input: {
   isProfessionalAccount: boolean
   fullName?: string | null
   followers?: number | null
+  /** `is_verified` from web_profile_info — carried onto PERSON verdicts for the talent bar. */
+  isVerified?: boolean | null
 }): BrandVerdict {
   const { handle: h, category, isBusinessAccount, isProfessionalAccount } = input
   const catLower = category?.toLowerCase() ?? ''
@@ -341,7 +355,14 @@ export function classifyProfile(input: {
      * files them as buyers. What separates a prospect from a profession or a competitor is
      * the category, never the account type.
      */
-    return { kind: 'PERSON', handle: h, category }
+    return {
+      kind: 'PERSON',
+      handle: h,
+      category,
+      isVerified: input.isVerified ?? null,
+      followers: input.followers ?? null,
+      displayName: (input.fullName || h).trim() || h,
+    }
   }
 
   if (isBusinessAccount || (isProfessionalAccount && category !== null)) {
@@ -356,7 +377,14 @@ export function classifyProfile(input: {
 
   if (category !== null) {
     // A category we do not recognise as a person-role, on a non-professional account.
-    return { kind: 'PERSON', handle: h, category }
+    return {
+      kind: 'PERSON',
+      handle: h,
+      category,
+      isVerified: input.isVerified ?? null,
+      followers: input.followers ?? null,
+      displayName: (input.fullName || h).trim() || h,
+    }
   }
 
   /**
@@ -745,7 +773,16 @@ export async function resolveBrand(
         followers: cached.followers,
       }
     }
-    if (cached.kind === 'PERSON') return { kind: 'PERSON', handle: h, category: cached.category }
+    if (cached.kind === 'PERSON')
+      return {
+        kind: 'PERSON',
+        handle: h,
+        category: cached.category,
+        // The cache predates the verified fact; followers were stored. NULL never admits.
+        isVerified: null,
+        followers: cached.followers,
+        displayName: cached.displayName ?? h,
+      }
     if (cached.kind !== 'UNRESOLVED') return { kind: 'MISSING', handle: h }
 
     const stored: BrandVerdict = { kind: 'UNRESOLVED', handle: h, reason: 'cached: no category' }
@@ -859,6 +896,7 @@ export async function resolveBrand(
           isProfessionalAccount: user.is_professional_account === true,
           fullName: (user.full_name as string | null) ?? null,
           followers: ((user.edge_followed_by as { count?: number } | undefined)?.count ?? null) as number | null,
+          isVerified: (user.is_verified as boolean | null) ?? null,
         })
       }
     }

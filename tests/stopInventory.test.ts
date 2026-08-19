@@ -363,6 +363,7 @@ describe('the brand guards explain themselves', () => {
       targetKind: 'BRAND',
       brandCategory: 'Film Director',
       handle: 'somedirector',
+      campaignTalent: false,
     })
     expect(r.ok, 'the person guard did not fire on a Film Director category').toBe(false)
     if (!r.ok) {
@@ -377,6 +378,7 @@ describe('the brand guards explain themselves', () => {
         targetKind: 'BRAND',
         brandCategory: 'Grocery & Convenience Stores',
         handle: 'royalcanin.india',
+        campaignTalent: false,
       }).ok,
     ).toBe(true)
   })

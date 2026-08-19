@@ -9,6 +9,8 @@ import {
 } from '@/detection/resolveBrand'
 import { brandCandidatesFor, excludedHandles } from '@/detection/brandCandidates'
 import { createBrandTarget } from '@/outreach/brandTarget'
+import { admitsAsTalent } from '@/outreach/targetAudit'
+import { getSettings } from '@/lib/settings'
 
 /**
  *   pnpm ig:brands                    what would be discovered — costs nothing
@@ -407,6 +409,8 @@ async function main(): Promise<void> {
 
   let brands = 0
   let people = 0
+  let talent = 0
+  const settings = await getSettings()
   let missing = 0
   let unknown = 0
   let unresolved = 0
@@ -436,6 +440,26 @@ async function main(): Promise<void> {
 
     for (const v of verdicts) {
       if (v.kind === 'PERSON') {
+        /**
+         * The talent bar (Tabish, 2026-08-19): a verified or truly-big person tagged on a
+         * CAMPAIGN post is a deliberate recipient, created with `campaignTalent` so the
+         * person guard admits exactly these rows and no others. Same rule as the
+         * automatic pass (autoResolve.ts) — one bar, two callers.
+         */
+        if (isRun && admitsAsTalent({ isVerified: v.isVerified ?? null, followerCount: v.followers ?? null }, settings.celebrityMinFollowers)) {
+          const outcome = await createBrandTarget(
+            { kind: 'BRAND', handle: v.handle, displayName: v.displayName ?? v.handle, category: v.category, followers: v.followers ?? null },
+            { id: c.id, shortcode: c.shortcode },
+            'brand.discovered',
+            'cli:brands-talent',
+            { campaignTalent: true, isVerified: v.isVerified ?? null, followerCount: v.followers ?? null },
+          )
+          if (outcome === 'created') {
+            talent++
+            console.log(`  TALENT ADMITTED  @${v.handle} (${v.category ?? 'person'}, verified=${v.isVerified ?? '?'}, followers=${v.followers ?? '?'})`)
+            continue
+          }
+        }
         people++
         continue
       }
@@ -476,7 +500,7 @@ async function main(): Promise<void> {
   }
 
   console.log(
-    `\n  brands ${brands} · people ${people} · missing ${missing} · needs-a-human ${unresolved} · not-yet-looked ${unknown}`,
+    `\n  brands ${brands} · people ${people} · talent admitted ${talent} · missing ${missing} · needs-a-human ${unresolved} · not-yet-looked ${unknown}`,
   )
   console.log(`  new brand targets created: ${created} (their routes are live — see the header)`)
   if (unresolved > 0) {

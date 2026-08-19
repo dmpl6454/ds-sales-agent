@@ -42,6 +42,16 @@ export async function createBrandTarget(
   campaign: { id: string; shortcode?: string; channelHandle?: string } | null,
   auditAction: 'brand.discovered' | 'brand.auto-decided',
   actor: string,
+  opts: {
+    /**
+     * A person deliberately admitted from a CAMPAIGN post's Instagram-asserted evidence
+     * after passing `admitsAsTalent` (Tabish, 2026-08-19). Exempts the row from
+     * `checkRecipientIsNotAPerson` — and ONLY rows created this way are exempt.
+     */
+    campaignTalent?: boolean
+    isVerified?: boolean | null
+    followerCount?: number | null
+  } = {},
 ): Promise<BrandTargetOutcome> {
   const handle = verdict.handle
 
@@ -91,6 +101,9 @@ export async function createBrandTarget(
       optedOut: false,
       discoveredFromCampaignId: campaign?.id ?? null,
       brandCategory: verdict.category,
+      campaignTalent: opts.campaignTalent ?? false,
+      isVerified: opts.isVerified ?? null,
+      followerCount: opts.followerCount ?? null,
     },
   })
 

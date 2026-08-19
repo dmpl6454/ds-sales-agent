@@ -266,6 +266,7 @@ export async function buildProspectsPage(): Promise<ProspectsPageView> {
     kind: string
     handle: string
     brandCategory: string | null
+    campaignTalent: boolean
   }): { sentence: string; willWrite: boolean } {
     /**
      * ── THE PLANNER'S OWN REFUSAL COMES FIRST, OR THIS ROW PROMISES A MESSAGE THAT
@@ -290,6 +291,7 @@ export async function buildProspectsPage(): Promise<ProspectsPageView> {
       targetKind: t.kind,
       brandCategory: t.brandCategory,
       handle: t.handle,
+      campaignTalent: t.campaignTalent,
     })
     if (!person.ok) return { sentence: person.detail ?? 'Nothing is written to them.', willWrite: false }
 

@@ -4,6 +4,8 @@ import { detectionCutoff } from '@/lib/cutoff'
 import { mentionsIn, taggedHandlesIn, modelHasRun, resolveBrand } from './resolveBrand'
 import { brandCandidatesFor, excludedHandles } from './brandCandidates'
 import { createBrandTarget } from '@/outreach/brandTarget'
+import { admitsAsTalent } from '@/outreach/targetAudit'
+import { getSettings } from '@/lib/settings'
 
 /**
  * AFTER A DETECTION PASS: turn the @mentions of recent CAMPAIGN captions into prospects,
@@ -306,6 +308,7 @@ export async function autoResolveBrands(
   opts: { maxLookups?: number } = {},
 ): Promise<AutoResolveSummary> {
   const maxLookups = opts.maxLookups ?? MAX_LOOKUPS_PER_PASS
+  const settings = await getSettings()
 
   /**
    * Newest first, and scoped to the detection window. A mention in a post from before the
@@ -453,6 +456,39 @@ export async function autoResolveBrands(
         'auto-resolve',
       )
       if (outcome === 'created') out.decided++
+      continue
+    }
+
+    /**
+     * A PERSON tagged on a CAMPAIGN post becomes a target when they pass the talent bar
+     * (Tabish, 2026-08-19: "send messages to celebrities as well if they are part of the
+     * paid campaign"). Every candidate here IS Instagram-asserted campaign evidence — that
+     * is what `brandCandidatesFor` walks — so the only question left is legitimacy:
+     * verified, or ≥ celebrityMinFollowers. A cached PERSON flows through this branch on
+     * every pass too, so historic verdicts get the bar without a separate backfill.
+     * Below the bar behaves exactly as before: the person is left alone.
+     */
+    if (verdict.kind === 'PERSON') {
+      const talent = admitsAsTalent(
+        { isVerified: verdict.isVerified ?? null, followerCount: verdict.followers ?? null },
+        settings.celebrityMinFollowers,
+      )
+      if (talent) {
+        const outcome = await createBrandTarget(
+          {
+            kind: 'BRAND',
+            handle: verdict.handle,
+            displayName: verdict.displayName ?? verdict.handle,
+            category: verdict.category,
+            followers: verdict.followers ?? null,
+          },
+          { id: candidate.postId, shortcode: candidate.shortcode },
+          'brand.auto-decided',
+          'auto-resolve:talent',
+          { campaignTalent: true, isVerified: verdict.isVerified ?? null, followerCount: verdict.followers ?? null },
+        )
+        if (outcome === 'created') out.decided++
+      }
       continue
     }
 
