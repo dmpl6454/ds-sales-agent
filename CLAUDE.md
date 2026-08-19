@@ -5,6 +5,114 @@ changing anything that touches sending.
 
 ---
 
+## 20 AUGUST, SMALL HOURS — SPACING IS THE RING RULE NOW, AND THE FLEET UN-FROZE THE MINUTE IT DEPLOYED
+
+**Read this before trusting anything below about cross-account spacing, the reply window,
+or the person guard. All deployed to both hosts and verified live, 00:30–01:00 IST.**
+
+### THE ANY-OTHER-PAGE SPACING RULE HALTED THE ENTIRE FLEET, AND TABISH REPLACED IT WITH THE RING RULE
+
+MEASURED 2026-08-19 18:07 IST: **33 of 33 waiting drafts held** by `TARGET_RECENTLY_CONTACTED`
+(first clear Aug 24, none within 48h), 76 recipients each "locked" by having heard from
+exactly ONE page, dispatcher ticking `all-held` every minute, prospect inflow dry — the
+sender-blind rule restored on 2026-08-18 met the 1-minute pace and froze the fleet for five
+days. Tabish, verbatim: *"there is no limit except the 7 day constraint which should occur
+only if target has been contacted by all targets or a reply has been detected."*
+
+**The rule is now `crossSpacingVerdict` (src/outreach/crossSpacing.ts) — ONE pure
+implementation, THREE callers (gate.ts, plan.ts→governor, messages-page.ts), pinned by the
+rewritten `tests/cross-account-spacing.test.ts`:**
+
+- **ring-complete** — hold only when EVERY eligible fleet sender (`eligibleFleetSenderIds`,
+  machine-independent, built on `readSenderAvailability`) has delivered to the recipient
+  within `defaultCooldownDays` (7). Releases when the oldest in-window delivery ages out.
+- **inter-page-gap** — a DIFFERENT page delivered within `crossPageGapHours` (Setting,
+  default **24**, 0 disables). Without it the planner walks all five pages through one inbox
+  in an afternoon. **This is the one editorial mitigation and it is Tabish's lever.**
+- Self-deliveries never hold (that would reinstate the pair cooldown deleted 2026-08-18);
+  the empty eligible set never holds (a vacuous "all" must not fire).
+
+**The ban-pattern risk was stated and recorded as his call**: up to 5 near-identical
+templates to one inbox per week. The stop NAME is unchanged, so STOP_LABELS/remedies were
+untouched. VERIFIED LIVE: the first previously-frozen draft
+(bollywoodsocietyy→anandpanditmotionpictures, held since Aug 18) **delivered at 00:30 IST,
+one minute after the agent restarted**, and the queue has been draining at the 1-minute pace
+since. The reply halt is **7 days** now (`REPLY_RESUME_HOURS_DEFAULT = 168`, was 48) — auto-
+resume, "I have replied" still releases early.
+
+### "UP NEXT" SHOWS THE RESTING HALF NOW — 33 waiting can never again be an invisible list
+
+`buildMessagesPage` partitions the queue with the SAME shared predicate (never a UI mirror —
+the old inline `some(sid => sid !== senderId)` copy was exactly how the rule drifted) and
+returns `heldUpNext`: the first 8 held drafts, soonest-release first, each with the
+enforcer's own sentence and the IST time it frees up. `waiting.tsx` renders them under
+"Resting (N held)", in a `.table-wrap` (the layout harness caught the page scrolling
+sideways without it — 819px against 800). The all-held state now states the earliest resume
+time and says outright it is not a fault.
+
+### TARGETS CARRY VERIFICATION FACTS, AND THE FAULTY ONES ARE FLAGGED, NEVER AUTO-RETIRED
+
+Tabish: *"targets identified should not be faulty … remove targets that are undesired and
+faulty."* Three new `TargetAccount` columns (`isVerified`, `followerCount`,
+`campaignTalent`), applied to the live Postgres by hand-written `ALTER TABLE` (there is
+still no `_prisma_migrations`; the same SQL went into every live-test DDL block — the suite
+failed 102 tests until it did, which is the two-provider trap's cousin: hand-transcribed DDL
+goes stale the day the schema moves). `pnpm ig:audit-targets` (dry-run default, home IP,
+6s spacing, 429 halts) re-enriches every live prospect, persists the facts with `--run`, and
+FLAGS through the pure `auditTarget` rule (src/outreach/targetAudit.ts): gone / person-role-
+category / tiny-unverified / no-category-thin. NULL facts never flag — never-looked is not
+tiny. The rule flags, a PERSON retires (`ig:retire-target`), because `usableName` taught
+what plausible predicates do to real populations. `/targets` rows show the legitimacy line
+("verified · 1.2M followers", review suffix from the same rule). First real pass: caught
+@apoorvsinghkarki01 ("Film Director", unverified) within its first 12 rows.
+
+### UNTAGGED PAID POSTS CAN MINT A PROSPECT NOW — BUT ONLY THROUGH AN IDENTITY BAR
+
+"Existence is not identity" (wrong 4/10, 3 of 4 wrong handles EXIST) is AMENDED, not
+repealed. `pnpm ig:find-official` (dry-run default, home IP) walks in-window CAMPAIGN posts
+whose evidence names NOBODY (172 of them at first run — the population that yielded no
+prospect by design), takes brand names from `DetectedCampaign.brands` then OCR `frameText`
+tokens, generates candidate handles (`candidateHandlesFor`), and auto-accepts ONLY
+`isOfficialMatch` (src/detection/officialHandle.ts): **verified badge + name-covering, or
+≥`officialMinFollowers` (100k Setting) + business + EXACT name**. The Philips trap is a
+permanent test fixture: profile "Philips" never passes for brand "Philips India" — the
+subset direction carries the safety. Near-misses print under NEEDS A HUMAN with
+`--accept <handle>` as the deliberate door. First dry run: 1 identity-grade match in 15
+lookups (@gururandhawa, verified). Candidate lookups are NOT yet cached in BrandLookup, so
+repeated dry runs re-spend the endpoint on 404s — known, minor, fix by persisting MISSING
+rows if it starts to matter.
+
+### CELEBRITIES TAGGED IN PAID CAMPAIGNS ARE MESSAGEABLE — DELIBERATELY, VIA `campaignTalent`
+
+Tabish: *"send messages to celebrities as well if they are part of the paid campaign …
+legitimate and verified (sometimes might not be the case)."* A PERSON verdict from a
+CAMPAIGN post's Instagram-asserted evidence is admitted when `admitsAsTalent`: **verified,
+or ≥`celebrityMinFollowers` (500k Setting)** — NULL never admits. Wired in BOTH resolvers
+(autoResolve.ts and ig:brands — one bar, two callers), created as kind BRAND with
+`campaignTalent: true`, which is the ONLY thing `checkRecipientIsNotAPerson` exempts:
+accidental people (vanity categories — @ananyapanday-as-"Private Investigator" is still the
+fixture) stay refused. The PERSON verdict now carries `isVerified`/`followers`/`displayName`
+for this; a cached PERSON has `isVerified: null` and flows through the bar on every pass, so
+history needs no separate backfill. Risk stated: celebrity inboxes are managed and report-
+happy; recorded as his call.
+
+### WHAT BIT DURING THE NIGHT, SO NOBODY RE-CHASES IT
+
+- **The Mac's disk hit literally ZERO bytes free, twice.** Once mid-session (every tool
+  including `df` failed — the harness cannot even open its own output file), once after two
+  local builds. `pnpm ig:prune --run` (Tabish ran it) plus `pnpm store prune` (1,180
+  packages) and deleting `.next` recovered it. **This machine's disk is structurally too
+  full** — ~/Library is the real problem and it is Tabish's; expect ENOSPC again.
+- **The device agent crash-looped for ~2h because the suite left the SQLite client on
+  disk** and the prune restart booted onto it — the exact documented trap. The agent was
+  down 23:0x–00:31; nothing was lost (the queue was all-held anyway). `bash
+  scripts/prisma-client-for-env.sh` after ANY test run on this machine, always.
+- The layout harness earned its keep again: it caught the held-list table scrolling `/`
+  sideways, and the query-count check refuses to pass when counting is off (a run with
+  `DS_QUERY_COUNT` unset fails rather than skips — by design).
+
+---
+
 ## 19 AUGUST, LATE — THE HALT WHEN AWAY WAS THE MAC SLEEPING, AND SENDING IS 24/7 NOW
 
 ### "MESSAGES HALT WHEN I'M NOT ON THE PAGE" WAS THE MAC IDLE-SLEEPING — caffeinate FIXES IT
