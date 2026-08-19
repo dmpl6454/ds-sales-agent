@@ -16,8 +16,13 @@ https://claude.ai/code/artifact/517b2e18-4c61-428c-a300-9b21de07d1c6
 > - **the reply reads are NOT at 11:00/20:00 on the server any more** — they run on the
 >   DEVICE AGENT every 30 minutes inside 10:00-21:00 IST, under the send lock (the
 >   server schedule still fires and still no-ops; the device is where the sessions are).
-> - **the fleet gap is 3 minutes** (was 5), device tick every 60s — so the send lane's
->   ceiling line is wrong.
+> - **the fleet gap is ONE minute** (5 → 3 → 1 on 2026-08-19), device tick every 30s — so
+>   the send lane's ceiling line is wrong (~500-600/day of headroom, the architecture's
+>   floor).
+> - **the send path now bypasses FOUR recipient-side blockers** (hidden button → … menu,
+>   the partnership interstitial, the "Turn on notifications" modal, and profiles with NO
+>   door → the inbox-compose route), all in `messageEntry.ts`. A failed draft re-queues to
+>   the BACK so the queue proceeds; 3 tries then park visibly.
 > - **a sender leaving the rotation hands its queue off by rotation**
 >   (`handOffWaitingDrafts`) — a new arrow the drawing has no notion of; and
 >   @madaboutmarketingg is out (5 accounts in the ring, not 6).
