@@ -1,33 +1,71 @@
 import type { MessagesPageView } from '../view-model/messages-page'
 
 /**
- * THE QUEUE, AS A SUMMARY (2026-08-18, Tabish's instruction).
+ * THE QUEUE: "UP NEXT" FIRST, THEN THE PER-SENDER COUNTS.
  *
- * *"we do not need to see every draft as now we need only a single template message"* —
- * every waiting draft carries the identical standard template, so a wall of twenty cards
- * showing twenty copies of one body earned nothing. What a reader actually needs from the
- * queue is three facts: how deep it is, which accounts it is spread across, and why it is
- * not moving right now. The first two are here; the third is the pace band beside it,
- * which carries the dispatcher's own hold reason from the enforcer itself.
+ * Tabish, 2026-08-19: *"Always the queue must be visible as an 'Up next' in the UI such
+ * that users can see who is sending next in our round format"* — and, from the same
+ * instruction, blockers must be visible when they occur.
  *
- * The per-draft view (body, per-draft gate verdict, edit/send/discard buttons) was
- * deliberately removed, not collapsed. Manual sending survives in "Send a message now"
- * below, which writes and sends one message with every rule named.
+ * The order shown is the dispatcher's own pick order (oldest draft first), read by the
+ * same query — never a re-derivation, so this panel can never name a different "next"
+ * than the one that actually sends. The head row carries the live gate verdict from
+ * `recheckBeforeSend`, the same call the dispatcher makes: when the front of the queue
+ * is held, the reason is the enforcer's own sentence, on the row it is about.
+ *
+ * The per-draft card wall stays gone (2026-08-18): every draft is the same standard
+ * template, so beyond WHO sends to WHOM next there is nothing per-row to show.
  */
-export function WaitingList({ queue, total }: { queue: MessagesPageView['queueBySender']; total: number }) {
+export function WaitingList({
+  queue,
+  upNext,
+  total,
+}: {
+  queue: MessagesPageView['queueBySender']
+  upNext: MessagesPageView['upNext']
+  total: number
+}) {
   return (
     <section>
-      <h2>The queue ({total})</h2>
+      <h2>Up next ({total} waiting)</h2>
       {total === 0 ? (
         <p className="cardnote">
           Nothing is waiting. New drafts are written automatically when there is someone new to write to.
         </p>
       ) : (
         <>
+          <table className="table">
+            <thead>
+              <tr>
+                <th>#</th>
+                <th>From account</th>
+                <th>To</th>
+                <th>Turn comes</th>
+              </tr>
+            </thead>
+            <tbody>
+              {upNext.map((row) => (
+                <tr key={`${row.senderHandle}-${row.targetHandle}`}>
+                  <td>{row.position}</td>
+                  <td>@{row.senderHandle}</td>
+                  <td>@{row.targetHandle}</td>
+                  <td>
+                    {row.etaMinutes <= 0 ? 'next tick' : `in ~${row.etaMinutes} min`}
+                    {row.note ? (
+                      <span className={row.held ? ' note-warn' : ' note-good'}> — {row.note}</span>
+                    ) : null}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
           <p className="cardnote">
-            {total} message{total === 1 ? '' : 's'} written and waiting — every one is the standard template. They go
-            out one at a time while Autopilot is on.
+            {total > upNext.length ? <>{total - upNext.length} more wait behind these. </> : null}
+            Times assume Autopilot is on, inside sending hours (10:00&ndash;21:00 IST), one message per
+            gap. Each recipient&rsquo;s account was chosen by the rotation; oldest draft goes first.
           </p>
+
+          <h3>Waiting per account</h3>
           <table className="table">
             <thead>
               <tr>

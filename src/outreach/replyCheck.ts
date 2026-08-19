@@ -268,6 +268,25 @@ export async function checkConversation(args: {
     return { status: 'unreadable', detail: result.detail ?? result.reason }
   }
 
+  /**
+   * BACKFILL THE THREAD URL while we are standing in the thread.
+   *
+   * MEASURED 2026-08-19: every delivered message ever carried `threadUrl: null`, because
+   * the send path's conversation opens as a panel over the profile and the URL never
+   * changes — so the CSV export's thread column was empty end to end. This read HAS
+   * navigated into the real conversation, so its URL is the one the send path could not
+   * capture. Pair-scoped (a thread belongs to one sender-target pair), only where the
+   * column is empty, and never allowed to fail the check it rides on.
+   */
+  if (result.url.includes('/direct/t/')) {
+    await prisma.outreachAttempt
+      .updateMany({
+        where: { senderId, targetId, status: { in: [...DELIVERED_STATUSES] }, threadUrl: null },
+        data: { threadUrl: result.url },
+      })
+      .catch(() => undefined)
+  }
+
   const theirs = result.messages.filter((m) => !m.ours)
 
   /**

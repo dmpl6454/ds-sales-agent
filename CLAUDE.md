@@ -5,6 +5,87 @@ changing anything that touches sending.
 
 ---
 
+## 19 AUGUST — A SENDER CAN LEAVE, THE QUEUE CANNOT; THE SWEEP FINALLY RUNS WHERE THE SESSIONS ARE
+
+All on Tabish's instruction, all deployed and verified live the same day.
+
+### @madaboutmarketingg IS OUT OF THE ROTATION, AND ITS 19 DRAFTS MOVED BY ROTATION
+
+`handOffWaitingDrafts` (src/outreach/handOff.ts) is the mechanism, and `removeSender` now
+calls it: when a sender leaves, every READY/QUEUED draft — and every parked FAILED one
+except `not-in-thread` — is reassigned to the account `nextSender` would choose on the
+ring MINUS the leaving sender, with `touchNumber` recomputed from the RECEIVING pair's
+history and the retry counter reset. A recipient another account already covers gets its
+duplicate DISCARDED through `discardAttempt` (the one writer); a retired recipient's
+draft is discarded too; `not-in-thread` stays on the account that sent it, because the
+recipient may HAVE that message. `tests/hand-off.test.ts` drives all seven properties
+against a real SQLite file. VERIFIED LIVE: 18 transferred, 1 discarded, 0 kept —
+including the two @dharmaticent rows collapsing to exactly one READY draft on
+@bachelorssociety with its counter reset.
+
+**madabout is ACTIVE + `fleetMember: false` (the burner's shape), NOT paused** — its
+17-18 Aug deliveries are open conversations, and the reply sweep only reads ACTIVE
+senders' threads. Pausing it would have made any reply to those messages invisible.
+Rotation cannot elect it, the planner writes nothing for it; the only path left is a
+person deliberately picking it in the on-demand dialog. `/senders` has a Remove form now
+(typed-confirmation), which is `removeSender` — the action retires WITH hand-off.
+
+### THE MESSAGE BUTTON IS SOMETIMES BEHIND THE "…" MENU, AND THAT IS NOT "CANNOT MESSAGE"
+
+@dharmaticent (Tabish's screenshots): profile header shows Follow only; "Send message"
+lives in the options ("…") dialog. The agent failed it 3 times as `no-message-button`.
+`clickMessageEntry` (src/outreach/browser/messageEntry.ts) is now the ONE implementation
+of "open the composer from a profile" — plain button first, then the … menu — shared by
+`sendDm.ts` AND `readThread.ts`, because a profile that hides the button must stay
+readable too, or its conversation can never be checked for a reply. `jitter`/
+`firstVisible` moved there (readThread re-exports them for scripts/thread.ts).
+
+### THE REPLY SWEEP RUNS ON THE DEVICE AGENT NOW — IT HAD NEVER ONCE RUN ANYWHERE IT COULD WORK
+
+Same fix as brand discovery: `checkForReplies` (the SAME function, caps and checkpoint
+handling intact) runs on the device agent every 30 minutes inside active hours, HOLDING
+THE SEND LOCK — reading drives the same Chrome profiles as sending, and two contexts on
+one profile is how device identity dies. A tick that lands mid-sweep returns lockBusy and
+loses nothing. Not gated on autopilot: a reply to a hand-sent message halts outreach the
+same way. The server-side 11:00/20:00 schedule is untouched (it still no-ops there).
+
+**AND THE SWEEP BACKFILLS `threadUrl`.** MEASURED: all 21 delivered messages carried
+`threadUrl: null` — the send-path conversation opens as a panel OVER the profile, so the
+`/direct/t/` URL the capture loop waits for never appears, and the CSV thread column was
+empty end to end. `checkConversation` now writes the thread URL it actually navigated to
+onto every delivered attempt of that pair that lacks one, and `sendDm` gained an anchor
+fallback (`a[href*="/direct/t/"]`, a DOM read, no navigation).
+
+### THE FLEET GAP IS 3 MINUTES (WAS 5), AND 1 MINUTE IS ONE ROW AWAY
+
+`FLEET_MIN_GAP_MINUTES = 3` — Tabish: "5 mins is too much… 3 mins or lesser". ~220/day
+of headroom inside the active window; what bounds real volume is still prospect inflow.
+The `fleetMinGapMinutes` Setting row overrides it in one write, and the device agent
+polls every 60s, so ONE minute is the effective floor if he asks — the risk (identical
+template, one home IP, faster clustering) was stated when the caps went and is unchanged
+in kind. The pace band and /rules read the same limits object, so both show 3 without
+being told.
+
+### "UP NEXT" IS ON THE LANDING PAGE, AND IT IS THE DISPATCHER'S OWN ORDER
+
+The queue renders as the next 8 sends (oldest draft first — the exact `deliverWaiting`
+query), each with sender → recipient and an ETA at the current gap, and THE HEAD ROW
+carries the live gate verdict from the same `recheckBeforeSend` the dispatcher will ask.
+Per-sender counts sit under it. The 18/15/12-style split Tabish asked about is
+`stableIndex` (FNV-1a) spreading never-messaged recipients across the ring —
+deterministic and roughly even, never exactly even; nothing to fix.
+
+### PAID POSTS: TWO BOXES, AND THE FUNNEL IS ON THE PAGE
+
+The verdict boxes are CAMPAIGN and ORGANIC only (Tabish: "only paid and ordinary");
+"not judged" survives as the one quiet sentence when non-zero, because it has never
+meant organic. Under them, the funnel in live counts — paid posts → companies Instagram
+itself names → live prospects → queued/contacted/retired — which is the honest answer to
+"356 paid posts, why 75 messages": most paid posts name nobody or repeat a company, and
+a fully anonymous paid post yields NO prospect by design (existence is not identity).
+
+
+
 ## THIS REPO IS SHARED NOW — READ `docs/SECOND-MACHINE.md` BEFORE SETTING IT UP
 
 As of 2026-08-17 the code goes to a second operator on their own Mac, via

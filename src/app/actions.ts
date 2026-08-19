@@ -26,6 +26,7 @@ import { importProspects, type ImportOutcome } from '@/outreach/importProspects'
 import { routeAllowed, fleetHandles } from '@/outreach/routes'
 import { ensureCategory, addTargetToCategory } from '@/outreach/categories'
 import { discardAttempt } from '@/outreach/discard'
+import { handOffWaitingDrafts } from '@/outreach/handOff'
 import { log } from '@/lib/logger'
 import { validatePersona } from '@/outreach/render'
 import { checkTemplateBody } from '@/outreach/templateGuard'
@@ -1111,24 +1112,60 @@ export async function removeSender(handle: string): Promise<MutationResult> {
   if (!sender) return { ok: false, message: `@${handle} not found.` }
 
   await cancelConnect(handle)
+
+  /**
+   * OUT OF THE ROTATION FIRST, THEN THE QUEUE MOVES, THEN THE ROW IS SETTLED.
+   *
+   * `fleetMember: false` first, so the planner (which reads this flag live, on the
+   * server) cannot elect this account for a fresh recipient in the window between the
+   * hand-off reading the queue and the row being retired — otherwise a 15-minute
+   * planning pass could re-create the very drafts just transferred away.
+   *
+   * Then the queue: Tabish's rule (2026-08-19) is that removing a sender must never
+   * cost a message — every waiting draft moves to the account rotation would choose
+   * next. Anything that cannot move (a recipient another account already covers, a
+   * retired recipient) is discarded through the one discard writer, audited.
+   */
+  await prisma.senderAccount.update({ where: { handle }, data: { fleetMember: false } })
+  const handOff = await handOffWaitingDrafts({ senderId: sender.id, senderHandle: handle, actor: user.email })
+  const movedNote =
+    handOff.transferred + handOff.discarded + handOff.kept === 0
+      ? ''
+      : ` Queue: ${handOff.transferred} draft${handOff.transferred === 1 ? '' : 's'} moved to other accounts by rotation` +
+        (handOff.discarded > 0 ? `, ${handOff.discarded} discarded as already covered` : '') +
+        (handOff.kept > 0 ? `, ${handOff.kept} could not move and stayed put` : '') +
+        '.'
+
   const sentCount = sender.pairs.reduce((n, p) => n + p.attempts.length, 0)
 
   if (sentCount === 0) {
     await prisma.senderAccount.delete({ where: { handle } })
-    await audit(user.email, 'sender.deleted', `SenderAccount:${handle}`, 'no send history')
+    await audit(
+      user.email,
+      'sender.deleted',
+      `SenderAccount:${handle}`,
+      `no send history; hand-off: ${handOff.transferred} moved, ${handOff.discarded} discarded, ${handOff.kept} kept`,
+    )
     revalidatePath('/')
-    return { ok: true, message: `Removed @${handle}. Its Chrome profile is left on disk in case you re-add it.` }
+    return { ok: true, message: `Removed @${handle}. Its Chrome profile is left on disk in case you re-add it.${movedNote}` }
   }
 
   await prisma.$transaction([
     prisma.senderAccount.update({ where: { handle }, data: { autoSendEnabled: false, status: 'PAUSED' } }),
     prisma.outreachPair.updateMany({ where: { senderId: sender.id }, data: { enabled: false } }),
   ])
-  await audit(user.email, 'sender.retired', `SenderAccount:${handle}`, `${sentCount} sent messages kept`)
+  await audit(
+    user.email,
+    'sender.retired',
+    `SenderAccount:${handle}`,
+    `${sentCount} sent messages kept; hand-off: ${handOff.transferred} moved, ${handOff.discarded} discarded, ${handOff.kept} kept`,
+  )
   revalidatePath('/')
   return {
     ok: true,
-    message: `@${handle} has sent ${sentCount} message${sentCount === 1 ? '' : 's'}, so it is retired rather than deleted — that history is what stops anyone being contacted twice.`,
+    message:
+      `@${handle} has sent ${sentCount} message${sentCount === 1 ? '' : 's'}, so it is retired rather than deleted — ` +
+      `that history is what stops anyone being contacted twice.${movedNote}`,
   }
 }
 

@@ -6,6 +6,7 @@ import { pasteShortcut } from '@/lib/platform'
 import { bodyAppearedSince, messageMatchesOurs } from '@/outreach/matching'
 import type { FailureCode } from '@/lib/constants'
 import { assertLoggedInAs, assertNoCheckpoint, assertNoEnforcement, launchProfile } from './session'
+import { clickMessageEntry } from './messageEntry'
 
 /**
  * Sending one DM from the account's own logged-in Chrome profile.
@@ -100,23 +101,18 @@ export async function sendDm(params: SendDmParams): Promise<SendDmResult> {
     await jitter(1500, 3200)
     await browseBriefly(page)
 
-    // 3. Message. If the button is absent the layout changed or the account cannot
-    //    be messaged — either way, stop rather than improvise.
-    const messageBtn = await firstVisible(
-      page,
-      [
-        page.getByRole('button', { name: /^message$/i }),
-        page.locator('div[role="button"]', { hasText: /^Message$/ }),
-        page.locator('//div[@role="button"][normalize-space(.)="Message"]'),
-      ],
-      15_000,
-    )
-    if (!messageBtn) {
-      return { ok: false, reason: 'could not find the Message button on the profile', failureCode: 'no-message-button' }
+    // 3. Message — the button when the profile shows one, the "…" menu's "Send message"
+    //    when it does not (measured on @dharmaticent, 2026-08-19: three failed drives
+    //    against a profile a person could message in one click). One implementation for
+    //    this and the thread reader: `clickMessageEntry`.
+    const entry = await clickMessageEntry(page, targetHandle)
+    if (!entry.ok) {
+      return {
+        ok: false,
+        reason: 'no Message button on the profile, and the … menu offered no "Send message" either',
+        failureCode: 'no-message-button',
+      }
     }
-    await messageBtn.hover()
-    await jitter(300, 900)
-    await messageBtn.click()
 
     /**
      * 3b. THE BUSINESS-MESSAGING INTERSTITIAL (first seen 2026-08-18, from Tabish's own
@@ -291,6 +287,21 @@ export async function sendDm(params: SendDmParams): Promise<SendDmResult> {
         break
       }
       await jitter(400, 700)
+    }
+    /**
+     * The URL usually never changes: the conversation opens as a panel OVER the profile,
+     * so `page.url()` stays on the profile forever. MEASURED 2026-08-19: all 21 delivered
+     * messages carried `threadUrl: null`, and the CSV export's thread column was empty
+     * end to end. When the panel renders an anchor to the real thread, take it from
+     * there instead — a DOM read, no navigation, no extra activity.
+     */
+    if (!threadUrl) {
+      const href = await page
+        .locator('a[href*="/direct/t/"]')
+        .first()
+        .getAttribute('href', { timeout: 1_500 })
+        .catch(() => null)
+      if (href) threadUrl = new URL(href, 'https://www.instagram.com').toString()
     }
     log.info('dm delivered', { senderHandle, targetHandle, threadUrl })
     // A moment before closing; slamming the window shut on send is not what a

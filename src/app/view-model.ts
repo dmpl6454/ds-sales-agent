@@ -942,6 +942,18 @@ export interface PaidPostsView {
   storedBeforeCutoff: number
   /** Every verdict IN THE WINDOW, including UNCLASSIFIED — NOT JUDGED, never "organic". */
   byVerdict: { verdict: string; count: number }[]
+  /**
+   * FROM PAID POSTS TO MESSAGES — the funnel, in live counts (2026-08-19, Tabish asked
+   * why 319 paid posts had produced only 75 waiting messages; the honest answer is a
+   * chain of counts, and it belongs on the screen the question starts from).
+   *
+   * A paid post yields a prospect ONLY when Instagram itself names a company on the
+   * post (caption @mentions, media tags, collabs) — a guessed handle was measured wrong
+   * 4 times in 10, and 3 of those 4 wrong handles exist. Many posts name nobody, many
+   * name the same company, and people are refused. So paid posts ≫ companies ≫ queue,
+   * by design rather than by fault.
+   */
+  funnel: { paidPosts: number; prospectsLive: number; queued: number; contacted: number; retired: number }
   /** Per channel: how much we have stored, and how much of it has been judged. */
   perChannel: {
     name: string
@@ -1090,6 +1102,10 @@ export async function buildPaidPostsView(): Promise<PaidPostsView> {
     framesNoEngine,
     framesFailed,
     frameFlagged,
+    prospectsLive,
+    prospectsRetired,
+    prospectsQueued,
+    prospectsContacted,
   ] = await Promise.all([
     prisma.detectedCampaign.groupBy({ by: ['verdict'], where: inWindow, _count: { _all: true } }),
     prisma.detectedCampaign.count({ where: { verdict: 'CAMPAIGN', ...inWindow } }),
@@ -1159,6 +1175,19 @@ export async function buildPaidPostsView(): Promise<PaidPostsView> {
     prisma.detectedCampaign.count({ where: { signals: { contains: 'frame:ocr-failed' }, ...inWindow } }),
     // `signals` is a JSON string; this marker is written by applyFrameSignal alone.
     prisma.detectedCampaign.count({ where: { signals: { contains: 'frame:flagged-for-review' }, ...inWindow } }),
+    /**
+     * The funnel's prospect side. Counted from `TargetAccount` the way the planner sees
+     * it: PROSPECT rows only, retirement respected, a "queued" company being one that
+     * holds a waiting draft and a "contacted" one having a delivered message.
+     */
+    prisma.targetAccount.count({ where: { role: 'PROSPECT', optedOut: false } }),
+    prisma.targetAccount.count({ where: { role: 'PROSPECT', optedOut: true } }),
+    prisma.targetAccount.count({
+      where: { role: 'PROSPECT', optedOut: false, attempts: { some: { status: { in: ['READY', 'QUEUED'] } } } },
+    }),
+    prisma.targetAccount.count({
+      where: { role: 'PROSPECT', optedOut: false, attempts: { some: { status: { in: [...DELIVERED_STATUSES] } } } },
+    }),
   ])
 
   /**
@@ -1175,6 +1204,13 @@ export async function buildPaidPostsView(): Promise<PaidPostsView> {
     totalDetected,
     since,
     storedBeforeCutoff: storedBefore,
+    funnel: {
+      paidPosts: totalDetected,
+      prospectsLive,
+      queued: prospectsQueued,
+      contacted: prospectsContacted,
+      retired: prospectsRetired,
+    },
     byVerdict: byVerdictRaw
       .map((r) => ({ verdict: r.verdict, count: r._count._all }))
       .sort((a, b) => b.count - a.count),
