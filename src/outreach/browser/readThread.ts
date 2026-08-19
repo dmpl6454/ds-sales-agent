@@ -377,7 +377,22 @@ export async function openAndReadThread(
       }
     }
 
-    return { ok: true, ...read, url: page.url() }
+    /**
+     * The page URL usually stays on the PROFILE — the conversation opens as a panel over
+     * it (verified live 2026-08-19: the first sweep read three threads and backfilled
+     * zero URLs, because `page.url()` never said `/direct/t/`). If the panel renders an
+     * anchor to the real thread, prefer it; a DOM read, no navigation.
+     */
+    let url = page.url()
+    if (!url.includes('/direct/t/')) {
+      const href = await page
+        .locator('a[href*="/direct/t/"]')
+        .first()
+        .getAttribute('href', { timeout: 1_000 })
+        .catch(() => null)
+      if (href) url = new URL(href, 'https://www.instagram.com').toString()
+    }
+    return { ok: true, ...read, url }
   } finally {
     await jitter(1000, 2000)
     await context.close()
