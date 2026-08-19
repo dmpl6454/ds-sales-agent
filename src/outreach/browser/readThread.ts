@@ -2,7 +2,7 @@ import type { Page } from 'patchright'
 import { isOneOfOurs, normalise } from '@/outreach/matching'
 import { profileUrl } from '@/lib/urls'
 import { assertLoggedInAs, assertNoCheckpoint, launchProfile } from './session'
-import { clickMessageEntry, firstVisible, jitter } from './messageEntry'
+import { clickMessageEntry, passBusinessInterstitial, firstVisible, jitter } from './messageEntry'
 
 /**
  * Opening a real conversation and reading it back.
@@ -350,6 +350,12 @@ export async function openAndReadThread(
     // or its conversation can never be checked for a reply.
     const entry = await clickMessageEntry(page, targetHandle)
     if (!entry.ok) return { ok: false, reason: 'no-message-button' }
+
+    // And the business-messaging dialog, which blocks READS exactly as it blocks sends —
+    // Tabish's 2026-08-19 screenshot caught it over @cameratakefilms while the first
+    // sweep filed that thread unreadable. "Send message request" opens the ordinary
+    // conversation; nothing is typed and nothing is sent by this module, as ever.
+    await passBusinessInterstitial(page, targetHandle)
 
     /**
      * The dwell is now spent INSIDE the read rather than before it. Same wall-clock pause, so
