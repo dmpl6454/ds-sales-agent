@@ -5,6 +5,96 @@ changing anything that touches sending.
 
 ---
 
+## 19 AUGUST, LATE — THE HALT WHEN AWAY WAS THE MAC SLEEPING, AND SENDING IS 24/7 NOW
+
+### "MESSAGES HALT WHEN I'M NOT ON THE PAGE" WAS THE MAC IDLE-SLEEPING — caffeinate FIXES IT
+
+Tabish: *"autopilot works phenomenally if I am on the localhost open, but falters if I am
+somewhere else … messages were halted and resumed only after I landed on the page."*
+
+**MEASURED from watch.log, and it is not App Nap and not the browser:** overnight the device
+agent went **silent for 50-68 minutes at a stretch** while it polls every 30 seconds. Total
+silence — not even the `autopilot-off` tick — means the process was SUSPENDED, i.e. the Mac
+idle-slept. launchd cannot wake a sleeping Mac (this file has said so for weeks), and the
+sender lives on this machine, so a slept Mac is a stopped fleet. When Tabish was active the
+Mac stayed awake and the agent ran continuously; when he walked away it slept. That is the
+whole correlation with "being on the page".
+
+**Ruled out, with evidence, so nobody re-chases them:** (1) the agent DOES tick reliably
+every 30s when merely backgrounded — the 6-minute "gap" that looked like throttling was
+`reason=autopilot-off` every tick, i.e. Tabish's own toggling; (2) the local `pnpm local`
+dashboard is NOT a second sender — the Linode's heartbeat is fresh, so the Mac dashboard's
+embedded scheduler reads it and declines to start (`another scheduler is already running`).
+
+**The fix is in `scripts/install-watch.sh`: the agent runs under `caffeinate -i`** (prevent
+idle system sleep, released when the agent exits) plus `ProcessType=Interactive`. VERIFIED
+with `pmset -g assertions`: `caffeinate … asserting on behalf of pnpm`. **The one case it
+still cannot cover is a CLOSED LID** — clamshell sleep is a hardware state no assertion
+overrides on battery. Keep the lid open (or external power + display). Reinstall with
+`bash scripts/install-watch.sh install` after any change; the plist now carries the wrapper.
+
+### THERE IS NO TIME WINDOW ANY MORE — SENDS AND REPLY CHECKS RUN 24/7
+
+Tabish: *"there is no limit or time constraint … the message can be sent at any time, no
+matter if it is morning or past midnight."* `ACTIVE_FROM_HOUR` and `ACTIVE_TO_HOUR` are both
+**0** — a zero-width window, which `withinActiveHours` reads as "always on" — so the
+dispatcher and the reply sweep (which reads the same constants) run around the clock.
+
+**This reverses a load-bearing safety property and is recorded as his call**, like the caps,
+the 1-minute gap and the 24/7 decision before it. "We never DM at 4 a.m. from an Indian
+business page" was a behavioural signal that cost nothing to keep; a 03:00 IST send is a
+pattern a person does not produce. The lever to restore a window is those two numbers (e.g.
+10 and 21) — one edit, no schema change. The pace band and `stopInventory`/`pacing` tests
+now exercise the window MECHANISM with explicit hours so it stays enforceable if restored.
+
+### "UP NEXT" SHOWED PERMANENTLY-STUCK ROWS — NOW IT SHOWS WHAT ACTUALLY SENDS
+
+Tabish: *"the number changes but the list below it remains the same."* The dispatcher drains
+READY oldest-first but HOLDS every draft that fails the gate and sends the first that passes.
+Most of the queue's front is held by 7-day cross-page spacing (@anandpanditmotionpictures
+"heard from @bollywoodchronicle 1 day ago"), so those rows never move — while sends happen
+from further down, dropping the count. So the raw oldest-first list was eight stuck faces
+over a falling number.
+
+`buildMessagesPage` now computes the two DOMINANT holds in bulk — cross-page spacing
+(`TARGET_RECENTLY_CONTACTED`, another page delivered within `defaultCooldownDays`) and the
+reply halt — one query each, mirroring `gate.ts`, and lists only SENDABLE drafts in dispatch
+order plus a `heldWaiting` count. The list now advances with the count. Rarer per-sender
+holds (cohort, dead session) are left to the head row's real `recheckBeforeSend`. **MEASURED
+live: 33 of 33 waiting were spacing-held**, so "Up next" is legitimately empty and says so —
+which is the honest answer to why sending slows: not a bug, the spacing rule Tabish restored
+on 2026-08-18. Throughput is bounded by spacing and prospect inflow, not by the 1-min gap.
+
+### THE PACE COUNTER IS ACCURATE; ~25-35/hr IS THE REAL RATE, NOT 60
+
+Tabish asked whether "24 sent this hour" is true. **It is** — `fleetUsage.thisHour` was 11
+against a direct hourly count of 11 the moment he asked; 24 was a fuller hour. The pace band
+copy now states the real rate honestly: a send itself takes ~1 minute and the reply sweep
+pauses sending while it reads up to 4 conversations, so the fleet settles around 25-35/hour,
+not 60. The band was also fixed for the zero-width window (it was dividing by a zero span →
+NaN → falsely "outside sending hours").
+
+### THE LANDING AND ANALYTICS PAGES REFRESH THEMSELVES, AND ANALYTICS SHOWS PER-ACCOUNT SENDS
+
+`auto-refresh.tsx` (`router.refresh()` every 30-45s, paused while the tab is hidden, refreshed
+on return) so a page open while messages go out every minute stays current without a manual
+reload — a refresh re-runs the server components in place and was verified not to error on any
+page. Analytics gained a **"Messages sent, by account"** table (sent + replied per sending
+page) — the per-SENDER view that had no home; per-recipient detail stays in the recent-sends
+list and the CSV export.
+
+### THE "CHECK THE CONVERSATION" SEND (sonypicturesin) IS THE `not-in-thread` GUARD WORKING
+
+Tabish saw a send where "the agent completed the entire process but the browser closed
+unexpectedly … no message was sent." MEASURED: it is `failureCode: not-in-thread` — the
+composer cleared (Instagram accepted the keystroke) and the message never confirmed in the
+thread. That is the one ambiguous outcome: the recipient MAY have it, and re-sending is wrong
+under both readings, so it parks in FAILED under "check the conversation" for a person to
+read the thread and settle. One occurrence is expected; the circuit breaker watches for a
+RISING rate. Not a bug — the guard doing its job.
+
+---
+
 ## FOUR RECIPIENT-SIDE BLOCKERS STAND BETWEEN A PROFILE AND THE COMPOSER — ALL FOUR ARE BYPASSED
 
 **Read this before touching `sendDm.ts` or `readThread.ts`.** Instagram no longer offers one
