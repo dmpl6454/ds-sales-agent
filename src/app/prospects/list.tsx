@@ -150,7 +150,7 @@ function Row({ p, sendersAble }: { p: ProspectRow; sendersAble: number }) {
         from writing to this person, which is a bigger fact than a badge implies.
       */}
       {p.replied && (
-        <p className="account-message">They replied — messaging pauses for a day, then resumes on its own.</p>
+        <p className="account-message">They replied — messaging pauses for seven days, then resumes on its own.</p>
       )}
 
       {/*

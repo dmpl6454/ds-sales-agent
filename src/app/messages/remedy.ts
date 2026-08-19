@@ -42,7 +42,7 @@ export const REMEDIES = {
    * dialog can reach someone mid-conversation. It is not crossable from the plain Send button,
    * which carries no acknowledgement, so the remedy is to go and deal with the reply.
    */
-  [RESEND_BLOCKS.TARGET_REPLIED]: { href: '/', label: 'Read the reply — messaging resumes by itself after a day' },
+  [RESEND_BLOCKS.TARGET_REPLIED]: { href: '/', label: 'Read the reply — messaging resumes by itself after seven days' },
 
   /**
    * No control, on purpose. Retirement is the one promise the UI makes that has to survive

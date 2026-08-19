@@ -33,11 +33,13 @@
 /**
  * Default hours a reply pauses its target. A `Setting` row (`replyResumeHours`) overrides.
  *
- * TWO DAYS since 2026-08-18 — Tabish: "cooldown if conversation is ongoing to 2 days",
- * given in the same instruction that removed every other volume cap. This is the one
- * number that got MORE conservative that day.
+ * SEVEN DAYS since 2026-08-19 — Tabish: the 7-day constraint applies when "a reply has
+ * been detected (which would resume after 7 days automatically or manually by clicking
+ * on the UI)". Was 48h (2026-08-18, "cooldown if conversation is ongoing to 2 days").
+ * "I have replied" stays as the early release; a hard stop with no release is a bug
+ * wearing a safety feature's clothes.
  */
-export const REPLY_RESUME_HOURS_DEFAULT = 48
+export const REPLY_RESUME_HOURS_DEFAULT = 168
 
 /** Replies at or after this instant still hold the halt; older ones have released. */
 export function replyHaltFloor(resumeHours: number, now: Date = new Date()): Date {

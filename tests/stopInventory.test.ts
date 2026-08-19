@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import { evaluatePair, SKIP_REASONS } from '@/outreach/governor'
 import { evaluateResend, RESEND_BLOCKS, OVERRIDABLE_BLOCKS } from '@/outreach/gate'
+import { crossSpacingVerdict } from '@/outreach/crossSpacing'
 import { BRAND_BLOCKS, checkNewBrandTouchCap, checkRecipientIsNotAPerson } from '@/outreach/brandGuards'
 import { decideDispatch, assessBreaker, FLEET_MIN_GAP_MINUTES } from '@/outreach/pacing'
 import { FAILURE_CODES } from '@/lib/constants'
@@ -56,6 +57,23 @@ function assertReadable(label: string, detail: string | undefined, code: string)
 
 const NOW = new Date('2026-08-20T12:00:00Z')
 
+/**
+ * A real ring-complete hold, built by the predicate itself — a hand-written verdict
+ * literal would go stale GREEN the day the rule changed shape (this file's own lesson,
+ * learned when the too-soon fixture pinned a number the gap rule owned).
+ */
+const RING_HOLD = crossSpacingVerdict({
+  now: NOW,
+  windowDays: 7,
+  crossPageGapHours: 24,
+  thisSenderId: 's1',
+  eligibleSenderIds: ['s1', 's2'],
+  lastDeliveryBySender: new Map([
+    ['s1', { sentAt: new Date(NOW.getTime() - 3 * 86_400_000), handle: 'bollywoodchronicle' }],
+    ['s2', { sentAt: new Date(NOW.getTime() - 2 * 86_400_000), handle: 'bollywoodsocietyy' }],
+  ]),
+})
+
 function governorInput(over: Record<string, unknown> = {}) {
   return {
     now: NOW,
@@ -67,8 +85,7 @@ function governorInput(over: Record<string, unknown> = {}) {
     unusedCampaignCount: 5,
     pairSentTodayCount: 0,
     maxPerPairPerDay: 5,
-    otherPageLastDeliveredAt: null,
-    cooldownDays: 7,
+    crossSpacing: { held: false },
     totalSentEver: 0,
     maxTotalSends: null,
     ...over,
@@ -89,14 +106,11 @@ const GOVERNOR_CASES: Array<[string, Record<string, unknown>]> = [
   // Five per day from one account to one recipient (2026-08-18).
   [SKIP_REASONS.PAIR_DAILY_CAP, { pairSentTodayCount: 5, maxPerPairPerDay: 5 }],
   /**
-   * Sender-blind spacing, restored the evening of 2026-08-18 after its morning removal
-   * put three of our pages in one recipient's inbox inside two days. One hour ago against
-   * a seven-day window.
+   * The RING RULE (2026-08-19): the stop stays REACHABLE only when every eligible page
+   * has written inside the window — built by the real predicate so this case cannot go
+   * stale green.
    */
-  [
-    SKIP_REASONS.TARGET_RECENTLY_CONTACTED,
-    { otherPageLastDeliveredAt: new Date(NOW.getTime() - 60 * 60 * 1000), cooldownDays: 7 },
-  ],
+  [SKIP_REASONS.TARGET_RECENTLY_CONTACTED, { crossSpacing: RING_HOLD }],
 ]
 
 describe('every governor stop is reachable and explains itself', () => {
@@ -138,7 +152,7 @@ function gateInput(over: Record<string, unknown> = {}) {
     targetRepliedAt: null,
     pairSentTodayCount: 0,
     maxPerPairPerDay: 5,
-    targetRecentContact: null,
+    crossSpacing: { held: false },
     ...over,
   } as Parameters<typeof evaluateResend>[0]
 }
@@ -153,11 +167,8 @@ const GATE_CASES: Array<[string, Record<string, unknown>]> = [
   [RESEND_BLOCKS.NO_SESSION, { senderHasSession: false }],
   // Five per day from one account to one recipient (2026-08-18).
   [RESEND_BLOCKS.PAIR_DAILY_CAP, { pairSentTodayCount: 5, maxPerPairPerDay: 5 }],
-  // One recipient hears from one of our pages at a time — restored 2026-08-18 evening.
-  [
-    RESEND_BLOCKS.TARGET_RECENTLY_CONTACTED,
-    { targetRecentContact: { fromHandle: 'bollywoodchronicle', hoursAgo: 3 } },
-  ],
+  // The ring rule (2026-08-19): reachable only when every page has written in-window.
+  [RESEND_BLOCKS.TARGET_RECENTLY_CONTACTED, { crossSpacing: RING_HOLD }],
 ]
 
 describe('every gate stop is reachable and explains itself', () => {
