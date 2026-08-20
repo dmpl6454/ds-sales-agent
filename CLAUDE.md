@@ -690,6 +690,69 @@ first one's profiles.
 
 ---
 
+## 20 AUGUST — "OFF" DID NOT MEAN OFF, AND EVERY LAYER WAS BEHAVING CORRECTLY
+
+**Tabish, watching it happen: *"I have clearly turned off autopilot, browser pop up and
+message delivery still occurs in front of my eyes."*** He was right, and the reason is the
+most instructive shape in this file: nothing was broken, and the product still did the thing
+he had just told it to stop.
+
+**MEASURED, before changing anything:**
+
+| | |
+|---|---|
+| deliveries after the switch went off | **ZERO** |
+| the switch | OFF at 07:43:26.853Z, by him, audited |
+| the last delivery | recorded 07:43:13.719Z — **13 seconds BEFORE** he pressed it |
+| the dispatcher | held with `autopilot-off` on every tick from that second onward |
+
+So the message he watched land was a send already mid-flight, which the design permits
+deliberately (*"at most the one message already in flight completes, because a send under
+way is a browser mid-paste"*). That half was correct and is worth keeping.
+
+**THE BROWSERS WERE THE REPLY SWEEP, AND IT NEVER ASKED THE SWITCH.** Moved onto the device
+agent on 2026-08-19 to fix the eleven-day reply blindness, it opens up to four real Chrome
+profiles every 30 minutes — *and once the instant the agent starts* — with no autopilot gate
+and, since the active-hours window was removed the same day, **around the clock**. Reading
+is not sending, so on its own terms it was fine; from the operator's side it is a browser
+touring conversations from a revenue account after he pressed stop.
+
+**This file predicted it, in these words, when the sweep still lived on the server:** *"the
+fix is to move the sweep onto the device agent, and that means unattended browser sessions
+against revenue accounts, which is an exposure change to decide rather than to slip in."*
+It was slipped in.
+
+**THE RULE NOW, and it is the general one:** the one control the product offers means *stop
+touching my accounts*, not *stop sending*. Any pass on the device agent that launches a
+Chrome profile asks `autopilotEnabled` first and **fails closed** when it cannot read it —
+"we could not ask" must never authorise driving a browser, the same direction as
+`identify()`'s `no-answer`. `replyPass` asks before it even takes the send lock.
+
+**Nothing is lost by gating it**, which is what makes this conservative rather than a trade:
+with the switch off no follow-up can land, so the guard has nothing to guard;
+`ensureConversationChecked` still reads the exact thread immediately before every follow-up
+once it is back on; and a reply arriving while it is off is picked up by the first sweep
+after it resumes, before anything goes out.
+
+### THE FIRST VERSION OF THE TEST PASSED THE MUTATION, WHICH IS WHY IT IS BEHAVIOURAL NOW
+
+The obvious guard was a source grep — *"the switch is read before the thread read"*. Deleting
+the early return leaves `autopilotEnabled` sitting above `checkForReplies`, so **the grep
+passed against the exact edit that reopens the hole.** A grep proves a fact is CONSULTED;
+only calling the function proves it GATES. `tests/autopilot-off-drives-no-browser.test.ts`
+drives `replyPass` with the switch off and asserts `checkForReplies` is never reached —
+verified to FAIL when the gate is deleted, and to pass in the permitting direction and the
+unreadable-switch direction. A source check beside it refuses any NEW browser driver on the
+agent (`launchProfile`, `sendDm`, `openAndReadThread`, …), because that is how this one
+arrived and no behavioural test can fail for a caller nobody has written yet.
+
+**VERIFIED LIVE:** agent restarted with autopilot still OFF — `→ autopilot is off — the
+reply sweep opens no browser`, **zero Chrome processes**, brand discovery still running
+(it drives no browser, so it is deliberately NOT gated: prospects keep arriving while
+sending is stopped).
+
+---
+
 ## 18 AUGUST, LATE — SPACING CAME BACK, DISCOVERY RUNS ITSELF, AND `/` WAS 500 FOR AN HOUR
 
 **Read this before the section below it: it CORRECTS three things that section shipped.**
