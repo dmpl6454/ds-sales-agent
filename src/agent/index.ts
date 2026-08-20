@@ -8,6 +8,7 @@ import { reconcileSessionRecords } from './reconcile'
 import { autoResolveBrands } from '@/detection/autoResolve'
 import { discoverOfficialPages } from '@/detection/officialDiscovery'
 import { checkForReplies } from '@/outreach/replyCheck'
+import { getSettings } from '@/lib/settings'
 
 /**
  *   pnpm agent:device
@@ -275,11 +276,68 @@ async function brandPass(): Promise<void> {
 /** One reply sweep at a time on this machine — same reasoning as `brandPassRunning`. */
 let replyPassRunning = false
 
-async function replyPass(): Promise<void> {
+/**
+ * EXPORTED FOR ONE REASON: `tests/autopilot-off-drives-no-browser.test.ts` drives this
+ * function directly and asserts that `checkForReplies` is NEVER reached with the switch
+ * off. The first version of that test was a source grep, and mutation-testing it showed
+ * the grep passing against the exact edit that matters — deleting the early return still
+ * left the word `autopilotEnabled` above the read. A grep proves a fact is CONSULTED; only
+ * calling the function proves it GATES. Exporting it is the cheaper of the two costs.
+ */
+export async function replyPass(): Promise<void> {
   if (replyPassRunning) {
     log.step('the reply sweep is still running from the last pass — skipping this one')
     return
   }
+
+  /**
+   * ── AUTOPILOT OFF MEANS NO UNATTENDED BROWSER, NOT JUST NO SEND (2026-08-20) ──
+   *
+   * OBSERVED BY TABISH, and it is the only report that matters here: he switched autopilot
+   * off, and Chrome windows kept opening on his revenue accounts in front of him. He was
+   * right, and every layer below was behaving "correctly": the dispatcher held with
+   * `autopilot-off` on every tick, ZERO messages were delivered after the switch — and
+   * this sweep drove a real browser into a real account every thirty minutes anyway,
+   * around the clock, because reading is not sending and nothing here asked the switch.
+   *
+   * That distinction is real inside the code and worthless outside it. The one control the
+   * product offers has to mean *"stop touching my accounts"*, because that is what a person
+   * pressing it believes it means — and a browser touring conversations from a revenue page
+   * is exactly the unattended activity they were stopping. CLAUDE.md predicted this exact
+   * exposure when the sweep was still on the server: moving it to the device "means
+   * unattended browser sessions against revenue accounts, which is an exposure change to
+   * decide rather than to slip in". It was slipped in.
+   *
+   * NOTHING IS LOST BY GATING IT, and that is what makes this the conservative direction
+   * rather than a trade:
+   *
+   *   - The sweep exists to stop a queued follow-up landing in a live conversation. With
+   *     autopilot off no follow-up can land at all, so the guard has nothing to guard.
+   *   - `ensureConversationChecked` still reads the exact thread immediately before every
+   *     follow-up once autopilot is back on. That is the design's own "real answer" —
+   *     coverage proportional to messages sent rather than to prospects held.
+   *   - A reply that arrives while the switch is off is still recorded by the first sweep
+   *     after it goes back on, before anything is delivered.
+   *
+   * FAILS CLOSED. An unreadable settings row means the switch cannot be confirmed ON, and
+   * "we could not ask" must never authorise driving a browser — the same direction as
+   * `identify()`'s `no-answer`, which this codebase already paid for once by recording a
+   * live session as dead.
+   */
+  let autopilotOn = false
+  try {
+    autopilotOn = (await getSettings()).autopilotEnabled
+  } catch (err) {
+    log.warn('could not read the autopilot switch — the reply sweep stays put', {
+      error: err instanceof Error ? err.message : String(err),
+    })
+    return
+  }
+  if (!autopilotOn) {
+    log.step('autopilot is off — the reply sweep opens no browser (replies are read again when it is on)')
+    return
+  }
+
   // No active-hours gate since 2026-08-19: Tabish removed the time window for sending AND
   // checking, so replies are read around the clock too.
   replyPassRunning = true
