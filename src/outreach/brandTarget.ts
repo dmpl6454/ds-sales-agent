@@ -2,6 +2,7 @@ import { prisma } from '@/lib/db'
 import { env } from '@/lib/env'
 import { routeAllowed, fleetHandles } from '@/outreach/routes'
 import type { BrandVerdict } from '@/detection/resolveBrand'
+import { enrichHandle } from '@/detection/enrichHandle'
 
 /**
  * THE ONE PLACE A DISCOVERED BRAND BECOMES A `TargetAccount`.
@@ -70,6 +71,19 @@ export async function createBrandTarget(
   const sender = await prisma.senderAccount.findUnique({ where: { handle } })
   if (sender) return 'is-our-sender'
 
+  /**
+   * EVERY TARGET ROW MUST KNOW WHETHER IT IS VERIFIED, AT BIRTH.
+   *
+   * `gate.ts` refuses to message an unverified recipient (Tabish, 2026-08-20: "No message
+   * is to be sent to any target that are unverified"), and it treats NULL as "not proven
+   * verified" — so a row created without the fact would be permanently unmessageable, which
+   * loses exactly the leads discovery exists to find. One enrichment call per CREATION
+   * (rare, and already the same endpoint discovery just used) makes the invariant hold by
+   * construction rather than by remembering to run the audit afterwards.
+   */
+  const verified =
+    opts.isVerified !== undefined ? opts.isVerified : (await enrichHandle(handle)).isVerified
+
   const target = await prisma.targetAccount.create({
     data: {
       handle,
@@ -102,7 +116,7 @@ export async function createBrandTarget(
       discoveredFromCampaignId: campaign?.id ?? null,
       brandCategory: verdict.category,
       campaignTalent: opts.campaignTalent ?? false,
-      isVerified: opts.isVerified ?? null,
+      isVerified: verified,
       followerCount: opts.followerCount ?? null,
     },
   })

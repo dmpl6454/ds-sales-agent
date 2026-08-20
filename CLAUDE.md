@@ -5,6 +5,72 @@ changing anything that touches sending.
 
 ---
 
+## VERIFIED ONLY — THE ADMISSION RULE FOR EVERY RECIPIENT (2026-08-20, TABISH, PERMANENT)
+
+**Read this before adding any path that creates a target or sends a message. It is one
+sentence and it outranks convenience everywhere.**
+
+> *"No message is to be sent to any target that are unverified. … A simple rule, we cannot
+> lose leads in posts with no tags, so we discover valid verified instagram accounts and add
+> them as target and message them."* — Tabish, 2026-08-20
+
+**A recipient is messageable only if Instagram shows the verified badge.** That is the whole
+rule, and it is enforced at BOTH ends like every load-bearing rule here:
+
+| | |
+|---|---|
+| `governor.ts` → `TARGET_NOT_VERIFIED` | refuses to WRITE a draft, so the queue never fills with permanent holds |
+| `gate.ts` → `RESEND_BLOCKS.TARGET_NOT_VERIFIED` | refuses to SEND, catching every draft written before the rule |
+| **NOT overridable** | absent from `OVERRIDABLE_BLOCKS`, with a test asserting the override is inert. Every stop a human may cross is about TIMING; this one is about WHO the recipient is, and "I know something the agent does not" is not an argument about whether an account is the company it appears to be |
+
+**`isVerified: null` IS REFUSED, AND THAT IS THE DESIGN.** "We never looked" is not
+"verified" — absence of data hardening into a positive verdict is this codebase's
+most-repeated defect, and this is the one place it must not happen. The cost of refusing
+NULL is paid at CREATION instead: **`createBrandTarget` enriches every new row** so the fact
+exists at birth, and `pnpm ig:audit-targets --run` backfills. A NULL therefore means a row
+predating both — visible and fixable, never a silent send.
+
+**WHY THIS RULE EXISTS, measured:** `@lego.mybrickhouse` — display name *"My Brickhouse"*,
+unverified, no category — received a real media-buying pitch from a revenue account at
+11:09 IST, **two minutes after the genuine `@legoindia_official` ("LEGO India", verified) at
+11:07.** A professional account with nothing else known falls to `classifyProfile`'s business
+branch and becomes a BRAND. Absence of data becoming a verdict, one door along.
+
+**THE SAME BAR NOW GOVERNS BOTH ADMISSION DOORS, and both size fallbacks were DELETED
+rather than left unreachable** — they required a follower count `enrichHandle` never returns
+(see below), so they were dead code that read like a second way in:
+
+- `admitsAsTalent` (celebrities on CAMPAIGN posts) — **badge only**.
+- `isOfficialMatch` (official pages for untagged posts) — **badge AND a name covering every
+  token of the brand name**. The @philips / "Philips India" trap is still a permanent
+  fixture: a badge on the WRONG account passes every existence check, and only the name test
+  stops it.
+
+**AND THE LEAD-RECOVERY HALF RUNS ITSELF, which is what makes the rule affordable.**
+Refusing unverified accounts would lose leads if nothing replaced them, so
+`discoverOfficialPages` (`src/detection/officialDiscovery.ts`) works the **172 measured
+in-window CAMPAIGN posts that assert no handle at all**: brand names from the caption, then
+OCR frame text → candidate handles → the badge bar → a prospect. It runs on the **device
+agent's brand timer, 5 lookups every 30 minutes**, sharing the throttled profile endpoint
+with `autoResolveBrands`, on the home IP where that endpoint answers. It is a FUNCTION
+shared with `pnpm ig:find-official`, not logic inside the script, because *a feature that
+works only when someone runs a command is not running* — this repo has paid for that twice.
+Anything resolving but failing the bar is REPORTED for a person (`--accept`), never guessed.
+
+`tests/verified-only.test.ts` is the future-proofing and is deliberately three kinds of
+check, because the rule can be lost three ways: behaviourally at both enforcers in both
+directions (including NULL), structurally as a source grep over the creators and the
+automatic path, and as the overridability invariant.
+
+**THE DATA STATE THIS LEFT:** 18 unverified prospects retired (all had delivered history, so
+retired and never deleted — `optedOut`, the promise that survives every feature), the 20
+drafts aimed at them discarded through the one writer with an audit row each, and the live
+list is now **74 prospects, 74 of them verified**. If a retired brand's verified page is
+later discovered it arrives as a NEW row on the correct handle — the lead is re-acquired
+properly rather than kept on a handle we could never confirm.
+
+---
+
 ## 20 AUGUST, MIDDAY — "AUTOPILOT IS OFF AND IT STILL SENT" WAS FALSE; "THE UI IS STUCK" WAS TRUE
 
 Three claims from Tabish, all measured. The first two were the system being right and the

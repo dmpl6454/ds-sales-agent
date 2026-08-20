@@ -23,7 +23,7 @@ function base(overrides: Partial<GovernorInput> = {}): GovernorInput {
   return {
     now: NOW,
     sender: { status: 'ACTIVE' },
-    target: { optedOut: false },
+    target: { optedOut: false, isVerified: true },
     touchesSoFar: 0,
     targetRepliedAt: null,
     unusedCampaignCount: 2,
@@ -60,7 +60,7 @@ describe('absolute stops', () => {
    * cannot be lost by a pair row being recreated automatically.
    */
   it('skips an opted-out target', () => {
-    const d = evaluatePair(base({ target: { optedOut: true } }))
+    const d = evaluatePair(base({ target: { optedOut: true, isVerified: true } }))
     expect(d).toMatchObject({ eligible: false, reason: SKIP_REASONS.TARGET_OPTED_OUT })
   })
 
@@ -70,7 +70,7 @@ describe('absolute stops', () => {
   })
 
   it('opt-out outranks everything, including a fresh eligible pair', () => {
-    const d = evaluatePair(base({ target: { optedOut: true } }))
+    const d = evaluatePair(base({ target: { optedOut: true, isVerified: true } }))
     expect(d).toMatchObject({ eligible: false, reason: SKIP_REASONS.TARGET_OPTED_OUT })
   })
 })
@@ -186,7 +186,7 @@ describe('the lifetime send ceiling', () => {
   })
 
   it('is reported before target opt-out, because it is the more absolute stop', () => {
-    const d = evaluatePair(base({ totalSentEver: 1, maxTotalSends: 1, target: { optedOut: true } }))
+    const d = evaluatePair(base({ totalSentEver: 1, maxTotalSends: 1, target: { optedOut: true, isVerified: true } }))
     expect(d).toMatchObject({ eligible: false, reason: SKIP_REASONS.LIFETIME_CAP })
   })
 

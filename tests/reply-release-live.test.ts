@@ -177,12 +177,18 @@ beforeEach(async () => {
     },
   })
   await prisma.targetAccount.create({
-    data: { id: TARGET, handle: TARGET, displayName: TARGET, kind: 'BRAND', role: 'PROSPECT' },
+    /**
+     * `isVerified: true` is REQUIRED for this fixture to exercise the stop it names.
+     * Verified-only (Tabish, 2026-08-20) is checked BEFORE the reply halt, because who the
+     * recipient is outranks when we may write — so a seeded target without a badge refuses
+     * on `target-not-verified` and this file would silently stop testing the reply release.
+     */
+    data: { id: TARGET, handle: TARGET, displayName: TARGET, kind: 'BRAND', role: 'PROSPECT', isVerified: true },
   })
   await prisma.outreachPair.create({ data: { id: 'pair', senderId: SENDER, targetId: TARGET } })
 
   // What we delivered, and their answer to it — a reply from ten minutes ago, well inside
-  // the 48-hour window, so the halt is genuinely active.
+  // the reply window (7 days since 2026-08-19), so the halt is genuinely active.
   await prisma.outreachAttempt.create({
     data: {
       id: 'delivered',

@@ -405,7 +405,7 @@ export async function runOutreach(): Promise<PlanSummary> {
     const decision: GovernorDecision = evaluatePair({
       now,
       sender: { status: pair.sender.status },
-      target: { optedOut: pair.target.optedOut },
+      target: { optedOut: pair.target.optedOut, isVerified: pair.target.isVerified },
       touchesSoFar: touches,
       targetRepliedAt: replied?.repliedAt ?? null,
       pairSentTodayCount: pairToday,

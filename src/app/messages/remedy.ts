@@ -67,6 +67,10 @@ export const REMEDIES = {
     href: '/targets',
     label: 'We watch this page to find who is buying from them — discard this draft',
   },
+  [RESEND_BLOCKS.TARGET_NOT_VERIFIED]: {
+    href: '/targets',
+    label: 'Only verified accounts are messaged — find the company’s verified page, or discard this draft',
+  },
 
   // Clears by waiting — five a day from one account to one recipient.
   [RESEND_BLOCKS.PAIR_DAILY_CAP]: { href: null, label: 'The allowance resets at midnight IST.' },
