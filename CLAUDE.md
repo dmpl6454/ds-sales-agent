@@ -5,6 +5,86 @@ changing anything that touches sending.
 
 ---
 
+## 20 AUGUST, MORNING — THE INTER-PAGE GAP IS GONE (SECOND INSTRUCTION), AND A HUNG READ HELD THE FLEET FOR 88 MINUTES
+
+**Read this before the section below it: it DELETES the one mitigation that section shipped,
+and it records the measurement that justified deleting it.**
+
+### THE 24-HOUR INTER-PAGE GAP BECAME THE ONLY THING STOPPING THE FLEET, SO IT IS ZERO NOW
+
+The ring rule went out at 00:30 IST and delivered 11 messages in twenty minutes. Then
+sending stopped, and the morning measurement named the cause exactly: **23 of 23 waiting
+drafts held by the 24h inter-page gap alone**, freeing 13:29-15:32 IST — while the 7-day
+rule the gap was protecting was **firing for nobody** (77 recipients had heard from exactly
+ONE page, so no ring was complete). The mitigation had become the entire constraint.
+
+Tabish, for the second time in twelve hours: *"Remove this 24-hour inter-page gap …
+I told you before and I am telling you this again, 7 day constraint only no other
+limitation."*
+
+`crossPageGapHours` is **0**. The MECHANISM is deliberately kept rather than deleted —
+exactly the shape of the 0-0 active-hours window — so one number restores it, and
+`tests/cross-spacing.test.ts` still drives it with an explicit 24 so it stays enforceable.
+**The default is now pinned by a test whose failure message names whose call it was**,
+because the next person to read this code will see an unspaced fleet and want to "fix" it.
+
+**WHAT IT PERMITS, STATED FOR THE THIRD TIME AND RECORDED AS HIS:** all five pages may
+reach one recipient within minutes of each other, near-identical template each time, then
+that recipient rests seven days. Nothing else spaces our pages apart. Same trade as the
+caps removal (18 Aug) and the 24/7 window (19 Aug).
+
+**VERIFIED BEFORE DEPLOY, on the real queue through the real page:** "Up next (23 waiting)"
+with **22 sendable** at 1-8 minute ETAs, and "Resting (1 held)" — the single remaining hold
+being a REPLY halt (@fastrackworld, freeing 26 Aug, which is the new 7-day window). That is
+Tabish's rule rendered exactly: the ring, a reply, and nothing else.
+
+### A SINGLE REPLY READ HUNG FOR 88 MINUTES AND STOPPED ALL SENDING, INVISIBLY
+
+MEASURED the same morning, and it is the more dangerous finding. At 09:04 IST the reply
+sweep took the **fleet-wide send lock** and opened a conversation; the SSH tunnel to the
+database dropped underneath it (`Can't reach database server` in the agent log); the read
+did not return until **10:32**. For those 88 minutes every dispatcher tick reported only
+*"another send is already running"*, `/`'s pace band looked healthy, and nothing anywhere
+said the fleet had stopped. **A hard stop with no release, in the guard that holds the
+lock.**
+
+It cost no sends *this time* purely because the gap was holding everything anyway. The fix
+is `READ_DEADLINE_MS = 6 minutes` in `readThread.ts`, and the shape matters more than the
+number:
+
+- **Closing the CONTEXT is the interrupt AND the cleanup.** Every `page.goto` here was
+  already bounded at 60s, so the hang was not a navigation — an in-page `fetch` (the
+  identity check) has no timeout and waits forever on a stalled socket. `context.close()`
+  makes it reject immediately, and it is what the `finally` does anyway.
+- **Racing the promise and walking away would be worse than the hang.** An abandoned read
+  leaves a live context on a profile a send may pick up seconds later, and two contexts on
+  one profile is how device identity dies. So nothing is abandoned; the context is closed.
+- **A timeout is `unreadable`, NEVER "no reply"** — otherwise a stalled network becomes an
+  assertion of verified silence and releases the hardest guard in the system.
+- **The thrown message must not match `/checkpoint|challenge|suspend/i`.**
+  `checkConversation` tests exactly that pattern and marks the account CHALLENGED, which
+  halts the WHOLE FLEET through the breaker. A network stall flagging a healthy revenue
+  account would be far worse than the hang. `tests/read-deadline.test.ts` asserts this
+  directly, and it is the assertion in that file carrying real weight.
+
+**Still open, and it is the general form of this bug:** the sweep holds a fleet-wide lock
+for its whole duration, so its worst case is now bounded at 6 minutes per conversation
+rather than bounded at all. If sending must never pause for a read, the sweep needs to hold
+the lock per conversation rather than per run — a bigger change than a "keep messages
+flowing" fix should carry.
+
+### AND `/rules` WAS DESCRIBING THE DELETED RULE, AT BOTH OF ITS SPACING STATEMENTS
+
+The page promises every value on it comes from the module that enforces it, and its two
+spacing sentences still said *"another of our pages wrote to this recipient recently — one
+inbox hears from one of our pages at a time"* and *"our OTHER pages leave them alone for 7
+days"* — both describing the rule deleted the night before. Both now state the ring rule
+and the 7-day reply window, and the gap sentence appears **only when the gap is non-zero**,
+so the page cannot claim spacing that is switched off. Third time this file has recorded a
+screen asserting a rule the enforcer no longer holds.
+
+---
+
 ## 20 AUGUST, SMALL HOURS — SPACING IS THE RING RULE NOW, AND THE FLEET UN-FROZE THE MINUTE IT DEPLOYED
 
 **Read this before trusting anything below about cross-account spacing, the reply window,
