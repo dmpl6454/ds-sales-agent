@@ -13,14 +13,17 @@
  *   ring-complete  — hold only when EVERY eligible fleet sender has delivered to this
  *                    recipient within `windowDays`. Releases the moment the OLDEST
  *                    in-window delivery ages out of the window.
- *   inter-page-gap — a DIFFERENT page delivered within `crossPageGapHours` (Setting,
- *                    default 24; 0 disables). Without it the planner would walk the
- *                    whole ring through one inbox in a single afternoon — five
- *                    near-identical templates in five minutes is the recipient-side
- *                    ban pattern (the @absolutejk incident, 2026-08-18). The ban-pattern
- *                    risk of the ring rule itself was stated to Tabish and is recorded
- *                    as his call; this gap is the one mitigation, and it is HIS lever —
- *                    one Setting row to zero.
+ *   inter-page-gap — a DIFFERENT page delivered within `crossPageGapHours`.
+ *                    **THIS IS ZERO — DISABLED — SINCE 2026-08-20**, on Tabish's second
+ *                    explicit instruction: *"Remove this 24-hour inter-page gap … 7 day
+ *                    constraint only no other limitation."* It shipped at 24 the night
+ *                    before and became the binding constraint within hours (23 of 23
+ *                    drafts held by it alone, while ring-complete held nobody). The
+ *                    mechanism is deliberately KEPT at 0 rather than deleted — the same
+ *                    shape as the 0-0 active-hours window — so one number restores it,
+ *                    and the tests below still drive it with an explicit non-zero value.
+ *                    With it off, all five pages may reach one recipient within minutes;
+ *                    the ban-pattern risk was stated and is recorded as his call.
  *
  * A sender's OWN delivery never holds here: one page re-messaging its own recipient is
  * governed by NO_NEW_MATERIAL and PAIR_DAILY_CAP (the 2026-08-18 decision), and adding

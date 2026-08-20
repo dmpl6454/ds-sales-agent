@@ -45,11 +45,11 @@ const STOP_LABELS: Record<(typeof RESEND_BLOCKS)[keyof typeof RESEND_BLOCKS], st
   [RESEND_BLOCKS.SENDER_NOT_ACTIVE]: 'Instagram flagged the account',
   [RESEND_BLOCKS.TARGET_OPTED_OUT]: 'the recipient is retired — never contacted again',
   [RESEND_BLOCKS.TARGET_IS_WATCH_ONLY]: 'this is a page we watch for paid posts, not a company we message',
-  [RESEND_BLOCKS.TARGET_REPLIED]: 'they replied — paused for two days, then resumes',
+  [RESEND_BLOCKS.TARGET_REPLIED]: 'they replied — paused for seven days, then resumes on its own',
   [RESEND_BLOCKS.NO_SESSION]: 'the account is not signed in',
   [RESEND_BLOCKS.PAIR_DAILY_CAP]: 'this account already sent this recipient five messages today',
   [RESEND_BLOCKS.TARGET_RECENTLY_CONTACTED]:
-    'another of our pages wrote to this recipient recently — one inbox hears from one of our pages at a time',
+    'every one of our pages has already written to this recipient this week — they rest until the oldest of those messages is seven days old',
   [RESEND_BLOCKS.COHORT_NOT_CLEARED]: 'the account’s onboarding group is not cleared yet',
 }
 
@@ -118,7 +118,14 @@ export default async function RulesPage() {
           removed the same day on his instruction ("Remove all caps … rest unlimited").
         */
         `${settings.maxPerPairPerDay} messages per day from one account to one recipient.`,
-        `Once one of our pages writes to someone, our OTHER pages leave them alone for ${settings.defaultCooldownDays} days — so nobody hears the same message from three of our accounts. Sending volume is otherwise uncapped, by explicit decision.`,
+        /*
+          THE RING RULE (2026-08-19, reshaped 2026-08-20 on Tabish's second instruction —
+          "7 day constraint only no other limitation"). Every page may write to a recipient;
+          the rest applies only once they ALL have. The 24h inter-page gap that shipped with
+          it was REMOVED after it was measured holding 23 of 23 drafts while the seven-day
+          rule held nobody. `crossPageGapHours` is 0 and is the one number that restores it.
+        */
+        `Every one of our pages may write to a recipient. Once ALL of them have, that recipient rests until the oldest of those messages is ${settings.defaultCooldownDays} days old — and nothing else spaces our pages apart${settings.crossPageGapHours > 0 ? `, beyond ${settings.crossPageGapHours}h between two different pages reaching the same inbox` : ''}. Sending volume is otherwise uncapped, by explicit decision.`,
         'A follow-up must reference a paid post not used before for that conversation — fresh material is what makes a second message new rather than a repeat, which is what Instagram penalises.',
         settings.fleetMaxPerDay === Number.POSITIVE_INFINITY
           ? 'No fleet-wide daily cap — chosen deliberately, one setting away from binding.'
