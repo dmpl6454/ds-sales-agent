@@ -5,6 +5,84 @@ changing anything that touches sending.
 
 ---
 
+## 20 AUGUST, MIDDAY — "AUTOPILOT IS OFF AND IT STILL SENT" WAS FALSE; "THE UI IS STUCK" WAS TRUE
+
+Three claims from Tabish, all measured. The first two were the system being right and the
+SCREEN being wrong; the third found a guard I had shipped dead the day before.
+
+### AUTOPILOT OFF IS WORKING. THE LAST SEND WAS 50 SECONDS BEFORE HE FLIPPED IT
+
+MEASURED from the audit log: `autopilot.set OFF` at **11:19:15 IST** by
+tabish@dashmani.com; the last `attempt.sent.autopilot` at **11:18:25** — fifty seconds
+EARLIER. Zero sends after the toggle, no row in SENDING, and `dispatchState` reads
+`autopilot-off` on every tick since. The just-in-time `getSettings()` before the SENDING
+claim (2026-08-19) is doing its job.
+
+**What he actually saw was the PAGE, not the fleet** — which is finding two.
+
+### "UP NEXT" PROMISED SENDS WHILE THE SWITCH WAS OFF, SO A PAUSED FLEET READ AS A STUCK ONE
+
+With autopilot off the panel went on rendering **"in ~1 min" ETAs** and **"clear to send on
+the next tick"** over eight rows that could not move — so the queue looked frozen on every
+refresh while the page insisted it was draining. Both halves of his complaint, one cause.
+
+**THE GATE CANNOT CATCH THIS, AND THAT IS THE GENERAL LESSON.** `AUTO_SEND_OFF` was deleted
+in the one-switch change (2026-08-08), so `recheckBeforeSend` says nothing about the switch
+and truthfully answers `ok` for a draft nothing will send. The verdict was right; the
+sentence built from it was not. `WaitingList` now takes `autopilotOn`: the ETA column reads
+**"when Autopilot is on"**, the head row says *"every check passes — waiting only for
+Autopilot to be switched on"*, and the summary states **"Autopilot is off, so none of these
+are going out"**. `etaMinutes` is `null` rather than a number, because a countdown is a
+promise and nothing was counting down.
+
+Fourth entry in this file's "a page reporting a rule by a different rule than the one
+enforcing it" series. The queue was never stuck — **it was obedient, and the page lied
+about it.**
+
+### THE 91-DRAFT QUEUE IS REAL AND EXPECTED — IT IS THE GAP REMOVAL WORKING
+
+83 drafts were written in the 11:00-11:30 IST window: with the inter-page gap gone the
+planner can write for pairs it previously refused, so each recipient now holds up to one
+draft per page. MEASURED: **max 2 drafts per recipient, from 2 distinct senders** — nothing
+is stacked, because `hasPendingAttempt` still forbids two unsent drafts on one pair. The
+depth is bounded at `maxWaitingNewBrandDrafts` (150), so it fills toward that and stops.
+"Perpetual" is the intended steady state, not a leak.
+
+### AND HALF THE TARGET AUDIT WAS DEAD CODE REPORTING SUCCESS — SHIPPED BY ME THE DAY BEFORE
+
+His third question — *"are we sending to authentic users"* — is what exposed it.
+**MEASURED: `followerCount` is NULL on all 91 queued recipients**, and probing
+`enrichHandle` live on three handles says why: the anonymous FEED endpoint returns
+`is_verified` and `full_name` and **no follower count at all, ever**. Follower data exists
+only in `BrandLookup`, from the profile endpoint that 429s on the server and 400s on Meta's
+deleted category schema — **55 rows of 438**.
+
+So `auditTarget`'s `tiny-unverified` and `no-category-thin` flags, `admitsAsTalent`'s size
+arm and `isOfficialMatch`'s size arm were **all unreachable**, and the audit's "no suspect
+prospects" was an all-clear over rows it had not judged. *A guard nobody can trigger is not
+a guard* — this codebase's signature failure, committed by me one day earlier inside the
+code written to find faulty targets.
+
+Fixed three ways: followers now come from `BrandLookup` (partial beats always-null); the
+identity flag keys on **badge + category only**, so it needs no count; and the command
+REPORTS how many rows it could not judge, because "no flags" and "no facts" are different
+answers (the `framesRead` five-states lesson).
+
+**WHAT THE NEW FLAG CAUGHT, and it is a real send to a real fan page:**
+`@lego.mybrickhouse` — display name *"My Brickhouse"*, unverified, no category, account
+type 2 — **was messaged from a revenue account at 11:09, two minutes after the genuine
+`@legoindia_official` ("LEGO India", verified) at 11:07.** A professional account with
+nothing else known falls to `classifyProfile`'s business branch and becomes a BRAND, which
+is absence-of-data-becomes-a-verdict one door along. Retired.
+
+**THE HONEST ANSWER ON AUTHENTICITY:** of 91 queued recipients, **71 verified, 20
+unverified, 0 never-looked**. The unverified twenty are mostly real Indian brands without a
+blue tick (Senco Gold, Shiprocket, Wildstone, Anand Pandit Motion Pictures) — which is why
+the flag is worded **"unconfirmed identity"** and not "faulty", and why it feeds a review
+queue rather than a retirement sweep. Both readings stay a person's.
+
+---
+
 ## 20 AUGUST, MORNING — THE INTER-PAGE GAP IS GONE (SECOND INSTRUCTION), AND A HUNG READ HELD THE FLEET FOR 88 MINUTES
 
 **Read this before the section below it: it DELETES the one mitigation that section shipped,
