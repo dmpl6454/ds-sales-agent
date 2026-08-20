@@ -71,6 +71,109 @@ properly rather than kept on a handle we could never confirm.
 
 ---
 
+## 20 AUGUST, NIGHT — ELEVEN WATCH PAGES, AND SIX OF THE HANDLES AS TYPED WERE WRONG ACCOUNTS THAT EXIST
+
+**Tabish: *"I want to add these pages as targets as well (to be monitored for paid posts not
+to be sent any messages whatsoever… When I clicked on our manual method to add filmigyan it
+did not get added… the manual method must work as well e2e)."*** Fourteen handles. Every one
+was probed against `web_profile_info` from the home Mac before anything was added, and the
+probe is the story:
+
+### EXISTENCE IS NOT IDENTITY, MEASURED A SECOND TIME — ON WATCH PAGES
+
+**Six of the fourteen, exactly as typed, resolve to wrong accounts that EXIST**: `filmigyan`
+is a **219-follower fan page** ("4K FOLLOWERS ON MAIN PAGE") while the page he means is
+**@filmygyan, 31.6M, verified**; `manavmanglani` is a 19-follower private person
+(**@manav.manglani**, 9.2M ✓, is the paparazzo); `rvcj` is "rachael", 97 followers
+(**@rvcjinsta** = "RVCJ Media" ✓ — its profile endpoint hits Meta's schema-bug 400, so
+identity came from the FEED endpoint, which returns `full_name` + `is_verified`);
+`varinderchawla` → **@varindertchawla** (8.9M ✓); `komalnahata` and `sacrasm` are 404s;
+`indian` is a username squatter. A wrong WATCH page is NOT harmless: its CAMPAIGN posts mint
+real prospects that get real DMs, so the identity bar for auto-accepting a correction was
+**verified badge AND the display name being the page he named** — the isOfficialMatch
+philosophy at the watch door.
+
+**ELEVEN ADDED** (all ✓verified): filmygyan 31.6M, varindertchawla 8.9M, manav.manglani 9.2M,
+voompla 19.5M, instantbollywood 42.8M, rvcjinsta, pinkvilla 7.3M, taranadarsh 771k,
+adultsociety 8.1M, trolls_official 12M, naughtyworld 10.8M. **THREE HELD FOR TABISH, never
+guessed:** `sacrasm` (the famous @sarcasm_only is now named **"ecards"and UNVERIFIED**, 17M —
+possibly the page rebranded, his call), `indian` (no credible candidate), `komalnahata`
+(@komal.nahta is "Game changers of India", unverified — plausibly his show account,
+unconfirmable; @komalnahtaofficial is an empty shell).
+
+### WHY HIS FILMIGYAN CLICK RENDERED NOTHING, AND WHAT THE FORM DOES NOW
+
+No row, no audit row, no message — the action never ran. The form's `submit` had **`finally`
+with no `catch`**, so a THROWN failure rendered silence; the reachable thrower is a tab open
+from before a deploy calling a server action by a stale build-time ID ("Failed to find Server
+Action"), and at one deploy a day every open tab is that tab. Three fixes, all now behind
+`tests/exists.test.ts` (17 tests, both roles, both directions):
+
+- **the catch renders the error and the remedy** (reload the page);
+- **`probeHandle` returns existence AND identity facts from the one fetch**, and
+  `addTargetMessage` (PURE) puts them on screen at the moment of the add: *"Watching
+  @filmygyan… Instagram says this is "F I L M Y G Y A N", 31,619,996 followers, verified —
+  if that is not who you meant, remove it and check the handle."* A wrong add is visible to
+  the person who just made it, not discovered in the corpus weeks later;
+- **the success sentence matches the ROLE** — the old copy promised "the fleet will write to
+  them" for WATCH adds, false by definition. Fifth of the screen-asserts-a-rule-the-enforcer-
+  does-not-hold family. Plus `revalidatePath('/targets')` so the list beside the form updates.
+
+**All 11 were added through the REAL form in a REAL browser** (Playwright on the rebuilt
+local dashboard), each add answered with its identity line. VERIFIED in the DB: all 11 rows
+byte-match viralbhayani's shape (`CHANNEL/WATCH/semantic/watchEnabled/not opted out`),
+**zero `OutreachPair` rows** (`routeAllowed` refused every route), absent from the on-demand
+dropdown, 11 `target.added` audit rows.
+
+### THE ELEVEN NEW CHANNELS BLEW FOUR QUERY BUDGETS AT ONCE, WHICH IS `ig:layout` WORKING
+
+`buildChannelCards` issued **five queries PER channel** — invisible for its whole life at 2
+channels, 65 at 13, and `/` (192/160), `/targets` (142/120), `/paid-posts` (150/120) and
+`/analytics` (151/125) all failed together because all four render the cards through
+`buildTodayView`. The identical N+1 the `buildBrandsPanel` docblock ONE FUNCTION DOWN records
+being killed on 2026-08-13. Now five `groupBy`s total over `cardTargetIds`; **below the OLD
+numbers with 11 more channels** (`/` 192→132, `/targets` 142→82, `/paid-posts` 150→90,
+`/analytics` 151→91). The visible-channels grep accepts exactly `targetId: { in:
+cardTargetIds }` — the VARIABLE NAME is the carve-out, so a survey over every channel id
+still fails it. **A loop over a list whose size is a product decision must not cost queries
+per row.**
+
+### DETECTION ON THE NEW PAGES, MEASURED THE SAME EVENING
+
+The server's own 15-minute cron picked all 11 up with **zero code changes** (the deploy was
+for the form fixes; the rows alone were enough). First pass per channel, then steady state by
+23:00 IST — **128 CAMPAIGN posts stored and judged across the new pages within hours**:
+pinkvilla 20, manav.manglani 21 (a paparazzo — the viralbhayani profile exactly),
+varindertchawla 16, naughtyworld 14, adultsociety 12, trolls_official 11, taranadarsh 10 of
+12(!), voompla 9, filmygyan 6, rvcjinsta 6, instantbollywood 3. Every post `verdictSource:
+semantic`, zero never-looked. **And the LOOP CLOSED THE SAME NIGHT**: the device agent's
+brand timer minted verified prospects from those campaigns — @gilletteindia, @indiagatefoods,
+@jioworldplaza, @jatt_prabhjot (from an @adultsociety campaign detected two hours earlier) —
+all `isVerified: true`, per the VERIFIED ONLY rule.
+
+**THE REQUEST-LOAD TRADE, STATED:** 13 watched channels ≈ **~5,000 anonymous feed
+requests/day** (was ~750 at 2). The feed endpoint has stayed healthy at every measurement,
+and it is the endpoint that answers on the server; if a 429 ever appears, raise
+`DETECT_INTERVAL_MINUTES` first. Classifier cost at this scale is cents a day; frames add
+roughly tens of MB/day on the server disk (ig:prune covers it).
+
+### ROTATION, PROVEN AGAINST THE GROWN TARGET LIST, AND THE OVERNIGHT RUN
+
+With the 11 WATCH rows in place: two sends observed (`bollywoodchronicle → zee5_marathi`,
+`bollywoodpaparazzii → zeemusiccompany` — different ring senders, both recipients verified
+PROSPECTs), **zero attempts ever addressed to any WATCH row**, and zero drafts aimed at the
+new pages. Rotation cannot elect them: they hold no pair rows, and `hasPendingAttempt`/ring
+election walk pairs.
+
+**AUTOPILOT IS ON FOR THE NIGHT, ON TABISH'S INSTRUCTION** (*"autopilot is going to be on
+throughout the night"*), audited with those words at 23:13 IST after his own dashboard OFF at
+18:27 — the flip trail is four rows, all named actors. **Send #170 landed 45 seconds after
+the flip** (`bollywoodpaparazzii → @ddecordiaries`, verified, real thread URL). The Mac: on
+AC power, `caffeinate` asserting on behalf of the agent — the one uncoverable case remains a
+CLOSED LID, so the lid stays open. Queue: 56 waiting; 170 delivered on the day at the flip.
+
+---
+
 ## 20 AUGUST, AFTERNOON — 59 SENT AND NO SCREEN SAID SO; THE ONE FIGURE THAT DID WAS A `take: 50`
 
 **Tabish: *"How many messages have been sent today and is all that value reflected in the UI…
