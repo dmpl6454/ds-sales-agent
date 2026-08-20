@@ -1,13 +1,17 @@
 /**
  * The ring spacing rule (2026-08-19, Tabish): a recipient may hear from every one of our
- * pages; the 7-day rest applies only once ALL of them have written — plus a short
- * inter-page gap so the ring cannot walk through one inbox in an afternoon.
+ * pages; the 7-day rest applies only once ALL of them have written. The inter-page gap
+ * is a KEPT MECHANISM shipping at ZERO since 2026-08-20 ("7 day constraint only no other
+ * limitation") — the fixtures below still drive it with an explicit 24 so it stays
+ * enforceable if it is ever wanted back, and the last block pins the shipped default.
  *
  * The rule this replaces (any other page in 7 days → hold) halted the entire fleet the
  * day after the 1-minute pace shipped: MEASURED 33/33 waiting drafts held, first clear
  * five days out, while 76 recipients had heard from exactly ONE page.
  */
 import { describe, expect, it } from 'vitest'
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
 import { crossSpacingVerdict, crossSpacingDetail } from '@/outreach/crossSpacing'
 
 const now = new Date('2026-08-19T12:00:00Z')
@@ -138,5 +142,31 @@ describe('crossSpacingDetail', () => {
       resumesAt: new Date('2026-08-24T12:00:00Z'),
     })
     expect(ring).toContain('all 5')
+  })
+})
+
+/**
+ * THE SHIPPED DEFAULTS, pinned as source facts.
+ *
+ * Both numbers are Tabish's, both were given twice, and both are the kind of value a
+ * later "safety improvement" restores without noticing whose call it was. A source read
+ * rather than an import because `settings.ts` reaches `@/lib/db` at module scope — and a
+ * grep that matches nothing must fail loudly, so each assertion names what it expects.
+ */
+describe('the shipped spacing defaults', () => {
+  const src = readFileSync(join(process.cwd(), 'src/lib/settings.ts'), 'utf8')
+
+  it('crossPageGapHours ships at 0 — no inter-page gap (Tabish, 2026-08-20, stated twice)', () => {
+    expect(
+      /crossPageGapHours:\s*0\b/.test(src),
+      'the inter-page gap has been restored to a non-zero default. It was REMOVED on ' +
+        'explicit instruction ("7 day constraint only no other limitation") after MEASURING ' +
+        'it hold 23 of 23 drafts while the 7-day rule held nobody. Restoring it is Tabish\'s ' +
+        'call to make, not a safety improvement to apply.',
+    ).toBe(true)
+  })
+
+  it('the 7-day window still comes from defaultCooldownDays, not a literal', () => {
+    expect(src).toContain('defaultCooldownDays: env.DEFAULT_COOLDOWN_DAYS')
   })
 })

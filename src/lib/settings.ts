@@ -122,12 +122,28 @@ export interface RuntimeSettings {
   replyResumeHours: number
 
   /**
-   * Hours between DIFFERENT pages writing to ONE recipient (the ring rule, 2026-08-19).
-   * The ring rule lets every page contact a recipient inside the 7-day window; without
-   * this gap the planner would walk all five pages through one inbox in an afternoon —
-   * five near-identical templates in five minutes is the recipient-side ban pattern.
-   * The ban-pattern risk was stated to Tabish and recorded as his; this is HIS lever:
-   * 0 disables the gap entirely, one Setting row.
+   * Hours between DIFFERENT pages writing to ONE recipient.
+   *
+   * ── ZERO SINCE 2026-08-20, ON TABISH'S SECOND EXPLICIT INSTRUCTION ────────
+   *
+   * It shipped at 24 the night before as the one mitigation on the ring rule, and it
+   * became the binding constraint immediately: MEASURED the next morning, 23 of 23
+   * waiting drafts held by this gap alone until 13:29-15:32 IST, while the 7-day rule
+   * it was protecting was firing for NOBODY (77 recipients had heard from exactly one
+   * page). Tabish, seeing that: *"Remove this 24-hour inter-page gap … I told you
+   * before and I am telling you this again, 7 day constraint only no other
+   * limitation."*
+   *
+   * So the MECHANISM stays and the value is 0, exactly as `ACTIVE_FROM_HOUR`/
+   * `ACTIVE_TO_HOUR` are both 0 for 24/7 sending: one number restores it, no schema
+   * change, and `tests/cross-spacing.test.ts` keeps exercising it with an explicit
+   * non-zero value so it stays enforceable if it is ever wanted back.
+   *
+   * WHAT THIS PERMITS, STATED PLAINLY AND RECORDED AS HIS CALL: all five pages may
+   * reach one recipient within minutes of each other, near-identical template each
+   * time, and then that recipient rests seven days. Nothing else spaces our pages
+   * apart. This is the same ban-pattern trade as the caps removal (2026-08-18) and the
+   * 24/7 window (2026-08-19), taken deliberately and for the third time.
    */
   crossPageGapHours: number
   /**
@@ -279,8 +295,9 @@ function defaults(): RuntimeSettings {
     tagsAsEvidence: false,
     // Seven days since 2026-08-19 (was 48h) — see replyHalt.ts for whose call and why.
     replyResumeHours: REPLY_RESUME_HOURS_DEFAULT,
-    // 24h between different pages to one recipient — the ring rule's one mitigation.
-    crossPageGapHours: 24,
+    // ZERO — no inter-page gap. Tabish, 2026-08-20: "7 day constraint only no other
+    // limitation." The mechanism is kept and is one number from being restored.
+    crossPageGapHours: 0,
     officialMinFollowers: 100_000,
     celebrityMinFollowers: 500_000,
   }

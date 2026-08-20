@@ -333,12 +333,43 @@ export function assessRead(messages: ThreadMessage[], ourBodies: readonly string
  * context is a visible Chrome window nobody closes and, worse, a profile directory left
  * locked against the next run.
  */
+/**
+ * HOW LONG ONE CONVERSATION READ MAY TAKE BEFORE IT IS ABANDONED.
+ *
+ * MEASURED 2026-08-20: a single read hung for **88 minutes** (09:04 → 10:32 IST) while
+ * the SSH tunnel to the database dropped, and because the reply sweep holds the
+ * fleet-wide SEND LOCK for its whole duration, **the entire fleet stopped sending for
+ * those 88 minutes** — with every screen healthy and the dispatcher reporting only
+ * "another send is already running". A hard stop with no release, again.
+ *
+ * Every `page.goto` here is already bounded at 60s, so the hang was not a navigation: an
+ * in-page `fetch` (the identity check) has no timeout of its own and waits forever on a
+ * stalled socket. **Closing the CONTEXT is what unblocks it** — which is also exactly the
+ * cleanup the `finally` performs anyway, so this bomb does not abandon a browser to leak.
+ * That matters more than the timeout itself: racing the promise and walking away would
+ * leave a live context on a profile a send might pick up seconds later, and two contexts
+ * on one profile is how device identity dies.
+ *
+ * SIX MINUTES: a healthy read is 30-60s, so this cannot fire on a slow-but-working thread,
+ * and it caps the fleet's worst-case silence at one read rather than one outage. The
+ * outcome is `unreadable` — never "no reply" — so a timeout can never be mistaken for
+ * verified silence, which is the whole reason that distinction exists.
+ */
+export const READ_DEADLINE_MS = 6 * 60 * 1000
+
 export async function openAndReadThread(
   senderHandle: string,
   targetHandle: string,
   ourBodies: readonly string[],
 ): Promise<ReadThreadResult> {
   const context = await launchProfile(senderHandle)
+  let deadlineFired = false
+  const deadline = setTimeout(() => {
+    deadlineFired = true
+    // Closing is the interrupt AND the cleanup. Errors here are ignored on purpose: the
+    // `finally` below closes again, and a double close must not mask the real outcome.
+    void context.close().catch(() => {})
+  }, READ_DEADLINE_MS)
   try {
     const page = context.pages()[0] ?? (await context.newPage())
 
@@ -417,8 +448,25 @@ export async function openAndReadThread(
       if (href) url = new URL(href, 'https://www.instagram.com').toString()
     }
     return { ok: true, ...read, url }
+  } catch (err) {
+    /**
+     * A deadline expiry is `unreadable`, NEVER "no reply" — the caller must not stamp
+     * `replyCheckedAt` on it, or a stalled network would convert into an assertion of
+     * verified silence and release the hardest guard in the system. Re-thrown as an
+     * ordinary read failure so `checkConversation`'s existing branch handles it, and
+     * NOT matching /checkpoint|challenge|suspend/, so it can never flag an account.
+     */
+    if (deadlineFired) {
+      throw new Error(`reply read abandoned after ${READ_DEADLINE_MS / 60_000} minutes — thread could not be read in time`)
+    }
+    throw err
   } finally {
-    await jitter(1000, 2000)
-    await context.close()
+    clearTimeout(deadline)
+    // Skipped when the bomb already closed the context: jittering after an abandoned
+    // read only delays releasing the send lock, which is the thing being protected.
+    if (!deadlineFired) {
+      await jitter(1000, 2000)
+      await context.close()
+    }
   }
 }
