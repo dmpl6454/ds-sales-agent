@@ -8,6 +8,7 @@ import { CoverageNote } from '../coverage'
 import { SentList } from '../messages/sent'
 import { ExportPanel } from './export-panel'
 import { prisma } from '@/lib/db'
+import { fleetUsage } from '@/outreach/reservations'
 import { DELIVERED_STATUSES } from '@/lib/constants'
 import { Nav } from '../nav'
 import { PageHead } from '../page-head'
@@ -56,10 +57,24 @@ export default async function AnalyticsPage({
   const { range } = await searchParams
   const picked = RANGES.find((r) => r.key === range) ?? RANGES[1]
 
-  const [v, c, charts, senderRows, sentBySender, repliedBySender] = await Promise.all([
+  const [v, c, charts, usage, senderRows, sentBySender, repliedBySender] = await Promise.all([
     buildTodayView(),
     buildConversationsPage(),
     buildAnalyticsCharts(picked.days),
+    /**
+     * TODAY'S TOTAL, from the function the PACING GUARD reads (2026-08-20).
+     *
+     * Every figure in the grid below is a rolling SEVEN DAYS, and "messages sent" under a
+     * heading like this one reads as an answer to "how many went out today" — so on a day
+     * with 59 sends the page showed a larger number that was not that, and the real one
+     * appeared nowhere in the product. Two different questions, one of which nobody could
+     * ask the dashboard.
+     *
+     * `fleetUsage` rather than a count written here: this page must not report the day by a
+     * different rule than the dispatcher, and the IST boundary is the part that is easy to
+     * get wrong (the Linode is not on IST). Two cheap counts, inside the existing Promise.all.
+     */
+    fleetUsage(),
     prisma.senderAccount.findMany({ orderBy: { handle: 'asc' }, select: { id: true, handle: true } }),
     /**
      * PER-ACCOUNT SENT AND REPLIED (2026-08-19, Tabish: "clearly see the amount of messages
@@ -117,7 +132,29 @@ export default async function AnalyticsPage({
               <span className="stat-l">reply rate</span>
             </div>
           </div>
-          <p className="blurb">Last 7 days.</p>
+          {/*
+            EVERY STAT ABOVE IS SEVEN DAYS, AND TODAY IS STATED SEPARATELY.
+
+            One sentence rather than a fifth tile: `.grid-4` is a hard `repeat(4, 1fr)` that
+            cannot collapse, so a fifth column would scroll the page sideways at 800px — the
+            defect `pnpm ig:layout` caught on `.grid-2` and the history table. It is also the
+            cheaper answer to numeral bloat: this page was halved once by removing figures.
+
+            `{' '}` between every expression and the following text, because a text node that
+            CONTINUES onto the next line loses the space — five instances of that have reached
+            a live dashboard here ("768requests", "16 companys", "watch2 channels").
+          */}
+          <p className="blurb">
+            Last 7 days. Since midnight IST, <strong>{usage.today}</strong>{' '}
+            {usage.today === 1 ? 'message has' : 'messages have'} gone out
+            {/* Only when it is a SUBSET: "1 message has gone out, 1 of them in this hour" is
+                what reading the rendered line looks like otherwise — clumsy at 1, and simply
+                redundant whenever the hour and the day are the same number. */}
+            {usage.thisHour > 0 && usage.thisHour < usage.today ? (
+              <>, {usage.thisHour} of them in this hour</>
+            ) : null}
+            .
+          </p>
 
           {/* The qualifier travels with the number it qualifies, always. */}
           <CoverageNote detection={v.detection} channelCount={v.channelCount} showLink />

@@ -127,6 +127,9 @@ export default async function AutopilotPage() {
             istHour={istHourOfDay(now)}
             istMinute={istMinute}
             sentThisHour={m.dispatch.usage.thisHour}
+            /* Both halves of the SAME `fleetUsage()` call; the daily one reached no screen
+               until 2026-08-20 — see the prop's docblock in pace.tsx. */
+            sentToday={m.sentToday}
             /* The limits the DISPATCHER enforces — Setting rows where they exist. */
             perHour={m.dispatch.limits.perHour}
             minGapMinutes={m.dispatch.limits.minGapMinutes}

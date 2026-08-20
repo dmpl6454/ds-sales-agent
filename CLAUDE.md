@@ -71,6 +71,77 @@ properly rather than kept on a handle we could never confirm.
 
 ---
 
+## 20 AUGUST, AFTERNOON — 59 SENT AND NO SCREEN SAID SO; THE ONE FIGURE THAT DID WAS A `take: 50`
+
+**Tabish: *"How many messages have been sent today and is all that value reflected in the UI…
+I see 60 messages sent today but nowhere that indicates real count of messages sent."*** He
+was right on both halves, and the second half is the more instructive one.
+
+**MEASURED against the live Postgres, IST midnight → 09:01Z: 59 delivered** — bachelorssociety
+19, bollywoodsocietyy 14, bollywoodpaparazzii 12, totalfilmii 10, bollywoodchronicle 4, all
+`autopilot:`. His count was right.
+
+### THE NUMBER EXISTED, WAS CORRECT, AND REACHED NO SCREEN
+
+`fleetUsage()` returns `{ thisHour, today }` and has done since 2026-08-18. Both halves are
+covered in both directions by `tests/fleet-reservations.test.ts`. **`page.tsx` passed only
+`thisHour` to the pace band; `today` was computed on every render and thrown away.** Every
+function was right and the product still could not answer the question — *the defect is a
+missing CALLER*, which is this file's most-repeated shape (166 cover frames read by nothing,
+`resetBrandResolverLimit` with zero callers, `addSender` with no UI caller for weeks,
+`repliedAt` read in six places and written in none). No behavioural test can fail for a
+caller nobody has written, so `tests/sent-today-rendered.test.ts` is a SOURCE GREP.
+
+**AND `/analytics` ANSWERED A DIFFERENT QUESTION UNDER A HEADING THAT READS LIKE THIS ONE.**
+All four stats in its headline grid are a rolling SEVEN DAYS, so "messages sent" showed 152
+on a day with 59. Nothing was false; the page simply had no daily figure, which is the fifth
+entry in this file's "a screen reporting one rule by another" series — except here the screen
+was honest and merely silent, and silence is the failure this dashboard's whole design is
+against.
+
+### THE ONE `sentToday` IN THE CODE WAS A CEILING WEARING A COUNT'S LABEL
+
+`buildMessagesPage` had `sentToday: recentRaw.filter(a => a.sentAt >= istMidnight).length` —
+and **`recentRaw` is `take: 50`**. So the day's total was capped at however many of today's
+sends sat inside the newest fifty rows: today it would have read **50, and gone on reading 50
+until midnight**. VERIFIED LIVE after the fix — `fleetUsage().today` 59, `recent.length` 50 —
+so the old expression is provably wrong *right now*, not in principle.
+
+It was rendered nowhere, which is the only reason it cost nothing rather than being a figure
+somebody had trusted. **A "count" derived by filtering a paginated list is a `LIMIT` in
+disguise, and it reads correctly until the day volume exceeds the page size** — the
+`MAX_TOTAL_SENDS` shape again (a limit reported by a different rule than the one enforcing it
+reads as headroom).
+
+`sentToday` is now `dispatch.usage.today`. `dispatch` was **already awaited on that page**, so
+the correct answer costs ONE FEWER query than the wrong one did, and the page cannot report the
+day by a different rule than the dispatcher.
+
+### WHAT IS ON SCREEN NOW, AND WHY IN THOSE TWO PLACES ONLY
+
+- **`/` → the pace band**, a second row under "This hour": same measurement, same call, a
+  different boundary. No pips — `fleetMaxPerDay` is unset by Tabish's decision, and drawing a
+  bounded row would picture a rule not in force (the `Infinity` → `RangeError` → HTTP 500 that
+  took `/` down on 18 Aug).
+- **`/analytics` → one sentence** beside "Last 7 days.", from `fleetUsage()` rather than a
+  count written locally. **NOT a fifth stat tile:** `.grid-4` is a hard `repeat(4, 1fr)` that
+  cannot collapse, so a fifth column scrolls the page sideways at 800px — the defect
+  `ig:layout` caught on `.grid-2` and the history table.
+
+**MUTATION-TESTED IN BOTH DIRECTIONS.** Reverting `fleetUsage`'s day count to a `take: 50`
+fails the new 60-row case with `expected 50 to be 60` — **and left the other 14 tests in that
+file green**, because every existing case used TWO rows and so could not tell an uncatered
+count from a capped one. Removing the prop from `page.tsx`, and re-deriving `sentToday` from
+`recentRaw`, each fail the grep.
+
+**AND READING THE RENDERED COMPONENT CAUGHT TWO THINGS NO TEST COULD**, which is why it is
+always the last step: the row read *"Today · 59 messages sent **today**, since midnight IST"*
+— the word twice in nine words — and the analytics line read *"1 message has gone out, **1 of
+them** in this hour"*. Both pass every assertion in both spellings. The hour clause now
+renders only when it is a genuine subset.
+
+---
+
 ## 20 AUGUST, MIDDAY — "AUTOPILOT IS OFF AND IT STILL SENT" WAS FALSE; "THE UI IS STUCK" WAS TRUE
 
 Three claims from Tabish, all measured. The first two were the system being right and the

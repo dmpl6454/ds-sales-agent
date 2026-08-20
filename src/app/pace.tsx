@@ -40,6 +40,7 @@ export function PaceBand({
   istHour,
   istMinute,
   sentThisHour,
+  sentToday,
   perHour,
   minGapMinutes,
   lastTick,
@@ -48,6 +49,16 @@ export function PaceBand({
   istMinute: number
   /** Fleet sends already delivered this IST hour, counted the way the guard counts. */
   sentThisHour: number
+  /**
+   * Fleet sends delivered since IST midnight — the SAME `fleetUsage()` count, uncapped.
+   *
+   * On screen since 2026-08-20, because it was the one figure an operator asks for and no
+   * page carried it. `usage.today` had been computed on every tick and thrown away: the
+   * hourly half was drawn here, the daily half reached no screen at all, and `/analytics`
+   * answered a different question (a rolling 7 days) under a heading that reads like an
+   * answer to this one. Tabish counted 59 sends by hand and could not find them anywhere.
+   */
+  sentToday: number
   /** The hourly allowance the dispatcher enforces. `Infinity` when there is none. */
   perHour: number
   /** Minutes the dispatcher insists on between two fleet sends. */
@@ -84,11 +95,26 @@ export function PaceBand({
     ? `${sentThisHour} of ${perHour} fleet sends used this hour`
     : `${sentThisHour} sent this hour — no hourly limit; one message every ${minGapMinutes} minute${minGapMinutes === 1 ? '' : 's'} at most`
 
+  /**
+   * "Since midnight IST" is stated rather than implied. The boundary is the only thing that
+   * makes the number checkable against Instagram by hand, and this codebase has already
+   * shipped a day boundary on the host's clock once — the Linode is not on IST, so a
+   * machine-local midnight is 5.5 hours out and would make the figure quietly wrong on the
+   * one host that runs the schedule.
+   *
+   * "sent since midnight IST" rather than "sent today, since midnight IST": the eyebrow
+   * beside it already reads "Today", and rendering the component and READING it is what
+   * caught the word appearing twice in one nine-word line — no test could, because both
+   * readings pass every assertion. It still stands alone in the band's aria-label, where
+   * the boundary carries the meaning by itself.
+   */
+  const todayPhrase = `${sentToday} ${sentToday === 1 ? 'message' : 'messages'} sent since midnight IST`
+
   const label = allDay
-    ? `Sends any time of day — no window. It is ${clock} IST. ${usedPhrase}.`
+    ? `Sends any time of day — no window. It is ${clock} IST. ${usedPhrase}. ${todayPhrase}.`
     : inside
-      ? `Inside sending hours. It is ${clock} IST; the window runs ${fromHour}:00 to ${toHour}:00 IST. ${usedPhrase}.`
-      : `Outside sending hours. It is ${clock} IST; the window runs ${fromHour}:00 to ${toHour}:00 IST, so nothing will go out until it opens.`
+      ? `Inside sending hours. It is ${clock} IST; the window runs ${fromHour}:00 to ${toHour}:00 IST. ${usedPhrase}. ${todayPhrase}.`
+      : `Outside sending hours. It is ${clock} IST; the window runs ${fromHour}:00 to ${toHour}:00 IST, so nothing will go out until it opens. ${todayPhrase}.`
 
   return (
     <figure className="chartbox pacebox">
@@ -130,6 +156,22 @@ export function PaceBand({
           </span>
         )}
         <span className="muted">{usedPhrase}</span>
+      </div>
+
+      {/*
+        TODAY'S TOTAL — the figure the operator actually asks for, and the reason this row
+        exists rather than living only in the aria-label.
+
+        Deliberately beside "This hour" and not a `stat` tile: it is the same measurement at a
+        different boundary, from the same call, and putting it anywhere else on the page would
+        make two elements answer one question — which is the duplication this dashboard was
+        halved to remove. No pips: there is no daily allowance to fill (`fleetMaxPerDay` is
+        unset by Tabish's decision), and drawing a bounded row would be a picture of a rule
+        that is not in force — the exact `Infinity` mistake that took `/` to HTTP 500.
+      */}
+      <div className="pace-allowance">
+        <span className="eyebrow">Today</span>
+        <span className="muted">{todayPhrase}</span>
       </div>
 
       {!capped && (
