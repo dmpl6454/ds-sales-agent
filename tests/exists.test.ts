@@ -67,3 +67,90 @@ describe('interpretExistence', () => {
     }
   })
 })
+
+/**
+ * The identity facts a 200 carries — the half `handleExists` used to THROW AWAY.
+ *
+ * The measurement that forced this (2026-08-20): "filmigyan" EXISTS — a 219-follower fan
+ * page reading "4K FOLLOWERS ON MAIN PAGE" — while the page Tabish meant is @filmygyan,
+ * 31,619,942 followers, verified. A yes/no existence check passes both identically, so the
+ * wrong watch channel would have entered the corpus silently and its CAMPAIGN verdicts
+ * would mint real prospects that get real DMs. The fixture bodies are the REAL payload
+ * shape from web_profile_info, trimmed.
+ */
+import { parseHandleFacts } from '@/detection/exists'
+import { addTargetMessage } from '@/app/add-target-message'
+
+describe('parseHandleFacts', () => {
+  const body = (user: unknown) => JSON.stringify({ data: { user } })
+
+  it('pulls name, badge and followers from the real payload shape', () => {
+    expect(
+      parseHandleFacts(
+        body({
+          full_name: 'F I L M Y G Y A N',
+          is_verified: true,
+          edge_followed_by: { count: 31_619_942 },
+        }),
+      ),
+    ).toEqual({ name: 'F I L M Y G Y A N', verified: true, followers: 31_619_942 })
+  })
+
+  /** Absent fields are null facts, never inventions — absence of data is not a verdict. */
+  it('missing fields become null, not guesses', () => {
+    expect(parseHandleFacts(body({ full_name: '  ' }))).toEqual({
+      name: null,
+      verified: null,
+      followers: null,
+    })
+  })
+
+  it('an unreadable body is null facts, never a throw', () => {
+    expect(parseHandleFacts('<!DOCTYPE html>')).toBeNull()
+    expect(parseHandleFacts(JSON.stringify({ data: {} }))).toBeNull()
+  })
+})
+
+describe('addTargetMessage', () => {
+  const filmygyan = { name: 'F I L M Y G Y A N', verified: true, followers: 31_619_942 }
+  const fanPage = { name: 'BOLLYWOOD | NEWS | PAPARAZZI', verified: false, followers: 219 }
+
+  /**
+   * THE SENTENCE MUST MATCH THE ROLE. The old copy promised "The fleet will write to them"
+   * for every add — false for a WATCH page, whose definition is that it is never written
+   * to. The negative assertion is the one carrying weight.
+   */
+  it('a WATCH add never claims the fleet will write to them', () => {
+    const msg = addTargetMessage('WATCH', 'filmygyan', 'exists', filmygyan)
+    expect(msg).toContain('never messaged')
+    expect(msg).not.toContain('will write to them')
+  })
+
+  it('a PROSPECT add says exactly that', () => {
+    const msg = addTargetMessage('PROSPECT', 'crocsindia', 'exists', {
+      name: 'Crocs India',
+      verified: true,
+      followers: 100_000,
+    })
+    expect(msg).toContain('will write to them while Autopilot is on')
+  })
+
+  /** The identity line is the point: the wrong account must be visible at the moment of the add. */
+  it('carries who Instagram says it is, including NOT verified', () => {
+    const msg = addTargetMessage('WATCH', 'filmigyan', 'exists', fanPage)
+    expect(msg).toContain('“BOLLYWOOD | NEWS | PAPARAZZI”')
+    expect(msg).toContain('219 followers')
+    expect(msg).toContain('NOT verified')
+  })
+
+  it('null facts render as "could not read who this is", never silently', () => {
+    const msg = addTargetMessage('WATCH', 'rvcjinsta', 'exists', null)
+    expect(msg).toContain('could not say who this is')
+  })
+
+  it('an unreached Instagram says so and points at the spelling', () => {
+    const msg = addTargetMessage('WATCH', 'sacrasm', 'unknown', null)
+    expect(msg).toContain('could not be reached')
+    expect(msg).toContain('spelling')
+  })
+})

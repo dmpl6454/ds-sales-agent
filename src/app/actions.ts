@@ -14,7 +14,8 @@ import { recheckBeforeSend, isOverridable } from '@/outreach/gate'
 import { prepareOnDemand, type OnDemandPreview } from '@/outreach/onDemand'
 import { getSettings, setSetting, SETTING_KEYS } from '@/lib/settings'
 import { startConnect, pollConnect, cancelConnect, type ConnectState } from '@/outreach/browser/connect'
-import { handleExists } from '@/detection/exists'
+import { handleExists, probeHandle } from '@/detection/exists'
+import { addTargetMessage } from './add-target-message'
 import { assertSafeHandle } from '@/lib/urls'
 import { distinctiveSlice } from '@/outreach/matching'
 import { recordDelivered } from '@/outreach/recordSend'
@@ -1217,7 +1218,13 @@ export async function addTarget(
     return { ok: false, message: `@${handle} is already a channel you watch.` }
   }
 
-  const exists = await handleExists(handle)
+  /**
+   * One fetch answers two questions: does it exist, and WHO does Instagram say it is. The
+   * facts go into the result sentence — "filmigyan" exists (219 followers, a fan page)
+   * while the page actually meant is @filmygyan (31.6M, verified), and a bare yes/no check
+   * passes both identically. The wrong add must be visible to the person who just made it.
+   */
+  const { check: exists, facts } = await probeHandle(handle)
   if (exists === 'missing') return { ok: false, message: `@${handle} does not exist on Instagram.` }
 
   /**
@@ -1317,6 +1324,9 @@ export async function addTarget(
       (allowed.length < senders.length ? ' (the rest are our own pages, or itself)' : ''),
   )
   revalidatePath('/')
+  // The form lives on /targets; revalidating only '/' left the list beside it stale, so a
+  // successful add read as "nothing happened" until the next auto-refresh.
+  revalidatePath('/targets')
   return {
     ok: true,
     /**
@@ -1325,11 +1335,14 @@ export async function addTarget(
      * `enabled: true` a few lines above — so the old sentence sent an operator looking for a
      * switch AND implied adding a channel was inert. It is not: it is reachable the moment
      * Autopilot is on, which is the fact worth telling them.
+     *
+     * AND IT MUST MATCH THE ROLE (2026-08-20): the one sentence above was returned for
+     * WATCH adds too, promising the fleet would write to a page whose whole definition is
+     * that it is never written to. `addTargetMessage` is pure and tested in both roles,
+     * and it carries Instagram's own identity facts — see its docblock for the filmigyan
+     * measurement that forced this.
      */
-    message:
-      exists === 'unknown'
-        ? `Added @${handle}, but Instagram could not be reached to confirm it exists — check the spelling.`
-        : `Watching @${handle}. The fleet will write to them while Autopilot is on.`,
+    message: addTargetMessage(role, handle, exists, facts),
   }
 }
 

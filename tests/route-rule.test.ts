@@ -158,7 +158,12 @@ vi.mock('@/lib/session', () => ({
   requireOperator: async () => ({ email: 'test@dashmani.com', role: 'operator' }),
   requireUser: async () => ({ email: 'test@dashmani.com', role: 'operator' }),
 }))
-vi.mock('@/detection/exists', () => ({ handleExists: async () => 'exists' }))
+vi.mock('@/detection/exists', () => ({
+  handleExists: async () => 'exists',
+  /* `addTarget` reads identity facts now (2026-08-20) — null facts is the honest stub,
+     and the message builder renders it as "could not say who this is". */
+  probeHandle: async () => ({ check: 'exists', facts: null }),
+}))
 vi.mock('@/outreach/senders/browser', () => ({ browserSender: {} }))
 vi.mock('@/outreach/browser/connect', () => ({
   startConnect: async () => ({ state: 'waiting' }),

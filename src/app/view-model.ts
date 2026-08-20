@@ -1338,29 +1338,74 @@ async function buildChannelCards(
   targets: Array<{ id: string; handle: string; displayName: string; optedOut: boolean; detectorKey: string }>,
   weekStart: Date,
 ): Promise<ChannelCard[]> {
+  /**
+   * ── FIVE QUERIES TOTAL, NOT FIVE PER CHANNEL (2026-08-20) ────────────────
+   *
+   * This was a `for (const t of targets)` issuing five queries per row — the exact N+1 the
+   * `buildBrandsPanel` docblock below records being killed on 2026-08-13, one function up
+   * from it. It survived here because the channel list was 2 rows for its whole life:
+   * 10 queries, invisible. The day Tabish added his 11 watch pages it became 65, and FOUR
+   * pages blew their `ig:layout` query budgets at once, because `/`, `/targets`,
+   * `/analytics` and `/paid-posts` all render these cards through `buildTodayView`.
+   *
+   * A loop over a list whose size is a PRODUCT DECISION (how many pages to watch) must not
+   * cost queries per row — the whole point of adding channels is that the list grows.
+   * Budgets are ceilings over a bounded design; the fix is batching, never raising them.
+   */
+  /* Named so the visible-channels grep can accept exactly this scope and nothing looser:
+     these ids are the card rows the caller already chose, not a survey of the corpus. */
+  const cardTargetIds = targets.map((t) => t.id)
+  const [campaignCounts, weekCounts, loggedCounts, lastSents, repliedCounts] = await Promise.all([
+    prisma.detectedCampaign.groupBy({
+      by: ['targetId'],
+      where: { targetId: { in: cardTargetIds }, verdict: 'CAMPAIGN', detectedAt: { gte: weekStart } },
+      _count: { _all: true },
+    }),
+    prisma.detectedCampaign.groupBy({
+      by: ['targetId'],
+      where: { targetId: { in: cardTargetIds }, detectedAt: { gte: weekStart } },
+      _count: { _all: true },
+    }),
+    prisma.detectedCampaign.groupBy({
+      by: ['targetId'],
+      where: { targetId: { in: cardTargetIds } },
+      _count: { _all: true },
+    }),
+    /**
+     * Newest delivery per target in ONE query: ordered newest-first, `distinct` keeps the
+     * first row seen per targetId. `targetId` is the attempt's own column — the same value
+     * the old `pair: { targetId }` join reached, written from the same pair at draft time.
+     */
+    prisma.outreachAttempt.findMany({
+      where: { targetId: { in: cardTargetIds }, status: { in: ['SENT', 'REPLIED'] } },
+      orderBy: { sentAt: 'desc' },
+      distinct: ['targetId'],
+      select: { targetId: true, sentAt: true },
+    }),
+    prisma.outreachAttempt.groupBy({
+      by: ['targetId'],
+      where: { targetId: { in: cardTargetIds }, repliedAt: { not: null } },
+      _count: { _all: true },
+    }),
+  ])
+  const campaignBy = new Map(campaignCounts.map((r) => [r.targetId, r._count._all]))
+  const weekBy = new Map(weekCounts.map((r) => [r.targetId, r._count._all]))
+  const loggedBy = new Map(loggedCounts.map((r) => [r.targetId, r._count._all]))
+  const lastSentBy = new Map(lastSents.map((r) => [r.targetId, r.sentAt]))
+  const repliedBy = new Map(repliedCounts.map((r) => [r.targetId, r._count._all]))
+
   const channels: ChannelCard[] = []
   for (const t of targets) {
-    const [campaignsThisWeek, postsThisWeek, postsLogged, lastSent, halted] = await Promise.all([
-      prisma.detectedCampaign.count({
-        where: { targetId: t.id, verdict: 'CAMPAIGN', detectedAt: { gte: weekStart } },
-      }),
-      prisma.detectedCampaign.count({ where: { targetId: t.id, detectedAt: { gte: weekStart } } }),
-      prisma.detectedCampaign.count({ where: { targetId: t.id } }),
-      prisma.outreachAttempt.findFirst({
-        where: { pair: { targetId: t.id }, status: { in: ['SENT', 'REPLIED'] } },
-        orderBy: { sentAt: 'desc' },
-      }),
-      prisma.outreachAttempt.count({ where: { pair: { targetId: t.id }, repliedAt: { not: null } } }),
-    ])
+    const lastSentAt = lastSentBy.get(t.id) ?? null
     channels.push({
       name: operatorName(t.displayName),
       handle: t.handle,
       followers: FOLLOWER_SNAPSHOT[t.handle] ?? '—',
-      campaignsThisWeek,
-      postsThisWeek,
-      postsLogged,
-      lastContactedLabel: lastSent?.sentAt ? relative(lastSent.sentAt) : 'not yet',
-      halted: halted > 0 || t.optedOut,
+      campaignsThisWeek: campaignBy.get(t.id) ?? 0,
+      postsThisWeek: weekBy.get(t.id) ?? 0,
+      postsLogged: loggedBy.get(t.id) ?? 0,
+      lastContactedLabel: lastSentAt ? relative(lastSentAt) : 'not yet',
+      halted: (repliedBy.get(t.id) ?? 0) > 0 || t.optedOut,
       /**
        * Ask the detector, never the key.
        *
@@ -1377,7 +1422,7 @@ async function buildChannelCards(
       unclassified: !(getDetector(t.detectorKey).readiness?.() ?? { ready: true }).ready,
       unclassifiedReason: (getDetector(t.detectorKey).readiness?.() ?? { ready: true }).reason ?? null,
       retired: t.optedOut,
-      everContacted: lastSent !== null,
+      everContacted: lastSentAt !== null,
     })
   }
   return channels

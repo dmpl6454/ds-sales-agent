@@ -68,7 +68,17 @@ describe('our own pages are excluded from every dashboard figure', () => {
           /targetId:\s*(t\.id|target\.id|[a-zA-Z]+\.id)/.test(window) ||
           window.includes('shortcode: { in:') ||
           // A lookup BY ID is not a survey of the corpus — it resolves rows already chosen.
-          window.includes('id: { in: campaignIds }')
+          window.includes('id: { in: campaignIds }') ||
+          /**
+           * The batched channel cards (2026-08-20): `buildChannelCards` went from five
+           * queries PER channel to five `groupBy`s over `cardTargetIds` — the exact rows
+           * the caller already chose — when 11 new watch pages made the per-row loop blow
+           * four pages' query budgets at once. The same scope as `targetId: t.id`, N rows
+           * at a time. The VARIABLE NAME is the carve-out, deliberately: a looser pattern
+           * like any `targetId: { in: ... }` would also accept a survey over every channel
+           * id, which is the exact query this grep exists to refuse.
+           */
+          window.includes('targetId: { in: cardTargetIds }')
         if (!scoped) unscoped.push(`${file}:${i + 1}  ${line.trim().slice(0, 90)}`)
       })
     }
