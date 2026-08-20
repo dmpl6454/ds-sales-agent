@@ -17,7 +17,7 @@ import { describe, expect, it, vi } from 'vitest'
  */
 vi.mock('@/lib/db', () => ({ prisma: {} }))
 
-import { auditTarget } from '@/outreach/targetAudit'
+import { auditTarget, auditIsJudgeable } from '@/outreach/targetAudit'
 
 const base = {
   brandCategory: 'Movies' as string | null,
@@ -51,23 +51,50 @@ describe('auditTarget', () => {
     })
   })
 
-  it('flags a thin no-category account (unverified, small, category blank)', () => {
-    expect(auditTarget({ ...base, brandCategory: null, isVerified: false, followerCount: 3_000 })).toEqual({
+  /**
+   * THE MEASURED CASE, 2026-08-20: `@lego.mybrickhouse` ("My Brickhouse") was messaged from
+   * a revenue account two minutes after the real `@legoindia_official`. Business-type
+   * account, NO badge, NO category — which classifyProfile reads as BRAND. Critically this
+   * must flag WITHOUT a follower count, because the feed endpoint never returns one.
+   */
+  it('flags an unverified account with no category, with NO follower data at all', () => {
+    expect(auditTarget({ ...base, brandCategory: null, isVerified: false, followerCount: null })).toEqual({
       flag: true,
-      why: 'no-category-thin',
+      why: 'unconfirmed-identity',
     })
   })
 
-  it('does NOT flag on NULL verification facts — never looked is not tiny', () => {
+  it('does NOT flag on NULL verification facts — never looked is not a verdict', () => {
     expect(auditTarget({ ...base, isVerified: null, followerCount: null })).toEqual({ flag: false })
-    expect(auditTarget({ ...base, brandCategory: null, isVerified: null, followerCount: null })).toEqual({
-      flag: false,
-    })
   })
 
   it('a verified account with no category is fine — the badge answers the question', () => {
-    expect(auditTarget({ ...base, brandCategory: null, isVerified: true, followerCount: 12_000 })).toEqual({
+    expect(auditTarget({ ...base, brandCategory: null, isVerified: true, followerCount: null })).toEqual({
       flag: false,
     })
   })
+
+  /**
+   * The rules that need follower data must still work where it EXISTS (BrandLookup), and
+   * must not be the only protection — that was the bug: two of four flags needed a field
+   * that is null almost everywhere, so they reported success while judging nothing.
+   */
+  it('the tiny-unverified rule still fires where a follower count is known', () => {
+    expect(auditTarget({ ...base, brandCategory: 'Brand', isVerified: false, followerCount: 400 })).toEqual({
+      flag: true,
+      why: 'tiny-unverified',
+    })
+  })
+})
+
+describe('auditIsJudgeable — "no flags" must not be confused with "no facts"', () => {
+  it('is false when neither the badge nor the category is known', () => {
+    expect(auditIsJudgeable({ isVerified: null, brandCategory: null })).toBe(false)
+  })
+
+  it('is true on either fact alone', () => {
+    expect(auditIsJudgeable({ isVerified: false, brandCategory: null })).toBe(true)
+    expect(auditIsJudgeable({ isVerified: null, brandCategory: 'Brand' })).toBe(true)
+  })
+
 })

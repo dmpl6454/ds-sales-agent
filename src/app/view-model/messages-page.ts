@@ -64,8 +64,11 @@ export interface UpNextRow {
   position: number
   senderHandle: string
   targetHandle: string
-  /** Minutes until this row's turn at the current pace, while autopilot is on. */
-  etaMinutes: number
+  /**
+   * Minutes until this row's turn at the current pace — NULL when Autopilot is off,
+   * because a countdown is a promise and with the switch off nothing is counting down.
+   */
+  etaMinutes: number | null
   /** Head of the queue only: the gate's verdict right now. Null further down. */
   note: string | null
   /** Head only: whether that verdict was a refusal. */
@@ -131,6 +134,20 @@ export interface MessagesPageView {
   heldWaiting: number
   /** The first held drafts, soonest release first — so "33 waiting" is never an invisible list. */
   heldUpNext: HeldRow[]
+  /**
+   * IS AUTOPILOT ON? The queue panel needs it, and rendering the panel without it was a
+   * page claiming a send the enforcer refuses.
+   *
+   * MEASURED 2026-08-20: Tabish switched Autopilot OFF, the dispatcher correctly held
+   * every tick on `autopilot-off` — and "Up next" went on showing "clear to send on the
+   * next tick" over 8 rows with "in ~1 min" ETAs. The gate cannot catch this: AUTO_SEND_OFF
+   * was deleted in the one-switch change (2026-08-08), so `recheckBeforeSend` says nothing
+   * about the switch and answers `ok` for a draft nothing will send. The queue then looks
+   * FROZEN — the same eight rows on every refresh — while the page insists they are going
+   * out, which is exactly the "reports a limit by a different rule than the one enforcing
+   * it" failure this file's history is full of.
+   */
+  autopilotOn: boolean
   waitingTotal: number
   uncertain: UncertainMessage[]
   /** Parked by the retry cap: repeated failures, provably undelivered. */
@@ -420,11 +437,15 @@ export async function buildMessagesPage(): Promise<MessagesPageView> {
     position: i + 1,
     senderHandle: a.pair.sender.handle,
     targetHandle: a.pair.target.handle,
-    etaMinutes: headWait + i * gapMinutes,
+    // A countdown is a promise. With the switch off nothing is counting down, so the
+    // panel is given nothing to count rather than a number that will not arrive.
+    etaMinutes: settings.autopilotEnabled ? headWait + i * gapMinutes : null,
     note:
       i === 0 && headVerdict
         ? headVerdict.ok
-          ? 'clear to send on the next tick'
+          ? settings.autopilotEnabled
+            ? 'clear to send on the next tick'
+            : 'every check passes — waiting only for Autopilot to be switched on'
           : (headVerdict.detail ?? headVerdict.reason)
         : null,
     held: i === 0 && headVerdict !== null && !headVerdict.ok,
@@ -445,6 +466,7 @@ export async function buildMessagesPage(): Promise<MessagesPageView> {
     upNext,
     heldWaiting,
     heldUpNext,
+    autopilotOn: settings.autopilotEnabled,
     queueBySender: waitingBySenderRaw
       .map((r) => ({ handle: senderHandles.get(r.senderId) ?? r.senderId, count: r._count._all }))
       .sort((a, b) => b.count - a.count),

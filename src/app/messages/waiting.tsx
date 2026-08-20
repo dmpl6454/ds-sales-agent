@@ -69,12 +69,20 @@ export function WaitingList({
   heldWaiting,
   heldUpNext,
   total,
+  autopilotOn,
 }: {
   queue: MessagesPageView['queueBySender']
   upNext: MessagesPageView['upNext']
   heldWaiting: number
   heldUpNext: MessagesPageView['heldUpNext']
   total: number
+  /**
+   * With this false the dispatcher holds every tick on `autopilot-off` and NOTHING in this
+   * list is going anywhere. The panel used to render ETAs and "clear to send on the next
+   * tick" regardless, so a deliberately-paused fleet read as a stuck one — the queue looked
+   * frozen on every refresh while the page insisted it was draining.
+   */
+  autopilotOn: boolean
 }) {
   const sendable = total - heldWaiting
   const firstFree = heldUpNext[0]
@@ -89,9 +97,10 @@ export function WaitingList({
         <>
           <p className="cardnote">
             Nothing is sendable right now{firstFree ? <> until {whenIst(firstFree.resumesAt)} IST</> : null} &mdash; all{' '}
-            {total} waiting {total === 1 ? 'draft is' : 'drafts are'} resting (spacing or a reply). Not a fault:
-            Autopilot is on and the dispatcher checks every minute; each draft below sends itself when its window
-            clears.
+            {total} waiting {total === 1 ? 'draft is' : 'drafts are'} resting (spacing or a reply). Not a fault:{' '}
+            {autopilotOn
+              ? 'Autopilot is on and the dispatcher checks every minute, so each draft below sends itself when its window clears.'
+              : 'each draft below is waiting for its window to clear AND for Autopilot to be switched back on.'}
           </p>
           <HeldList heldUpNext={heldUpNext} heldWaiting={heldWaiting} />
         </>
@@ -113,7 +122,11 @@ export function WaitingList({
                   <td>@{row.senderHandle}</td>
                   <td>@{row.targetHandle}</td>
                   <td>
-                    {row.etaMinutes <= 0 ? 'next tick' : `in ~${row.etaMinutes} min`}
+                    {row.etaMinutes === null
+                      ? 'when Autopilot is on'
+                      : row.etaMinutes <= 0
+                        ? 'next tick'
+                        : `in ~${row.etaMinutes} min`}
                     {row.note ? (
                       <span className={row.held ? ' note-warn' : ' note-good'}> — {row.note}</span>
                     ) : null}
@@ -123,8 +136,17 @@ export function WaitingList({
             </tbody>
           </table>
           <p className="cardnote">
-            These are the drafts that will actually go, oldest first &mdash; one every minute while Autopilot is
-            on, any time of day. {sendable > upNext.length ? <>{sendable - upNext.length} more are clear behind them. </> : null}
+            {autopilotOn ? (
+              <>
+                These are the drafts that will actually go, oldest first &mdash; one every minute, any time of day.{' '}
+              </>
+            ) : (
+              <>
+                <strong>Autopilot is off, so none of these are going out.</strong> They are cleared to send and will
+                start moving, oldest first, the moment you switch it on &mdash; or you can send any of them by hand.{' '}
+              </>
+            )}
+            {sendable > upNext.length ? <>{sendable - upNext.length} more are clear behind them. </> : null}
             {heldWaiting > 0 ? (
               <>
                 {heldWaiting} other {heldWaiting === 1 ? 'draft is' : 'drafts are'} resting and listed below.
