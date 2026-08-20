@@ -81,13 +81,59 @@ export function interpretExistence(status: number, body: string): HandleCheck {
   return 'unknown'
 }
 
-export async function handleExists(handle: string): Promise<HandleCheck> {
+/**
+ * What Instagram itself says the account IS — the facts the 200 body already carries and
+ * `handleExists` used to throw away.
+ *
+ * ── WHY THIS EXISTS (2026-08-20) ──────────────────────────────────────────
+ *
+ * Tabish asked to watch "filmigyan". That handle EXISTS — a 219-follower fan page reading
+ * "4K FOLLOWERS ON MAIN PAGE" — while the page he meant is @filmygyan, 31.6M, verified. A
+ * yes/no existence check passes both identically, so the add would have succeeded and the
+ * corpus would have quietly filled with a fan page's posts, whose CAMPAIGN verdicts mint
+ * real prospects that get real DMs. Existence is not identity, measured once more.
+ *
+ * The fix is not a guard that refuses (a small unverified page can be a legitimate watch
+ * choice) — it is putting the identity ON THE SCREEN at the moment of the add, so a wrong
+ * account is visible to the person who just typed it, not discovered in the corpus weeks
+ * later. The facts were in the response all along; this stops discarding them.
+ */
+export interface HandleFacts {
+  name: string | null
+  verified: boolean | null
+  followers: number | null
+}
+
+/** PURE. Pull the identity facts out of a web_profile_info 200 body. Never throws. */
+export function parseHandleFacts(body: string): HandleFacts | null {
+  try {
+    const u = JSON.parse(body)?.data?.user
+    if (!u) return null
+    return {
+      name: typeof u.full_name === 'string' && u.full_name.trim() ? u.full_name.trim() : null,
+      verified: typeof u.is_verified === 'boolean' ? u.is_verified : null,
+      followers: typeof u.edge_followed_by?.count === 'number' ? u.edge_followed_by.count : null,
+    }
+  } catch {
+    return null
+  }
+}
+
+/**
+ * One fetch, both answers: does the handle exist, and who does Instagram say it is.
+ * Facts are BEST-EFFORT — `null` on the schema-bug 400 (the account exists, its payload
+ * cannot be serialised) and on anything unreadable. A null fact renders as an honest
+ * "could not read who this is", never as a verdict.
+ */
+export async function probeHandle(
+  handle: string,
+): Promise<{ check: HandleCheck; facts: HandleFacts | null }> {
   try {
     // A handle with a slash or a query character would otherwise be interpolated straight
     // into the URL. Rejecting it as unknown rather than throwing keeps a bulk import going.
     assertSafeHandle(handle)
   } catch {
-    return 'unknown'
+    return { check: 'unknown', facts: null }
   }
 
   try {
@@ -97,12 +143,17 @@ export async function handleExists(handle: string): Promise<HandleCheck> {
       signal: AbortSignal.timeout(12_000),
     })
     /**
-     * The body is only read when it might carry the schema error, so the happy path does
-     * not download a profile payload to answer a yes/no question.
+     * A 200 body carries the identity facts; a 400 might carry the schema error. Anything
+     * else is not worth downloading to answer a yes/no question.
      */
-    const body = res.status === 400 ? await res.text().catch(() => '') : ''
-    return interpretExistence(res.status, body)
+    const body = res.status === 200 || res.status === 400 ? await res.text().catch(() => '') : ''
+    const check = interpretExistence(res.status, body)
+    return { check, facts: res.status === 200 ? parseHandleFacts(body) : null }
   } catch {
-    return 'unknown'
+    return { check: 'unknown', facts: null }
   }
+}
+
+export async function handleExists(handle: string): Promise<HandleCheck> {
+  return (await probeHandle(handle)).check
 }

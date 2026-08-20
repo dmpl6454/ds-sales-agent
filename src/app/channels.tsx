@@ -172,6 +172,24 @@ function AddChannelForm({ onDone }: { onDone: () => void }) {
         setName('')
         setGreeting('')
       }
+    } catch (e) {
+      /**
+       * AN EXCEPTION MUST RENDER A SENTENCE, NOT NOTHING (2026-08-20).
+       *
+       * Tabish added @filmigyan and "it did not get added" — no row, no audit row, and no
+       * message on screen, because this had `finally` with no `catch`: a THROWN failure
+       * (as opposed to a returned refusal) reset the button and rendered silence. The
+       * reachable thrower is real, not hypothetical — a tab served by an older build calls
+       * a server action by a build-time ID the new server no longer has, and Next throws
+       * "Failed to find Server Action". At one deploy a day, every open tab is that tab.
+       *
+       * "A refusal must say why, on the thing it refuses" applies doubly to a failure
+       * nobody chose. The reload hint is the actual remedy for the stale-bundle case.
+       */
+      setMsg({
+        ok: false,
+        text: `The add failed before it could run: ${e instanceof Error ? e.message : String(e)}. Reload the page and try again — an open tab from before a deploy is the usual cause.`,
+      })
     } finally {
       setBusy(false)
     }
