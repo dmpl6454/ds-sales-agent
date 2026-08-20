@@ -302,6 +302,35 @@ describe('fleetUsage counts what was actually DELIVERED', () => {
     expect(usage.today).toBe(2)
   })
 
+  /**
+   * ── THE DAY IS A COUNT, NOT A PAGE OF RESULTS (2026-08-20) ────────────────
+   *
+   * Every other case in this block uses TWO rows, so not one of them could tell an uncapped
+   * count from one capped at fifty — and a figure capped at fifty is exactly what
+   * `buildMessagesPage` was computing for `sentToday`: `recentRaw.filter(...).length` over a
+   * `take: 50` query. On 2026-08-20 the fleet delivered 59 messages before 09:00 IST, so that
+   * expression would have read 50 and gone on reading 50 for the rest of the day, under a
+   * label saying "today". A `LIMIT` wearing a count's clothes.
+   *
+   * It was never rendered, which is the only reason it cost nothing; `sentToday` is now this
+   * function's own `today`. 60 rows because the bound was 50: a case at the bound cannot fail
+   * for a bound that is one out, and this must fail for ANY ceiling.
+   */
+  it('counts every delivery today, past any page size a caller might have used', async () => {
+    const HOW_MANY = 60
+    for (let i = 0; i < HOW_MANY; i += 1) {
+      /* Spread across the IST day so this also proves the day is not just "this hour". */
+      const minutesIntoDay = 60 + i * 5
+      const istMidnightUtc = new Date('2026-08-03T18:30:00.000Z').getTime()
+      await delivered(`bulk_${i}`, new Date(istMidnightUtc + minutesIntoDay * 60_000))
+    }
+
+    const usage = await fleetUsage(USAGE_NOW)
+    expect(usage.today).toBe(HOW_MANY)
+    /* And the hour is still its own, narrower number — not the day by another name. */
+    expect(usage.thisHour).toBeLessThan(usage.today)
+  })
+
   /** Only what a recipient actually received counts — a parked failure is not a send. */
   it('does not count drafts or failures, whatever their timestamps say', async () => {
     await delivered('a1', new Date('2026-08-04T09:35:00.000Z'), 'FAILED')

@@ -1,6 +1,6 @@
 import { prisma } from '@/lib/db'
 import { DELIVERED_STATUSES } from '@/lib/constants'
-import { daysAgo, istDateKey } from '@/lib/time'
+import { daysAgo } from '@/lib/time'
 import { dispatchStatus, readPause } from '@/outreach/dispatcher'
 import { replyCoverage } from '@/outreach/replyCheck'
 import { profileUrl } from '@/lib/urls'
@@ -174,7 +174,24 @@ export interface MessagesPageView {
   replyCoverage: Awaited<ReturnType<typeof replyCoverage>>
   /** Present when a person paused sending, so the banner can name them. */
   pause: { at: string; by: string; reason?: string } | null
-  /** Delivered today / this week. Counted the way the enforcer counts, never as 'SENT' alone. */
+  /**
+   * Delivered today / this week. Counted the way the enforcer counts, never as 'SENT' alone.
+   *
+   * ── `sentToday` IS THE DISPATCHER'S OWN FIGURE, NOT A FILTER OVER THE RECENT LIST ──
+   *
+   * It used to be `recentRaw.filter(a => a.sentAt >= istMidnight).length`, and `recentRaw`
+   * is `take: 50`. So the day's total was silently CAPPED at however many of today's sends
+   * happened to be inside the newest fifty rows — on 2026-08-20, with 59 delivered before
+   * 09:00 IST, it would have read 50 and gone on reading 50 for the rest of the day. A
+   * ceiling wearing a count's clothes, which is the `MAX_TOTAL_SENDS` shape again: the
+   * number and its label mean different things and the gap only opens on a busy day.
+   *
+   * It was never rendered, so nothing was ever visibly wrong — which is the only reason
+   * this was cheap to fix rather than a figure somebody had trusted. It is now
+   * `dispatchStatus().usage.today`, i.e. `fleetUsage()`, THE SAME uncapped count the pacing
+   * guard reads, so the page cannot report the day by a different rule than the dispatcher.
+   * `dispatch` is already awaited on this page, so this costs no extra query.
+   */
   sentToday: number
   sentThisWeek: number
   /**
@@ -210,7 +227,6 @@ export interface MessagesPageView {
 
 export async function buildMessagesPage(): Promise<MessagesPageView> {
   const weekStart = daysAgo(7)
-  const today = istDateKey()
 
   const [
     waitingBySenderRaw,
@@ -501,7 +517,7 @@ export async function buildMessagesPage(): Promise<MessagesPageView> {
       replyHandled: a.replyHandledAt !== null,
       replyText: a.replyText,
     })),
-    sentToday: recentRaw.filter((a) => a.sentAt && a.sentAt >= new Date(`${today}T00:00:00+05:30`)).length,
+    sentToday: dispatch.usage.today,
     sentThisWeek,
     onDemandSenders: sendersRaw.map((x) => ({ handle: x.handle, name: operatorName(x.displayName), status: x.status })),
     onDemandRecipients: recipientsRaw.map((x) => ({
