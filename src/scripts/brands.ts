@@ -491,6 +491,7 @@ async function main(): Promise<void> {
         { id: c.id, shortcode: c.shortcode, channelHandle: c.target.handle },
         'brand.discovered',
         'ig:brands',
+        { isVerified: v.isVerified ?? undefined, followerCount: v.followers },
       )
       if (outcome !== 'created') continue
 

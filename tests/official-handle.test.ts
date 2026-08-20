@@ -37,55 +37,31 @@ describe('nameMatches — subset direction carries the safety', () => {
   })
 })
 
-describe('isOfficialMatch', () => {
-  const base = { brandName: 'Royal Canin', officialMinFollowers: 100_000 }
+describe('isOfficialMatch — VERIFIED ONLY since 2026-08-20', () => {
+  const base = { brandName: 'Royal Canin' }
 
   it('accepts a verified account whose name covers the brand', () => {
-    expect(
-      isOfficialMatch({ ...base, fullName: 'Royal Canin India', isVerified: true, followerCount: 5_000, isBusiness: true }),
-    ).toBe(true)
+    expect(isOfficialMatch({ ...base, fullName: 'Royal Canin India', isVerified: true })).toBe(true)
   })
 
   it('REJECTS a verified account with the wrong name — a badge on the wrong account is the trap', () => {
-    expect(
-      isOfficialMatch({ ...base, fullName: 'Ryan Canin', isVerified: true, followerCount: 900_000, isBusiness: true }),
-    ).toBe(false)
+    expect(isOfficialMatch({ ...base, fullName: 'Ryan Canin', isVerified: true })).toBe(false)
   })
 
-  it('accepts an unverified account only on size AND exact name AND business', () => {
-    expect(
-      isOfficialMatch({ ...base, fullName: 'Royal Canin', isVerified: null, followerCount: 250_000, isBusiness: true }),
-    ).toBe(true)
+  /**
+   * THE SIZE ARM IS GONE (Tabish: "No message is to be sent to any target that are
+   * unverified"). It was already unreachable — the feed endpoint returns no follower count
+   * — so these cases assert the bar is now a single question, not two.
+   */
+  it('REJECTS an unverified account however large or exactly-named', () => {
+    expect(isOfficialMatch({ ...base, fullName: 'Royal Canin', isVerified: false })).toBe(false)
   })
 
-  it('rejects big-but-unverified when the name is not EXACT (covering is not enough without the badge)', () => {
-    expect(
-      isOfficialMatch({ ...base, fullName: 'Royal Canin Fan Club', isVerified: false, followerCount: 250_000, isBusiness: true }),
-    ).toBe(false)
-  })
-
-  it('rejects below the follower floor without a badge', () => {
-    expect(
-      isOfficialMatch({ ...base, fullName: 'Royal Canin', isVerified: false, followerCount: 90_000, isBusiness: true }),
-    ).toBe(false)
-  })
-
-  it('rejects a personal (non-business) account without a badge, whatever its size', () => {
-    expect(
-      isOfficialMatch({ ...base, fullName: 'Royal Canin', isVerified: false, followerCount: 2_000_000, isBusiness: false }),
-    ).toBe(false)
+  it('REJECTS an unknown badge state — never looked is not verified', () => {
+    expect(isOfficialMatch({ ...base, fullName: 'Royal Canin', isVerified: null })).toBe(false)
   })
 
   it('THE PHILIPS TRAP, end to end: verified @philips never passes for "Philips India"', () => {
-    expect(
-      isOfficialMatch({
-        brandName: 'Philips India',
-        fullName: 'Philips',
-        isVerified: true,
-        followerCount: 268_000,
-        isBusiness: true,
-        officialMinFollowers: 100_000,
-      }),
-    ).toBe(false)
+    expect(isOfficialMatch({ brandName: 'Philips India', fullName: 'Philips', isVerified: true })).toBe(false)
   })
 })

@@ -61,20 +61,23 @@ export function nameMatches(brandName: string, profileFullName: string | null): 
   return [...want].every((t) => have.has(t))
 }
 
+/**
+ * ── VERIFIED ONLY SINCE 2026-08-20 (Tabish) ────────────────────────────────
+ *
+ * *"we discover valid verified instagram accounts and add them as target and message
+ * them."* The size arm is DELETED, not disabled: it required a follower count the feed
+ * endpoint never returns, so it could only ever fire for the handles `BrandLookup` happened
+ * to hold — a rule that reads like a second route in and was not one.
+ *
+ * So the whole bar is now: **Instagram says this account is verified, AND its name covers
+ * every token of the brand name.** The badge is the only identity assertion here that is
+ * not ours to make, and the name test is what stops a verified badge on the WRONG account
+ * passing — the measured @philips / "Philips India" trap, still a fixture below.
+ */
 export function isOfficialMatch(input: {
   brandName: string
   fullName: string | null
   isVerified: boolean | null
-  followerCount: number | null
-  isBusiness: boolean | null
-  officialMinFollowers: number
 }): boolean {
-  if (input.isVerified === true && nameMatches(input.brandName, input.fullName)) return true
-  return (
-    (input.followerCount ?? 0) >= input.officialMinFollowers &&
-    input.isBusiness === true &&
-    input.fullName !== null &&
-    tokens(input.fullName).size === tokens(input.brandName).size &&
-    nameMatches(input.brandName, input.fullName)
-  )
+  return input.isVerified === true && nameMatches(input.brandName, input.fullName)
 }

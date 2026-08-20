@@ -13,6 +13,7 @@ function ok(): ResendInput {
     senderHasSession: true,
     targetOptedOut: false,
     targetIsWatchOnly: false,
+    targetIsVerified: true,
     targetRepliedAt: null,
     pairSentTodayCount: 0,
     maxPerPairPerDay: 5,

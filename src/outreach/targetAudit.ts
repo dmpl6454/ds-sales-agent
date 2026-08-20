@@ -90,16 +90,22 @@ export const AUDIT_WHY_SENTENCE: Record<AuditWhy, string> = {
  * account" — the badge admits, and for the unverified the bar is size,
  * `celebrityMinFollowers`, default 500k.)
  *
- * NULL follower counts never admit — absence of size is not size. NOTE, measured
- * 2026-08-20: the feed endpoint returns no follower count, so in practice the size arm
- * fires only for handles `BrandLookup` already holds a count for. That makes this
- * effectively verified-only today, which is the SAFE direction — but it is narrower than
- * it reads, and nobody should assume the size arm is doing work.
+ * ── VERIFIED ONLY SINCE 2026-08-20 (Tabish) ────────────────────────────────
+ *
+ * *"No message is to be sent to any target that are unverified."* The follower fallback is
+ * DELETED rather than left unreachable: it was already dead — the feed endpoint returns no
+ * follower count, so `celebrityMinFollowers` could only fire for the 55 of 438 handles
+ * `BrandLookup` happened to hold a number for. Keeping a rule that cannot run is how this
+ * codebase gets guards nobody can trigger; deleting it makes the bar say what it does.
+ *
+ * A badge is Instagram asserting the identity, which is the only assertion here that is not
+ * ours. `minFollowers` is retained in the signature so the Setting stays wired and a future
+ * decision to re-admit by size is one edit rather than a rewrite — but it CANNOT admit
+ * today, and the test asserts that.
  */
 export function admitsAsTalent(
   e: { isVerified: boolean | null; followerCount: number | null },
-  minFollowers: number,
+  _minFollowers: number,
 ): boolean {
-  if (e.isVerified === true) return true
-  return e.followerCount !== null && e.followerCount >= minFollowers
+  return e.isVerified === true
 }

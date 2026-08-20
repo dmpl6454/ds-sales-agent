@@ -454,6 +454,7 @@ export async function autoResolveBrands(
         { id: candidate.postId, shortcode: candidate.shortcode },
         'brand.auto-decided',
         'auto-resolve',
+        { isVerified: verdict.isVerified ?? undefined, followerCount: verdict.followers },
       )
       if (outcome === 'created') out.decided++
       continue

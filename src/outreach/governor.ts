@@ -44,6 +44,12 @@ export interface GovernorInput {
   }
   target: {
     optedOut: boolean
+    /**
+     * Verified only (Tabish, 2026-08-20). NULL is refused — never looked is not verified.
+     * Refused HERE as well as at the gate so no draft is written that can never be sent;
+     * a rule enforced only at delivery fills the queue with permanent holds.
+     */
+    isVerified: boolean | null
   }
 
   /**
@@ -110,6 +116,7 @@ export const SKIP_REASONS = {
   NO_NEW_MATERIAL: 'no-new-material-to-reference',
   PAIR_DAILY_CAP: 'pair-daily-cap',
   TARGET_RECENTLY_CONTACTED: 'target-recently-contacted',
+  TARGET_NOT_VERIFIED: 'target-not-verified',
 } as const
 
 export function evaluatePair(input: GovernorInput): GovernorDecision {
@@ -137,6 +144,15 @@ export function evaluatePair(input: GovernorInput): GovernorDecision {
 
   if (input.target.optedOut) {
     return { eligible: false, reason: SKIP_REASONS.TARGET_OPTED_OUT }
+  }
+
+  if (input.target.isVerified !== true) {
+    return {
+      eligible: false,
+      reason: SKIP_REASONS.TARGET_NOT_VERIFIED,
+      detail:
+        'only accounts carrying Instagram’s verified badge are messaged, and this one does not — nothing is written to them',
+    }
   }
 
   if (input.sender.status !== 'ACTIVE') {

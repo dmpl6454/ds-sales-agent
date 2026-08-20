@@ -79,6 +79,24 @@ export interface ResendInput {
    */
   targetIsWatchOnly: boolean
   /**
+   * `TargetAccount.isVerified` — TRUE only where Instagram itself shows the badge.
+   *
+   * ── VERIFIED ONLY (Tabish, 2026-08-20) ────────────────────────────────────
+   *
+   * *"No message is to be sent to any target that are unverified."* Given after MEASURING
+   * `@lego.mybrickhouse` ("My Brickhouse", unverified, no category) receiving a real
+   * media-buying pitch from a revenue account two minutes after the genuine
+   * `@legoindia_official`.
+   *
+   * **NULL IS REFUSED, and that is the whole design.** "We never looked" is not "verified",
+   * and this codebase's most-repeated defect is absence of data hardening into a positive
+   * verdict. The cost of refusing NULL is paid at CREATION instead: `createBrandTarget`
+   * enriches every new row so the fact exists at birth, and `pnpm ig:audit-targets --run`
+   * backfills the rest. So a NULL here means a row that predates both — visible, fixable,
+   * and never a silent send.
+   */
+  targetIsVerified: boolean | null
+  /**
    * A reply from this target to ANY of our senders, WITHIN the resume window — the DB
    * half only surfaces replies newer than `replyResumeHours` (default one day), so an
    * older reply simply stops arriving here and messaging resumes. Tabish's decision,
@@ -147,6 +165,7 @@ export const RESEND_BLOCKS = {
   SENDER_NOT_ACTIVE: 'sender-not-active',
   TARGET_OPTED_OUT: 'target-opted-out',
   TARGET_IS_WATCH_ONLY: 'target-is-watch-only',
+  TARGET_NOT_VERIFIED: 'target-not-verified',
   TARGET_REPLIED: 'target-replied',
   NO_SESSION: 'no-session',
   /**
@@ -314,6 +333,23 @@ export function evaluateResend(input: ResendInput): ResendResult {
     }
   }
 
+  /**
+   * VERIFIED ONLY. Checked beside watch-only because it is the same KIND of question — who
+   * the recipient is, not when we may write — and therefore NOT overridable: "I know
+   * something the agent does not" is an argument about timing, never about whether the
+   * account on the other end is the company it appears to be.
+   */
+  if (input.targetIsVerified !== true) {
+    return {
+      ok: false,
+      reason: RESEND_BLOCKS.TARGET_NOT_VERIFIED,
+      detail:
+        input.targetIsVerified === null
+          ? 'we have never confirmed whether this account carries Instagram’s verified badge, and only verified accounts are messaged'
+          : 'this account has no verified badge on Instagram — it may be a fan or reseller page rather than the company itself',
+    }
+  }
+
   // A reply means a human conversation started. Continuing to fire a queued cold
   // pitch into it is the single most damaging thing this system could do, so it halts
   // every sender to this target, not just the one that got the reply.
@@ -364,7 +400,7 @@ export interface ResendAttempt {
     senderId: string
     targetId: string
     sender: { handle: string; status: string }
-    target: { optedOut: boolean; role: string; kind?: string }
+    target: { optedOut: boolean; role: string; kind?: string; isVerified: boolean | null }
   }
 }
 
@@ -460,6 +496,7 @@ export async function recheckBeforeSend(
     }),
     targetOptedOut: target.optedOut,
     targetIsWatchOnly: target.role === 'WATCH',
+    targetIsVerified: target.isVerified,
     targetRepliedAt: replied?.repliedAt ?? null,
     pairSentTodayCount: pairToday,
     maxPerPairPerDay: settings.maxPerPairPerDay,

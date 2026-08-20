@@ -78,7 +78,7 @@ function governorInput(over: Record<string, unknown> = {}) {
   return {
     now: NOW,
     sender: { status: 'ACTIVE' },
-    target: { optedOut: false },
+    target: { optedOut: false, isVerified: true },
     touchesSoFar: 0,
     targetRepliedAt: null,
     hasPendingAttempt: false,
@@ -98,7 +98,8 @@ const GOVERNOR_CASES: Array<[string, Record<string, unknown>]> = [
   // PAIR_DISABLED is GONE (one switch, 2026-08-08). Routes are not chosen any more — they
   // exist — so there is no per-route "off" for the governor to report. Retirement is
   // `target.optedOut`, which is the next case and is checked independently of any pair row.
-  [SKIP_REASONS.TARGET_OPTED_OUT, { target: { optedOut: true } }],
+  [SKIP_REASONS.TARGET_OPTED_OUT, { target: { optedOut: true, isVerified: true } }],
+  [SKIP_REASONS.TARGET_NOT_VERIFIED, { target: { optedOut: false, isVerified: false } }],
   [SKIP_REASONS.SENDER_NOT_ACTIVE, { sender: { status: 'CHALLENGED' } }],
   [SKIP_REASONS.TARGET_REPLIED, { targetRepliedAt: new Date('2026-08-19T12:00:00Z') }],
   [SKIP_REASONS.PENDING_ATTEMPT, { hasPendingAttempt: true }],
@@ -149,6 +150,7 @@ function gateInput(over: Record<string, unknown> = {}) {
     senderHasSession: true,
     targetOptedOut: false,
     targetIsWatchOnly: false,
+    targetIsVerified: true,
     targetRepliedAt: null,
     pairSentTodayCount: 0,
     maxPerPairPerDay: 5,
@@ -163,6 +165,8 @@ const GATE_CASES: Array<[string, Record<string, unknown>]> = [
   [RESEND_BLOCKS.COHORT_NOT_CLEARED, { senderCohortCleared: false, senderCohortDetail: 'group 1 has been sending for 3 of 14 days' }],
   [RESEND_BLOCKS.TARGET_OPTED_OUT, { targetOptedOut: true }],
   [RESEND_BLOCKS.TARGET_IS_WATCH_ONLY, { targetIsWatchOnly: true }],
+  // Verified only (2026-08-20). NULL is refused too — see the second case.
+  [RESEND_BLOCKS.TARGET_NOT_VERIFIED, { targetIsVerified: false }],
   [RESEND_BLOCKS.TARGET_REPLIED, { targetRepliedAt: new Date('2026-08-19T12:00:00Z') }],
   [RESEND_BLOCKS.NO_SESSION, { senderHasSession: false }],
   // Five per day from one account to one recipient (2026-08-18).

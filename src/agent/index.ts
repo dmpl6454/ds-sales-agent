@@ -6,6 +6,7 @@ import { deviceId } from './claim'
 import { profileStatus } from '@/outreach/browser/profile'
 import { reconcileSessionRecords } from './reconcile'
 import { autoResolveBrands } from '@/detection/autoResolve'
+import { discoverOfficialPages } from '@/detection/officialDiscovery'
 import { checkForReplies } from '@/outreach/replyCheck'
 
 /**
@@ -104,6 +105,13 @@ const BRAND_INTERVAL_MS = 30 * 60_000
  * pass here would be a burst against the one IP every account also logs in from.
  */
 const BRAND_LOOKUPS_PER_PASS = 25
+/**
+ * Untagged-post discovery shares the same throttled endpoint as the brand pass above, so it
+ * gets a small slice rather than a budget of its own. Five lookups every 30 minutes is ~240
+ * a day against a population of 172 posts — enough to work through it in days, not minutes,
+ * which is the right speed for a rule whose failure mode is a pitch to the wrong company.
+ */
+const OFFICIAL_LOOKUPS_PER_PASS = 5
 
 /**
  * ── THE REPLY SWEEP RUNS HERE NOW, BECAUSE HERE IS WHERE THE SESSIONS ARE ──
@@ -230,6 +238,28 @@ async function brandPass(): Promise<void> {
       haltedEarly: summary.haltedEarly,
       awaitingRetry: summary.awaitingRetry,
     })
+
+    /**
+     * AND THE LEADS NOBODY TAGGED, on the same timer (Tabish, 2026-08-20: "we cannot lose
+     * leads in posts with no tags").
+     *
+     * MEASURED that morning: 172 in-window CAMPAIGN posts assert no handle at all and by
+     * design produced no prospect. It runs HERE rather than behind `pnpm ig:find-official`
+     * alone for the reason this repo has paid for twice — a feature that works only when
+     * someone runs a command is not running — and on THIS host because the profile endpoint
+     * answers a home IP and 429s the Linode.
+     *
+     * Bounded small (5 lookups) because it shares one scarce endpoint with the pass above
+     * and runs every 30 minutes; the badge bar means a pass that finds nothing is the normal
+     * case, not a fault. It can never fail the agent: the catch below covers both passes.
+     */
+    const official = await discoverOfficialPages({ maxLookups: OFFICIAL_LOOKUPS_PER_PASS })
+    if (official.needsHuman.length > 0) {
+      log.step('untagged paid posts resolved to accounts that FAILED the verified bar — a person decides', {
+        count: official.needsHuman.length,
+        examples: official.needsHuman.slice(0, 3).join(' | '),
+      })
+    }
   } catch (err) {
     /**
      * Never allowed to take the agent down, exactly like the detect-pass rule: discovering

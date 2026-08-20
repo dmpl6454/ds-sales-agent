@@ -37,7 +37,7 @@ const OCR_STOPWORDS = new Set([
   'MAR', 'APR', 'MAY', 'JUN', 'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC', 'MON', 'TUE', 'WED',
   'THU', 'FRI', 'SAT', 'SUN', 'INDIA', 'OFFICIAL', 'EPISODE', 'SEASON', 'TRAILER', 'TEASER',
 ])
-export function frameBrandTokens(frameText: string | null): string[] {
+function frameBrandTokensLocal(frameText: string | null): string[] {
   if (frameText === null) return []
   const out = new Set<string>()
   for (const raw of frameText.split(/[|•·\n\r,;:!?"“”]+/)) {
@@ -125,7 +125,7 @@ async function main(): Promise<void> {
     const list: Array<{ name: string; source: 'caption' | 'frame' }> =
       fromCaption.length > 0
         ? fromCaption.map((name) => ({ name, source: 'caption' as const }))
-        : frameBrandTokens(p.frameText).map((name) => ({ name, source: 'frame' as const }))
+        : frameBrandTokensLocal(p.frameText).map((name) => ({ name, source: 'frame' as const }))
     for (const { name, source } of list) {
       const key = name.toLowerCase()
       const row = names.get(key)
@@ -160,14 +160,8 @@ async function main(): Promise<void> {
         }
         continue
       }
-      const match = isOfficialMatch({
-        brandName: key,
-        fullName: e.fullName,
-        isVerified: e.isVerified,
-        followerCount: e.followers,
-        isBusiness: e.accountType !== null && e.accountType !== 1,
-        officialMinFollowers: settings.officialMinFollowers,
-      })
+      // VERIFIED ONLY (Tabish, 2026-08-20). The badge plus a covering name, nothing else.
+      const match = isOfficialMatch({ brandName: key, fullName: e.fullName, isVerified: e.isVerified })
       const evidence = `"${key}" (${info.source}, ${info.shortcodes.length} post(s), e.g. ${info.shortcodes[0]}) → @${candidate}: ${e.fullName ?? '—'}, verified=${e.isVerified ?? '?'}, followers=${e.followers ?? '?'}`
       if (match) {
         console.log(`  OFFICIAL MATCH  ${evidence}`)
@@ -190,7 +184,7 @@ async function main(): Promise<void> {
         continue outer // one official page per brand name is the point
       }
       // Exists, plausibly related, fails the bar: a person decides, never a fuzzy accept.
-      if ((e.followers ?? 0) >= 1_000) needsHuman.push(`${evidence}\n    admit with: pnpm ig:find-official --accept ${candidate}`)
+      if (e.isVerified !== true) needsHuman.push(`${evidence}\n    admit with: pnpm ig:find-official --accept ${candidate}`)
     }
   }
 

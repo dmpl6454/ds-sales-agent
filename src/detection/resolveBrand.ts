@@ -255,7 +255,16 @@ const NOT_A_PROSPECT_CATEGORIES = new Set([
 const NEVER_A_PROSPECT = new Set(['instagram', 'explore', 'reels'])
 
 export type BrandVerdict =
-  | { kind: 'BRAND'; handle: string; displayName: string; category: string | null; followers: number | null }
+  | {
+      kind: 'BRAND'
+      handle: string
+      displayName: string
+      category: string | null
+      followers: number | null
+      /** `is_verified`. Carried so `createBrandTarget` can stamp it at birth — gate.ts
+       *  refuses to message an unverified recipient (Tabish, 2026-08-20). */
+      isVerified?: boolean | null
+    }
   | {
       kind: 'PERSON'
       handle: string
@@ -372,6 +381,7 @@ export function classifyProfile(input: {
       displayName: (input.fullName || h).trim() || h,
       category,
       followers: input.followers ?? null,
+      isVerified: input.isVerified ?? null,
     }
   }
 

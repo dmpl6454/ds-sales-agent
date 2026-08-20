@@ -19,9 +19,14 @@ describe('admitsAsTalent', () => {
     expect(admitsAsTalent({ isVerified: true, followerCount: 1_200 }, 500_000)).toBe(true)
   })
 
-  it('an unverified person admits only at or above the follower bar', () => {
-    expect(admitsAsTalent({ isVerified: false, followerCount: 500_000 }, 500_000)).toBe(true)
-    expect(admitsAsTalent({ isVerified: false, followerCount: 499_999 }, 500_000)).toBe(false)
+  /**
+   * VERIFIED ONLY since 2026-08-20 (Tabish). The follower arm is DELETED, not merely
+   * unreachable — it required a count the feed endpoint never returns. A two-million-
+   * follower unverified account is refused, which is the whole point of the new rule.
+   */
+  it('an unverified person is refused however large', () => {
+    expect(admitsAsTalent({ isVerified: false, followerCount: 2_000_000 }, 500_000)).toBe(false)
+    expect(admitsAsTalent({ isVerified: false, followerCount: 500_000 }, 500_000)).toBe(false)
   })
 
   it('NULL facts never admit — absence of size is not size', () => {
