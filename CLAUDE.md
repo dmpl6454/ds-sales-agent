@@ -140,6 +140,45 @@ always the last step: the row read *"Today · 59 messages sent **today**, since 
 them** in this hour"*. Both pass every assertion in both spellings. The hour clause now
 renders only when it is a genuine subset.
 
+### VERIFIED BY WATCHING TWO REAL SENDS MOVE THE COUNTER, ON BOTH HOSTS
+
+Deployed (`baa91dc`), then **the number was proven by making it change** rather than by
+reading it once — a figure that is correct on a still queue says nothing about whether it
+tracks. Autopilot had been OFF since 13:54 IST (his flip; the 08:24:12Z send eleven seconds
+after it is the documented in-flight completion, not a leak), so it was turned ON through the
+same two writes the dashboard toggle makes — `setSetting` plus an `autopilot.set` row — and
+**restored to OFF in a `finally`**, because a script must not leave a revenue fleet sending:
+
+```
+14:57:03  autopilot OFF · today=59        page: "Today · 59 messages sent since midnight IST"
+14:57:04  AUTOPILOT ON            (audited, cli:Tabish)
+14:57:52  SENT #1  @bollywoodsocietyy → @luxindia        today=60  thisHour=1
+14:59:39  SENT #2  @bachelorssociety  → @mcintoshlabs    today=61  thisHour=2
+14:59:50  AUTOPILOT RESTORED TO OFF
+          /            "Today · 61 messages sent since midnight IST"
+          /analytics   "Since midnight IST, 61 messages have gone out, 2 of them in this hour."
+```
+
+Both carry real thread URLs; 1m47s apart, which is the 1-minute pace end to end. Both
+recipients clear the VERIFIED ONLY bar — **"LUX India"** and **"McIntosh Laboratory, Inc."**,
+`isVerified: true`, both PROSPECT/BRAND — so the admission rule held on the sends this
+exercise caused. The Linode reads 61 as well, from its own build.
+
+**AND THE HOUR ROLLED OVER WHILE THE DAY DID NOT, which is the free half of the measurement.**
+Read again just past 15:00 IST: `thisHour` **2 → 0**, `today` still **61**. The two boundaries
+are independent and the IST hour floor is right — worth having, because a machine-local floor
+would be 30 minutes out (IST is +05:30) and the Linode does not run in IST, and a day figure
+that silently tracked the hour is exactly the class of bug this whole entry is about.
+
+**THE LOCAL DASHBOARD NEEDED REBUILDING AND IS NOT A SECOND SENDER.** `pnpm start` on :3100
+was serving a pre-fix build, so it showed the old page while the Linode showed the new one —
+stop it, `pnpm build` (exit code read directly), restart. On boot it logged *"another
+scheduler is already running — not starting a second, otherHost=dashboard"*: the Linode's
+heartbeat is fresh, so the local copy is a VIEWER and rebuilding it cannot affect sending.
+Sending is the launchd device agent (`caffeinate -i`, pid 16541), which was left alone —
+nothing in this change is reachable from it, and a restart it does not need is a restart that
+can only cost sends.
+
 ---
 
 ## 20 AUGUST, MIDDAY — "AUTOPILOT IS OFF AND IT STILL SENT" WAS FALSE; "THE UI IS STUCK" WAS TRUE
