@@ -85,6 +85,19 @@ export async function recordSendStarted(at: Date): Promise<void> {
 }
 
 /**
+ * PURE. Which clock does the fleet gap measure from, given both candidates?
+ *
+ * Extracted so the answer is testable without a database, because the bug it encodes was a
+ * one-line comparison that a source grep could not see and that the caller exercised
+ * perfectly — see the docblock inside `lastSendStartedAt`.
+ */
+export function gapClock(started: Date | null, lastCompleted: Date | null): Date | null {
+  /* The stamp wins whenever it exists; completion is the fallback, never the maximum. */
+  if (started) return started
+  return lastCompleted
+}
+
+/**
  * The gap clock: when did a send last BEGIN?
  *
  * Falls back to the newest `sentAt` when the row does not exist yet — a fleet that has
@@ -101,9 +114,28 @@ export async function lastSendStartedAt(): Promise<Date | null> {
     }),
   ])
   const started = row?.value ? new Date(String(row.value)) : null
-  const completed = lastSend?.sentAt ?? null
-  if (started && completed) return started > completed ? started : completed
-  return started ?? completed
+
+  /**
+   * ── THE FALLBACK MUST NOT SWALLOW THE PRIMARY (found by measuring, 2026-08-21) ──
+   *
+   * The first version of this returned `max(started, completed)`, reasoning that the later
+   * of the two clocks was the safer answer. It is not: a send's COMPLETION is always ~47s
+   * after that same send's START, so the max is the completion EVERY time and the fix
+   * silently reinstated the exact behaviour it was written to remove. Deployed, the agent
+   * restarted, and the measured period was **106.8s against a 107s baseline** — the change
+   * did nothing, and the source-grep test passed the whole way because the caller genuinely
+   * did read this function.
+   *
+   * A defensive fallback that outranks the signal it is defending is this codebase's most
+   * repeated shape, and this is the first time it has appeared inside a fix for itself.
+   *
+   * So: the stamp WINS whenever it exists. `sentAt` is the fallback for one case only — a
+   * fleet whose first send under this code has not happened yet, which must not read as
+   * "never sent" and ignore the gap once on every deploy. `tests/gap-is-a-period.test.ts`
+   * now drives this against a real database in both directions, because a grep cannot see
+   * which of two clocks a comparison returns.
+   */
+  return gapClock(started, lastSend?.sentAt ?? null)
 }
 
 export interface SendLockHolder {
@@ -259,7 +291,30 @@ let heldInThisProcess = false
  * `null` means "somebody else is sending", which is never an error and never loses a
  * message: whatever was waiting is still waiting, with its Send button.
  */
-export async function withSendLock<T>(what: string, fn: () => Promise<T>): Promise<T | null> {
+/**
+ * IS THIS OPERATION A SEND? Required, with no default, on purpose.
+ *
+ * `withSendLock` is the one place every browser-driving path passes through, which makes it
+ * the right place to stamp the fleet's pace clock — but two of its four callers are NOT sends
+ * (the reply sweep reads a conversation; the pruner deletes cache), and stamping those would
+ * make a read cost a send's worth of spacing.
+ *
+ * So the answer is a REQUIRED field rather than an optional flag with a default: the compiler
+ * names every call site the day a new one appears, exactly as making `RenderTarget.kind`
+ * required named all 24 of its call sites. A default here would be a decision made by
+ * omission, and the omission this repo keeps paying for is a rule that reached one caller and
+ * not the others.
+ */
+export interface SendLockKind {
+  /** True only when a message is about to be delivered. Stamps the pace clock. */
+  isSend: boolean
+}
+
+export async function withSendLock<T>(
+  what: string,
+  { isSend }: SendLockKind,
+  fn: () => Promise<T>,
+): Promise<T | null> {
   /**
    * MAY THIS MACHINE SEND AT ALL? Checked here because this function is the ONE place
    * every path that drives a browser passes through — the dispatcher, the dashboard's
@@ -290,6 +345,17 @@ export async function withSendLock<T>(what: string, fn: () => Promise<T>): Promi
   if (!(await acquireSendLock(what))) return null
   heldInThisProcess = true
   try {
+    /**
+     * THE PACE CLOCK IS STAMPED HERE, FOR EVERY SEND PATH, BEFORE THE BROWSER MOVES.
+     *
+     * Inside the lock (so it cannot race) and before `fn()` (so the gap is a PERIOD rather
+     * than idle time bolted onto a ~47s drive). In `withSendLock` rather than in the
+     * dispatcher, because the dashboard's Send button and the on-demand dialog are sends too
+     * — a stamp that reached only the dispatcher would let a manual send land seconds after
+     * an automatic one, which is the "one rule, several callers" gap this function's own
+     * docblock is about.
+     */
+    if (isSend) await recordSendStarted(new Date())
     return await fn()
   } finally {
     heldInThisProcess = false
@@ -436,19 +502,8 @@ export async function dispatchTick(reason: string): Promise<DispatchTickResult> 
    * was never going to send does not block the dashboard's Send button for the duration
    * of its own queries.
    */
-  const result = await withSendLock(`dispatch:${reason}`, async () => {
-    /**
-     * STAMP THE START, INSIDE THE LOCK, BEFORE THE BROWSER MOVES.
-     *
-     * This is the whole of the 2026-08-21 pace fix — see `GAP_MEASURED_FROM_SEND_START` in
-     * pacing.ts for the measurement. Inside the lock so it cannot race, and BEFORE the
-     * drive so the gap is a period rather than idle time bolted onto a ~47s send.
-     *
-     * A crash mid-send leaves this row stamped, which delays the next send by up to one
-     * gap. That is the safe direction and the reason it is not written afterwards: a stamp
-     * written on completion is exactly the behaviour being fixed.
-     */
-    await recordSendStarted(new Date())
+  const result = await withSendLock(`dispatch:${reason}`, { isSend: true }, async () => {
+    /* The pace clock is stamped by `withSendLock` itself now — every send path, one place. */
     return deliverWaiting({ maxSends: settings.maxSendsPerTick })
   })
 

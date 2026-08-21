@@ -84,7 +84,7 @@ async function main() {
      * report as an error — something is legitimately driving a browser, and the right answer
      * is to say so and leave the profile alone.
      */
-    const report = await withSendLock(`prune @${handle}`, async () => pruneProfile({ handle, dryRun: false }))
+    const report = await withSendLock(`prune @${handle}`, { isSend: false }, async () => pruneProfile({ handle, dryRun: false }))
     if (report === null) {
       console.log(`@${handle}  skipped — a send is in progress (the fleet send lock is held)\n`)
       continue

@@ -342,7 +342,7 @@ export async function replyPass(): Promise<void> {
   // checking, so replies are read around the clock too.
   replyPassRunning = true
   try {
-    const summary = await withSendLock('reply-sweep', () => checkForReplies())
+    const summary = await withSendLock('reply-sweep', { isSend: false }, () => checkForReplies())
     if (summary === null) {
       // A send holds the lock. Nothing is lost: the next pass is half an hour away and
       // the just-in-time check still reads any thread a follow-up is about to land in.
