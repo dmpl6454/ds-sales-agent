@@ -49,6 +49,7 @@
     "ig:generate": "tsx src/scripts/generate.ts",
     "ig:detect": "tsx src/scripts/detect.ts",
     "ig:rejudge": "tsx src/scripts/rejudge.ts",
+    "ig:rejudge-channel": "tsx src/scripts/rejudgeChannel.ts",
     "ig:second-look": "tsx src/scripts/secondLook.ts",
     "ig:retire-target": "tsx src/scripts/retire-target.ts",
     "ig:ocr": "tsx src/scripts/ocr.ts",
