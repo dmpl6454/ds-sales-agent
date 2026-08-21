@@ -143,6 +143,7 @@ bootstrap.exec(`
     "category" TEXT,
     "displayName" TEXT,
     "followers" INTEGER,
+    "isVerified" BOOLEAN,
     "enrichment" TEXT,
     "reachable" BOOLEAN,
     "decidedBy" TEXT,

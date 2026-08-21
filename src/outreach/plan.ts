@@ -433,7 +433,7 @@ export async function runOutreach(): Promise<PlanSummary> {
        * never fire. Measured: skipped=851, queued=0, the whole fleet quiet. See
        * campaignsNamingHandle.
        */
-      campaignsNamingHandle(prisma, pair.target.handle, windowFloor),
+      campaignsNamingHandle(prisma, { handle: pair.target.handle, displayName: pair.target.displayName }, windowFloor),
       prisma.outreachAttempt.count({
         where: {
           pair: { targetId: pair.targetId },

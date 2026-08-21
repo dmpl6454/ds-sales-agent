@@ -26,10 +26,11 @@ import { postUrl } from '@/lib/urls'
 import { isConnecting } from '@/outreach/browser/connect'
 import { getSettings } from '@/lib/settings'
 import { visibleChannelFilter, ourOwnPageHandles } from '@/detection/visibleChannels'
+import { brandCandidatesFor, excludedHandles } from '@/detection/brandCandidates'
 import { detectionCutoff } from '@/lib/cutoff'
 import { readLabelledSet } from '@/detection/labels'
 import { replyHaltFloor } from '@/outreach/replyHalt'
-import { mentionsHandleExactly } from '@/outreach/materialAllowance'
+import { mentionsHandleExactly, brandStringsNameProspect } from '@/outreach/materialAllowance'
 import { readHeartbeat, machineId } from '@/worker/scheduler'
 import { assessWatch, watchHealthSentence } from '@/detection/watchHealth'
 import { getDetector } from '@/detection/detectors'
@@ -1105,6 +1106,8 @@ export interface PaidPostRow {
    * means the post named nobody we could verify, which is the honest answer, not a gap.
    */
   recipients: { handle: string; retired: boolean }[]
+  /** Unminted candidates' state — 'N unverified, refused · M badge check pending', or null. */
+  candidateNote: string | null
 }
 
 export async function buildPaidPostsView(): Promise<PaidPostsView> {
@@ -1191,6 +1194,7 @@ export async function buildPaidPostsView(): Promise<PaidPostsView> {
       take: POSTS_SHOWN,
       select: {
         id: true,
+        rawPayload: true,
         shortcode: true,
         postedAt: true,
         // For the lateness note: how far behind publication detection actually was.
@@ -1272,8 +1276,35 @@ export async function buildPaidPostsView(): Promise<PaidPostsView> {
    */
   const prospectRefs = await prisma.targetAccount.findMany({
     where: { role: 'PROSPECT' },
-    select: { handle: true, optedOut: true, discoveredFromCampaignId: true },
+    select: { handle: true, displayName: true, optedOut: true, discoveredFromCampaignId: true },
   })
+
+  /**
+   * The DISPOSITION of every asserted-but-unminted candidate, so the column never
+   * collapses "unverified, refused" / "badge check pending" into a false "nobody
+   * verified" — Tabish read exactly that on 2026-08-21 and was right to call it false.
+   * One query for the whole table; the same extractor the pipeline itself uses.
+   */
+  const excludedForColumn = await excludedHandles()
+  const candidatesByPost = new Map<string, string[]>()
+  for (const p of paidRows) {
+    candidatesByPost.set(
+      p.id,
+      brandCandidatesFor(
+        { caption: p.caption, taggedAccounts: p.taggedAccounts, rawPayload: p.rawPayload },
+        excludedForColumn,
+      ).map((c) => c.handle),
+    )
+  }
+  const allCandidates = [...new Set([...candidatesByPost.values()].flat())]
+  const candidateLookups = new Map(
+    (
+      await prisma.brandLookup.findMany({
+        where: { handle: { in: allCandidates } },
+        select: { handle: true, isVerified: true },
+      })
+    ).map((l) => [l.handle, l]),
+  )
 
   return {
     weekDetected: v.week.detected,
@@ -1319,9 +1350,23 @@ export async function buildPaidPostsView(): Promise<PaidPostsView> {
         .filter(
           (t) =>
             t.discoveredFromCampaignId === p.id ||
-            mentionsHandleExactly({ caption: p.caption, taggedAccounts: p.taggedAccounts }, t.handle),
+            mentionsHandleExactly({ caption: p.caption, taggedAccounts: p.taggedAccounts }, t.handle) ||
+            /* A brand STRING that IS a verified prospect's name links too (2026-08-21) —
+               the same arm campaignsNamingHandle counts, so column and enforcer agree. */
+            brandStringsNameProspect(p.brands, { handle: t.handle, displayName: t.displayName }),
         )
         .map((t) => ({ handle: t.handle, retired: t.optedOut })),
+      candidateNote: (() => {
+        const minted = new Set(prospectRefs.map((t) => t.handle))
+        const rest = (candidatesByPost.get(p.id) ?? []).filter((h) => !minted.has(h))
+        if (rest.length === 0) return null
+        const refused = rest.filter((h) => candidateLookups.get(h)?.isVerified === false).length
+        const pending = rest.length - refused
+        const parts: string[] = []
+        if (refused > 0) parts.push(`${refused} unverified, refused`)
+        if (pending > 0) parts.push(`${pending} badge check pending`)
+        return parts.join(' · ')
+      })(),
       shortcode: p.shortcode,
       url: postUrl(p.shortcode),
       dayLabel: istDateKey(p.postedAt),

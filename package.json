@@ -63,7 +63,8 @@
     "ig:purge-watch-drafts": "tsx src/scripts/purge-watch-drafts.ts",
     "ig:clear-bulk-labels": "tsx src/scripts/clear-bulk-labels.ts",
     "ig:audit-targets": "tsx src/scripts/audit-targets.ts",
-    "ig:find-official": "tsx src/scripts/find-official.ts"
+    "ig:find-official": "tsx src/scripts/find-official.ts",
+    "ig:reaudit": "tsx src/scripts/reaudit.ts"
   },
   "dependencies": {
     "@prisma/adapter-better-sqlite3": "^7.9.1",

@@ -135,25 +135,68 @@ export function mentionsHandleExactly(row: { caption: string; taggedAccounts: st
   return new RegExp(`@${escaped}($|[^a-z0-9_.])`, 'i').test(row.caption)
 }
 
+/**
+ * ── AND A BRAND STRING THAT IS THE PROSPECT'S OWN NAME COUNTS TOO (2026-08-21) ──
+ *
+ * Tabish, on the "We message" column: *"the llm discovers what is mentioned in the caption
+ * (say #sony but no tag to insta) and OCR and then messages targets accordingly."*
+ * MEASURED that night: **45 in-window paid posts named an existing VERIFIED prospect in
+ * their `brands` strings without tagging them** — "Amazon MGM Studios", "JioHotstar",
+ * "Excel Entertainment" — and none of those posts unlocked a message, because brand
+ * strings were excluded from this linkage wholesale.
+ *
+ * The original exclusion was about MINTING: `fg6` was stored as a brand name, so strings
+ * must not create prospects. That reasoning stands and is untouched — this arm only
+ * CREDITS a prospect that already exists and already passed the verified badge, and only
+ * on EXACT name equality (squashed: case and separators removed, minimum four
+ * characters). `fg6` can never equal a verified prospect's name; prose can never
+ * substring-match its way in.
+ */
+export function brandStringsNameProspect(
+  brandsJson: string,
+  prospect: { handle: string; displayName?: string | null },
+): boolean {
+  let arr: unknown
+  try {
+    arr = JSON.parse(brandsJson || '[]')
+  } catch {
+    return false
+  }
+  if (!Array.isArray(arr)) return false
+  const squash = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, '')
+  const names = [prospect.displayName ?? '', prospect.handle].map(squash).filter((n) => n.length >= 4)
+  if (names.length === 0) return false
+  return arr.some((b) => typeof b === 'string' && names.includes(squash(b)))
+}
+
 export async function campaignsNamingHandle(
   /* Structurally typed so tests can hand in a stub; `any`-shaped findMany because Prisma's
      own generic signature does not narrow through a structural constraint. */
   prismaClient: {
     detectedCampaign: {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      findMany: (args: any) => Promise<Array<{ caption: string; taggedAccounts: string }>>
+      findMany: (args: any) => Promise<Array<{ caption: string; taggedAccounts: string; brands: string }>>
     }
   },
-  handle: string,
+  prospect: { handle: string; displayName?: string | null },
   windowFloor: Date,
 ): Promise<number> {
+  const handle = prospect.handle
   const candidates = await prismaClient.detectedCampaign.findMany({
     where: {
       verdict: 'CAMPAIGN',
       postedAt: { gte: windowFloor },
-      OR: [{ taggedAccounts: { contains: `"${handle}"` } }, { caption: { contains: `@${handle}` } }],
+      /* The brands arm cannot be prefiltered portably (SQLite `contains` is
+         case-insensitive, Postgres is not — the two-provider trap), so rows with any
+         brand strings come back and the EXACT test runs in JS, where it is one rule on
+         both providers. Bounded by the window either way. */
+      OR: [
+        { taggedAccounts: { contains: `"${handle}"` } },
+        { caption: { contains: `@${handle}` } },
+        { brands: { not: '[]' } },
+      ],
     },
-    select: { caption: true, taggedAccounts: true },
+    select: { caption: true, taggedAccounts: true, brands: true },
   })
-  return candidates.filter((c) => mentionsHandleExactly(c, handle)).length
+  return candidates.filter((c) => mentionsHandleExactly(c, handle) || brandStringsNameProspect(c.brands, prospect)).length
 }

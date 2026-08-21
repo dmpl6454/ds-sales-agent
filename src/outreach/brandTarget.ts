@@ -41,7 +41,7 @@ export type BrandTargetOutcome = 'created' | 'exists' | 'is-our-sender'
 export async function createBrandTarget(
   verdict: Extract<BrandVerdict, { kind: 'BRAND' }>,
   campaign: { id: string; shortcode?: string; channelHandle?: string } | null,
-  auditAction: 'brand.discovered' | 'brand.auto-decided',
+  auditAction: 'brand.discovered' | 'brand.auto-decided' | 'brand.badge-door',
   actor: string,
   opts: {
     /**
