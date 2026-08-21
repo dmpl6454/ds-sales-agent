@@ -90,3 +90,70 @@ export function materialAllowanceDetail(v: MaterialVerdict): string | null {
   const sent = v.delivered === 1 ? 'one of our pages has already written' : `${v.delivered} of our pages have already written`
   return `${posts} and ${sent} — the next message waits for the next paid post from them, on any channel we watch`
 }
+
+/**
+ * ── HOW MANY PAID POSTS NAME THIS RECIPIENT? The unlock half of Tabish's rule ──
+ *
+ * *"…unless we detect another paid post made that same day or by another channel (we
+ * monitor) and only then."*
+ *
+ * The first version counted `DetectedCampaign.targetId === recipient` — and `targetId` is
+ * the CHANNEL that posted, so for a PROSPECT that count is zero forever. MEASURED the
+ * evening it went live: the allowance clamped every recipient to max(1, 0) = 1, 133 of 139
+ * verified prospects were at allowance, the planner logged `skipped=851 queued=0`, and the
+ * fleet went quiet — the unlock could never fire, which silently strengthened his rule into
+ * "one message per recipient, ever (per window)". His own report was the detector: *"the
+ * queue also doesn't seem to move forward"*.
+ *
+ * What links a campaign to a prospect is the same evidence that MINTED the prospect:
+ * handles Instagram itself asserts on the post — caption @mentions and media tags. Brand
+ * STRINGS are deliberately not consulted ("fg6" was one); handles are asserted facts.
+ *
+ * ── PORTABLE BY CONSTRUCTION, EXACT IN JS ─────────────────────────────────
+ *
+ * The first draft used `caption ~* …`, which is Postgres-only — and `pnpm test` drives the
+ * gate against SQLite, the two-provider trap this repo has already paid for. So the DATABASE
+ * does a cheap `contains` prefilter (portable on both providers) and the BOUNDARY test runs
+ * in JS, where it is exact and testable:
+ *
+ *   - a tag matches only as the QUOTED array element, so "zee5" never credits a post that
+ *     tagged @zee5_marathi;
+ *   - a caption mention must be @handle followed by a non-handle character or the end, so
+ *     @zee5 never credits @zee5_marathi either. Dots in handles are regex-escaped
+ *     (@manav.manglani must not wildcard).
+ */
+export function mentionsHandleExactly(row: { caption: string; taggedAccounts: string }, handle: string): boolean {
+  try {
+    const tags: unknown = JSON.parse(row.taggedAccounts || '[]')
+    if (Array.isArray(tags) && tags.some((t) => typeof t === 'string' && t.toLowerCase() === handle.toLowerCase())) {
+      return true
+    }
+  } catch {
+    /* unreadable tags decide nothing — the caption test below still runs */
+  }
+  const escaped = handle.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  return new RegExp(`@${escaped}($|[^a-z0-9_.])`, 'i').test(row.caption)
+}
+
+export async function campaignsNamingHandle(
+  /* Structurally typed so tests can hand in a stub; `any`-shaped findMany because Prisma's
+     own generic signature does not narrow through a structural constraint. */
+  prismaClient: {
+    detectedCampaign: {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      findMany: (args: any) => Promise<Array<{ caption: string; taggedAccounts: string }>>
+    }
+  },
+  handle: string,
+  windowFloor: Date,
+): Promise<number> {
+  const candidates = await prismaClient.detectedCampaign.findMany({
+    where: {
+      verdict: 'CAMPAIGN',
+      postedAt: { gte: windowFloor },
+      OR: [{ taggedAccounts: { contains: `"${handle}"` } }, { caption: { contains: `@${handle}` } }],
+    },
+    select: { caption: true, taggedAccounts: true },
+  })
+  return candidates.filter((c) => mentionsHandleExactly(c, handle)).length
+}

@@ -7,7 +7,7 @@ import { newMaterialFloor } from '@/lib/cutoff'
 import { DELIVERED_STATUSES, IN_FLIGHT_STATUSES } from '@/lib/constants'
 import { evaluatePair, type GovernorDecision } from './governor'
 import { crossSpacingVerdict } from './crossSpacing'
-import { materialAllowance } from './materialAllowance'
+import { materialAllowance, campaignsNamingHandle } from './materialAllowance'
 import { eligibleFleetSenderIds } from './availability'
 import { routeAllowed } from './routes'
 import { composeForPair, usedCampaignIds } from './compose'
@@ -426,9 +426,14 @@ export async function runOutreach(): Promise<PlanSummary> {
        * same campaign reads as "unused" for every sender and each sender's own first touch is
        * exempt from the pair rule. See materialAllowance.ts.
        */
-      prisma.detectedCampaign.count({
-        where: { targetId: pair.targetId, verdict: 'CAMPAIGN', postedAt: { gte: windowFloor } },
-      }),
+      /**
+       * Campaigns NAMING the recipient, not campaigns POSTED by them — `targetId` on
+       * DetectedCampaign is the channel that posted, so the old count was zero for every
+       * prospect forever and the unlock ("another paid post earns another message") could
+       * never fire. Measured: skipped=851, queued=0, the whole fleet quiet. See
+       * campaignsNamingHandle.
+       */
+      campaignsNamingHandle(prisma, pair.target.handle, windowFloor),
       prisma.outreachAttempt.count({
         where: {
           pair: { targetId: pair.targetId },

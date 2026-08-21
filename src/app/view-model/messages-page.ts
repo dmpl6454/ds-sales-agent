@@ -17,6 +17,7 @@ import { readNewBrandTouchCounts } from '@/outreach/brandTouchCounts'
 import { recheckBeforeSend } from '@/outreach/gate'
 import { replyHaltFloor } from '@/outreach/replyHalt'
 import { crossSpacingVerdict, crossSpacingDetail } from '@/outreach/crossSpacing'
+import { materialAllowance, materialAllowanceDetail, campaignsNamingHandle } from '@/outreach/materialAllowance'
 import { eligibleFleetSenderIds } from '@/outreach/availability'
 import type { OnDemandRecipient, OnDemandSender } from '../on-demand'
 
@@ -407,11 +408,48 @@ export async function buildMessagesPage(): Promise<MessagesPageView> {
     if (prev === undefined || resumes > prev) replyResumesAt.set(r.targetId, resumes)
   }
 
-  /** Reply first, then spacing — the gate's own order, so the sentence names the deeper stop. */
-  const holdFor = (draft: { senderId: string; targetId: string }): { why: string; resumesAt: Date } | null => {
+  /**
+   * THE MATERIAL ALLOWANCE, per waiting draft (2026-08-21). Tabish watched gea_saudi and
+   * kumarmangatpathak sit in "Up next" for an hour — both were 5th messages the gate refuses
+   * under one-message-per-paid-post, and this partition predates that rule, so the page kept
+   * promising sends the enforcer holds. The fifth entry in the "a page reporting a rule by a
+   * different rule than the one enforcing it" series; same fix as ever — ask the enforcer's
+   * own predicate, never mirror it.
+   *
+   * Per-draft rather than bulk: the queue is small by construction (drafts for held targets
+   * stop being written by the governor's copy of the same rule), so this is a handful of
+   * `campaignsNamingHandle` reads.
+   */
+  const materialHolds = new Map<string, { why: string }>()
+  for (const a of upNextRaw) {
+    if (materialHolds.has(a.pair.target.handle)) continue
+    const delivered = (deliveriesByTarget.get(a.pair.targetId)?.size ?? 0) > 0
+      ? [...(deliveriesByTarget.get(a.pair.targetId) ?? new Map()).values()].length
+      : 0
+    if (delivered === 0) continue /* nothing delivered in window — the allowance cannot hold */
+    const campaigns = await campaignsNamingHandle(prisma, a.pair.target.handle, cooldownFloor)
+    const v = materialAllowance({ campaignsInWindow: campaigns, deliveredInWindow: delivered })
+    if (v.held) materialHolds.set(a.pair.target.handle, { why: materialAllowanceDetail(v)! })
+  }
+
+  /** Reply first, then material, then spacing — the gate's own order, so the sentence names the deeper stop. */
+  const holdFor = (draft: { senderId: string; targetId: string; targetHandle?: string }): { why: string; resumesAt: Date } | null => {
     const replyResume = replyResumesAt.get(draft.targetId)
     if (replyResume !== undefined) {
       return { why: 'they replied — resumes on its own, or the moment "I have replied" is pressed', resumesAt: replyResume }
+    }
+    const material = draft.targetHandle ? materialHolds.get(draft.targetHandle) : undefined
+    if (material !== undefined) {
+      /**
+       * `resumesAt` here is "when the window's oldest delivery ages out" — the only date the
+       * rule itself guarantees; a NEW paid post can release it any minute before that, and
+       * the sentence says so.
+       */
+      const oldest = [...(deliveriesByTarget.get(draft.targetId) ?? new Map()).values()]
+        .map((d: { sentAt: Date }) => d.sentAt.getTime())
+        .sort((x: number, y: number) => x - y)[0]
+      const resumesAt = new Date((oldest ?? now.getTime()) + settings.defaultCooldownDays * 86_400_000)
+      return { why: material.why, resumesAt }
     }
     const v = crossSpacingVerdict({
       now,
@@ -427,7 +465,7 @@ export async function buildMessagesPage(): Promise<MessagesPageView> {
   const sendableDrafts: typeof upNextRaw = []
   const heldRows: HeldRow[] = []
   for (const a of upNextRaw) {
-    const hold = holdFor(a)
+    const hold = holdFor({ senderId: a.senderId, targetId: a.targetId, targetHandle: a.pair.target.handle })
     if (hold === null) sendableDrafts.push(a)
     else
       heldRows.push({

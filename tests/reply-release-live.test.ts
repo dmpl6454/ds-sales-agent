@@ -239,7 +239,9 @@ beforeEach(async () => {
         targetId: TARGET,
         shortcode: shortcode!,
         permalink: `https://www.instagram.com/p/${shortcode}/`,
-        caption: 'a detected paid post for this recipient',
+        /* The allowance counts campaigns NAMING the recipient (caption @mention or tag), not
+           campaigns posted by them — so the fixture must actually mention the handle. */
+        caption: `a detected paid post mentioning @${TARGET}`,
         verdict: 'CAMPAIGN',
         postedAt: new Date(),
       },

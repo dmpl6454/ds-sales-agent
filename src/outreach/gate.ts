@@ -6,7 +6,7 @@ import { replyHaltFloor } from './replyHalt'
 import { profileStatus } from './browser/profile'
 import { sessionUsable } from './sessionHealth'
 import { crossSpacingVerdict, crossSpacingDetail, type CrossSpacingVerdict } from './crossSpacing'
-import { materialAllowance, materialAllowanceDetail, type MaterialVerdict } from './materialAllowance'
+import { materialAllowance, materialAllowanceDetail, campaignsNamingHandle, type MaterialVerdict } from './materialAllowance'
 import { eligibleFleetSenderIds } from './availability'
 import { DELIVERED_STATUSES } from '@/lib/constants'
 
@@ -474,7 +474,7 @@ export interface ResendAttempt {
     senderId: string
     targetId: string
     sender: { handle: string; status: string }
-    target: { optedOut: boolean; role: string; kind?: string; isVerified: boolean | null }
+    target: { handle: string; optedOut: boolean; role: string; kind?: string; isVerified: boolean | null }
   }
 }
 
@@ -567,10 +567,9 @@ export async function recheckBeforeSend(
       orderBy: [{ failureCode: 'asc' }, { queuedAt: 'desc' }],
       select: { failureCode: true },
     }),
-    /* The recipient's allowance: paid posts naming them, and messages any page has sent. */
-    prisma.detectedCampaign.count({
-      where: { targetId, verdict: 'CAMPAIGN', postedAt: { gte: materialWindowFloor } },
-    }),
+    /* The recipient's allowance: paid posts NAMING them (see campaignsNamingHandle — the
+       targetId column is the posting channel, so counting it here was zero forever). */
+    campaignsNamingHandle(prisma, target.handle, materialWindowFloor),
     prisma.outreachAttempt.count({
       where: {
         pair: { targetId },
