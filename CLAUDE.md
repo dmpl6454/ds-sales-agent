@@ -71,7 +71,99 @@ properly rather than kept on a handle we could never confirm.
 
 ---
 
-## 21 AUGUST, EVENING — THE GREEN-RUN THAT KEPT FINDING RED: SIX DEFECTS IN ONE MONITORED SESSION
+## 21 AUGUST, NIGHT — THE INBOX WAS THE ANSWER ALL ALONG: 20 REPLIES WHERE 6 HAD EVER BEEN FOUND
+
+Tabish's audit request named five discrepancies; measuring them found four real defects, all
+fixed, tested (1,793), deployed to both hosts, and re-verified live the same night. The
+headline: **reply detection was reading 4 threads per run against ~600 open conversations
+(10% coverage ever), and one probe of ONE sender's real inbox found six undetected replies in
+ten minutes** — including a live Lufthansa collaboration response, a Royal Canin reply, and a
+Hindi buyer conversation sitting in the "Partnership messages" folder no sweep had ever opened.
+
+### THE SWEEP SCANS INBOX LISTS NOW — ONE DRIVE ANSWERS FOR EVERY CONVERSATION AT ONCE
+
+`src/outreach/browser/inboxScan.ts` (read-only by construction: it clicks the inbox icon and
+the Partnership folder, never a row, never a composer) reads every conversation row of a
+sender in one drive: display name, snippet, relative age, unread state. The snippet's grammar
+is the ours/theirs signal, OBSERVED live: "You sent an attachment."/"You: …" = ours last;
+the reply text, "<Name> sent an attachment." or "2 new messages" = theirs. `inboxTriage.ts`
+is the PURE interpreter, its fixtures the real probe rows. Rows where THEY wrote last and a
+prospect matches are recorded as replies immediately — the HALT, the safety-critical half —
+and the capped 4-thread deep-read budget now covers what remains instead of rotating blindly.
+**First live run: 14 replies recorded against 6 ever detected before.** After dedupe and two
+undos, **20 genuine reply records stand**, each on its own thread.
+
+Watching the two live runs caught three defects no test could have (render the real output):
+presence text (**"Active"**) recorded as a reply — and the real snippet underneath it turned
+out to be *"Regarding?"*, a genuine human reply the noise was hiding; a system notice
+(*"This account can't receive your message…"*) recorded as a reply; and state snippets
+re-recording EVERY run because the attach rule was target-scoped — the per-PAIR
+`shouldRecordInboxReply` fixes that (a row describes ONE sender's thread; a state can never
+be "new" twice). All three undone with audit rows, filtered, and pinned in
+`tests/reply-dating.test.ts` with the live rows as fixtures. Rows matching NO prospect are
+REPORTED for a person, never guessed (36 on the first run — several are inbound enquiries
+from strangers, the @fukra_insaan class; and several exposed that stored `displayName`s are
+often just the handle, which the squashed-handle exact match now covers: "India Gate Foods" →
+`indiagatefoods`, while "Kama Ayurveda" stays honestly unmatched against `kamaayurvedaindia`).
+
+**The exposure, stated:** the sweep now opens ~6 inbox scans + up to 4 thread reads per
+30-minute run (was 4 reads). All read-only, home IP, inside the send lock, checkpoint-halted.
+
+### THE HALT COUNTS FROM WHEN THEY WROTE, NOT WHEN WE LOOKED (TABISH'S RULE, VERBATIM)
+
+*"the agent must see the date on the reply or message sent; if no date is visible send the
+message … as the reply might be to an older conversation."* `repliedAt` is the OBSERVATION
+clock, and at 10% coverage growing it meant "discovering" weeks-old replies that would each
+have halted their target seven days from the day of DISCOVERY. New column
+**`replyPostedAt`** (hand-ALTERed on the live Postgres, 6 existing replies backfilled, DDL
+added to all seven live-test blocks) carries the reply's own date: from the thread's date
+separators — plain `span[dir=auto]` texts interleaved with bubbles, OBSERVED live ("12:39"
+above our message, "18:04" above the reply) and parsed by the anchored `threadDates.ts` —
+or from the inbox row's age ("41m", "2d"). Every halt site (gate, plan, onDemand, three view
+models) keys on it, the gate's refusal sentence names the WRITTEN date it counts from, and
+**an UNDATABLE reply does not halt — his call, the permissive direction, recorded in
+`replyHalt.ts`.** The reply itself is always recorded and listed; only the automatic
+seven-day pause needs a date it can count from.
+
+### THE PACE CLOCK STAMPED ON INTENT — "0 MINUTES AGO" FOR TWELVE MINUTES WITH ZERO SENDS
+
+The lock-level stamp shipped that same morning was measured wrong by evening: a dispatch tick
+takes the lock BEFORE it knows whether any draft passes the gate, so on a drained queue every
+passing tick re-stamped `fleetLastSendStartedAt` — watch.log read *"the last message went out
+0 minute(s) ago"* every minute from 17:07 to 17:18 with nothing sent, and a newly-cleared
+draft could wait a full extra gap period behind stamps from ticks that delivered nothing.
+The stamp lives in **`browserSender.send`** now (`paceClock.ts` — its own module because the
+sender sits below `deliver.ts` in the import graph): the ONE implementation every delivered
+message passes through, still inside the lock, still before the browser moves. The `isSend`
+flag died with it — a read structurally cannot stamp a clock it never reaches. Its test mock
+had now been wrong in BOTH directions across the flag's one-day life.
+
+### AND THE ANSWERS TO THE REST OF THE AUDIT, MEASURED
+
+- **"Autopilot on but nothing sends"** — the fleet delivered 362 that day and DRAINED the
+  queue; the 4 remaining drafts were all held by his own rules (1 reply halt, 3 at
+  allowance). Waiting-for-material is the steady state, not a fault; new paid posts release
+  it automatically.
+- **Repetition:** every send since the allowance shipped complies (sanyamalhotra 3/3, zee5
+  4/4, pharsfilm 1/1; the 124 over-allowance recipients are all pre-fix history, all now
+  held). **Worth his eyes:** sanyamalhotra's 3 messages trace to ONE film campaign ("Bandar")
+  syndicated across three watched channels in 43 minutes — his rule counts each channel's
+  copy as a new unlock, so syndication multiplies messages. Stated, not changed.
+- **Failure path:** a retryable failure re-queues to the BACK (`queuedAt` bumped) so the next
+  tick takes the next recipient; the third failure parks in FAILED, visible with
+  requeue/discard; `not-in-thread` parks immediately for a person (13 parked, all that class).
+- **Reply rate on /analytics divides by conversations CHECKED now** and names its denominator
+  on the tile — dividing by every send was understating reality tenfold at 10% coverage.
+- **/paid-posts carries a "We message" column** (left of the cross): the prospect(s) each
+  paid post earns a message to, via `mentionsHandleExactly` — the allowance's OWN linkage, so
+  the column cannot disagree with the enforcer — plus `discoveredFromCampaignId` for
+  prospects minted from untagged posts. "nobody verified" is the honest empty state.
+- **Accuracy, all channels, server, --repeat 3:** fleet-wide **96% recall (43/45), 91%
+  correct, 80% precision over 140 labels**. Both misses are the documented
+  dressed-as-commentary class (one carries "#ad-" stripped by the harness). @rvcjinsta's "0%"
+  is 0/1 on a single label. THE HONEST HALF: filmygyan (0/304), voompla (0/108), taranadarsh
+  (0/20) and most new channels have NO labels — their accuracy is UNMEASURED, not good, and
+  only disclosures or human answers on /paid-posts can change that.
 
 Tabish asked for a supervised end-to-end run: autopilot on from the real UI, three paid posts
 detected accurately, blocker 5 resolving itself, three more sends, everything reflected on the
