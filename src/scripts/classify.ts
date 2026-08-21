@@ -226,6 +226,7 @@ async function main(): Promise<void> {
           shortcode: post.shortcode,
           caption: post.caption,
           optedOut: target.optedOut,
+          publisher: { handle: target.handle, displayName: target.displayName },
           detectorKey: 'semantic', // only semantic channels reach this loop
           tagText,
         },

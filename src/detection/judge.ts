@@ -1,4 +1,5 @@
 import { readFrameText, frameTextSummaryLine } from './ocr'
+import { stripOwnMarksFromFrame } from './ownMarks'
 import { applyFrameSignal } from './frameSignal'
 import { modelVerdictToStored, classifyCaption } from './detectors/semantic'
 import type { Verdict } from '@/lib/constants'
@@ -60,6 +61,20 @@ import type { Verdict } from '@/lib/constants'
 export interface JudgeInput {
   shortcode: string
   caption: string
+  /**
+   * WHOSE POST THIS IS — required, no default, so the compiler names every caller.
+   *
+   * Needed because a publisher's own marks are not evidence about the publisher. MEASURED
+   * 2026-08-21: the caption classifier called @filmygyan's anniversary post ORGANIC with the
+   * reason "Publisher's own anniversary, not a paid promotion", and the FOOTAGE then
+   * escalated it to CAMPAIGN on a frame reading `in shot: FILMYGYAN` — the channel's own
+   * watermark, burned into every video it posts. @filmygyan produced 42 CAMPAIGN verdicts
+   * since 20 August against @viralbhayani's 25.
+   *
+   * See `ownMarks.ts`, including the control case that proves the stage itself is sound:
+   * the same channel's `acerpure | Dolby | 120Hz` frame escalation is CORRECT and survives.
+   */
+  publisher: { handle: string; displayName: string | null }
   /**
    * Is this target one we would ever MESSAGE? Frames are still saved for everyone —
    * they are the labelled set any future measurement needs — but reading and re-judging
@@ -242,17 +257,44 @@ export async function judgeWithFrame(
   const engine = frame.text?.engine ?? null
 
   /**
+   * THE PUBLISHER'S OWN WATERMARK IS REMOVED BEFORE THE FOOTAGE BECOMES EVIDENCE.
+   *
+   * Applied to the PROMPT, so the classifier never sees the channel's own logo presented as
+   * a brand in shot — and applied here rather than in `ocr.ts` so the stored `frameText`
+   * still records everything that was actually read. What we READ and what we treat as
+   * EVIDENCE are different facts, and this repo has paid for collapsing them before.
+   *
+   * When nothing survives the strip there is no footage evidence at all, so the flow takes
+   * the same path as a frame with no text — through `applyFrameSignal`, which is the one
+   * writer of the reasoning about why the footage did not speak.
+   */
+  const evidencePrompt = frame.prompt ? stripOwnMarksFromFrame(frame.prompt, input.publisher) : frame.prompt
+
+  /**
    * No prompt means nothing to add to the caption. The verdict is re-derived through
    * `applyFrameSignal` ANYWAY, passing the caption verdict as both arguments, so the
    * signal recording WHY the footage did not speak is produced by the permission table
    * rather than invented here. One writer of that reasoning, not two.
    */
-  if (!frame.prompt) {
+  if (!evidencePrompt) {
     const outcome = applyFrameSignal(captionOnly, captionOnly, frame.evidence)
-    return { ...base, verdict: outcome.verdict, signals: [...extraSignals, ...outcome.signals], engine }
+    /**
+     * `frame:only-own-marks` when the frame HAD text and all of it was the publisher's own.
+     * Distinct from "no text found", because they are different facts with different
+     * meanings — the five-states lesson from `framesRead`, one modality along.
+     */
+    const stripped = frame.prompt ? ['frame:only-own-marks'] : []
+    return {
+      ...base,
+      verdict: outcome.verdict,
+      signals: [...extraSignals, ...outcome.signals, ...stripped],
+      frameText: frameTextSummaryLine(frame.text),
+      frameSummary: frameTextSummaryLine(frame.text),
+      engine,
+    }
   }
 
-  const withFrameCall = await classifyCaption(input.caption, input.shortcode, frame.prompt, input.tagText ?? null)
+  const withFrameCall = await classifyCaption(input.caption, input.shortcode, evidencePrompt, input.tagText ?? null)
 
   /**
    * A FAILED CALL IS NOT A VERDICT. Without an answer we cannot know what the classifier

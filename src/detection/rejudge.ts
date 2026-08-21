@@ -133,7 +133,7 @@ export async function rejudgeUnusedEvidence(opts: RejudgeOptions = {}): Promise<
       signals: true,
       taggedAccounts: true,
       rawPayload: true,
-      target: { select: { handle: true, optedOut: true, detectorKey: true } },
+      target: { select: { handle: true, optedOut: true, detectorKey: true, displayName: true } },
     },
   })
 
@@ -148,6 +148,7 @@ export async function rejudgeUnusedEvidence(opts: RejudgeOptions = {}): Promise<
         shortcode: p.shortcode,
         caption: p.caption,
         optedOut: p.target.optedOut,
+        publisher: { handle: p.target.handle, displayName: p.target.displayName },
         /**
          * judge.ts owns what each detector's verdicts permit, keyed on the detector —
          * but READINESS is still asked of the detector itself ("no API key" must skip
