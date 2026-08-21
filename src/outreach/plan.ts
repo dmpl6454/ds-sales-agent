@@ -7,6 +7,7 @@ import { newMaterialFloor } from '@/lib/cutoff'
 import { DELIVERED_STATUSES, IN_FLIGHT_STATUSES } from '@/lib/constants'
 import { evaluatePair, type GovernorDecision } from './governor'
 import { crossSpacingVerdict } from './crossSpacing'
+import { materialAllowance } from './materialAllowance'
 import { eligibleFleetSenderIds } from './availability'
 import { routeAllowed } from './routes'
 import { composeForPair, usedCampaignIds } from './compose'
@@ -333,7 +334,8 @@ export async function runOutreach(): Promise<PlanSummary> {
      */
     const alreadyUsedIds = await usedCampaignIds(pair.id)
 
-    const [touches, replied, pairToday, ringDeliveries, pending, parked, unusedCampaignCount] = await Promise.all([
+    const windowFloor = new Date(now.getTime() - settings.defaultCooldownDays * 86_400_000)
+    const [touches, replied, pairToday, ringDeliveries, pending, parked, unusedCampaignCount, targetCampaigns, targetDelivered] = await Promise.all([
       /**
        * Both counts here use DELIVERED_STATUSES, not 'SENT'.
        *
@@ -415,6 +417,25 @@ export async function runOutreach(): Promise<PlanSummary> {
           id: { notIn: alreadyUsedIds },
         },
       }),
+      /**
+       * ── THE RECIPIENT'S ALLOWANCE (2026-08-21) ─────────────────────────────
+       *
+       * Distinct paid posts naming this recipient inside the window, and messages ANY of our
+       * pages delivered to them inside the SAME window. Target-scoped on purpose: the
+       * per-pair versions above are what let one paid post fund five messages, because the
+       * same campaign reads as "unused" for every sender and each sender's own first touch is
+       * exempt from the pair rule. See materialAllowance.ts.
+       */
+      prisma.detectedCampaign.count({
+        where: { targetId: pair.targetId, verdict: 'CAMPAIGN', postedAt: { gte: windowFloor } },
+      }),
+      prisma.outreachAttempt.count({
+        where: {
+          pair: { targetId: pair.targetId },
+          status: { in: [...DELIVERED_STATUSES] },
+          sentAt: { gte: windowFloor },
+        },
+      }),
     ])
 
     const decision: GovernorDecision = evaluatePair({
@@ -439,6 +460,11 @@ export async function runOutreach(): Promise<PlanSummary> {
       }),
       hasPendingAttempt: pending > 0,
       parkedFailureCode: parked?.failureCode ?? null,
+      /**
+       * One message per detected paid post, asked about the RECIPIENT (2026-08-21). Both
+       * counts over the same window — see materialAllowance.ts for why that matters.
+       */
+      material: materialAllowance({ campaignsInWindow: targetCampaigns, deliveredInWindow: targetDelivered }),
       unusedCampaignCount,
       totalSentEver,
       maxTotalSends: env.MAX_TOTAL_SENDS,

@@ -34,6 +34,7 @@ const gateInput = (over: Record<string, unknown> = {}) =>
     senderHasSession: true,
     /* Nothing parked on this pair — the duplicate guard, 2026-08-21. */
     parkedFailureCode: null,
+    material: { held: false, allowance: 1, delivered: 0 },
     targetOptedOut: false,
     targetIsWatchOnly: false,
     targetIsVerified: true,
@@ -53,6 +54,7 @@ const governorInput = (over: Record<string, unknown> = {}) =>
     targetRepliedAt: null,
     hasPendingAttempt: false,
     parkedFailureCode: null,
+    material: { held: false, allowance: 1, delivered: 0 },
     unusedCampaignCount: 5,
     pairSentTodayCount: 0,
     maxPerPairPerDay: 5,

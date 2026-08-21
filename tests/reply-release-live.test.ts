@@ -128,6 +128,39 @@ bootstrap.exec(`
     "replyHandledBy" TEXT
   );
 
+  /**
+   * ADDED 2026-08-21 with the recipient's material allowance, which counts paid posts naming
+   * the target. Hand-transcribed DDL goes stale the day the schema moves — CLAUDE.md's
+   * two-provider trap's cousin — and it went stale the moment the gate learned a new query.
+   * Only the columns this gate actually reads.
+   */
+  CREATE TABLE "DetectedCampaign" (
+    "id" TEXT NOT NULL PRIMARY KEY,
+    "targetId" TEXT NOT NULL,
+    "shortcode" TEXT NOT NULL UNIQUE,
+    "permalink" TEXT NOT NULL,
+    "postedAt" DATETIME NOT NULL,
+    "detectedAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "caption" TEXT NOT NULL,
+    "likeCount" INTEGER,
+    "commentCount" INTEGER,
+    "mediaType" TEXT,
+    "brands" TEXT NOT NULL DEFAULT '[]',
+    "signals" TEXT NOT NULL DEFAULT '[]',
+    "confidence" INTEGER NOT NULL DEFAULT 0,
+    "verdict" TEXT NOT NULL,
+    "humanLabel" BOOLEAN,
+    "labelledBy" TEXT,
+    "labelledAt" DATETIME,
+    "verdictSource" TEXT NOT NULL DEFAULT 'none',
+    "classifierModel" TEXT,
+    "classifierReason" TEXT,
+    "taggedAccounts" TEXT NOT NULL DEFAULT '[]',
+    "rawPayload" TEXT,
+    "frameText" TEXT
+  );
+
+
   CREATE TABLE "Setting" (
     "key" TEXT NOT NULL PRIMARY KEY,
     "value" TEXT NOT NULL,
@@ -186,6 +219,32 @@ beforeEach(async () => {
     data: { id: TARGET, handle: TARGET, displayName: TARGET, kind: 'BRAND', role: 'PROSPECT', isVerified: true },
   })
   await prisma.outreachPair.create({ data: { id: 'pair', senderId: SENDER, targetId: TARGET } })
+
+  /**
+   * TWO detected paid posts for this recipient, so the material allowance (2026-08-21) is not
+   * what refuses the send. Without them the allowance is max(1, 0) = 1, the delivered message
+   * that GOT the reply spends it, and `material-exhausted` shadows the stop this file is about.
+   *
+   * That is the rule working correctly, and it is also why the fixture needs them: this test
+   * asserts the reply stop RELEASES, and it can only see that if the next stop is the
+   * environmental one (a seeded account can never hold a session) rather than a second rule.
+   */
+  for (const [id, shortcode] of [['dc1', 'AAAAAAAAAAA'], ['dc2', 'BBBBBBBBBBB']]) {
+    /* The seed runs before EVERY test in this file, so upsert rather than create. */
+    await prisma.detectedCampaign.upsert({
+      where: { id: id! },
+      update: {},
+      create: {
+        id: id!,
+        targetId: TARGET,
+        shortcode: shortcode!,
+        permalink: `https://www.instagram.com/p/${shortcode}/`,
+        caption: 'a detected paid post for this recipient',
+        verdict: 'CAMPAIGN',
+        postedAt: new Date(),
+      },
+    })
+  }
 
   // What we delivered, and their answer to it — a reply from ten minutes ago, well inside
   // the reply window (7 days since 2026-08-19), so the halt is genuinely active.

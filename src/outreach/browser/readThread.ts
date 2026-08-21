@@ -6,6 +6,7 @@ import {
   clickMessageEntry,
   openThreadViaInbox,
   passBusinessInterstitial,
+  acceptMessageRequest,
   dismissBlockingDialog,
   firstVisible,
   jitter,
@@ -405,6 +406,17 @@ export async function openAndReadThread(
     // conversation; nothing is typed and nothing is sent by this module, as ever.
     await passBusinessInterstitial(page, targetHandle)
     await dismissBlockingDialog(page)
+
+    /**
+     * BLOCKER 5 on the READ path too, and this is the half that matters most for it: an
+     * unaccepted request is a message somebody sent US, so refusing to accept it means the
+     * one thread most likely to contain a real enquiry is the one we can never read. A
+     * blocker fixed on one path and not the other is this codebase's most repeated defect,
+     * which is why every door lives in `messageEntry.ts` and both callers take it.
+     */
+    if (await acceptMessageRequest(page, targetHandle)) {
+      await dismissBlockingDialog(page)
+    }
 
     /**
      * The dwell is now spent INSIDE the read rather than before it. Same wall-clock pause, so

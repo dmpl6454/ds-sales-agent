@@ -35,6 +35,7 @@
  */
 
 import { crossSpacingDetail, type CrossSpacingVerdict } from './crossSpacing'
+import { materialAllowanceDetail, type MaterialVerdict } from './materialAllowance'
 
 export interface GovernorInput {
   now: Date
@@ -80,6 +81,24 @@ export interface GovernorInput {
    * gate and the dashboard use, so the three can never disagree.
    */
   crossSpacing: CrossSpacingVerdict
+
+  /**
+   * ONE MESSAGE PER DETECTED PAID POST — Tabish, 2026-08-21.
+   *
+   * *"If only a single paid post is detected … then we send a message to the brand only once
+   * unless we detect another paid post."* MEASURED before the change: **133 recipients had
+   * heard from more than one of our pages**, many from all five — @indiagatefoods got five
+   * messages from five pages in twelve hours off ONE paid post.
+   *
+   * The existing `NO_NEW_MATERIAL` rule already said this and was defeated by its SCOPE:
+   * `unusedCampaignCount` is per PAIR, so one paid post reads as unused for all five senders,
+   * and the check only runs when `touchesSoFar > 0` while each sender's own pair has zero.
+   * This asks the question about the RECIPIENT, which is who the rule was always about.
+   *
+   * See `materialAllowance.ts`. Computed by the caller with the shared predicate the gate and
+   * the dashboard use, so the three cannot disagree.
+   */
+  material: MaterialVerdict
 
   /** True when an attempt for this pair is already waiting to be sent. */
   hasPendingAttempt: boolean
@@ -150,6 +169,8 @@ export const SKIP_REASONS = {
   /** Repeated failures parked this pair. Re-drafting would re-drive the browser forever. */
   PARKED_FAILURE: 'parked-failure-unsettled',
   NO_NEW_MATERIAL: 'no-new-material-to-reference',
+  /** Every paid post we have seen naming this recipient has already been written about. */
+  MATERIAL_EXHAUSTED: 'material-exhausted',
   PAIR_DAILY_CAP: 'pair-daily-cap',
   TARGET_RECENTLY_CONTACTED: 'target-recently-contacted',
   TARGET_NOT_VERIFIED: 'target-not-verified',
@@ -241,6 +262,23 @@ export function evaluatePair(input: GovernorInput): GovernorDecision {
           reason: SKIP_REASONS.PARKED_FAILURE,
           detail: `a message to them was parked after repeated failures (${input.parkedFailureCode}) — re-queue or discard it before another is written`,
         }
+  }
+
+  /**
+   * ONE MESSAGE PER DETECTED PAID POST, ASKED ABOUT THE RECIPIENT (2026-08-21).
+   *
+   * Checked BEFORE the per-pair new-material rule below, because it is the stronger and more
+   * general form of the same idea: that rule asks "has THIS page written about this campaign",
+   * this one asks "has ANY page", which is the question a recipient's inbox actually poses.
+   * Ordered after the pair-level pending/parked checks so a more specific fact about this
+   * exact draft still wins the sentence.
+   */
+  if (input.material.held) {
+    return {
+      eligible: false,
+      reason: SKIP_REASONS.MATERIAL_EXHAUSTED,
+      detail: materialAllowanceDetail(input.material) ?? undefined,
+    }
   }
 
   // A follow-up must have something new to say — a campaign we have not written

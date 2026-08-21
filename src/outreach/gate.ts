@@ -6,6 +6,7 @@ import { replyHaltFloor } from './replyHalt'
 import { profileStatus } from './browser/profile'
 import { sessionUsable } from './sessionHealth'
 import { crossSpacingVerdict, crossSpacingDetail, type CrossSpacingVerdict } from './crossSpacing'
+import { materialAllowance, materialAllowanceDetail, type MaterialVerdict } from './materialAllowance'
 import { eligibleFleetSenderIds } from './availability'
 import { DELIVERED_STATUSES } from '@/lib/constants'
 
@@ -68,6 +69,9 @@ export interface ResendInput {
    * the drift this file was extracted to stop.
    */
   parkedFailureCode: string | null
+
+  /** One message per detected paid post, asked about the recipient. See materialAllowance.ts. */
+  material: MaterialVerdict
 
   targetOptedOut: boolean
   /**
@@ -224,6 +228,13 @@ export const RESEND_BLOCKS = {
    * message, and "I know something the agent does not" is not an argument about that — it is
    * an argument for opening the thread and pressing one of the two buttons that settle it.
    */
+  /**
+   * ONE MESSAGE PER DETECTED PAID POST (2026-08-21, Tabish). The other end of the governor's
+   * `MATERIAL_EXHAUSTED`: 133 recipients had heard from more than one of our pages, many from
+   * all five, off a single paid post. Absolute — it is a fact about how much we have to say to
+   * this person, not about timing.
+   */
+  MATERIAL_EXHAUSTED: 'material-exhausted',
   UNCERTAIN_DELIVERY: 'uncertain-delivery-unsettled',
   /** Repeated failures parked this pair; re-queue or discard before another is sent. */
   PARKED_FAILURE: 'parked-failure-unsettled',
@@ -411,6 +422,19 @@ export function evaluateResend(input: ResendInput): ResendResult {
         }
   }
 
+  /**
+   * Has this recipient earned another message? Checked with the parked/uncertain stops rather
+   * than with the caps, because it is a fact about what we have to SAY to them; the caps are
+   * facts about timing and clear by themselves.
+   */
+  if (input.material.held) {
+    return {
+      ok: false,
+      reason: RESEND_BLOCKS.MATERIAL_EXHAUSTED,
+      detail: materialAllowanceDetail(input.material) ?? undefined,
+    }
+  }
+
   if (!input.senderHasSession) {
     return { ok: false, reason: RESEND_BLOCKS.NO_SESSION, detail: 'account is not connected' }
   }
@@ -469,7 +493,9 @@ export async function recheckBeforeSend(
   const dayStart = istDayStart()
   const { sender, target, senderId, targetId } = attempt.pair
 
-  const [replied, pairToday, ringDeliveries, eligibleSenderIds, ladder, senderRow, parked] = await Promise.all([
+  const materialWindowFloor = new Date(Date.now() - settings.defaultCooldownDays * 86_400_000)
+  const [replied, pairToday, ringDeliveries, eligibleSenderIds, ladder, senderRow, parked, targetCampaigns, targetDelivered] =
+    await Promise.all([
     prisma.outreachAttempt.findFirst({
       /**
        * `gte: replyHaltFloor(...)` rather than `not: null` since 2026-08-07: a reply
@@ -541,6 +567,19 @@ export async function recheckBeforeSend(
       orderBy: [{ failureCode: 'asc' }, { queuedAt: 'desc' }],
       select: { failureCode: true },
     }),
+    /* The recipient's allowance: paid posts naming them, and messages any page has sent. */
+    prisma.detectedCampaign.count({
+      where: { targetId, verdict: 'CAMPAIGN', postedAt: { gte: materialWindowFloor } },
+    }),
+    prisma.outreachAttempt.count({
+      where: {
+        pair: { targetId },
+        status: { in: [...DELIVERED_STATUSES] },
+        sentAt: { gte: materialWindowFloor },
+        /* This draft is not yet delivered, so it cannot count against its own allowance. */
+        id: { not: attempt.id },
+      },
+    }),
   ])
 
   return evaluateResend({
@@ -550,6 +589,7 @@ export async function recheckBeforeSend(
     senderCohortCleared: ladder.ok,
     senderCohortDetail: ladder.ok ? undefined : ladder.detail,
     parkedFailureCode: parked?.failureCode ?? null,
+    material: materialAllowance({ campaignsInWindow: targetCampaigns, deliveredInWindow: targetDelivered }),
     /**
      * §3.5: "connected" means a cookie on disk AND nothing has since proved it dead. A
      * dead session found during a real send writes `sessionInvalidAt`, and folding it in
