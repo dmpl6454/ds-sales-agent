@@ -165,20 +165,57 @@ had now been wrong in BOTH directions across the flag's one-day life.
   (0/20) and most new channels have NO labels — their accuracy is UNMEASURED, not good, and
   only disclosures or human answers on /paid-posts can change that.
 
-### OPEN, REPORTED BY TABISH THE SAME NIGHT — THE "WE MESSAGE" COLUMN EXPOSED A LEAD FUNNEL GAP
+### THE COLUMN EXPOSED THE LEAD FUNNEL'S REAL LEAK THE HOUR IT SHIPPED — THE BADGE DOOR
 
-His report, from the live page: *"Several of the paid posts columns has nobody verified,
-this is false and doesn't make sense … for a post if several tags are detected then we must
-message them provided they are not our monitoring target … why is only kumarmangatpathak
-being sent a message — we must send one to Rocket Reels, @ajaydhama7, @ameyjoshi30,
-@kumarmangatpathak, @krantishanbhag provided they have verified accounts … Almost all the
-paid posts have this issue. Why are we missing out so many of the leads when we have clear
-indications."* Also: whether the Autopilot page's "4 waiting" is real-time, and that the
-targets we HAVE messaged must display accurately.
+Tabish, from the live page: *"Several of the paid posts columns has nobody verified, this
+is false … we must send one to Rocket Reels, @ajaydhama7, @ameyjoshi30,
+@kumarmangatpathak, @krantishanbhag provided they have verified accounts … Why are we
+missing out so many of the leads when we have clear indications."* He was right, and the
+funnel audit found a leak nobody suspected:
 
-The column made the funnel's ingestion lag VISIBLE for the first time — that is the column
-working, and the gap is real. Being measured and fixed now; this block is replaced by the
-measured entry when done.
+**Of 280 handles asserted on in-window paid posts, ZERO were never-looked** — the lookup
+pipeline keeps up — **and only 74 were prospects. The leak was the VERDICTS.** 144 sat as
+cached PERSON — among them @amazonmgmstudiosin, @zeemarathiofficial, @rkdstudios, @1win:
+companies the model mis-filed, permanently, because PERSON never retries. And the genuine
+people among them were equally stuck: `admitsAsTalent` needs the badge, a cached PERSON
+carries `isVerified: null`, and NOTHING EVER FILLED IT IN — "a cached PERSON flows through
+the bar on every pass" was true and useless. Absence of data hardening into a permanent
+refusal, inside the door built for his talent rule. 43 more were model-declined once and
+never re-asked (@dr_pradeep_sethi — the Eugenix founder — among them).
+
+**`src/detection/badgeDoor.ts`** closes it: every asserted-but-unminted handle in
+PERSON/UNRESOLVED/MISSING/UNKNOWN gets ONE feed enrichment; the badge is persisted to
+`BrandLookup.isVerified` (new column, live-ALTERed); TRUE admits via `createBrandTarget`
+with `campaignTalent` and the asserting post as provenance; FALSE persists as a refusal
+the screen names. On the device agent's brand timer (10/pass) + `pnpm ig:reaudit` for the
+backlog. **THE DRAIN, MEASURED COMPLETE: 399 enriched, 266 ADMITTED, 109 refused as
+unverified (the bar working), 24 unreachable (the timer retries them). Live prospects went
+152 → 415 (409 verified) in one evening; the queue went 4 → 137 drafts; 13 delivered in
+the following hour** — including @1win and @aamirkhanproductions, both previously stuck as
+model-"PERSON" verdicts, admitted → drafted by the server planner → delivered by autopilot
+within the hour, which is the loop closing end to end. The voompla post from his screenshot
+went from one recipient to three, with the fourth honestly marked "badge check pending".
+
+Two linkage gaps fixed with it, both his observations: **brand STRINGS that exactly name a
+verified prospect now credit that prospect** in `campaignsNamingHandle` (45 in-window
+posts named "Amazon MGM Studios"/"JioHotstar"-class prospects with no tag and unlocked
+nothing; exact squashed-name equality only, so `fg6`-class junk structurally cannot match
+— minting stays string-free, crediting stops being blind). And the **"We message" column
+states each candidate's disposition** — "N unverified, refused · M badge check pending" —
+with "nobody named" only for posts that assert no account at all. The blanket "nobody
+verified" is gone; it was false, as reported.
+
+**The Autopilot page was VERIFIED REAL-TIME the same hour:** DB said 4 waiting, the page
+said "4 written and waiting" at the same instant (it re-renders every 30-45s), and the
+send he watched was @bachelorssociety → @parthiv9 at 20:17 IST — a prospect minted, drafted
+and delivered from the JITO Premier League post while the four held drafts stayed held.
+The queue moves; the page tells the truth about it.
+
+**THE THROUGHPUT CONSEQUENCE, STATED:** ~100+ new verified prospects means the planner
+fills the queue toward its 150-draft depth and the dispatcher works through it at the
+paced ~1/minute. That is the lead recovery he asked for, at the pace the safety design
+already enforces. The talent door risk (celebrity inboxes are managed and report-happy)
+was stated 2026-08-20 and stands recorded as his call.
 
 Tabish asked for a supervised end-to-end run: autopilot on from the real UI, three paid posts
 detected accurately, blocker 5 resolving itself, three more sends, everything reflected on the
