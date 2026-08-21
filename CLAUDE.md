@@ -71,6 +71,102 @@ properly rather than kept on a handle we could never confirm.
 
 ---
 
+## 21 AUGUST — THE 1-MINUTE GAP WAS MEASURED FROM A SEND'S *END*, SO THE PERIOD WAS 1 MIN + 47 s
+
+**Tabish: *"If we are sending every 1 min or so why are only 25-35/hour being sent?"*** The
+answer is arithmetic, and the overnight run is the cleanest sample this fleet has produced —
+276 deliveries, autopilot on, 80+ drafts waiting, nothing held:
+
+```
+gap between consecutive sends:  min 104s   p50 107s   p90 124s
+235 of 275 gaps inside ONE 15-second bucket (105-119s)
+```
+
+**A distribution that tight is an equation, not jitter.** `sentAt` is stamped on COMPLETION and
+`minutesSinceLastSend` was measured from it, so the next send could only START a full minute
+after the previous one FINISHED, and then took ~47s itself:
+
+> **period = gap (60s) + browser drive (~47s) = 107s = 33.6/hour**
+
+So the knob **could never produce the rate it named, at any value** — at gap=1 the true period
+was 107s, at gap=5 it would be 347s. The number on `/rules` and the number in force were
+different rules: the `MAX_TOTAL_SENDS` failure moved into the pacing layer, where "one message
+a minute" silently meant "one message per minute-plus-a-send".
+
+**THE FIX IS THAT THE GAP IS A PERIOD.** `fleetLastSendStartedAt` is stamped inside
+`withSendLock` **before** the drive, and the tick gates on that. `withSendLock` is what makes
+this safe rather than reckless: it is fleet-wide and refuses to nest, so two sends cannot
+overlap however small the gap gets. **The gap controls PACE, the lock enforces SERIALISATION** —
+measuring from completion conflated the two, and that conflation is the whole bug.
+
+The stamp lives in the LOCK and not in the tick because the dashboard's Send button is a send
+too; a stamp reaching only the dispatcher would let a manual send land seconds after an
+automatic one. `SendLockKind.isSend` is a **required** field rather than an optional flag, so
+the compiler names every call site the day a new one appears (the `RenderTarget.kind` pattern)
+— and it immediately named four, including a test mock whose old two-argument shape had been
+silently passing the callback into the options slot.
+
+### THE FIRST VERSION OF THE FIX DID NOTHING, AND IT WAS DEPLOYED BEFORE THAT WAS KNOWN
+
+`lastSendStartedAt` returned **`max(started, completed)`** — "the later clock is safer". It is
+not: a send COMPLETES ~47s after that same send STARTS, so **the max is the completion every
+single time** and the fix silently reinstated the behaviour it was written to remove. Deployed,
+agent restarted, measured: **106.8s against a 107s baseline. No change at all** — while every
+source grep passed, because the caller genuinely did read the new function.
+
+**A defensive fallback that outranks the signal it defends is this codebase's most repeated
+shape, and this is the first time it has appeared inside a fix for itself.** A grep cannot see
+which branch of a comparison returns, so the comparison is now the pure `gapClock`, driven in
+the direction that failed and mutation-tested by restoring the `max()` with the real
+timestamps. **Only re-measuring after deploying caught it.**
+
+**MEASURED AFTER THE REAL FIX: 77s, 77s, 76s — the period is 77s, 47.6/hour, up from 33.6.**
+
+### WHAT STILL COSTS THE LAST 13/HOUR, AND IT IS NOW THE POLL
+
+At a 77-second period the arithmetic is `drive (47s) + poll (30s)`, so **the 30-second device
+poll is the binding constraint and the 60-second gap is not** — which contradicts the stated
+invariant in `agent/index.ts`'s own docblock, *"at 30s the gap is what paces the fleet rather
+than this timer, which is where the decision belongs"*. That was true while the period was
+107s; the fix made it false. Restoring it means a shorter poll (10s → ~57-67s period,
+~54-63/hour), which is cheap — a handful of queries, no browser — and **cannot exceed the gap,
+so the gap stays the lever.** NOT CHANGED HERE: it is a deliberate throughput increase rather
+than a bug, and it is Tabish's call, stated rather than shipped.
+
+**THE EXPOSURE ALREADY SHIPPED, STATED PLAINLY (rule 1):** ~33/hour → ~47/hour at the same
+setting. That is the rate he asked for twice and never actually got, but it is 40% more than
+has been running. **`fleetMinGapMinutes = 2` restores the old rate in one write**, and
+autopilot OFF still stops everything at the next decision point. The long tail of the old
+distribution (20 gaps of 135-290s) is the reply sweep holding the fleet lock for its whole run
+— known, documented, and a different change (per-conversation locking) than this one.
+
+### AND THE THIRD FACE OF THE CAPPED-LIST BUG, PLUS THE HISTORY HE ASKED FOR
+
+*"it should reflect in analytics and autopilot page accurately all the message thread with an
+ability to go even beyond."* `SentList` rendered **`Delivered ({recent.length})`** — the size of
+its own `take: 50` window, labelled as the total, on a fleet doing ~290 a day. Third distinct
+face in three days of *a bounded list read as a complete record*, after `sentToday` (a
+`take: 50` filtered into a count) and the activity feed (a `take: 40` whose oldest row read as
+the day's first send).
+
+`buildSentHistory` is the whole delivered record, 50 a page: `total` from **its own count**
+(deriving it from the page would report "50 of 50" and agree with the truncation — *a check
+verifying its own symmetry*, third time recorded here), the page **clamped** into range because
+`?sent=999` is a URL anyone can type, and ordered `[sentAt desc, id desc]` because at a
+~1-minute period two rows can share a timestamp and an unstable sort silently repeats or skips
+a row across a page boundary. `/analytics` drives it from `?sent=` with the range preserved, a
+`#history` anchor, and Newest/Newer/Older/Oldest — "the oldest message we ever sent" is a real
+question and stepping to it one page at a time is not an answer. The **Autopilot page** finally
+states what has gone out at all (**290 today, 578 all time**, both real counts) with the newest
+eight and a link, because that page had the queue, the pace and the switch — everything about
+what is ABOUT to happen — and no figure for what already had.
+
+VERIFIED on the deployed server: *"Showing 1–50 of 578 · page 1 of 12"*, `?sent=12` →
+*"551–578 of 578"*, `?sent=999` clamps, `?sent=abc&from=../etc` falls back safely. 1,693 tests,
+typecheck clean, `ig:layout` all green.
+
+---
+
 ## 21 AUGUST — THE NIGHT RAN PERFECTLY; THE FEED SAID IT STARTED AT 07:51 AND THAT WAS THE 40-ROW CAP
 
 **Tabish: *"Verify messages sent tonight (the machine was turned on for the whole duration) so
