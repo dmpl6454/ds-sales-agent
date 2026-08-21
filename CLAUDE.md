@@ -165,6 +165,21 @@ had now been wrong in BOTH directions across the flag's one-day life.
   (0/20) and most new channels have NO labels — their accuracy is UNMEASURED, not good, and
   only disclosures or human answers on /paid-posts can change that.
 
+### OPEN, REPORTED BY TABISH THE SAME NIGHT — THE "WE MESSAGE" COLUMN EXPOSED A LEAD FUNNEL GAP
+
+His report, from the live page: *"Several of the paid posts columns has nobody verified,
+this is false and doesn't make sense … for a post if several tags are detected then we must
+message them provided they are not our monitoring target … why is only kumarmangatpathak
+being sent a message — we must send one to Rocket Reels, @ajaydhama7, @ameyjoshi30,
+@kumarmangatpathak, @krantishanbhag provided they have verified accounts … Almost all the
+paid posts have this issue. Why are we missing out so many of the leads when we have clear
+indications."* Also: whether the Autopilot page's "4 waiting" is real-time, and that the
+targets we HAVE messaged must display accurately.
+
+The column made the funnel's ingestion lag VISIBLE for the first time — that is the column
+working, and the gap is real. Being measured and fixed now; this block is replaced by the
+measured entry when done.
+
 Tabish asked for a supervised end-to-end run: autopilot on from the real UI, three paid posts
 detected accurately, blocker 5 resolving itself, three more sends, everything reflected on the
 pages. Each step of watching it surfaced something real. **All fixed, deployed, and re-verified

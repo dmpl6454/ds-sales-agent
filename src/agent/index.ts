@@ -7,6 +7,7 @@ import { profileStatus } from '@/outreach/browser/profile'
 import { reconcileSessionRecords } from './reconcile'
 import { autoResolveBrands } from '@/detection/autoResolve'
 import { discoverOfficialPages } from '@/detection/officialDiscovery'
+import { badgeDoorPass } from '@/detection/badgeDoor'
 import { checkForReplies } from '@/outreach/replyCheck'
 import { getSettings } from '@/lib/settings'
 
@@ -113,6 +114,8 @@ const BRAND_LOOKUPS_PER_PASS = 25
  * which is the right speed for a rule whose failure mode is a pitch to the wrong company.
  */
 const OFFICIAL_LOOKUPS_PER_PASS = 5
+/** Badge checks per brand pass — the FEED endpoint, 6s spacing inside the pass. */
+const BADGE_ENRICHMENTS_PER_PASS = 10
 
 /**
  * ── THE REPLY SWEEP RUNS HERE NOW, BECAUSE HERE IS WHERE THE SESSIONS ARE ──
@@ -259,6 +262,26 @@ async function brandPass(): Promise<void> {
       log.step('untagged paid posts resolved to accounts that FAILED the verified bar — a person decides', {
         count: official.needsHuman.length,
         examples: official.needsHuman.slice(0, 3).join(' | '),
+      })
+    }
+
+    /**
+     * AND THE BADGE DOOR, same timer, same reasoning (2026-08-21). Handles a paid post
+     * ASSERTED whose lookup settled as PERSON/UNRESOLVED/MISSING never had their badge
+     * actually checked — measured: 192 of 280 asserted handles sat permanently refused,
+     * @amazonmgmstudiosin among them, while the column Tabish read said "nobody
+     * verified". Bounded small; the FEED endpoint it uses answers on any host, but it
+     * runs here beside its siblings so one timer owns the lead funnel. It admits only on
+     * the badge (VERIFIED ONLY), so a pass that admits nobody is the normal case.
+     */
+    const badge = await badgeDoorPass({ maxEnrichments: BADGE_ENRICHMENTS_PER_PASS })
+    if (badge.enriched > 0 || badge.admitted > 0) {
+      log.info('badge-door pass', {
+        candidates: badge.candidates,
+        enriched: badge.enriched,
+        admitted: badge.admitted,
+        refusedUnverified: badge.refusedUnverified,
+        unreachable: badge.unreachable,
       })
     }
   } catch (err) {

@@ -629,6 +629,14 @@ model BrandLookup {
   displayName String?
   followers   Int?
 
+  /// The badge, learned by enrichment (2026-08-21). NULL means never enriched — and NULL
+  /// NEVER admits, but it also must never REFUSE forever: the badge door re-enriches NULL
+  /// rows for handles asserted on CAMPAIGN posts, because "a cached PERSON flows through
+  /// the bar on every pass" was FALSE while the bar read a fact nothing ever filled in —
+  /// 144 asserted handles sat permanently refused on absence of data (measured, the
+  /// funnel audit Tabish's "We message" column exposed).
+  isVerified Boolean?
+
   /// What we know about an UNRESOLVED handle, in one human-readable line.
   ///
   /// Facts, never a verdict — "1.2M followers · professional account · verified". Filled

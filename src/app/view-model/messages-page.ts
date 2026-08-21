@@ -430,7 +430,7 @@ export async function buildMessagesPage(): Promise<MessagesPageView> {
       ? [...(deliveriesByTarget.get(a.pair.targetId) ?? new Map()).values()].length
       : 0
     if (delivered === 0) continue /* nothing delivered in window — the allowance cannot hold */
-    const campaigns = await campaignsNamingHandle(prisma, a.pair.target.handle, cooldownFloor)
+    const campaigns = await campaignsNamingHandle(prisma, { handle: a.pair.target.handle, displayName: a.pair.target.displayName }, cooldownFloor)
     const v = materialAllowance({ campaignsInWindow: campaigns, deliveredInWindow: delivered })
     if (v.held) materialHolds.set(a.pair.target.handle, { why: materialAllowanceDetail(v)! })
   }

@@ -271,22 +271,34 @@ export default async function PaidPostsPage() {
                         {p.frameEvidence ? <span className="muted"> — from the footage: {p.frameEvidence}</span> : null}
                       </td>
                       <td>
-                        {p.recipients.length > 0 ? (
-                          p.recipients.map((r, i) => (
-                            <span key={r.handle}>
-                              {i > 0 ? ', ' : ''}@{r.handle}
-                              {/* A retired prospect is named, not hidden: "we found them
-                                  and chose not to write" and "we found nobody" are
-                                  different facts. */}
-                              {r.retired ? <span className="muted"> (retired)</span> : null}
-                            </span>
-                          ))
-                        ) : (
-                          /* The honest empty state: many paid posts name nobody Instagram
-                             can vouch for, and a fully anonymous paid post yields NO
-                             prospect by design — existence is not identity. */
-                          <span className="muted">nobody verified</span>
-                        )}
+                        {p.recipients.map((r, i) => (
+                          <span key={r.handle}>
+                            {i > 0 ? ', ' : ''}@{r.handle}
+                            {/* A retired prospect is named, not hidden: "we found them
+                                and chose not to write" and "we found nobody" are
+                                different facts. */}
+                            {r.retired ? <span className="muted"> (retired)</span> : null}
+                          </span>
+                        ))}
+                        {/*
+                          The rest of the post's candidates, BY STATE — never collapsed
+                          into "nobody verified" (Tabish, 2026-08-21: that read as false
+                          on posts with visible tags, and he was right — most of those
+                          candidates were "badge check pending" or "unverified, refused",
+                          which are different facts with different remedies).
+                        */}
+                        {p.candidateNote ? (
+                          <span className="muted">
+                            {p.recipients.length > 0 ? ' · ' : ''}
+                            {p.candidateNote}
+                          </span>
+                        ) : null}
+                        {p.recipients.length === 0 && !p.candidateNote ? (
+                          /* Genuinely nobody: the post asserted no account at all and no
+                             name resolved — a fully anonymous paid post yields NO
+                             prospect by design (existence is not identity). */
+                          <span className="muted">nobody named</span>
+                        ) : null}
                       </td>
                       <td>
                         <DismissButton shortcode={p.shortcode} dismissed={p.dismissed} />

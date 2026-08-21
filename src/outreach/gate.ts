@@ -474,7 +474,13 @@ export interface ResendAttempt {
     senderId: string
     targetId: string
     sender: { handle: string; status: string }
-    target: { handle: string; optedOut: boolean; role: string; kind?: string; isVerified: boolean | null }
+    /**
+     * `displayName` is REQUIRED (nullable), not optional: the allowance's brand-string
+     * arm matches on it, and an optional field a caller omits would silently disable
+     * that arm for exactly that caller — the half-wired-rule shape. The compiler names
+     * every constructor instead (the RenderTarget.kind pattern).
+     */
+    target: { handle: string; displayName: string | null; optedOut: boolean; role: string; kind?: string; isVerified: boolean | null }
   }
 }
 
@@ -569,7 +575,7 @@ export async function recheckBeforeSend(
     }),
     /* The recipient's allowance: paid posts NAMING them (see campaignsNamingHandle — the
        targetId column is the posting channel, so counting it here was zero forever). */
-    campaignsNamingHandle(prisma, target.handle, materialWindowFloor),
+    campaignsNamingHandle(prisma, { handle: target.handle, displayName: target.displayName }, materialWindowFloor),
     prisma.outreachAttempt.count({
       where: {
         pair: { targetId },

@@ -98,11 +98,28 @@ describe('no view model hands a raw displayName to the screen', () => {
  * happily matches a fragment starting mid-expression — which is exactly how the first version
  * of this checker produced a false positive.
  */
+/**
+ * Reads inside these calls are NOT hands-to-the-screen: `operatorName(...)` is the
+ * sanctioned formatter, and the two allowance functions (2026-08-21) consume the name as
+ * MATCHING INPUT — the brand-string arm asks whether a paid post's brand string IS this
+ * prospect's name, and feeding it anything but the raw stored name would break the match.
+ * Nothing inside these calls reaches prose.
+ */
+const SAFE_WRAPPERS = ['operatorName(', 'campaignsNamingHandle(', 'brandStringsNameProspect(']
+
 function unwrappedReads(src: string): string[] {
   let out = ''
   let i = 0
   while (i < src.length) {
-    const at = src.indexOf('operatorName(', i)
+    let at = -1
+    let wrapper = ''
+    for (const w of SAFE_WRAPPERS) {
+      const idx = src.indexOf(w, i)
+      if (idx !== -1 && (at === -1 || idx < at)) {
+        at = idx
+        wrapper = w
+      }
+    }
     if (at === -1) {
       out += src.slice(i)
       break
@@ -110,7 +127,7 @@ function unwrappedReads(src: string): string[] {
     out += src.slice(i, at)
     // Walk to the paren that closes this call.
     let depth = 0
-    let j = at + 'operatorName'.length
+    let j = at + wrapper.length - 1
     for (; j < src.length; j++) {
       if (src[j] === '(') depth++
       else if (src[j] === ')') {
