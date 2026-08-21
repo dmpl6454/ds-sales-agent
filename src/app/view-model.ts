@@ -186,6 +186,27 @@ export interface ActivityEvent {
 export interface ActivityDay {
   dayLabel: string
   events: ActivityEvent[]
+  /**
+   * HOW MANY WENT OUT THAT DAY, against how many this feed is showing.
+   *
+   * ── A CAPPED FEED WHOSE OLDEST ROW READS AS THE DAY'S FIRST EVENT ─────────
+   *
+   * MEASURED 2026-08-21. The fleet ran all night at ~30/hour — 280 delivered, first at
+   * **00:01:43 IST** — and Tabish read the feed and asked why the first message of the day
+   * was at **07:51**. It was not: `recentSends` is `take: 40`, and 07:51:32 is exactly the
+   * 40th-newest send. The feed was showing the newest forty of two hundred and eighty and
+   * saying nothing about it, so its bottom row became a start time.
+   *
+   * Every figure was correct — the counter said 280 — and the page still supported a false
+   * conclusion, which is the same shape as the `take: 50` `sentToday` fixed the day before:
+   * a bounded list read as a complete record. There the cap corrupted a number; here it
+   * corrupts an INFERENCE, which no assertion about a number could have caught.
+   *
+   * So a day in this feed states its own total. `shown < total` renders the sentence that
+   * makes the truncation impossible to misread.
+   */
+  shown: number
+  total: number
 }
 
 export interface ChannelCard {
@@ -639,9 +660,27 @@ export async function buildCeoView(): Promise<CeoView> {
     list.push(e.event)
     byDay.set(key, list)
   }
+  /**
+   * The TRUE delivered count per IST day, so each day can state what the feed is not
+   * showing. One `groupBy` over the same 14-day window the feed reads — never derived from
+   * `recentSends`, which is the capped list whose bottom row started this.
+   */
+  const perDayDelivered = new Map<string, number>()
+  for (const row of await prisma.outreachAttempt.findMany({
+    where: { status: { in: [...DELIVERED_STATUSES] }, sentAt: { gte: daysAgo(14) } },
+    select: { sentAt: true },
+  })) {
+    if (!row.sentAt) continue
+    const key = istDateKey(row.sentAt)
+    perDayDelivered.set(key, (perDayDelivered.get(key) ?? 0) + 1)
+  }
+
   const activity: ActivityDay[] = [...byDay.entries()].slice(0, 7).map(([key, evs]) => ({
     dayLabel: dayLabel(key),
     events: evs,
+    /* Sends only, both sides: the total is deliveries, so count the delivery events. */
+    shown: evs.filter((e) => e.kind === 'sent').length,
+    total: perDayDelivered.get(key) ?? evs.filter((e) => e.kind === 'sent').length,
   }))
 
   // ── Channels ──────────────────────────────────────────────────────────────
