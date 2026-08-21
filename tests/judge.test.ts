@@ -32,7 +32,13 @@ vi.mock('@/detection/ocr', async (importOriginal) => {
 
 const { judgeWithFrame } = await import('@/detection/judge')
 
-const ordinaryTarget = { shortcode: 'DbtNU9UzWYU', caption: 'a bus in Thane', optedOut: false, detectorKey: 'semantic' }
+/**
+ * `publisher` is required since 2026-08-21 — a channel's own watermark is not evidence about
+ * it. @viralbhayani here so the strip is a no-op for these fixtures; `tests/own-marks.test.ts`
+ * drives the stripping itself, including the @filmygyan anniversary frame that forced it.
+ */
+const publisher = { handle: 'viralbhayani', displayName: 'Viral Bhayani' }
+const ordinaryTarget = { shortcode: 'DbtNU9UzWYU', caption: 'a bus in Thane', optedOut: false, detectorKey: 'semantic', publisher }
 
 /** A frame that read cleanly and carries the founding case's decisive token. */
 function frameRead() {
@@ -186,7 +192,7 @@ describe('judgeWithFrame — absence of evidence never becomes a verdict', () =>
 })
 
 describe('judgeWithFrame — the M.O.M second look (2026-08-17, Tabish\'s decision)', () => {
-  const momPost = { shortcode: 'DmomTest01', caption: 'A wild new campaign from a fast-food giant', optedOut: false, detectorKey: 'mom' }
+  const momPost = { shortcode: 'DmomTest01', caption: 'A wild new campaign from a fast-food giant', optedOut: false, detectorKey: 'mom', publisher: { handle: 'madovermarketing_mom', displayName: 'Mad Over Marketing (M.O.M)' } }
 
   /**
    * The direction the feature exists for: MEASURED 2026-08-17, 61 in-window M.O.M posts

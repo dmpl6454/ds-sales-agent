@@ -40,7 +40,7 @@ const MACHINE_LOCAL_ABSENCE = new Set(['frame:not-saved', 'frame:no-ocr-engine']
 async function main(): Promise<void> {
   const targets = await prisma.targetAccount.findMany({
     where: { detectorKey: 'mom' },
-    select: { id: true, handle: true, optedOut: true },
+    select: { id: true, handle: true, optedOut: true, displayName: true },
   })
   if (targets.length === 0) {
     console.log('No channel uses the mom detector — nothing to do.')
@@ -76,6 +76,7 @@ async function main(): Promise<void> {
           shortcode: post.shortcode,
           caption: post.caption,
           optedOut: target.optedOut,
+          publisher: { handle: target.handle, displayName: target.displayName },
           detectorKey: 'mom',
           tagText: await tagsForStoredPost({
             shortcode: post.shortcode,

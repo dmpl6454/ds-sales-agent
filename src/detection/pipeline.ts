@@ -265,6 +265,8 @@ export async function runDetection(
              * MEASURED: 64% of OCR runs were against our own retired pages.
              */
             optedOut: target.optedOut,
+            /* Whose post this is — a publisher's own watermark is not evidence about it. */
+            publisher: { handle: target.handle, displayName: target.displayName },
             // judge.ts owns what each detector permits — including the M.O.M second look.
             detectorKey: detector.key,
             /**

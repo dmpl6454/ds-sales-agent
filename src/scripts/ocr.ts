@@ -62,6 +62,8 @@ const semanticIds = new Set(targets.filter((t) => getDetector(t.detectorKey).key
  * against exactly these.
  */
 const optedOutTargets = new Set(targets.filter((t) => t.optedOut).map((t) => t.id))
+/** Whose post each row is — a publisher's own watermark is not evidence about it. */
+const publisherById = new Map(targets.map((t) => [t.id, { handle: t.handle, displayName: t.displayName }]))
 
 const rows = await prisma.detectedCampaign.findMany({
   where: {
@@ -197,6 +199,7 @@ for (const c of worthJudging) {
       shortcode: c.shortcode,
       caption: c.caption,
       optedOut: optedOutTargets.has(c.targetId),
+      publisher: publisherById.get(c.targetId) ?? { handle: '', displayName: null },
       // 'passthrough' for anything non-semantic ON PURPOSE: this command re-reads
       // FRAMES, and giving it 'mom' would spend a semantic call per rule-negative —
       // that is `pnpm ig:second-look`'s job, bounded and dry-run by default.
