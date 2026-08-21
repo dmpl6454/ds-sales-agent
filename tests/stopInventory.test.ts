@@ -82,6 +82,7 @@ function governorInput(over: Record<string, unknown> = {}) {
     touchesSoFar: 0,
     targetRepliedAt: null,
     hasPendingAttempt: false,
+    parkedFailureCode: null,
     unusedCampaignCount: 5,
     pairSentTodayCount: 0,
     maxPerPairPerDay: 5,
@@ -103,6 +104,16 @@ const GOVERNOR_CASES: Array<[string, Record<string, unknown>]> = [
   [SKIP_REASONS.SENDER_NOT_ACTIVE, { sender: { status: 'CHALLENGED' } }],
   [SKIP_REASONS.TARGET_REPLIED, { targetRepliedAt: new Date('2026-08-19T12:00:00Z') }],
   [SKIP_REASONS.PENDING_ATTEMPT, { hasPendingAttempt: true }],
+  /**
+   * ── THE DUPLICATE GUARD (2026-08-21) ──────────────────────────────────────
+   * A parked FAILED attempt was invisible to both the pending count and the touch count, so
+   * the pair looked untouched and the planner drafted a fresh FIRST touch. MEASURED:
+   * @indiagatefoods received the identical message twice, and @sohamrockstrent collected six
+   * parked drafts at three attempts each. Two reasons, because "they may already have it" and
+   * "it kept failing" have different remedies.
+   */
+  [SKIP_REASONS.UNCERTAIN_DELIVERY, { parkedFailureCode: 'not-in-thread' }],
+  [SKIP_REASONS.PARKED_FAILURE, { parkedFailureCode: 'no-composer' }],
   [SKIP_REASONS.NO_NEW_MATERIAL, { touchesSoFar: 1, unusedCampaignCount: 0 }],
   // Five per day from one account to one recipient (2026-08-18).
   [SKIP_REASONS.PAIR_DAILY_CAP, { pairSentTodayCount: 5, maxPerPairPerDay: 5 }],
@@ -148,6 +159,7 @@ function gateInput(over: Record<string, unknown> = {}) {
     unattended: true,
     senderStatus: 'ACTIVE',
     senderHasSession: true,
+    parkedFailureCode: null,
     targetOptedOut: false,
     targetIsWatchOnly: false,
     targetIsVerified: true,
@@ -168,6 +180,16 @@ const GATE_CASES: Array<[string, Record<string, unknown>]> = [
   // Verified only (2026-08-20). NULL is refused too — see the second case.
   [RESEND_BLOCKS.TARGET_NOT_VERIFIED, { targetIsVerified: false }],
   [RESEND_BLOCKS.TARGET_REPLIED, { targetRepliedAt: new Date('2026-08-19T12:00:00Z') }],
+  /**
+   * ── THE DUPLICATE GUARD (2026-08-21) ──────────────────────────────────────
+   * A parked FAILED attempt was invisible to both the pending count and the touch count, so
+   * the pair looked untouched and the planner drafted a fresh FIRST touch. MEASURED:
+   * @indiagatefoods received the identical message twice, and @sohamrockstrent collected six
+   * parked drafts at three attempts each. Two reasons, because "they may already have it" and
+   * "it kept failing" have different remedies.
+   */
+  [RESEND_BLOCKS.UNCERTAIN_DELIVERY, { parkedFailureCode: 'not-in-thread' }],
+  [RESEND_BLOCKS.PARKED_FAILURE, { parkedFailureCode: 'no-composer' }],
   [RESEND_BLOCKS.NO_SESSION, { senderHasSession: false }],
   // Five per day from one account to one recipient (2026-08-18).
   [RESEND_BLOCKS.PAIR_DAILY_CAP, { pairSentTodayCount: 5, maxPerPairPerDay: 5 }],

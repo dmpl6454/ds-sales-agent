@@ -85,6 +85,38 @@ export interface GovernorInput {
   hasPendingAttempt: boolean
 
   /**
+   * A PARKED FAILURE ON THIS PAIR THAT NOBODY HAS SETTLED YET.
+   *
+   * ── THE DUPLICATE THIS CLOSES, MEASURED 2026-08-21 ────────────────────────
+   *
+   * Tabish photographed a thread where @bollywoodchronicle had sent
+   * @indiagatefoods the SAME message twice. The database explains it exactly:
+   *
+   *     07:30  FAILED  not-in-thread   bollywoodchronicle → indiagatefoods
+   *     09:16  a NEW draft for the same pair
+   *     12:39  SENT                    bollywoodchronicle → indiagatefoods
+   *
+   * `hasPendingAttempt` counts QUEUED|READY|SENDING, and `touchesSoFar` counts DELIVERED
+   * statuses. **FAILED is in neither**, so a parked attempt makes the pair look untouched —
+   * and the fresh draft is therefore a FIRST touch, which `NO_NEW_MATERIAL` exempts by
+   * construction. Every guard passed; the recipient got two identical DMs.
+   *
+   * `not-in-thread` is the case that makes this severe rather than untidy: its entire
+   * meaning is *the composer cleared and we cannot prove what happened, so the recipient
+   * MAY have it*. CLAUDE.md's "`not-in-thread` is never retried" was a promise about the
+   * ATTEMPT; nothing was protecting the PAIR, so the planner simply reopened it.
+   *
+   * The same hole is why @sohamrockstrent accumulated SIX parked drafts at three attempts
+   * each — eighteen browser drives at one revenue profile against a recipient whose
+   * composer cannot open (see blocker 5) — because each park was invisible to the guard.
+   *
+   * Blocking is only safe because it is VISIBLE, which is the condition this repo already
+   * sets for parking: `not-in-thread` rows have the two-button "check the conversation"
+   * flow, and other parked rows have re-queue and discard. Both release this stop.
+   */
+  parkedFailureCode: string | null
+
+  /**
    * Total messages this system has ever put IN FLIGHT — sent, replied, or sitting
    * prepared and waiting for a human. Counting prepared-but-unsent matters: with a
    * ceiling of 1 and four routing pairs, counting only delivered messages would
@@ -113,6 +145,10 @@ export const SKIP_REASONS = {
   SENDER_NOT_ACTIVE: 'sender-not-active',
   TARGET_REPLIED: 'target-replied',
   PENDING_ATTEMPT: 'pending-attempt-exists',
+  /** A send we cannot account for — the recipient may already have it. A person must look. */
+  UNCERTAIN_DELIVERY: 'uncertain-delivery-unsettled',
+  /** Repeated failures parked this pair. Re-drafting would re-drive the browser forever. */
+  PARKED_FAILURE: 'parked-failure-unsettled',
   NO_NEW_MATERIAL: 'no-new-material-to-reference',
   PAIR_DAILY_CAP: 'pair-daily-cap',
   TARGET_RECENTLY_CONTACTED: 'target-recently-contacted',
@@ -178,6 +214,33 @@ export function evaluatePair(input: GovernorInput): GovernorDecision {
   // un-tapped attempt from yesterday must not become a queue of five.
   if (input.hasPendingAttempt) {
     return { eligible: false, reason: SKIP_REASONS.PENDING_ATTEMPT }
+  }
+
+  /**
+   * A PARKED FAILURE BLOCKS A NEW DRAFT FOR THIS PAIR UNTIL A PERSON SETTLES IT.
+   *
+   * Checked here — after the pending check and before anything about material or spacing —
+   * because it is a fact about what the RECIPIENT may already hold, which outranks every
+   * question about timing. See `parkedFailureCode` for the measured duplicate.
+   *
+   * `not-in-thread` gets its own reason and its own sentence: "we cannot prove whether they
+   * got it" and "it repeatedly failed" are different facts with different remedies, and
+   * collapsing them would put the ambiguous case behind a button labelled for the certain
+   * one. Everything else is the retry cap having parked the pair.
+   */
+  if (input.parkedFailureCode !== null) {
+    return input.parkedFailureCode === 'not-in-thread'
+      ? {
+          eligible: false,
+          reason: SKIP_REASONS.UNCERTAIN_DELIVERY,
+          detail:
+            'a message to them cleared the composer and never appeared in the thread, so they may already have it — settle that on the dashboard before another is written',
+        }
+      : {
+          eligible: false,
+          reason: SKIP_REASONS.PARKED_FAILURE,
+          detail: `a message to them was parked after repeated failures (${input.parkedFailureCode}) — re-queue or discard it before another is written`,
+        }
   }
 
   // A follow-up must have something new to say — a campaign we have not written

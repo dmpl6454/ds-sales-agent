@@ -333,7 +333,7 @@ export async function runOutreach(): Promise<PlanSummary> {
      */
     const alreadyUsedIds = await usedCampaignIds(pair.id)
 
-    const [touches, replied, pairToday, ringDeliveries, pending, unusedCampaignCount] = await Promise.all([
+    const [touches, replied, pairToday, ringDeliveries, pending, parked, unusedCampaignCount] = await Promise.all([
       /**
        * Both counts here use DELIVERED_STATUSES, not 'SENT'.
        *
@@ -379,6 +379,21 @@ export async function runOutreach(): Promise<PlanSummary> {
       // SENDING included: a browser mid-send is the most pending an attempt gets.
       prisma.outreachAttempt.count({ where: { pairId: pair.id, status: { in: ['QUEUED', 'READY', 'SENDING'] } } }),
       /**
+       * AN UNSETTLED PARKED FAILURE ON THIS PAIR — the duplicate guard (2026-08-21).
+       *
+       * FAILED appears in neither of the two counts above, so before this a parked attempt
+       * made the pair look untouched and the planner drafted a fresh FIRST touch. MEASURED:
+       * @bollywoodchronicle sent @indiagatefoods the identical message twice, 07:30 parked
+       * `not-in-thread` and 12:39 delivered; and @sohamrockstrent collected six parked
+       * drafts at three attempts each. `not-in-thread` is preferred when both exist because
+       * "they may already have it" is the graver fact and deserves the sentence.
+       */
+      prisma.outreachAttempt.findFirst({
+        where: { pairId: pair.id, status: 'FAILED', failureCode: { not: null } },
+        orderBy: [{ failureCode: 'asc' }, { queuedAt: 'desc' }],
+        select: { failureCode: true },
+      }),
+      /**
        * Is there anything NEW worth writing about?
        *
        * `newMaterialFloor` takes whichever is LATER: the hook-age window
@@ -423,6 +438,7 @@ export async function runOutreach(): Promise<PlanSummary> {
         ),
       }),
       hasPendingAttempt: pending > 0,
+      parkedFailureCode: parked?.failureCode ?? null,
       unusedCampaignCount,
       totalSentEver,
       maxTotalSends: env.MAX_TOTAL_SENDS,

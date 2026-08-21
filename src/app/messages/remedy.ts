@@ -45,6 +45,22 @@ export const REMEDIES = {
   [RESEND_BLOCKS.TARGET_REPLIED]: { href: '/', label: 'Read the reply — messaging resumes by itself after seven days' },
 
   /**
+   * Both point at the landing page because that is where the controls that RELEASE them
+   * live: "check the conversation" for the unaccounted-for send, and re-queue / discard for
+   * a parked one. A stop whose remedy is a control on another screen must name that screen —
+   * the gate says WHY, this says WHERE, and `href: null` is reserved for stops with no
+   * control at all.
+   */
+  [RESEND_BLOCKS.UNCERTAIN_DELIVERY]: {
+    href: '/',
+    label: 'Open the conversation and say whether it arrived — under "check the conversation"',
+  },
+  [RESEND_BLOCKS.PARKED_FAILURE]: {
+    href: '/',
+    label: 'Re-queue or discard the parked message — under "Gave up after repeated failures"',
+  },
+
+  /**
    * No control, on purpose. Retirement is the one promise the UI makes that has to survive
    * every other feature, so there is deliberately no "un-retire" button beside a draft.
    */
