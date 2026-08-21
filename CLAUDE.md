@@ -71,6 +71,130 @@ properly rather than kept on a handle we could never confirm.
 
 ---
 
+## 21 AUGUST, LATE — THE DUPLICATE DM, AND A PUBLISHER'S OWN WATERMARK READ AS A PAID PLACEMENT
+
+Two independent defects, both found from Tabish's screenshots, both measured before anything
+was changed. **A third batch of items from the same message is NOT done and is listed at the
+end — read that before assuming this section closes them.**
+
+### A PARKED `FAILED` ATTEMPT WAS INVISIBLE TO THE PLANNER, SO IT RE-DRAFTED THE PAIR
+
+He photographed @bollywoodchronicle sending @indiagatefoods **the identical message twice**.
+The database explains it exactly:
+
+```
+07:30  FAILED  not-in-thread   bollywoodchronicle → indiagatefoods
+09:16  a NEW draft for the same pair
+12:39  SENT                    bollywoodchronicle → indiagatefoods
+```
+
+`hasPendingAttempt` counts `QUEUED|READY|SENDING`; `touchesSoFar` counts DELIVERED. **FAILED
+is in neither.** So a parked attempt made the pair look untouched, and the fresh draft was a
+**first touch** — which `NO_NEW_MATERIAL` exempts by construction. Every guard passed.
+
+`not-in-thread` is what makes this severe rather than untidy: its entire meaning is *the
+composer cleared, we cannot prove what happened, the recipient MAY have it*. This file's
+"`not-in-thread` is never retried" was a promise about the **ATTEMPT**; nothing protected the
+**PAIR**, so the planner simply reopened it.
+
+**THE SAME HOLE IS THE "8+ ATTEMPTS" HE SAW.** @sohamrockstrent had accumulated **six parked
+drafts at three attempts each — eighteen browser drives at one revenue profile** against a
+recipient whose composer cannot open (blocker 5, below), because each park was invisible.
+
+Fixed at BOTH ends: the governor refuses to WRITE for a pair with an unsettled park, the gate
+refuses to SEND one written before the rule. **Two reasons, not one** — `UNCERTAIN_DELIVERY`
+and `PARKED_FAILURE` — because "they may already have it" and "it kept failing" have different
+remedies, and collapsing them puts the ambiguous case behind a button labelled for the certain
+one. Neither is overridable: every stop a human may cross is about TIMING, and this is about
+whether a stranger already holds this exact message. The gate excludes the attempt being
+judged, or a re-queued draft would refuse to send on its own history.
+
+**VERIFIED by executing the real gate against the live queue:** the seventh sohamrockstrent
+drive now reads `parked-failure-unsettled`, and the clean drafts still read CLEAR TO SEND.
+
+**MEASURED and reassuring, from the same audit:** `(sender→target)` pairs delivered more than
+once: **0** apart from this mechanism. Sends that went out AFTER a recipient's reply was
+recorded: **0** — the reply halt has never been crossed.
+
+### A PUBLISHER'S OWN WATERMARK IS NOT EVIDENCE THAT SOMEBODY PAID THEM
+
+*"the detection mechanism has beautifully failed for filmigyan's posts … this was their
+anniversary celebration."* Correct, and the row names the mechanism. `DcRTPMDTTjX`:
+
+| | |
+|---|---|
+| caption verdict | **ORGANIC** — *"Publisher's own anniversary, not a paid promotion."* |
+| signals | `frame:escalated-to-campaign`, `frame:says-campaign` |
+| frame text | `…celebrationasFilmygyan \| marks10amazingyears… — in shot: FILMYGYAN` |
+| stored verdict | **CAMPAIGN** |
+
+**The caption classifier got it right and the FOOTAGE overruled it on the channel's own
+logo.** @filmygyan burns `FILMYGYAN` into every video, so OCR reports its own watermark on
+every post and the frame stage reads it as a brand in shot. Systematic, not incidental:
+**@filmygyan produced 42 CAMPAIGN verdicts since 20 August against @viralbhayani's 25.**
+
+**THE CONTROL CASE PROVES THE STAGE IS SOUND AND MUST NOT BE WEAKENED.** Same channel, same
+path, `DcRB5e1Cy_M`: the frame reads `acerpure | BaDolby | 120Hz | FILMYGYAN` and **that
+escalation is CORRECT** — a real television placement the caption missed, exactly what reading
+footage was built for. So the answer is not to distrust the frame; it is to stop handing a
+publisher its own name as evidence about itself. The same rule `brandCandidatesFor` already
+applies to handles, one modality late.
+
+`src/detection/ownMarks.ts` is PURE and **its control cases carry the weight** — acerpure,
+Zee5, 5Star, Dolby all survive, because a missed paid post is invisible and unappealable while
+a false one is a row on a screen. Those tests caught two real weaknesses in the first rule:
+`fg` is an **acronym** of filmygyan rather than a prefix (so the stem must be a
+first-letter-anchored subsequence — which also rejects `ig11`), and unbounded containment
+would have swallowed a `FilmygyanXAcerpure` blob (so it is length-bounded, and prose about the
+publisher survives for the model to judge, since the model judges it correctly).
+
+**INTERNAL SERIES CODES fall out of the same rule.** *"filmigyan uses #fg6 … there is no brand
+by that name, similarly #bs2."* MEASURED since 20 August: **fg6 ×15, fg2 ×10, fg14 ×4, fg15
+×4, fg18, fg11, FG17** stored as brand NAMES; **54 rows carry at least one.** The test is
+deliberately not "short token with digits" — that is Zee5 — it is *the publisher's own initials
+followed by a number*, which cannot be a third party by construction.
+
+`publisher` is a **required** field on `JudgeInput`, so the compiler named all five callers.
+The stored `frameText` still records everything read — **what we READ and what we treat as
+EVIDENCE are different facts** — and a frame whose text was only own marks now reports
+`frame:only-own-marks` rather than collapsing into "no text found" (the `framesRead`
+five-states lesson).
+
+**AND WATCHED CHANNELS ARE SAFE, MEASURED:** attempts ever aimed at a watched channel or one
+of our own pages = **0**, and no watched handle exists as a second non-WATCH row. Self-tagging
+cannot create a prospect either, because `brandCandidatesFor` excludes our pages and watched
+publishers *before* the lookup budget.
+
+### WHAT IS NOT DONE FROM THIS MESSAGE — READ THIS BEFORE ASSUMING IT IS
+
+1. **The dominant filmygyan cause is still live.** Only 1 of the 42 rested on the frame alone;
+   the rest are `frame:not-needed-caption-decided` with the model's own reasons reading
+   *"Promotes video on own channel, likely paid promo"* and *"Promotes Filmygyan's 10-year
+   party event"*. **The model is not told whose feed it is reading**, so it cannot know that
+   "Filmygyan's YouTube channel" is the publisher itself. That is an INPUT change of the same
+   shape as `tagsAsEvidence` and it **must go through `pnpm ig:accuracy --repeat 3` before and
+   after** — recall is never traded. Not attempted here.
+2. **The existing false CAMPAIGN rows are not re-judged**, and the 54 brand lists are not
+   cleaned. Both want a bounded `--run` command, not a silent sweep.
+3. **BLOCKER 5 is real and unhandled**: when a recipient has messaged US first, the thread
+   opens on Accept / Delete / Block with no composer, which is what produced `no-composer`
+   ×6 on @sohamrockstrent. The agent must click **Accept** and proceed. It belongs in
+   `messageEntry.ts` so BOTH the send path and the read path get it at once.
+4. **THE 5× FAN-OUT.** *"If only a single paid post is detected … we send a message to the
+   brand only once."* MEASURED: **133 recipients have heard from more than one of our pages,
+   many from all five** — @indiagatefoods got five messages from five pages in twelve hours.
+   That is the ring rule working exactly as specified on 2026-08-19, and he is now asking for
+   one message per DETECTED PAID POST instead. It is the safer direction and it is a real
+   change to `crossSpacing`.
+5. **REPLY DETECTION COVERS 50 OF 640 delivered messages (7.8%).** No send has yet crossed a
+   *recorded* reply, but the sweep reads four conversations a run against 640 open threads, so
+   most replies are simply unknown. The 5× fan-out multiplies this: a recipient who replies to
+   one page still hears from four others.
+6. **`/paid-posts` has no per-channel filter and no pagination**, and the "not paid" cascade
+   has not been re-verified end to end against drafts already written.
+
+---
+
 ## 21 AUGUST — THE 1-MINUTE GAP WAS MEASURED FROM A SEND'S *END*, SO THE PERIOD WAS 1 MIN + 47 s
 
 **Tabish: *"If we are sending every 1 min or so why are only 25-35/hour being sent?"*** The
