@@ -25,6 +25,7 @@
  * settle, and nothing else. A frame may never mint a CAMPAIGN nor clear one.
  */
 import { prisma } from '@/lib/db'
+import { getSettings } from '@/lib/settings'
 import { detectionCutoff } from '@/lib/cutoff'
 import { readStringArray, writeStringArray } from '@/lib/json'
 import { getDetector } from '@/detection/detectors'
@@ -200,6 +201,7 @@ for (const c of worthJudging) {
       caption: c.caption,
       optedOut: optedOutTargets.has(c.targetId),
       publisher: publisherById.get(c.targetId) ?? { handle: '', displayName: null },
+      publisherAsContext: (await getSettings()).publisherAsContext,
       // 'passthrough' for anything non-semantic ON PURPOSE: this command re-reads
       // FRAMES, and giving it 'mom' would spend a semantic call per rule-negative —
       // that is `pnpm ig:second-look`'s job, bounded and dry-run by default.

@@ -1,4 +1,5 @@
 import { prisma } from '@/lib/db'
+import { getSettings } from '@/lib/settings'
 import { log } from '@/lib/logger'
 import { writeStringArray } from '@/lib/json'
 import { fetchFeed, FeedFetchError, type FeedPost } from './feed'
@@ -267,6 +268,7 @@ export async function runDetection(
             optedOut: target.optedOut,
             /* Whose post this is — a publisher's own watermark is not evidence about it. */
             publisher: { handle: target.handle, displayName: target.displayName },
+            publisherAsContext: (await getSettings()).publisherAsContext,
             // judge.ts owns what each detector permits — including the M.O.M second look.
             detectorKey: detector.key,
             /**
