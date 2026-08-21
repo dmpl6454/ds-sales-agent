@@ -323,6 +323,21 @@ export default async function AnalyticsPage({
                   <div key={day.dayLabel}>
                     <div className="rowitem" style={{ paddingBottom: 4 }}>
                       <span className="eyebrow">{day.dayLabel}</span>
+                      {/*
+                        THE DAY'S REAL TOTAL, BESIDE ITS HEADING (2026-08-21).
+
+                        The feed reads `take: 40` across 14 days. On a night the fleet
+                        delivered 280 messages the oldest visible row was 07:51 — the
+                        40th-newest — and it read as the first send of the day. Every number
+                        on the page was right; the truncation was the thing that lied,
+                        because nothing said the list was a window. A capped list must
+                        announce its cap where the cap is visible.
+                      */}
+                      {day.total > day.shown ? (
+                        <span className="muted" style={{ marginLeft: 'auto' }}>
+                          newest {day.shown} shown of <strong>{day.total}</strong> sent
+                        </span>
+                      ) : null}
                     </div>
                     {day.events.map((e, i) => (
                       <div className="rowitem" key={i} style={{ paddingTop: 4, paddingBottom: 4, borderTop: 0 }}>
