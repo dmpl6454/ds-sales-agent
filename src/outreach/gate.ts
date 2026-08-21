@@ -61,6 +61,14 @@ export interface ResendInput {
   senderCohortDetail?: string
   senderHasSession: boolean
 
+  /**
+   * An unsettled parked failure on THIS pair, or null. See `RESEND_BLOCKS.UNCERTAIN_DELIVERY`
+   * for the duplicate this closes. Required with no default, so the compiler names every
+   * caller — a guard that reaches one of `recheckBeforeSend`'s callers and not the others is
+   * the drift this file was extracted to stop.
+   */
+  parkedFailureCode: string | null
+
   targetOptedOut: boolean
   /**
    * `TargetAccount.role === 'WATCH'` — a publisher we read, never a recipient.
@@ -197,6 +205,28 @@ export const RESEND_BLOCKS = {
    * fingerprint half of the whole fleet design.
    */
   TARGET_RECENTLY_CONTACTED: 'target-recently-contacted',
+  /**
+   * ── A SEND TO THIS PAIR WENT UNACCOUNTED FOR, AND NOBODY HAS SETTLED IT ────
+   *
+   * The other end of the governor's `UNCERTAIN_DELIVERY` (2026-08-21). The governor stops a
+   * NEW draft being written; this stops a draft that already exists — including the ones
+   * written before the rule, which is why every load-bearing rule here is enforced at both
+   * ends.
+   *
+   * MEASURED: @bollywoodchronicle delivered the identical message to @indiagatefoods twice,
+   * because a `not-in-thread` park at 07:30 was invisible to both the pending-attempt count
+   * (QUEUED|READY|SENDING) and the touch count (DELIVERED). `not-in-thread` means the
+   * composer cleared and the message never appeared, i.e. **the recipient may have it** — so
+   * writing another is the one thing that must not follow it.
+   *
+   * ABSOLUTE, and deliberately absent from `OVERRIDABLE_BLOCKS`. Every stop a human may
+   * cross is about TIMING; this is about whether a stranger already holds this exact
+   * message, and "I know something the agent does not" is not an argument about that — it is
+   * an argument for opening the thread and pressing one of the two buttons that settle it.
+   */
+  UNCERTAIN_DELIVERY: 'uncertain-delivery-unsettled',
+  /** Repeated failures parked this pair; re-queue or discard before another is sent. */
+  PARKED_FAILURE: 'parked-failure-unsettled',
   COHORT_NOT_CLEARED: 'cohort-not-cleared',
 } as const
 
@@ -361,6 +391,26 @@ export function evaluateResend(input: ResendInput): ResendResult {
     }
   }
 
+  /**
+   * An unaccounted-for send, or a pair parked by repeated failures. Checked before the
+   * session and the caps: those are about whether we CAN send, this is about whether the
+   * recipient already holds this message. Neither is overridable.
+   */
+  if (input.parkedFailureCode !== null) {
+    return input.parkedFailureCode === 'not-in-thread'
+      ? {
+          ok: false,
+          reason: RESEND_BLOCKS.UNCERTAIN_DELIVERY,
+          detail:
+            'an earlier message to them cleared the composer and never appeared in the thread, so they may already have it — open the conversation and settle it before this one goes',
+        }
+      : {
+          ok: false,
+          reason: RESEND_BLOCKS.PARKED_FAILURE,
+          detail: `an earlier message to them was parked after repeated failures (${input.parkedFailureCode}) — re-queue or discard that one first`,
+        }
+  }
+
   if (!input.senderHasSession) {
     return { ok: false, reason: RESEND_BLOCKS.NO_SESSION, detail: 'account is not connected' }
   }
@@ -419,7 +469,7 @@ export async function recheckBeforeSend(
   const dayStart = istDayStart()
   const { sender, target, senderId, targetId } = attempt.pair
 
-  const [replied, pairToday, ringDeliveries, eligibleSenderIds, ladder, senderRow] = await Promise.all([
+  const [replied, pairToday, ringDeliveries, eligibleSenderIds, ladder, senderRow, parked] = await Promise.all([
     prisma.outreachAttempt.findFirst({
       /**
        * `gte: replyHaltFloor(...)` rather than `not: null` since 2026-08-07: a reply
@@ -475,6 +525,22 @@ export async function recheckBeforeSend(
       where: { id: senderId },
       select: { sessionInvalidAt: true },
     }),
+    /**
+     * An unsettled parked failure on this pair — EXCLUDING this attempt itself, or a draft
+     * that had failed once and was re-queued would refuse to send on its own history.
+     * `not-in-thread` is preferred when several exist, because "they may already have it"
+     * is the graver fact. See `RESEND_BLOCKS.UNCERTAIN_DELIVERY`.
+     */
+    prisma.outreachAttempt.findFirst({
+      where: {
+        pair: { senderId, targetId },
+        status: 'FAILED',
+        failureCode: { not: null },
+        id: { not: attempt.id },
+      },
+      orderBy: [{ failureCode: 'asc' }, { queuedAt: 'desc' }],
+      select: { failureCode: true },
+    }),
   ])
 
   return evaluateResend({
@@ -483,6 +549,7 @@ export async function recheckBeforeSend(
     senderStatus: sender.status,
     senderCohortCleared: ladder.ok,
     senderCohortDetail: ladder.ok ? undefined : ladder.detail,
+    parkedFailureCode: parked?.failureCode ?? null,
     /**
      * §3.5: "connected" means a cookie on disk AND nothing has since proved it dead. A
      * dead session found during a real send writes `sessionInvalidAt`, and folding it in

@@ -32,6 +32,8 @@ const gateInput = (over: Record<string, unknown> = {}) =>
     unattended: true,
     senderStatus: 'ACTIVE',
     senderHasSession: true,
+    /* Nothing parked on this pair — the duplicate guard, 2026-08-21. */
+    parkedFailureCode: null,
     targetOptedOut: false,
     targetIsWatchOnly: false,
     targetIsVerified: true,
@@ -50,6 +52,7 @@ const governorInput = (over: Record<string, unknown> = {}) =>
     touchesSoFar: 0,
     targetRepliedAt: null,
     hasPendingAttempt: false,
+    parkedFailureCode: null,
     unusedCampaignCount: 5,
     pairSentTodayCount: 0,
     maxPerPairPerDay: 5,

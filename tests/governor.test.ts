@@ -26,6 +26,8 @@ function base(overrides: Partial<GovernorInput> = {}): GovernorInput {
     target: { optedOut: false, isVerified: true },
     touchesSoFar: 0,
     targetRepliedAt: null,
+    /* No parked failure on this pair — see the UNCERTAIN_DELIVERY tests for the other side. */
+    parkedFailureCode: null,
     unusedCampaignCount: 2,
     pairSentTodayCount: 0,
     maxPerPairPerDay: 5,
@@ -289,5 +291,68 @@ describe('cross-account spacing at drafting (the ring rule since 2026-08-19)', (
 
   it('permits when no page has ever written to them', () => {
     expect(evaluatePair(base({ crossSpacing: ring({ eligible: ['s1', 's2'], deliveredHoursAgo: [] }) })).eligible).toBe(true)
+  })
+})
+
+/**
+ * ── A PARKED FAILURE BLOCKS A NEW DRAFT FOR THE PAIR (2026-08-21) ──────────
+ *
+ * The duplicate Tabish photographed, in the database:
+ *
+ *     07:30  FAILED  not-in-thread   bollywoodchronicle → indiagatefoods
+ *     12:39  SENT                    bollywoodchronicle → indiagatefoods
+ *
+ * `hasPendingAttempt` counts QUEUED|READY|SENDING and `touchesSoFar` counts DELIVERED, so
+ * FAILED was in NEITHER — a parked attempt made the pair look untouched, and the fresh draft
+ * was a FIRST touch, which the new-material rule exempts by construction. Every guard
+ * passed and the recipient received two identical DMs.
+ *
+ * The same hole gave @sohamrockstrent six parked drafts at three attempts each: eighteen
+ * browser drives at one revenue profile against a composer that cannot open.
+ */
+describe('a parked failure on the pair', () => {
+  it('refuses a new draft when a send may already have reached them', () => {
+    const d = evaluatePair(base({ parkedFailureCode: 'not-in-thread' }))
+    expect(d.eligible).toBe(false)
+    if (d.eligible) throw new Error('unreachable')
+    expect(d.reason).toBe(SKIP_REASONS.UNCERTAIN_DELIVERY)
+    /* The sentence must name the ambiguity, because that is what a person has to settle. */
+    expect(d.detail).toMatch(/may already have it/)
+  })
+
+  it('refuses a new draft when repeated failures parked the pair, and names the cause', () => {
+    const d = evaluatePair(base({ parkedFailureCode: 'no-composer' }))
+    expect(d.eligible).toBe(false)
+    if (d.eligible) throw new Error('unreachable')
+    expect(d.reason).toBe(SKIP_REASONS.PARKED_FAILURE)
+    expect(d.detail).toContain('no-composer')
+  })
+
+  /**
+   * The permitting direction, which is the half that keeps this from becoming an outage:
+   * a pair with nothing parked is unaffected.
+   */
+  it('is silent when there is no parked failure', () => {
+    expect(evaluatePair(base({ parkedFailureCode: null })).eligible).toBe(true)
+  })
+
+  /**
+   * ORDER MATTERS: this is a fact about what the RECIPIENT may hold, so it outranks every
+   * question about timing. A pair that is both parked AND inside its daily cap must report
+   * the park — the cap will clear by itself tomorrow and the park never will.
+   */
+  it('outranks the daily cap, so the reported reason is the one a person must act on', () => {
+    const d = evaluatePair(base({ parkedFailureCode: 'not-in-thread', pairSentTodayCount: 99, maxPerPairPerDay: 5 }))
+    expect(d.eligible).toBe(false)
+    if (d.eligible) throw new Error('unreachable')
+    expect(d.reason).toBe(SKIP_REASONS.UNCERTAIN_DELIVERY)
+  })
+
+  /** But retirement and a live reply still outrank it — those are about the person, not the send. */
+  it('does not outrank opt-out', () => {
+    const d = evaluatePair(base({ parkedFailureCode: 'not-in-thread', target: { optedOut: true, isVerified: true } }))
+    expect(d.eligible).toBe(false)
+    if (d.eligible) throw new Error('unreachable')
+    expect(d.reason).toBe(SKIP_REASONS.TARGET_OPTED_OUT)
   })
 })

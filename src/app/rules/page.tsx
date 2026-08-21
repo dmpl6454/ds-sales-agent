@@ -48,6 +48,10 @@ const STOP_LABELS: Record<(typeof RESEND_BLOCKS)[keyof typeof RESEND_BLOCKS], st
   [RESEND_BLOCKS.TARGET_NOT_VERIFIED]:
     'the recipient has no verified badge on Instagram — only verified accounts are messaged',
   [RESEND_BLOCKS.TARGET_REPLIED]: 'they replied — paused for seven days, then resumes on its own',
+  [RESEND_BLOCKS.UNCERTAIN_DELIVERY]:
+    'an earlier message to them cleared the composer and never appeared in the thread, so they may already have it — a person settles that before another goes',
+  [RESEND_BLOCKS.PARKED_FAILURE]:
+    'an earlier message to them was parked after repeated failures — re-queue or discard that one first',
   [RESEND_BLOCKS.NO_SESSION]: 'the account is not signed in',
   [RESEND_BLOCKS.PAIR_DAILY_CAP]: 'this account already sent this recipient five messages today',
   [RESEND_BLOCKS.TARGET_RECENTLY_CONTACTED]:

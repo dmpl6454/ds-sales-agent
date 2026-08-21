@@ -11,6 +11,8 @@ function ok(): ResendInput {
     unattended: false,
     senderStatus: 'ACTIVE',
     senderHasSession: true,
+  /* No unsettled park on this pair — the UNCERTAIN_DELIVERY tests supply the other side. */
+  parkedFailureCode: null,
     targetOptedOut: false,
     targetIsWatchOnly: false,
     targetIsVerified: true,
