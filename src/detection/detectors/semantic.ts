@@ -242,6 +242,15 @@ export async function classifyCaption(
    * its keep. `tests/tag-evidence.test.ts` greps the call sites for exactly this.
    */
   tagText?: string | null,
+  /**
+   * WHOSE ACCOUNT POSTED THIS, already fenced by `publisherForPrompt`.
+   *
+   * Subject to the SAME both-calls-or-neither rule as `tagText` above, and for the same
+   * reason: the post is judged twice and `applyFrameSignal` attributes any difference to the
+   * FOOTAGE. The publisher belongs to the post, not to the frame, so passing it to one call
+   * only would record a publisher-driven change as "the footage changed the answer".
+   */
+  publisherText?: string | null,
 ): Promise<ModelVerdict | null> {
   const key = process.env.DEEPSEEK_API_KEY
   if (!key) return null
@@ -328,7 +337,7 @@ export async function classifyCaption(
              * structurally unable to move rather than merely measured not to have moved.
              */
             role: 'user',
-            content: [trimmed.slice(0, 3000), tagText ?? null, frameText ?? null]
+            content: [trimmed.slice(0, 3000), publisherText ?? null, tagText ?? null, frameText ?? null]
               .filter((part): part is string => part !== null)
               .join('\n\n'),
           },

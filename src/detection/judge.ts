@@ -1,5 +1,6 @@
 import { readFrameText, frameTextSummaryLine } from './ocr'
 import { stripOwnMarksFromFrame } from './ownMarks'
+import { publisherForPrompt } from './publisherContext'
 import { applyFrameSignal } from './frameSignal'
 import { modelVerdictToStored, classifyCaption } from './detectors/semantic'
 import type { Verdict } from '@/lib/constants'
@@ -75,6 +76,12 @@ export interface JudgeInput {
    * the same channel's `acerpure | Dolby | 120Hz` frame escalation is CORRECT and survives.
    */
   publisher: { handle: string; displayName: string | null }
+  /**
+   * Tell the classifier whose feed it is reading? A Setting, off by default until measured —
+   * the `tagsAsEvidence` pattern. See `publisherContext.ts` for why this is an INPUT gap
+   * rather than a rule gap, and `pnpm ig:accuracy --repeat 3` for the number that decides it.
+   */
+  publisherAsContext?: boolean
   /**
    * Is this target one we would ever MESSAGE? Frames are still saved for everyone —
    * they are the labelled set any future measurement needs — but reading and re-judging
@@ -206,6 +213,17 @@ export async function judgeWithFrame(
    */
   if (opts.humanLabelled) return { ...base, reason: 'human-labelled' }
 
+  /**
+   * WHOSE FEED THIS IS — derived ONCE and passed to BOTH classifier calls below.
+   *
+   * The both-or-neither rule that `tagText` documents applies identically: the post is judged
+   * on its caption and again with its frame, and `applyFrameSignal` attributes any difference
+   * to THE FOOTAGE. A publisher block reaching only one call would record a publisher-driven
+   * change as a frame-driven one, corrupting the single number that says whether reading video
+   * earns its keep. `tests/publisher-context.test.ts` greps both call sites for this.
+   */
+  const publisherText = input.publisherAsContext ? publisherForPrompt(input.caption, input.publisher) : null
+
   if (input.optedOut) return { ...base, reason: 'opted-out' }
   if (!FRAME_JUDGING_DETECTORS.has(input.detectorKey)) return { ...base, reason: 'unsupported' }
 
@@ -224,7 +242,7 @@ export async function judgeWithFrame(
   let secondLook: JudgeResult['secondLook'] = null
   const extraSignals: string[] = []
   if (SECOND_LOOK_DETECTORS.has(input.detectorKey) && captionOnly === 'ORGANIC') {
-    const call = await classifyCaption(input.caption, input.shortcode, null, input.tagText ?? null)
+    const call = await classifyCaption(input.caption, input.shortcode, null, input.tagText ?? null, publisherText)
     if (call) {
       captionOnly = modelVerdictToStored(call.verdict)
       secondLook = { confidence: call.confidence, reason: call.reason, brands: call.brands }
@@ -294,7 +312,7 @@ export async function judgeWithFrame(
     }
   }
 
-  const withFrameCall = await classifyCaption(input.caption, input.shortcode, evidencePrompt, input.tagText ?? null)
+  const withFrameCall = await classifyCaption(input.caption, input.shortcode, evidencePrompt, input.tagText ?? null, publisherText)
 
   /**
    * A FAILED CALL IS NOT A VERDICT. Without an answer we cannot know what the classifier
