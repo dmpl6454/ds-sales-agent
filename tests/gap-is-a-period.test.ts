@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { decideDispatch, FLEET_MIN_GAP_MINUTES, GAP_MEASURED_FROM_SEND_START } from '@/outreach/pacing'
+import { gapClock } from '@/outreach/dispatcher'
 
 /**
  * THE FLEET GAP IS A PERIOD, NOT IDLE TIME AFTER A SEND — 2026-08-21.
@@ -76,19 +77,64 @@ describe('the dispatcher measures the gap from the send START', () => {
   })
 
   /**
-   * The stamp must be written INSIDE the lock and BEFORE the drive. Written after, it is
-   * the completion clock again under a new name — the whole defect, restored.
+   * The stamp must be written BEFORE the work runs. Written after, it is the completion
+   * clock again under a new name — the whole defect, restored.
+   *
+   * It lives in `withSendLock` rather than in the tick, so the dashboard's Send button and
+   * the on-demand dialog are paced too: a stamp that reached only the dispatcher would let a
+   * manual send land seconds after an automatic one.
    */
-  it('the start is stamped inside the send lock, before deliverWaiting', () => {
-    const lock = src.slice(src.indexOf('withSendLock(`dispatch:'), src.indexOf('if (result === null)'))
+  it('the start is stamped inside the lock, before the work', () => {
+    const lock = src.slice(src.indexOf('heldInThisProcess = true'), src.indexOf('} finally {'))
     expect(lock).toMatch(/recordSendStarted/)
-    expect(lock.indexOf('recordSendStarted')).toBeLessThan(lock.indexOf('deliverWaiting'))
+    expect(lock.indexOf('recordSendStarted')).toBeLessThan(lock.indexOf('return await fn()'))
   })
 
-  /** A missing row must not read as "never sent" and fire immediately on every deploy. */
-  it('falls back to the newest delivery when the row does not exist yet', () => {
-    const fn = src.slice(src.indexOf('export async function lastSendStartedAt'), src.indexOf('export const DISPATCH_INTERVAL') > 0 ? src.indexOf('export const DISPATCH_INTERVAL') : src.length)
-    expect(fn).toMatch(/sentAt/)
-    expect(fn).toMatch(/started > completed \? started : completed/)
+  it('the dispatcher declares itself a send', () => {
+    expect(src).toMatch(/withSendLock\(`dispatch:\$\{reason\}`,\s*\{ isSend: true \}/)
+    expect(read('src/app/actions.ts')).toMatch(/\{ isSend: true \}/)
+  })
+
+  it('the send/read distinction is a REQUIRED field, so the compiler names new call sites', () => {
+    expect(src).toMatch(/export interface SendLockKind/)
+    expect(src).toMatch(/\{ isSend \}: SendLockKind/)
+    /* The stamp lives in the lock, so every send path gets it — not just the dispatcher. */
+    const lock = src.slice(src.indexOf('heldInThisProcess = true'), src.indexOf('} finally {'))
+    expect(lock).toMatch(/if \(isSend\) await recordSendStarted/)
+  })
+
+  it('the two non-send lock holders declare themselves as reads', () => {
+    expect(read('src/agent/index.ts')).toMatch(/'reply-sweep',\s*\{ isSend: false \}/)
+    expect(read('src/scripts/prune.ts')).toMatch(/\{ isSend: false \}/)
+  })
+})
+
+/**
+ * ── THE FALLBACK THAT SWALLOWED THE FIX ───────────────────────────────────
+ *
+ * The first version of `lastSendStartedAt` returned `max(started, completed)` — "the later of
+ * the two clocks is safer". It is not: a send COMPLETES ~47s after that same send STARTS, so
+ * the max is the completion every single time, and the fix silently reinstated the behaviour
+ * it removed. It was DEPLOYED, the agent restarted, and the measured period came back **106.8s
+ * against a 107s baseline** — no change at all — while every source-grep above passed, because
+ * the caller really did read the new function.
+ *
+ * A grep cannot see which branch of a comparison returns. So the comparison is its own pure
+ * function now, driven in the direction that failed.
+ */
+describe('gapClock — which clock wins', () => {
+  const start = new Date('2026-08-21T05:41:48.000Z')
+  const completedLater = new Date('2026-08-21T05:42:34.000Z') // the same send, 46s later
+
+  it('the START wins even though the completion is LATER — the exact bug', () => {
+    expect(gapClock(start, completedLater)).toBe(start)
+  })
+
+  it('falls back to the completion only when there is no stamp', () => {
+    expect(gapClock(null, completedLater)).toBe(completedLater)
+  })
+
+  it('a fleet that has never sent has no clock at all', () => {
+    expect(gapClock(null, null)).toBeNull()
   })
 })

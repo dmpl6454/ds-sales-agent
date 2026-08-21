@@ -44,7 +44,19 @@ beforeEach(() => {
   checkForReplies.mockReset().mockResolvedValue({ checked: 0, repliesFound: 0, unreadable: 0, incomplete: 0, deferred: 0 })
   // The real wrapper runs its callback; this stands in for it so the test measures the
   // GATE rather than the lock.
-  withSendLock.mockReset().mockImplementation(async (_label: string, fn: () => Promise<unknown>) => fn())
+  /**
+   * `withSendLock(what, { isSend }, fn)` since 2026-08-21 — the send/read distinction is a
+   * REQUIRED field so the compiler names every call site, and it named this mock: with the
+   * old two-argument shape the callback landed in the options slot and the sweep silently
+   * never ran. Asserting `isSend: false` here is the point rather than an aside — a reply
+   * READ must not stamp the fleet's pace clock and cost a send's worth of spacing.
+   */
+  withSendLock
+    .mockReset()
+    .mockImplementation(async (_label: string, kind: { isSend: boolean }, fn: () => Promise<unknown>) => {
+      expect(kind.isSend, 'the reply sweep is a READ — it must not stamp the send pace clock').toBe(false)
+      return fn()
+    })
 })
 
 describe('the reply sweep and the autopilot switch', () => {
