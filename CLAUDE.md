@@ -71,6 +71,58 @@ properly rather than kept on a handle we could never confirm.
 
 ---
 
+## 21 AUGUST — THE NIGHT RAN PERFECTLY; THE FEED SAID IT STARTED AT 07:51 AND THAT WAS THE 40-ROW CAP
+
+**Tabish: *"Verify messages sent tonight (the machine was turned on for the whole duration) so
+why does it show message sent at 7:51 as the first this day?"*** The premise was measurably
+false, and finding out WHY the screen suggested it is the whole entry.
+
+**MEASURED: the fleet never stopped.** 280 delivered on 21 Aug IST, **first at 00:01:43**, and
+the hourly shape is the flattest this project has ever recorded — 31, 31, 32, 29, 29, 31, 32,
+30, 31 per hour from midnight to 09:00, i.e. the documented 25-35/hour settling exactly where
+the docs say it should. Zero gaps over 4 minutes. Autopilot was ON from his 23:13 instruction
+until **he turned it off at 09:09:43** from the dashboard (audited, `tabish@dashmani.com`) —
+which is why nothing was sending when he asked.
+
+### 07:51:32 IS THE 40TH-NEWEST SEND, AND THE FEED NEVER SAID IT WAS A WINDOW
+
+`recentSends` is `take: 40` and feeds the **"What happened"** activity feed. At 30 sends an
+hour, forty events is **eighty minutes of history** — so on a 280-message day the feed's
+bottom row sat at 07:51 and read as the day's first event.
+
+**EVERY NUMBER ON THE PAGE WAS CORRECT.** The counter said 280. The forty rows were real sends
+at real times. What was wrong was an INFERENCE the layout invited, and that is the distinction
+worth keeping: the day before, a `take: 50` corrupted the `sentToday` VALUE and a 60-row
+fixture caught it; here the cap corrupts a READING, and no assertion about any number on the
+page could ever have failed for it. Same root cause — *a bounded list read as a complete
+record* — two days running, in two different disguises.
+
+`ActivityDay` carries `shown`/`total` now and the day states its own figure: **"Today · newest
+40 shown of 280 sent"**, rendered only when the day is genuinely truncated. The total comes
+from its OWN `groupBy` over the 14-day window and explicitly **not** from `recentSends` —
+deriving it from the capped list would report "40 of 40" and agree with the truncation, which
+is *a check that verifies its own symmetry*, now recorded here for the third time.
+`tests/activity-truncation.test.ts` greps both halves, including that the total is not derived
+from the capped list, because the data half is worthless if nothing draws it.
+
+**Still true and deliberately not "fixed" by raising the cap:** at this volume the feed covers
+about eighty minutes. Raising it trades page density and queries for history the CSV export
+already holds completely. The note makes it honest; the export is the record.
+
+### WHAT THE NIGHT ALSO PRODUCED, AND ONE ITEM NEEDS A PERSON
+
+- **A REAL INBOUND BUYER ENQUIRY, 02:36:59 IST**, from `@fukra_insaan` to
+  @bollywoodpaparazzii: *"We would like to know the commercials for posting one content on
+  your page."* That is the outcome this system exists for, it is **unhandled**, and outreach to
+  them is correctly halted by the reply guard. Two older ones (`@vivo_india`,
+  `@victorinox_india`, both 19 Aug) are autoresponders and can be released.
+- **Every rule held across 280 sends**: 280 recipients, **0 unverified** (VERIFIED ONLY
+  intact), **0 sends to any WATCH page** — including the 11 added hours earlier.
+- 12 FAILED: 10 `not-in-thread` (the ambiguous class, parked for a person by design) and 2
+  `no-composer`. Both expected; the breaker watches for a RISING rate, not a count.
+
+---
+
 ## 20 AUGUST, NIGHT — ELEVEN WATCH PAGES, AND SIX OF THE HANDLES AS TYPED WERE WRONG ACCOUNTS THAT EXIST
 
 **Tabish: *"I want to add these pages as targets as well (to be monitored for paid posts not
