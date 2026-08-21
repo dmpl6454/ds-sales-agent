@@ -1,4 +1,5 @@
 import { prisma } from '@/lib/db'
+import { getSettings } from '@/lib/settings'
 import { writeStringArray } from '@/lib/json'
 import { buildVocabulary, noveltyScore } from '@/detection/detectors/novelty'
 import { modelVerdictToStored, classifyCaption, semanticReadiness, tooShortToJudge } from '@/detection/detectors/semantic'
@@ -227,6 +228,7 @@ async function main(): Promise<void> {
           caption: post.caption,
           optedOut: target.optedOut,
           publisher: { handle: target.handle, displayName: target.displayName },
+          publisherAsContext: (await getSettings()).publisherAsContext,
           detectorKey: 'semantic', // only semantic channels reach this loop
           tagText,
         },

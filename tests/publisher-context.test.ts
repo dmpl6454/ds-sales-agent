@@ -82,6 +82,38 @@ describe('the input reaches BOTH classifier calls, or neither', () => {
     for (const c of calls) expect(c, `this call omits the publisher: ${c}`).toContain('publisherText')
   })
 
+  /**
+   * ── THE PRODUCTION CAPTION PATH IS THE DETECTOR, AND IT WAS MISSED (2026-08-21) ──
+   *
+   * The input was wired into judgeWithFrame's callers and the harness, measured, turned ON —
+   * and 40 minutes later @filmygyan's NEXT anniversary post was judged CAMPAIGN, because the
+   * pipeline's caption verdict comes from `detector.classify()`, which was never told. The
+   * missing-caller failure, inside the fix for an input gap. Found by READING the fresh
+   * verdicts rather than trusting the green harness.
+   */
+  it('the semantic DETECTOR passes the publisher to both of its own calls', () => {
+    const sem = read('src/detection/detectors/semantic.ts')
+    const classify = sem.slice(sem.indexOf('async classify('), sem.indexOf('const detector: ChannelDetector') > 0 ? sem.indexOf('const detector: ChannelDetector') : sem.length)
+    expect(classify).toMatch(/publisherForPrompt\(post\.caption, \{ handle: post\.ownerHandle/)
+    const calls = classify.match(/classifyCaption\([^)]*\)/gs) ?? []
+    expect(calls.length).toBeGreaterThanOrEqual(2)
+    for (const c of calls) expect(c, `detector call omits the publisher: ${c.slice(0, 80)}`).toContain('publisherText')
+  })
+
+  /** Every judgeWithFrame caller carries the Setting, so the flag reaches the frame path too. */
+  it('every judgeWithFrame caller passes publisherAsContext', () => {
+    for (const f of [
+      'src/detection/pipeline.ts',
+      'src/detection/rejudge.ts',
+      'src/scripts/classify.ts',
+      'src/scripts/secondLook.ts',
+      'src/scripts/ocr.ts',
+      'src/scripts/rejudgeChannel.ts',
+    ]) {
+      expect(read(f), `${f} omits publisherAsContext`).toMatch(/publisherAsContext/)
+    }
+  })
+
   /** Off in production until measured — the tagsAsEvidence pattern. */
   it('is a Setting, defaulting OFF', () => {
     const settings = read('src/lib/settings.ts')

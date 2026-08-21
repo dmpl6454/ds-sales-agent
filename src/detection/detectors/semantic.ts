@@ -1,4 +1,6 @@
 import type { ChannelDetector, Classification, EnrichedPost, PostTagFacts } from '../types'
+import { getSettings } from '@/lib/settings'
+import { publisherForPrompt } from '../publisherContext'
 import { tagsForPost } from '../tagEvidence'
 import type { Verdict } from '@/lib/constants'
 import { extractBrands, normaliseBrandKey } from './mom'
@@ -556,7 +558,24 @@ export const semanticDetector: ChannelDetector = {
       post.shortcode.slice(0, 6),
     )
 
-    const captionCall = await classifyCaption(post.caption, post.shortcode, null, tagText)
+    /**
+     * WHOSE FEED THIS IS — derived from the post's own `ownerHandle` and gated on the same
+     * Setting as everywhere else. Computed ONCE and handed to BOTH calls below, exactly like
+     * `tagText` above and for the same reason: a difference between the two calls is
+     * attributed to the footage by `applyFrameSignal`.
+     *
+     * ── FOUND BY READING THE FRESH VERDICTS, 40 MINUTES AFTER THE SETTING WENT ON ──
+     * (2026-08-21) `publisherAsContext` was wired into judgeWithFrame's callers and the
+     * accuracy harness, measured, and turned on — and @filmygyan's NEXT anniversary post was
+     * still judged CAMPAIGN, because THIS function is the production caption path and it was
+     * never told. The missing-caller failure, inside the fix for an input gap. No display
+     * name is available here; `publisherForPrompt` degrades to "@handle" honestly.
+     */
+    const publisherText = (await getSettings()).publisherAsContext
+      ? publisherForPrompt(post.caption, { handle: post.ownerHandle, displayName: null })
+      : null
+
+    const captionCall = await classifyCaption(post.caption, post.shortcode, null, tagText, publisherText)
     if (!captionCall) {
       return {
         verdict: 'UNCLASSIFIED',
@@ -601,6 +620,7 @@ export const semanticDetector: ChannelDetector = {
           `${post.shortcode}:with-frame`,
           frame.prompt,
           tagText,
+          publisherText,
         )
         if (frameCall) withFrame = modelVerdictToStored(frameCall.verdict)
         // A failed frame call leaves withFrame === captionOnly, so the footage is recorded

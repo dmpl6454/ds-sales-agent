@@ -1,4 +1,5 @@
 import { prisma } from '@/lib/db'
+import { getSettings } from '@/lib/settings'
 import { judgeWithFrame } from '@/detection/judge'
 import { tagsForStoredPost } from '@/detection/tagEvidence'
 import { detectionCutoff } from '@/lib/cutoff'
@@ -77,6 +78,7 @@ async function main(): Promise<void> {
           caption: post.caption,
           optedOut: target.optedOut,
           publisher: { handle: target.handle, displayName: target.displayName },
+          publisherAsContext: (await getSettings()).publisherAsContext,
           detectorKey: 'mom',
           tagText: await tagsForStoredPost({
             shortcode: post.shortcode,

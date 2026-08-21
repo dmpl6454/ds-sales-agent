@@ -1,4 +1,5 @@
 import { prisma } from '@/lib/db'
+import { getSettings } from '@/lib/settings'
 import { detectionCutoff } from '@/lib/cutoff'
 import { judgeWithFrame } from './judge'
 import { tagsForStoredPost } from './tagEvidence'
@@ -149,6 +150,7 @@ export async function rejudgeUnusedEvidence(opts: RejudgeOptions = {}): Promise<
         caption: p.caption,
         optedOut: p.target.optedOut,
         publisher: { handle: p.target.handle, displayName: p.target.displayName },
+        publisherAsContext: (await getSettings()).publisherAsContext,
         /**
          * judge.ts owns what each detector's verdicts permit, keyed on the detector —
          * but READINESS is still asked of the detector itself ("no API key" must skip
