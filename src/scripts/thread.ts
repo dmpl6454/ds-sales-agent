@@ -177,12 +177,20 @@ async function main(): Promise<void> {
   // Everything we have ever put in this thread, so "not ours" is a real distinction.
   // Every sender to this target counts: a reply belongs to the conversation, not to
   // one pair, and the governor halts all of them together.
-  const ourBodies = (
-    await prisma.outreachAttempt.findMany({
-      where: { pair: { targetId: pair.targetId }, status: { in: ['SENT', 'REPLIED'] } },
-      select: { renderedBody: true },
-    })
-  ).map((a) => a.renderedBody)
+  /**
+   * Two sets, two jobs — see `ThreadBodies` in readThread.ts. The fleet-wide set classifies
+   * ours/theirs; completeness is judged against what THIS pair delivered, because on a
+   * fanned-out recipient the other pages' identical messages live in OTHER threads.
+   */
+  const delivered = await prisma.outreachAttempt.findMany({
+    where: { pair: { targetId: pair.targetId }, status: { in: ['SENT', 'REPLIED'] } },
+    select: { renderedBody: true, senderId: true },
+  })
+  const bodies = {
+    allOurs: delivered.map((a) => a.renderedBody),
+    expected: delivered.filter((a) => a.senderId === pair.senderId).map((a) => a.renderedBody),
+  }
+  const ourBodies = bodies.allOurs
 
   console.log(`\n  Opening @${sender} → @${target} …`)
   const context = await launchProfile(sender)
@@ -217,7 +225,7 @@ async function main(): Promise<void> {
 
     // The dwell happens INSIDE the read now, so the window in which Instagram has the whole
     // thread in the DOM is observed rather than slept through. See `collectMessages`.
-    const read = await collectMessages(page, ourBodies, 2000 + Math.floor(Math.random() * 1500))
+    const read = await collectMessages(page, bodies, 2000 + Math.floor(Math.random() * 1500))
     assertNoCheckpoint(page, sender)
 
     if (read === null || read.messages.length === 0) {

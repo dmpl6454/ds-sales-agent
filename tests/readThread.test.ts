@@ -1,5 +1,11 @@
 import { describe, it, expect } from 'vitest'
-import { assessRead } from '@/outreach/browser/readThread'
+import { assessRead, type ThreadMessage } from '@/outreach/browser/readThread'
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
+import { SINGLE_TEMPLATE_MIDDLE } from '@/outreach/compose'
+
+/** The real shipped template — the byte-identical body all five pages deliver. */
+const standardBody = SINGLE_TEMPLATE_MIDDLE
 import { isOneOfOurs } from '@/outreach/matching'
 
 /**
@@ -152,5 +158,72 @@ describe('assessRead', () => {
     const r = assessRead([bubble(OURS_A, ours), bubble(THEIRS, ours)], ours)
     expect(r.foundOurs).toBe(1)
     expect(r.complete).toBe(false)
+  })
+})
+
+/**
+ * ── THE COMPLETENESS BAR IS THE PAIR'S, NOT THE FLEET'S (2026-08-21) ────────
+ *
+ * MEASURED live, and it is the worst near-miss in this repo's history. Every sweep read from
+ * ~03:39 reported `incomplete=4`: the ring fan-out had delivered the SAME template to one
+ * recipient from five different pages, `ourBodies` was gathered fleet-wide, and a thread holds
+ * ONE pair's conversation — so `expectedOurs` was 5 in a thread that can only ever show 1.
+ * Structurally unsatisfiable, for every fanned-out recipient, forever.
+ *
+ * The guard's own fail-closed design did what it promised: incomplete never vouches for
+ * silence, so `replyCheckedAt` was never stamped. The cost was that it could never vouch for
+ * ANYTHING — and @taniya_chatterjee's rate negotiation ("Hi, this will cost you 8k per post",
+ * "10 posts deal lelo", a phone number) sat unrecorded in a thread the sweep had "read",
+ * while other pages kept messaging her. A fail-closed guard with an unsatisfiable
+ * precondition is a blindfold wearing a seatbelt.
+ *
+ * The 2026-08-17 occurrence-counting fix ("each sent body claims its own bubble") was and is
+ * correct — for one pair's thread. The fan-out (2026-08-18/19) moved the copies into OTHER
+ * pairs' threads, which its fixture never modelled. These do.
+ */
+describe('completeness on a fanned-out recipient', () => {
+  const TEMPLATE = standardBody
+
+  /** The taniya thread, shaped exactly: 8 of theirs, ONE of ours, five pages' worth fleet-wide. */
+  it('one pair-delivered bubble plus their replies is COMPLETE, and the replies are theirs', () => {
+    const messages: ThreadMessage[] = [
+      { text: '?', ours: false },
+      { text: 'please message', ours: false },
+      { text: 'Hi, this will cost you 8k per post', ours: false },
+      { text: '10 posts deal lelo', ours: false },
+      { text: TEMPLATE, ours: true },
+    ]
+    /* Five identical deliveries exist FLEET-WIDE; this pair delivered ONE. */
+    const read = assessRead(messages, [TEMPLATE])
+    expect(read.complete).toBe(true)
+    expect(read.foundOurs).toBe(1)
+    /* The old bar, for contrast: fleet-wide expectations can never be met in one thread. */
+    const oldBar = assessRead(messages, [TEMPLATE, TEMPLATE, TEMPLATE, TEMPLATE, TEMPLATE])
+    expect(oldBar.complete).toBe(false)
+  })
+
+  /** The direction the 17 Aug fix exists for is UNCHANGED: two sends by THIS pair need two bubbles. */
+  it('a pair that delivered twice is still incomplete when only one bubble is visible', () => {
+    const read = assessRead([{ text: TEMPLATE, ours: true }], [TEMPLATE, TEMPLATE])
+    expect(read.complete).toBe(false)
+    expect(read.foundOurs).toBe(1)
+  })
+})
+
+describe('the two body sets cannot be silently conflated again', () => {
+  const src = readFileSync(join(import.meta.dirname, '..', 'src/outreach/browser/readThread.ts'), 'utf8')
+  const check = readFileSync(join(import.meta.dirname, '..', 'src/outreach/replyCheck.ts'), 'utf8')
+
+  it('openAndReadThread takes named fields, not one array for both jobs', () => {
+    expect(src).toMatch(/export interface ThreadBodies/)
+    expect(src).toMatch(/bodies: ThreadBodies/)
+    /* Classification stays fleet-wide; completeness is the pair's. */
+    expect(src).toMatch(/isOneOfOurs\(text, bodies\.allOurs\)/)
+    expect(src).toMatch(/assessRead\(messages, bodies\.expected\)/)
+  })
+
+  it('the sweep builds expected from THIS pair and allOurs from the fleet', () => {
+    expect(check).toMatch(/a\.senderId === senderId/)
+    expect(check).toMatch(/\{ expected, allOurs \}/)
   })
 })

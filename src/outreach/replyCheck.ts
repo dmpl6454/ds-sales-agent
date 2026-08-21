@@ -211,16 +211,25 @@ export async function checkConversation(args: {
    * make "not ours" a stricter test, and a body that appears in two threads (the same
    * variant reused) must never be read back as the recipient's words.
    */
-  const ourBodies = (
-    await prisma.outreachAttempt.findMany({
-      where: { targetId, status: { in: [...DELIVERED_STATUSES] } },
-      select: { renderedBody: true },
-    })
-  ).map((a) => a.renderedBody)
+  /**
+   * TWO SETS, TWO JOBS — see `ThreadBodies` in readThread.ts for the incident.
+   *
+   * `allOurs` stays fleet-wide: a body that exists in ANY of our threads must never be read
+   * back as the recipient's words. `expected` is THIS PAIR's deliveries only, because a
+   * thread holds one pair's conversation — the fleet-wide bar made completeness
+   * unsatisfiable for every fanned-out recipient, so `replyCheckedAt` was never stamped and
+   * a live rate negotiation went unrecorded while other pages kept writing.
+   */
+  const delivered = await prisma.outreachAttempt.findMany({
+    where: { targetId, status: { in: [...DELIVERED_STATUSES] } },
+    select: { renderedBody: true, senderId: true },
+  })
+  const allOurs = delivered.map((a) => a.renderedBody)
+  const expected = delivered.filter((a) => a.senderId === senderId).map((a) => a.renderedBody)
 
   let result
   try {
-    result = await openAndReadThread(senderHandle, targetHandle, ourBodies)
+    result = await openAndReadThread(senderHandle, targetHandle, { expected, allOurs })
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err)
 

@@ -101,8 +101,8 @@ export async function browseBriefly(page: Page): Promise<void> {
  * "not ours" — i.e. as a reply. A false reply silently halts every sender to that
  * target, so that direction of error is the expensive one and is designed against.
  */
-export async function readMessages(page: Page, ourBodies: readonly string[]): Promise<ThreadMessage[] | null> {
-  const read = await collectMessages(page, ourBodies, 0)
+export async function readMessages(page: Page, bodies: ThreadBodies): Promise<ThreadMessage[] | null> {
+  const read = await collectMessages(page, bodies, 0)
   if (read === null || read.messages.length === 0) return null
   return read.messages
 }
@@ -161,7 +161,7 @@ export async function readMessages(page: Page, ourBodies: readonly string[]): Pr
  */
 export async function collectMessages(
   page: Page,
-  ourBodies: readonly string[],
+  bodies: ThreadBodies,
   dwellMs: number,
 ): Promise<ThreadRead | null> {
   const SEL = 'div[role="presentation"] div[dir="auto"], div[role="row"]'
@@ -269,10 +269,11 @@ export async function collectMessages(
     const raw = text.trim()
     if (normalise(raw).length === 0 || seen.has(raw)) continue
     seen.add(raw)
-    messages.push({ text, ours: isOneOfOurs(text, ourBodies) })
+    messages.push({ text, ours: isOneOfOurs(text, bodies.allOurs) })
   }
 
-  return assessRead(messages, ourBodies)
+  /* Completeness is judged against THIS PAIR's deliveries — see ThreadBodies. */
+  return assessRead(messages, bodies.expected)
 }
 
 /**
@@ -358,10 +359,42 @@ export function assessRead(messages: ThreadMessage[], ourBodies: readonly string
  */
 export const READ_DEADLINE_MS = 6 * 60 * 1000
 
+/**
+ * ── TWO BODY SETS, TWO JOBS, AND CONFLATING THEM SILENCED THE REPLY GUARD (2026-08-21) ──
+ *
+ * `allOurs` — everything ANY of our pages ever delivered to this recipient. Used to classify
+ * a bubble as ours-or-theirs, where fleet-wide is strictly SAFER: a body that exists in any
+ * of our threads must never be read back as the recipient's words.
+ *
+ * `expected` — what THIS PAIR delivered, occurrence-correct. Used for COMPLETENESS, where
+ * fleet-wide is strictly WRONG: a thread holds ONE pair's conversation, so on a recipient the
+ * ring fanned out to, five pages' identical messages live in five different threads and no
+ * single thread can ever show more than one.
+ *
+ * MEASURED before the split: every sweep read since ~03:39 on 2026-08-21 reported
+ * `incomplete=4` — the completeness bar was fleet-wide, so it was structurally unsatisfiable
+ * for every fanned-out recipient, `replyCheckedAt` was never stamped, and **a recipient's
+ * rate negotiation ("this will cost you 8k per post", "10 posts deal lelo", a phone number)
+ * sat unrecorded while other pages kept messaging her.** The reply guard's own fail-closed
+ * design (incomplete never vouches for silence) did exactly what it promised — and the wrong
+ * expected-set upstream turned that safety into a permanent blindfold.
+ *
+ * The old comment defending the fleet-wide set ("it can only make 'not ours' a stricter
+ * test") was TRUE — for classification. Completeness inherited the same input silently, and
+ * the two questions have opposite safe directions. Hence one object with two named fields,
+ * so no future caller can hand one set to both jobs without saying so.
+ */
+export interface ThreadBodies {
+  /** Delivered by THIS pair — the completeness bar. */
+  expected: readonly string[]
+  /** Delivered by ANY of our pages to this recipient — the ours/theirs classifier. */
+  allOurs: readonly string[]
+}
+
 export async function openAndReadThread(
   senderHandle: string,
   targetHandle: string,
-  ourBodies: readonly string[],
+  bodies: ThreadBodies,
 ): Promise<ReadThreadResult> {
   const context = await launchProfile(senderHandle)
   let deadlineFired = false
@@ -425,7 +458,7 @@ export async function openAndReadThread(
      * See `collectMessages` for the measurement.
      */
     const dwellMs = 2000 + Math.floor(Math.random() * 1500)
-    const read = await collectMessages(page, ourBodies, dwellMs)
+    const read = await collectMessages(page, bodies, dwellMs)
     assertNoCheckpoint(page, senderHandle)
 
     if (read === null || read.messages.length === 0) return { ok: false, reason: 'unreadable' }
