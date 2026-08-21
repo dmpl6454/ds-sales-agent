@@ -76,6 +76,35 @@ export function snippetIsReplyText(snippet: string): boolean {
   return true
 }
 
+/**
+ * PURE. May this row record a reply, given what this PAIR already has recorded?
+ *
+ * The inbox row describes ONE sender's thread. The first version attached each sighting
+ * to "the newest delivered attempt for the TARGET with no reply yet" — so a state row
+ * like "MedLinks sent an attachment." re-recorded on EVERY sweep, walking down the
+ * target's attempt list one per run (measured across two live runs, 2026-08-21:
+ * @medlinkstrichology went from 3 genuine thread-records to 5). The rule:
+ *
+ *   - a pair with NO recorded reply records (first sighting of this thread's state);
+ *   - a pair that HAS one records again only for genuinely NEW TEXT — a fresh message,
+ *     not the same state re-observed. State snippets ("2 new messages", "…sent an
+ *     attachment") can never be "new" twice.
+ */
+export function shouldRecordInboxReply(args: {
+  snippet: string
+  /** replyText of every reply already recorded on THIS (sender → target) pair. */
+  pairReplyTexts: readonly (string | null)[]
+}): boolean {
+  if (args.pairReplyTexts.length === 0) return true
+  if (!snippetIsReplyText(args.snippet)) return false
+  const snip = normalise(args.snippet.replace(/[…]+$/, ''))
+  if (snip.length === 0) return false
+  return !args.pairReplyTexts.some((t) => {
+    const kn = normalise(t ?? '')
+    return kn.length > 0 && (kn.startsWith(snip) || snip.startsWith(kn))
+  })
+}
+
 export interface TargetRef {
   id: string
   handle: string

@@ -6,7 +6,7 @@ import { profileStatus } from './browser/profile'
 import { openAndReadThread } from './browser/readThread'
 import { scanInbox } from './browser/inboxScan'
 import { parseInboxAge } from './browser/threadDates'
-import { triageInboxRow, snippetIsReplyText, matchInboxRowToTarget } from './inboxTriage'
+import { triageInboxRow, snippetIsReplyText, matchInboxRowToTarget, shouldRecordInboxReply } from './inboxTriage'
 import { normalise } from './matching'
 import { markChallenged } from './challenge'
 
@@ -538,17 +538,37 @@ async function inboxPhase(
         continue
       }
 
-      /* Attach to the newest delivered attempt for this TARGET that carries no reply —
-         the same rule as checkConversation, and "none left" means a reply is already
-         recorded, so the scan has nothing to add. Never overwrite. */
-      const attachTo = await prisma.outreachAttempt.findFirst({
-        where: { targetId: target.id, status: { in: [...DELIVERED_STATUSES] }, repliedAt: null },
-        orderBy: { sentAt: 'desc' },
-        select: { id: true },
+      /**
+       * THE ROW DESCRIBES THIS SENDER'S THREAD, so the record-again decision is made
+       * against THIS PAIR's recorded replies (`shouldRecordInboxReply` — measured: the
+       * target-level version re-recorded the same "sent an attachment" state on every
+       * sweep, walking down the target's attempt list one row per run).
+       */
+      const pairReplies = await prisma.outreachAttempt.findMany({
+        where: { senderId: sender.id, targetId: target.id, repliedAt: { not: null } },
+        select: { replyText: true },
       })
+      if (!shouldRecordInboxReply({ snippet: row.snippet, pairReplyTexts: pairReplies.map((r) => r.replyText) })) {
+        continue
+      }
+
+      /* Attach to this PAIR's newest delivered attempt without a reply; when the pair
+         has none left, fall back to the target's (the reply still halts the target,
+         and it must not vanish for want of a row to sit on). Never overwrite. */
+      const attachTo =
+        (await prisma.outreachAttempt.findFirst({
+          where: { senderId: sender.id, targetId: target.id, status: { in: [...DELIVERED_STATUSES] }, repliedAt: null },
+          orderBy: { sentAt: 'desc' },
+          select: { id: true },
+        })) ??
+        (await prisma.outreachAttempt.findFirst({
+          where: { targetId: target.id, status: { in: [...DELIVERED_STATUSES] }, repliedAt: null },
+          orderBy: { sentAt: 'desc' },
+          select: { id: true },
+        }))
       if (!attachTo) continue
 
-      /* An already-recorded reply with the same words must not be recorded twice. */
+      /* And the same words must not be recorded twice even across pairs. */
       if (snippetIsReplyText(row.snippet)) {
         const known = await prisma.outreachAttempt.findMany({
           where: { targetId: target.id, repliedAt: { not: null }, replyText: { not: null } },
