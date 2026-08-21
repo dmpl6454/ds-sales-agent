@@ -51,6 +51,12 @@ export const REMEDIES = {
    * the gate says WHY, this says WHERE, and `href: null` is reserved for stops with no
    * control at all.
    */
+  /**
+   * No control, deliberately. The release is a NEW paid post from that recipient, which
+   * detection finds by itself — there is nothing for a person to press, and offering a button
+   * would imply the wait is a fault. `href: null` is a real answer here.
+   */
+  [RESEND_BLOCKS.MATERIAL_EXHAUSTED]: { href: null, label: 'Waits for their next paid post — nothing to do' },
   [RESEND_BLOCKS.UNCERTAIN_DELIVERY]: {
     href: '/',
     label: 'Open the conversation and say whether it arrived — under "check the conversation"',

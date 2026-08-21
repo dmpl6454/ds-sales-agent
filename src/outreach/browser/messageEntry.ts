@@ -317,6 +317,84 @@ export async function openThreadViaInbox(page: Page, targetHandle: string): Prom
  * models. The anchored regex cannot match the prioritised button. The wait costs
  * nothing when the dialog is absent: both flows dwell deliberately anyway.
  */
+/**
+ * ── BLOCKER 5: THEY MESSAGED US FIRST, SO THERE IS A REQUEST INSTEAD OF A COMPOSER ──
+ *
+ * Found by Tabish from a screenshot, 2026-08-21, and it is the fifth recipient-side blocker
+ * in this family — the rate this file's docblock predicted ("expect a fifth").
+ *
+ * When an account has sent US a message we never accepted, opening the conversation shows a
+ * REQUEST panel — *"Accept message request from Soham Rockstar Entertainment
+ * (sohamrockstrent)?"* with **Block · Delete · Accept** — and no composer at all. The send
+ * therefore timed out looking for a composer and was filed `no-composer`, which reads as
+ * "this account cannot be messaged" about an account that has literally just messaged us.
+ *
+ * MEASURED: @sohamrockstrent collected **six parked drafts at three attempts each** on exactly
+ * this, i.e. eighteen browser drives at one revenue profile against a door that was never
+ * going to open. (The re-drafting half of that is fixed separately in `governor.ts`; this is
+ * the half that makes the door open.)
+ *
+ * ── ACCEPT IS THE ONLY BUTTON EVER CLICKED, AND THAT IS THE WHOLE DISCIPLINE ──
+ *
+ * The same rule as blocker 3's "Not Now": exactly one button is safe and the others are
+ * destructive in ways nothing here could undo. **Delete** throws away an inbound message from
+ * a real company — which is a LEAD, and the most valuable thing this system can receive — and
+ * **Block** severs the account relationship permanently. Neither is ever clicked, and the
+ * matcher is anchored so "Accept" cannot fall through to something else.
+ *
+ * ── THE EXPOSURE, STATED RATHER THAN SLIPPED IN ───────────────────────────
+ *
+ * Accepting is a real state change on OUR account: Instagram's own dialog says the sender will
+ * then be able to call us and see our activity status and read receipts. That is a small,
+ * deliberate widening, and it is the price of reading a message somebody sent us on purpose.
+ * It is also the direction a person would take by hand, which is the test this project applies
+ * to every automated click.
+ *
+ * ── AND AN ACCEPTED REQUEST USUALLY MEANS A HUMAN SHOULD LOOK ─────────────
+ *
+ * Their message is now visible in the thread, so the reply guard will see a bubble that is
+ * THEIRS on the next read and halt outreach to that recipient for a person to take over. That
+ * is not a side effect to design around — it is the correct outcome. Somebody who wrote to us
+ * first should get a human, not a cold pitch.
+ */
+export async function acceptMessageRequest(page: Page, targetHandle: string): Promise<boolean> {
+  /**
+   * Anchored to the whole label, and deliberately NOT a `hasText` substring match: the panel
+   * also contains the words "Accept message request from …" as prose, and matching that would
+   * click whatever element happened to contain the sentence rather than the button.
+   */
+  const acceptBtn = await firstVisible(
+    page,
+    [
+      page.getByRole('button', { name: /^accept$/i }),
+      page.locator('div[role="button"]', { hasText: /^Accept$/ }),
+      page.locator('button', { hasText: /^Accept$/ }),
+    ],
+    4_000,
+  )
+  if (!acceptBtn) return false
+
+  /**
+   * A bare "Accept" could in principle belong to some other dialog, so the surrounding panel
+   * must also look like a message request before we touch it. Refusing on doubt costs one
+   * `no-composer` failure; clicking the wrong Accept changes account state we cannot see.
+   */
+  const looksLikeRequest = await page
+    .locator('text=/accept message request|wants to send you a message|sent you a message request/i')
+    .first()
+    .isVisible()
+    .catch(() => false)
+  if (!looksLikeRequest) return false
+
+  log.step('they messaged us first — accepting the message request', { target: targetHandle })
+  await acceptBtn.hover()
+  await jitter(300, 900)
+  await acceptBtn.click()
+  /* The panel is replaced by the real thread; give it a moment to render the composer. */
+  await jitter(1_200, 2_200)
+  return true
+}
+
 export async function passBusinessInterstitial(page: Page, targetHandle: string): Promise<void> {
   const requestBtn = await firstVisible(
     page,

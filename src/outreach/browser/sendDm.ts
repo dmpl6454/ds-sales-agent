@@ -10,6 +10,7 @@ import {
   clickMessageEntry,
   openThreadViaInbox,
   passBusinessInterstitial,
+  acceptMessageRequest,
   dismissBlockingDialog,
   clickPastDialogs,
 } from './messageEntry'
@@ -142,6 +143,20 @@ export async function sendDm(params: SendDmParams): Promise<SendDmResult> {
      * Tabish's screenshot caught the same dialog blocking the READ path too.
      */
     await passBusinessInterstitial(page, targetHandle)
+
+    /**
+     * 3c. BLOCKER 5 — THEY MESSAGED US FIRST, so there is a request panel and no composer.
+     *
+     * Ordered AFTER the interstitial and BEFORE the composer lookup, in the same slot as
+     * every other door in this sequence. It cost @sohamrockstrent eighteen browser drives
+     * filed `no-composer`: a name asserting the account cannot be messaged, about an account
+     * that had messaged us. Accept is the only button ever clicked — see the docblock.
+     */
+    if (await acceptMessageRequest(page, targetHandle)) {
+      /* The panel is gone and a real thread is rendering; Instagram often raises a dialog on
+         the transition, and the composer must be looked for after it, not before. */
+      await dismissBlockingDialog(page)
+    }
 
     // 4. The composer.
     const composer = await firstVisible(

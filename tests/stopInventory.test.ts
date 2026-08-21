@@ -83,6 +83,7 @@ function governorInput(over: Record<string, unknown> = {}) {
     targetRepliedAt: null,
     hasPendingAttempt: false,
     parkedFailureCode: null,
+    material: { held: false as const, allowance: 1, delivered: 0 },
     unusedCampaignCount: 5,
     pairSentTodayCount: 0,
     maxPerPairPerDay: 5,
@@ -112,6 +113,13 @@ const GOVERNOR_CASES: Array<[string, Record<string, unknown>]> = [
    * parked drafts at three attempts each. Two reasons, because "they may already have it" and
    * "it kept failing" have different remedies.
    */
+  /**
+   * ONE MESSAGE PER DETECTED PAID POST (2026-08-21). 133 recipients had heard from more than
+   * one of our pages, many from all five, off a single paid post — because the existing
+   * new-material rule is scoped to the PAIR and each sender's own first touch is exempt from
+   * it. This one asks about the RECIPIENT.
+   */
+  [SKIP_REASONS.MATERIAL_EXHAUSTED, { material: { held: true, allowance: 1, delivered: 1, campaigns: 1 } }],
   [SKIP_REASONS.UNCERTAIN_DELIVERY, { parkedFailureCode: 'not-in-thread' }],
   [SKIP_REASONS.PARKED_FAILURE, { parkedFailureCode: 'no-composer' }],
   [SKIP_REASONS.NO_NEW_MATERIAL, { touchesSoFar: 1, unusedCampaignCount: 0 }],
@@ -160,6 +168,7 @@ function gateInput(over: Record<string, unknown> = {}) {
     senderStatus: 'ACTIVE',
     senderHasSession: true,
     parkedFailureCode: null,
+    material: { held: false as const, allowance: 1, delivered: 0 },
     targetOptedOut: false,
     targetIsWatchOnly: false,
     targetIsVerified: true,
@@ -188,6 +197,13 @@ const GATE_CASES: Array<[string, Record<string, unknown>]> = [
    * parked drafts at three attempts each. Two reasons, because "they may already have it" and
    * "it kept failing" have different remedies.
    */
+  /**
+   * ONE MESSAGE PER DETECTED PAID POST (2026-08-21). 133 recipients had heard from more than
+   * one of our pages, many from all five, off a single paid post — because the existing
+   * new-material rule is scoped to the PAIR and each sender's own first touch is exempt from
+   * it. This one asks about the RECIPIENT.
+   */
+  [RESEND_BLOCKS.MATERIAL_EXHAUSTED, { material: { held: true, allowance: 1, delivered: 1, campaigns: 1 } }],
   [RESEND_BLOCKS.UNCERTAIN_DELIVERY, { parkedFailureCode: 'not-in-thread' }],
   [RESEND_BLOCKS.PARKED_FAILURE, { parkedFailureCode: 'no-composer' }],
   [RESEND_BLOCKS.NO_SESSION, { senderHasSession: false }],
