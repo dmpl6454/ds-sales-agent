@@ -39,6 +39,7 @@ import { prisma } from '@/lib/db'
 import { modelVerdictToStored, classifyCaption } from '@/detection/detectors/semantic'
 import { readFrameText } from '@/detection/ocr'
 import { tagsForPrompt } from '@/detection/tagEvidence'
+import { publisherForPrompt } from '@/detection/publisherContext'
 import { applyFrameSignal, type FrameEvidence } from '@/detection/frameSignal'
 import { readLabelledSet, LABEL_SOURCES, DISCLOSURE_PATTERN, type LabelRow } from '@/detection/labels'
 import type { Verdict } from '@/lib/constants'
@@ -59,6 +60,19 @@ const useFrames = !process.argv.includes('--no-frames')
  * exist. Flip both together, or the number stops describing anything.
  */
 const useTags = process.argv.includes('--tags')
+
+/**
+ * `--publisher` measures the publisher-context input (2026-08-21). OFF by default because
+ * `publisherAsContext` is off in production, for the reason stated directly above: a harness
+ * whose default disagrees with production measures a pipeline that does not exist.
+ *
+ * Note what this can and cannot say. The block is only emitted when a caption NAMES its own
+ * publisher, and M.O.M — the one channel with fact-grade labels — rarely does, so a flat
+ * result here means "very few of these posts were affected", not "the input is neutral". The
+ * channels it actually changes are the semantic ones, which have no ground truth. Same
+ * asymmetry `tagsAsEvidence` was measured under, and it must be stated with the number.
+ */
+const usePublisher = process.argv.includes('--publisher')
 
 /**
  * `--include-bulk` scores the 21 labels a script wrote in one second on 8 August.
@@ -143,6 +157,7 @@ interface Block {
   skipped: number
   withFrameText: number
   postsWithTags: number
+  postsWithPublisher: number
   rescued: number
   extraReview: number
   sources: Map<string, number>
@@ -163,7 +178,7 @@ function blockFor(channel: string): Block {
   const fresh: Block = {
     channel,
     tp: 0, tn: 0, fp: 0, fn: 0,
-    skipped: 0, withFrameText: 0, postsWithTags: 0, rescued: 0, extraReview: 0,
+    skipped: 0, withFrameText: 0, postsWithTags: 0, postsWithPublisher: 0, rescued: 0, extraReview: 0,
     sources: new Map(),
     errors: [],
     frameMoves: [],
@@ -215,7 +230,19 @@ async function scoreOnce(): Promise<Map<string, Block>> {
    * calling once WITH frame text would let the footage produce a CAMPAIGN, which the real
    * detector forbids, and would report a false-alarm rate for verdicts it cannot reach.
    */
-  const captionCall = await classifyCaption(blind, undefined, null, tagText)
+  /**
+   * Whose feed this post is from, derived ONCE and given to BOTH calls — the same
+   * both-or-neither rule as the tags, so a publisher-driven change is never scored as a
+   * frame-driven one.
+   */
+  const publisherText = usePublisher
+    /* `label.channel` IS the posting channel's handle. No display name is loaded here, and
+       the block degrades to "@handle" honestly rather than inventing one. */
+    ? publisherForPrompt(p.caption, { handle: label.channel, displayName: null })
+    : null
+  if (publisherText) b.postsWithPublisher++
+
+  const captionCall = await classifyCaption(blind, undefined, null, tagText, publisherText)
   if (!captionCall) { b.skipped++; continue }
   const captionOnly: Verdict = modelVerdictToStored(captionCall.verdict)
 
@@ -226,7 +253,7 @@ async function scoreOnce(): Promise<Map<string, Block>> {
     evidence = frame.evidence
     if (frame.prompt) {
       b.withFrameText++
-      const frameCall = await classifyCaption(blind, undefined, frame.prompt, tagText)
+      const frameCall = await classifyCaption(blind, undefined, frame.prompt, tagText, publisherText)
       if (frameCall) withFrame = modelVerdictToStored(frameCall.verdict)
     }
   }
@@ -317,6 +344,7 @@ console.log(`  known-paid  the list Tabish supplied, from outside this system`)
 console.log(`input: caption${useFrames ? ' first, then cover-frame text where the caption said ordinary' : ' ONLY (--no-frames)'}`)
 console.log(
   `tags : ${useTags ? 'ON (--tags)' : 'OFF, as in production (`tagsAsEvidence` is false; pass --tags to measure it on)'}`,
+  `publisher : ${usePublisher ? 'ON (--publisher)' : 'OFF, as in production (`publisherAsContext` is false; pass --publisher to measure it on)'}`,
 )
 
 /**
@@ -382,7 +410,7 @@ for (const c of channels) {
 // Overall, printed LAST so a per-channel loss cannot be read past on the way to it.
 function totalFor(r: Map<string, Block>): Block {
   const t: Block = {
-    channel: 'all', tp: 0, tn: 0, fp: 0, fn: 0, skipped: 0, withFrameText: 0, postsWithTags: 0,
+    channel: 'all', tp: 0, tn: 0, fp: 0, fn: 0, skipped: 0, withFrameText: 0, postsWithTags: 0, postsWithPublisher: 0,
     rescued: 0, extraReview: 0, sources: new Map(), errors: [], frameMoves: [],
   }
   for (const b of r.values()) {
@@ -465,6 +493,8 @@ interface HistoryEntry {
   repeats: number
   frames: boolean
   tags: boolean
+  /** Was the publisher-context input on for this run? See detection/publisherContext.ts. */
+  publisher: boolean
   /** Absent on entries written before 2026-08-17. See PRED_RULE. */
   predRule?: string
   /**
@@ -501,6 +531,7 @@ const entry: HistoryEntry = {
   repeats: REPEATS,
   frames: useFrames,
   tags: useTags,
+  publisher: usePublisher,
   predRule: PRED_RULE,
   channels: {},
 }

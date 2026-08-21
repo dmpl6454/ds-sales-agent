@@ -31,6 +31,7 @@ export const SETTING_KEYS = {
   singleTemplate: 'singleTemplate',
   singleTemplateBody: 'singleTemplateBody',
   tagsAsEvidence: 'tagsAsEvidence',
+  publisherAsContext: 'publisherAsContext',
   replyResumeHours: 'replyResumeHours',
   crossPageGapHours: 'crossPageGapHours',
   officialMinFollowers: 'officialMinFollowers',
@@ -264,6 +265,8 @@ export interface RuntimeSettings {
    * `generateMessages` and `singleTemplate`.
    */
   tagsAsEvidence: boolean
+  /** Tell the classifier whose feed a post is from. See detection/publisherContext.ts. */
+  publisherAsContext: boolean
 }
 
 function defaults(): RuntimeSettings {
@@ -293,6 +296,7 @@ function defaults(): RuntimeSettings {
     // OFF, because the harness measured precision falling 90% -> 83% with it on while
     // recall held. See the interface comment for all three runs and why it is kept.
     tagsAsEvidence: false,
+    publisherAsContext: false,
     // Seven days since 2026-08-19 (was 48h) — see replyHalt.ts for whose call and why.
     replyResumeHours: REPLY_RESUME_HOURS_DEFAULT,
     // ZERO — no inter-page gap. Tabish, 2026-08-20: "7 day constraint only no other
@@ -413,6 +417,7 @@ export async function getSettings(): Promise<RuntimeSettings> {
       return raw !== undefined && raw.trim().length > 0 ? raw : d.singleTemplateBody
     })(),
     tagsAsEvidence: bool(SETTING_KEYS.tagsAsEvidence, d.tagsAsEvidence),
+    publisherAsContext: bool(SETTING_KEYS.publisherAsContext, d.publisherAsContext),
     /**
      * Both fleet ceilings accept "unlimited", and for opposite reasons.
      *
