@@ -294,7 +294,7 @@ async function main(): Promise<void> {
     // guard unable to fire, which is where this started.
     const at = new Date()
     await prisma.$transaction([
-      prisma.outreachAttempt.update({ where: { id: latest.id }, data: { repliedAt: at, status: 'REPLIED' } }),
+      prisma.outreachAttempt.update({ where: { id: latest.id }, data: { repliedAt: at, replyPostedAt: at, status: 'REPLIED' } }),
       prisma.auditLog.create({
         data: {
           actor: 'ig:thread',

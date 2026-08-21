@@ -46,14 +46,34 @@ export function replyHaltFloor(resumeHours: number, now: Date = new Date()): Dat
   return new Date(now.getTime() - resumeHours * 60 * 60 * 1000)
 }
 
-/** Is this attempt's reply holding the halt right now? */
+/**
+ * Is this attempt's reply holding the halt right now?
+ *
+ * ── THE HALT KEYS ON WHEN THEY WROTE, NOT ON WHEN WE LOOKED (2026-08-21) ──
+ *
+ * `repliedAt` is the sweep's OBSERVATION clock. While coverage was 10%, growing it meant
+ * "discovering" weeks-old replies, and a halt keyed on observation would have paused each
+ * of those targets for seven days from the day of DISCOVERY — a reply from July silencing
+ * outreach in August. Tabish's rule, verbatim: *"the agent must see the date on the reply
+ * or message sent; if no date is visible send the message … as the reply might be to an
+ * older conversation."*
+ *
+ * So the halt reads `replyPostedAt` — the reply's own date, taken from the thread's date
+ * separator or the inbox row's age — and an UNDATABLE reply (`replyPostedAt: null`) does
+ * not hold it. That is the permissive direction and it is HIS call, recorded here: the
+ * reply itself is still recorded, still on the replies card, still a person's to answer;
+ * only the automatic seven-day pause requires a date it can count from. Query sites
+ * filter `replyPostedAt: { gte: floor }`, which never matches NULL, so the predicate and
+ * the queries fail in the same direction by construction.
+ */
 export function replyHaltActive(args: {
-  repliedAt: Date | null
+  /** When the reply was WRITTEN, as the thread or inbox showed us. Null = undatable. */
+  replyPostedAt: Date | null
   replyHandledAt: Date | null
   resumeHours: number
   now?: Date
 }): boolean {
-  if (args.repliedAt === null) return false
+  if (args.replyPostedAt === null) return false
   if (args.replyHandledAt !== null) return false
-  return args.repliedAt >= replyHaltFloor(args.resumeHours, args.now ?? new Date())
+  return args.replyPostedAt >= replyHaltFloor(args.resumeHours, args.now ?? new Date())
 }

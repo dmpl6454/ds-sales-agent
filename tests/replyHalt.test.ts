@@ -14,30 +14,41 @@ describe('replyHaltActive', () => {
 
   it('a fresh reply halts', () => {
     expect(
-      replyHaltActive({ repliedAt: new Date('2026-08-07T11:00:00Z'), replyHandledAt: null, resumeHours: HOURS, now: NOW }),
+      replyHaltActive({ replyPostedAt: new Date('2026-08-07T11:00:00Z'), replyHandledAt: null, resumeHours: HOURS, now: NOW }),
     ).toBe(true)
   })
 
   it('a reply older than the window has released itself', () => {
     expect(
-      replyHaltActive({ repliedAt: new Date('2026-08-06T11:59:59Z'), replyHandledAt: null, resumeHours: HOURS, now: NOW }),
+      replyHaltActive({ replyPostedAt: new Date('2026-08-06T11:59:59Z'), replyHandledAt: null, resumeHours: HOURS, now: NOW }),
     ).toBe(false)
   })
 
   it('exactly at the boundary still halts — the window is inclusive', () => {
     expect(
-      replyHaltActive({ repliedAt: new Date('2026-08-06T12:00:00Z'), replyHandledAt: null, resumeHours: HOURS, now: NOW }),
+      replyHaltActive({ replyPostedAt: new Date('2026-08-06T12:00:00Z'), replyHandledAt: null, resumeHours: HOURS, now: NOW }),
     ).toBe(true)
   })
 
-  it('no reply, no halt', () => {
-    expect(replyHaltActive({ repliedAt: null, replyHandledAt: null, resumeHours: HOURS, now: NOW })).toBe(false)
+  /**
+   * ── AN UNDATABLE REPLY DOES NOT HOLD THE HALT (Tabish's rule, 2026-08-21) ──
+   *
+   * `replyPostedAt: null` covers two cases that must behave the same: no reply at all,
+   * and a reply whose date the thread/inbox never showed. Verbatim: *"the agent must see
+   * the date on the reply … if no date is visible send the message … as the reply might
+   * be to an older conversation."* The reply itself is still recorded (`repliedAt`,
+   * `replyText`) and still listed for a person — only the automatic seven-day pause
+   * requires a date it can count from. This is the permissive direction, chosen by him,
+   * recorded here.
+   */
+  it('no dated reply, no halt — undatable replies release per the 2026-08-21 rule', () => {
+    expect(replyHaltActive({ replyPostedAt: null, replyHandledAt: null, resumeHours: HOURS, now: NOW })).toBe(false)
   })
 
   it('"handled" is an early release inside the window', () => {
     expect(
       replyHaltActive({
-        repliedAt: new Date('2026-08-07T11:00:00Z'),
+        replyPostedAt: new Date('2026-08-07T11:00:00Z'),
         replyHandledAt: new Date('2026-08-07T11:30:00Z'),
         resumeHours: HOURS,
         now: NOW,
@@ -51,15 +62,15 @@ describe('replyHaltActive', () => {
    * re-arms from the newest one.
    */
   it('a newer reply re-arms the window', () => {
-    const old = replyHaltActive({ repliedAt: new Date('2026-08-05T12:00:00Z'), replyHandledAt: null, resumeHours: HOURS, now: NOW })
-    const renewed = replyHaltActive({ repliedAt: new Date('2026-08-07T09:00:00Z'), replyHandledAt: null, resumeHours: HOURS, now: NOW })
+    const old = replyHaltActive({ replyPostedAt: new Date('2026-08-05T12:00:00Z'), replyHandledAt: null, resumeHours: HOURS, now: NOW })
+    const renewed = replyHaltActive({ replyPostedAt: new Date('2026-08-07T09:00:00Z'), replyHandledAt: null, resumeHours: HOURS, now: NOW })
     expect(old).toBe(false)
     expect(renewed).toBe(true)
   })
 
   it('the old behaviour is one Setting away — a huge window never releases in practice', () => {
     expect(
-      replyHaltActive({ repliedAt: new Date('2020-01-01T00:00:00Z'), replyHandledAt: null, resumeHours: 24 * 365 * 100, now: NOW }),
+      replyHaltActive({ replyPostedAt: new Date('2020-01-01T00:00:00Z'), replyHandledAt: null, resumeHours: 24 * 365 * 100, now: NOW }),
     ).toBe(true)
   })
 })

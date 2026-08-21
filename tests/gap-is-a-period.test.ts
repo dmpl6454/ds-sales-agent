@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { readFileSync } from 'node:fs'
+import { execSync } from 'node:child_process'
 import { join } from 'node:path'
 import { decideDispatch, FLEET_MIN_GAP_MINUTES, GAP_MEASURED_FROM_SEND_START } from '@/outreach/pacing'
 import { gapClock } from '@/outreach/dispatcher'
@@ -77,35 +78,46 @@ describe('the dispatcher measures the gap from the send START', () => {
   })
 
   /**
-   * The stamp must be written BEFORE the work runs. Written after, it is the completion
-   * clock again under a new name — the whole defect, restored.
+   * ── THE STAMP BELONGS TO THE DRIVE, NOT TO THE LOCK (2026-08-21, evening) ──
    *
-   * It lives in `withSendLock` rather than in the tick, so the dashboard's Send button and
-   * the on-demand dialog are paced too: a stamp that reached only the dispatcher would let a
-   * manual send land seconds after an automatic one.
+   * The lock-level stamp shipped that morning and was measured wrong the same day: a
+   * dispatch tick acquires the lock BEFORE it knows whether any draft passes the gate, so
+   * on a drained queue every passing tick stamped the clock — watch.log read "the last
+   * message went out 0 minute(s) ago" for TWELVE consecutive minutes with zero sends
+   * (17:07–17:18 IST), and a newly-cleared draft waits up to a full gap period behind
+   * stamps from ticks that delivered nothing.
+   *
+   * So the stamp lives in `browserSender.send` now: the ONE implementation every delivered
+   * message passes through (deliverWaiting and the operator send both call it, both under
+   * the send lock), still BEFORE the browser moves so the gap stays a period. Written after
+   * `sendDm`, it is the completion clock again under a new name — the original defect,
+   * restored.
    */
-  it('the start is stamped inside the lock, before the work', () => {
+  it('browserSender stamps the start before the drive begins', () => {
+    const sender = read('src/outreach/senders/browser.ts')
+    const body = sender.slice(sender.indexOf('async send(req'), sender.indexOf('catch (err)'))
+    expect(body).toMatch(/await recordSendStarted\(new Date\(\)\)/)
+    expect(body.indexOf('recordSendStarted')).toBeLessThan(body.indexOf('await sendDm('))
+  })
+
+  it('the lock does NOT stamp — a tick that delivers nothing must not reset the clock', () => {
     const lock = src.slice(src.indexOf('heldInThisProcess = true'), src.indexOf('} finally {'))
-    expect(lock).toMatch(/recordSendStarted/)
-    expect(lock.indexOf('recordSendStarted')).toBeLessThan(lock.indexOf('return await fn()'))
+    expect(lock).not.toMatch(/recordSendStarted/)
+    /* And nothing reintroduces an isSend flag whose only meaning was the deleted stamp. */
+    expect(src).not.toMatch(/SendLockKind/)
   })
 
-  it('the dispatcher declares itself a send', () => {
-    expect(src).toMatch(/withSendLock\(`dispatch:\$\{reason\}`,\s*\{ isSend: true \}/)
-    expect(read('src/app/actions.ts')).toMatch(/\{ isSend: true \}/)
-  })
-
-  it('the send/read distinction is a REQUIRED field, so the compiler names new call sites', () => {
-    expect(src).toMatch(/export interface SendLockKind/)
-    expect(src).toMatch(/\{ isSend \}: SendLockKind/)
-    /* The stamp lives in the lock, so every send path gets it — not just the dispatcher. */
-    const lock = src.slice(src.indexOf('heldInThisProcess = true'), src.indexOf('} finally {'))
-    expect(lock).toMatch(/if \(isSend\) await recordSendStarted/)
-  })
-
-  it('the two non-send lock holders declare themselves as reads', () => {
-    expect(read('src/agent/index.ts')).toMatch(/'reply-sweep',\s*\{ isSend: false \}/)
-    expect(read('src/scripts/prune.ts')).toMatch(/\{ isSend: false \}/)
+  it('the sender is the only writer of the pace clock', () => {
+    /* The reply sweep and the pruner never reach browserSender, so a read structurally
+       cannot cost a send's worth of spacing — the property the deleted flag protected. */
+    const files = execSync(
+      `grep -rln "recordSendStarted(" src --include='*.ts'`,
+      { cwd: root, encoding: 'utf8' },
+    )
+      .trim()
+      .split('\n')
+      .sort()
+    expect(files).toEqual(['src/outreach/paceClock.ts', 'src/outreach/senders/browser.ts'])
   })
 })
 

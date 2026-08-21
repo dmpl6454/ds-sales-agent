@@ -45,18 +45,18 @@ beforeEach(() => {
   // The real wrapper runs its callback; this stands in for it so the test measures the
   // GATE rather than the lock.
   /**
-   * `withSendLock(what, { isSend }, fn)` since 2026-08-21 — the send/read distinction is a
-   * REQUIRED field so the compiler names every call site, and it named this mock: with the
-   * old two-argument shape the callback landed in the options slot and the sweep silently
-   * never ran. Asserting `isSend: false` here is the point rather than an aside — a reply
-   * READ must not stamp the fleet's pace clock and cost a send's worth of spacing.
+   * `withSendLock(what, fn)` again since 2026-08-21 evening: the `{ isSend }` flag lasted
+   * one day — stamping the pace clock on lock ACQUISITION let a dispatch tick that then
+   * delivered nothing reset the gap, so the stamp moved to `browserSender.send`, the one
+   * implementation every delivered message passes through. A reply READ structurally
+   * cannot stamp the clock now, because it never reaches the sender — the property the
+   * flag existed to assert, held by construction instead of by argument. This mock's
+   * shape has now been wrong in BOTH directions across that flag's one-day life, which is
+   * the "mock shape drifts from the real signature" trap earning a second entry.
    */
   withSendLock
     .mockReset()
-    .mockImplementation(async (_label: string, kind: { isSend: boolean }, fn: () => Promise<unknown>) => {
-      expect(kind.isSend, 'the reply sweep is a READ — it must not stamp the send pace clock').toBe(false)
-      return fn()
-    })
+    .mockImplementation(async (_label: string, fn: () => Promise<unknown>) => fn())
 })
 
 describe('the reply sweep and the autopilot switch', () => {

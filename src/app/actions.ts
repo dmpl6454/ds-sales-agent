@@ -244,7 +244,7 @@ export async function sendNow(attemptId: string, overrides?: readonly string[]):
    * Refused rather than queued. Waiting would hold a server action open for the 40 seconds
    * of somebody else's send, and the honest answer is that the message is still there.
    */
-  const outcome = await withSendLock(`operator:${sender.handle}`, { isSend: true }, () =>
+  const outcome = await withSendLock(`operator:${sender.handle}`, () =>
     browserSender.send({
       attemptId,
       senderHandle: sender.handle,

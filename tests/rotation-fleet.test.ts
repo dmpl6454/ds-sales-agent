@@ -121,6 +121,7 @@ bootstrap.exec(`
     "attempts" INTEGER NOT NULL DEFAULT 0,
     "failureCode" TEXT,
     "repliedAt" DATETIME,
+    "replyPostedAt" DATETIME,
     "replyText" TEXT,
     "replyCheckedAt" DATETIME,
     "replyHandledAt" DATETIME,

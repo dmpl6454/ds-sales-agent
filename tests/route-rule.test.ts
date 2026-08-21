@@ -131,6 +131,7 @@ bootstrap.exec(`
     "body" TEXT NOT NULL,
     "sentAt" DATETIME,
     "repliedAt" DATETIME,
+    "replyPostedAt" DATETIME,
     "replyText" TEXT,
     "replyHandledAt" DATETIME,
     "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,

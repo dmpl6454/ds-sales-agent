@@ -349,7 +349,7 @@ export async function runOutreach(): Promise<PlanSummary> {
         // A reply halts for replyResumeHours (seven days since 2026-08-19), then releases itself — see replyHalt.ts.
         where: {
           pair: { targetId: pair.targetId },
-          repliedAt: { gte: replyHaltFloor(settings.replyResumeHours) },
+          replyPostedAt: { gte: replyHaltFloor(settings.replyResumeHours) },
           replyHandledAt: null,
         },
         orderBy: { repliedAt: 'desc' },

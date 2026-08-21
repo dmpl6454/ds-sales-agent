@@ -4,6 +4,9 @@ import { DELIVERED_STATUSES } from '@/lib/constants'
 import { hoursAgo } from '@/lib/time'
 import { profileStatus } from './browser/profile'
 import { openAndReadThread } from './browser/readThread'
+import { scanInbox } from './browser/inboxScan'
+import { parseInboxAge } from './browser/threadDates'
+import { triageInboxRow, snippetIsReplyText, matchInboxRowToTarget } from './inboxTriage'
 import { normalise } from './matching'
 import { markChallenged } from './challenge'
 
@@ -114,6 +117,16 @@ export interface ReplyCheckSummary {
   /** Conversations the cap could not reach this run. Reported, never silent. */
   deferred: number
   outcomes: ReplyCheckOutcome[]
+  /** Senders whose whole inbox LIST was read this run (one browser drive each). */
+  inboxesScanned?: number
+  /** Replies recorded straight from inbox rows — halts that never cost a thread read. */
+  inboxRepliesRecorded?: number
+  /**
+   * Rows where THEY wrote last and no target matched — usually an inbound enquiry from
+   * an account we never messaged (the @fukra_insaan class) or an ambiguous display
+   * name. Named so a person can look; never guessed at.
+   */
+  inboxUnmatched?: string[]
 }
 
 /** Is this a slot at which the sweep runs? */
@@ -372,22 +385,29 @@ export async function checkConversation(args: {
    */
   const attachToId = latest && latest.repliedAt === null ? latest.id : fallbackAttemptId
 
-  // The thread exposes no machine-readable per-bubble timestamp without more scraping
-  // than it is worth, so this is when we OBSERVED it, not when they wrote it.
-  // `pnpm ig:reply <sender> <target> --at <ISO>` corrects it.
-  const replyText = fresh[fresh.length - 1]!.text.slice(0, 2000)
+  const newest = fresh[fresh.length - 1]!
+  const replyText = newest.text.slice(0, 2000)
 
+  /**
+   * TWO CLOCKS, RECORDED SEPARATELY (2026-08-21). `repliedAt` is when WE SAW it — the
+   * observation. `replyPostedAt` is when THEY WROTE it, from the thread's own date
+   * separator above the bubble (`ThreadMessage.approxAt`), and it is what the seven-day
+   * halt reads. NULL means the thread showed no parseable date above this reply — and
+   * per Tabish's rule an undatable reply is recorded, listed for a person, and does NOT
+   * hold the halt, because it may answer a conversation from long before the window.
+   * `pnpm ig:reply <sender> <target> --at <ISO>` still corrects either by hand.
+   */
   await prisma.$transaction([
     prisma.outreachAttempt.update({
       where: { id: attachToId },
-      data: { repliedAt: now, status: 'REPLIED', replyText, replyCheckedAt: now },
+      data: { repliedAt: now, replyPostedAt: newest.approxAt, status: 'REPLIED', replyText, replyCheckedAt: now },
     }),
     prisma.auditLog.create({
       data: {
         actor: 'reply-check',
         action: 'reply.record.auto',
         entity: `OutreachAttempt:${attachToId}`,
-        detail: `@${targetHandle} replied to @${senderHandle} (observed ${now.toISOString()}; time is observation, not the reply itself)`,
+        detail: `@${targetHandle} replied to @${senderHandle} (observed ${now.toISOString()}; written ${newest.approxAt ? newest.approxAt.toISOString() : 'UNDATED — does not hold the 7-day halt'})`,
       },
     }),
   ])
@@ -451,6 +471,133 @@ async function openConversations(now: Date): Promise<ConversationCandidate[]> {
   return [...byPair.values()]
 }
 
+/**
+ * ── PHASE 0: SCAN EVERY INBOX BEFORE OPENING ANY THREAD (2026-08-21) ──────
+ *
+ * One drive per sender reads the last-message state of EVERY conversation at once,
+ * where the thread loop below pays a drive per conversation and covers four per run.
+ * A row where THEY wrote last and no reply is recorded becomes a recorded reply — the
+ * HALT, the safety-critical half — immediately; the thread loop remains the precise
+ * layer that reads full text and date separators.
+ *
+ * `replyPostedAt` comes from the row's own age ("41m", "2d"), so a months-old reply
+ * discovered today does not halt its target for seven days from today — Tabish's rule.
+ * A row with no parseable age records the reply UNDATED, which does not halt.
+ */
+async function inboxPhase(
+  now: Date,
+): Promise<{ scanned: number; recorded: number; unmatched: string[]; checkpoint: boolean }> {
+  const senders = await prisma.senderAccount.findMany({
+    where: { status: 'ACTIVE', fleetMember: true },
+    select: { id: true, handle: true },
+  })
+  const local = senders.filter((s) => profileStatus(s.handle).hasSession)
+  if (local.length === 0) return { scanned: 0, recorded: 0, unmatched: [], checkpoint: false }
+
+  const targets = await prisma.targetAccount.findMany({
+    where: { optedOut: false },
+    select: { id: true, handle: true, displayName: true },
+  })
+
+  let recorded = 0
+  const unmatched: string[] = []
+
+  for (const sender of local) {
+    const scan = await scanInbox(sender.handle)
+    if (!scan.ok) {
+      if (scan.reason === 'checkpoint') {
+        await markChallenged({
+          senderId: sender.id,
+          handle: sender.handle,
+          detail: scan.detail ?? 'checkpoint during inbox scan',
+          actor: 'reply-check',
+        })
+        /* Do not open more sessions from a flagged estate — same rule as the thread loop. */
+        return { scanned: local.indexOf(sender) + 1, recorded, unmatched, checkpoint: true }
+      }
+      log.warn('inbox scan unreadable — this sender contributes nothing this run', {
+        sender: sender.handle,
+        detail: scan.detail,
+      })
+      continue
+    }
+
+    /* Everything this sender ever delivered, for the ours/theirs snippet insurance. */
+    const delivered = await prisma.outreachAttempt.findMany({
+      where: { senderId: sender.id, status: { in: [...DELIVERED_STATUSES] } },
+      select: { renderedBody: true },
+    })
+    const ourBodies = delivered.map((a) => a.renderedBody)
+
+    for (const row of scan.rows) {
+      if (triageInboxRow(row, ourBodies) !== 'theirs-last') continue
+
+      const target = matchInboxRowToTarget(row.displayName, targets)
+      if (!target) {
+        unmatched.push(`${row.displayName} (${row.folder}, ${row.ageText ?? 'no age'}) via @${sender.handle}`)
+        continue
+      }
+
+      /* Attach to the newest delivered attempt for this TARGET that carries no reply —
+         the same rule as checkConversation, and "none left" means a reply is already
+         recorded, so the scan has nothing to add. Never overwrite. */
+      const attachTo = await prisma.outreachAttempt.findFirst({
+        where: { targetId: target.id, status: { in: [...DELIVERED_STATUSES] }, repliedAt: null },
+        orderBy: { sentAt: 'desc' },
+        select: { id: true },
+      })
+      if (!attachTo) continue
+
+      /* An already-recorded reply with the same words must not be recorded twice. */
+      if (snippetIsReplyText(row.snippet)) {
+        const known = await prisma.outreachAttempt.findMany({
+          where: { targetId: target.id, repliedAt: { not: null }, replyText: { not: null } },
+          select: { replyText: true },
+        })
+        const snipNorm = normalise(row.snippet)
+        if (
+          known.some((k) => {
+            const kn = normalise(k.replyText ?? '')
+            return kn.length > 0 && (kn.startsWith(snipNorm) || snipNorm.startsWith(kn))
+          })
+        ) {
+          continue
+        }
+      }
+
+      const replyPostedAt = row.ageText ? parseInboxAge(row.ageText, now) : null
+      const replyText = snippetIsReplyText(row.snippet) ? row.snippet.slice(0, 2000) : null
+
+      await prisma.$transaction([
+        prisma.outreachAttempt.update({
+          where: { id: attachTo.id },
+          data: { repliedAt: now, replyPostedAt, status: 'REPLIED', replyText },
+        }),
+        prisma.auditLog.create({
+          data: {
+            actor: 'reply-check',
+            action: 'reply.record.inbox',
+            entity: `OutreachAttempt:${attachTo.id}`,
+            detail:
+              `@${target.handle} wrote last in @${sender.handle}'s inbox (${row.folder}, age ${row.ageText ?? 'unknown'}; ` +
+              `written ~${replyPostedAt ? replyPostedAt.toISOString() : 'UNDATED — does not hold the 7-day halt'})`,
+          },
+        }),
+      ])
+      recorded += 1
+      log.info('reply recorded from the inbox list — outreach to this target is halted', {
+        target: target.handle,
+        via: sender.handle,
+        folder: row.folder,
+        age: row.ageText ?? 'unknown',
+        preview: (replyText ?? row.snippet).slice(0, 80),
+      })
+    }
+  }
+
+  return { scanned: local.length, recorded, unmatched, checkpoint: false }
+}
+
 export async function checkForReplies(): Promise<ReplyCheckSummary> {
   const outcomes: ReplyCheckOutcome[] = []
   let checked = 0
@@ -459,6 +606,29 @@ export async function checkForReplies(): Promise<ReplyCheckSummary> {
   let incomplete = 0
   const now = new Date()
 
+  const inbox = await inboxPhase(now)
+  if (inbox.unmatched.length > 0) {
+    log.info('inbox rows where THEY wrote last and no prospect matched — a person should look', {
+      count: inbox.unmatched.length,
+      rows: inbox.unmatched.slice(0, 10).join(' | '),
+    })
+  }
+  if (inbox.checkpoint) {
+    return {
+      checked: 0,
+      repliesFound: inbox.recorded,
+      unreadable: 0,
+      incomplete: 0,
+      deferred: 0,
+      outcomes,
+      inboxesScanned: inbox.scanned,
+      inboxRepliesRecorded: inbox.recorded,
+      inboxUnmatched: inbox.unmatched,
+    }
+  }
+
+  /* Candidates are computed AFTER the scan: a reply the scan just recorded takes its
+     conversation out of the thread budget, which is the whole point of the scan. */
   const candidates = prioritiseConversations(await openConversations(now))
 
   for (const c of candidates) {
@@ -476,7 +646,7 @@ export async function checkForReplies(): Promise<ReplyCheckSummary> {
         cap: MAX_REPLY_CHECKS_PER_RUN,
         deferred: remaining,
       })
-      return { checked, repliesFound, unreadable, incomplete, deferred: remaining, outcomes }
+      return { checked, repliesFound, unreadable, incomplete, deferred: remaining, outcomes, inboxesScanned: inbox.scanned, inboxRepliesRecorded: inbox.recorded, inboxUnmatched: inbox.unmatched }
     }
 
     // No hand login means no session to read with. Not a failure — nothing to do.
@@ -528,7 +698,7 @@ export async function checkForReplies(): Promise<ReplyCheckSummary> {
     outcomes.push({ pairKey, status: 'no-reply', detail: result.detail })
   }
 
-  return { checked, repliesFound, unreadable, incomplete, deferred: 0, outcomes }
+  return { checked, repliesFound, unreadable, incomplete, deferred: 0, outcomes, inboxesScanned: inbox.scanned, inboxRepliesRecorded: inbox.recorded, inboxUnmatched: inbox.unmatched }
 }
 
 // ── the just-in-time check, before a follow-up goes out ─────────────────────

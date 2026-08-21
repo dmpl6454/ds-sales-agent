@@ -414,7 +414,23 @@ model OutreachAttempt {
   failureCode String?
 
   /// Set when a reply is observed. Halts every sender to this target.
+  ///
+  /// This is when WE SAW it — the sweep's observation clock — not when they wrote it.
+  /// The distinction went unmeasured until 2026-08-21, when reply coverage was 10% and
+  /// growing it meant "discovering" weeks-old replies that would each have halted their
+  /// target for seven days from the day of DISCOVERY.
   repliedAt DateTime?
+
+  /// When the reply was actually WRITTEN, as far as the thread or the inbox showed us.
+  ///
+  /// NULL means we could not date it — and per Tabish's rule (2026-08-21, verbatim: "the
+  /// agent must see the date on the reply … if no date is visible send the message …
+  /// as the reply might be to an older conversation") an undatable reply DOES NOT hold
+  /// the seven-day halt. The reply is still recorded and still listed for a person; only
+  /// the automatic halt keys on this column. Sources, in order of precision: a thread
+  /// date-separator ("18:04", "19 August 2026, 14:21"), or the inbox row's relative age
+  /// ("41m", "2d") subtracted from the observation time.
+  replyPostedAt DateTime?
 
   /// What they actually said. Nullable: a reply recorded by hand may have no text.
   ///

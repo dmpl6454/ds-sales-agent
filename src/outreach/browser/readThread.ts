@@ -11,6 +11,7 @@ import {
   firstVisible,
   jitter,
 } from './messageEntry'
+import { parseThreadTimestamp } from './threadDates'
 
 /**
  * Opening a real conversation and reading it back.
@@ -37,6 +38,15 @@ export interface ThreadMessage {
   text: string
   /** True when this matches something we sent. */
   ours: boolean
+  /**
+   * When this message was WRITTEN, as far as the thread's own date separators showed —
+   * the nearest separator ABOVE the bubble ("18:04", "Yesterday 14:21", "19 August
+   * 2026, 14:21"), parsed by `parseThreadTimestamp`. NULL when no separator above it
+   * parsed, or when the bubble was seen only by the mutation observer (which has no
+   * position). The seven-day reply halt keys on this: an undatable reply is recorded
+   * but does not hold the halt — Tabish's rule, 2026-08-21.
+   */
+  approxAt: Date | null
 }
 
 /**
@@ -217,7 +227,15 @@ export async function collectMessages(
 
   // Read-only DOM traversal. The prohibition on `evaluate` in this codebase concerns
   // synthesised INPUT events, which lack `isTrusted`; reading has no such issue.
-  const texts = await page.evaluate(
+  //
+  // The final sweep returns the panel's bubbles AND its date separators in DOCUMENT
+  // ORDER, so each bubble can be dated from the nearest separator above it. Separators
+  // are `span[dir=auto]` nodes OUTSIDE any bubble — observed live 2026-08-21 ("12:39"
+  // above our message, "18:04" above the reply on the @indiagatefoods thread); the
+  // bubble selector never matches them, which is why replies were never falsely minted
+  // from them. `querySelectorAll` returns document order, which is what makes the
+  // nearest-preceding association sound.
+  const swept = await page.evaluate(
     ([sel, key]) => {
       const w = window as unknown as Record<string, unknown>
       const collected = (w[key!] as string[] | undefined) ?? []
@@ -225,7 +243,7 @@ export async function collectMessages(
       const box =
         document.querySelector('div[contenteditable="true"][role="textbox"]') ??
         document.querySelector('div[role="textbox"]')
-      if (!box) return collected.length > 0 ? collected : null
+      if (!box) return collected.length > 0 ? { collected, ordered: [] as { b: number; t: string }[] } : null
 
       // One final direct sweep, so a thread that never mutated after we attached is still
       // read. The observer only fires on change; a static thread would otherwise be empty.
@@ -234,20 +252,43 @@ export async function collectMessages(
         if (panel.querySelectorAll(sel!).length > 0) break
         panel = panel.parentElement
       }
-      const out = [...collected]
+      const ordered: { b: number; t: string }[] = []
       if (panel) {
-        for (const el of panel.querySelectorAll(sel!)) {
+        for (const el of panel.querySelectorAll(`${sel!}, span[dir="auto"]`)) {
           if (box.contains(el) || el.contains(box)) continue
           const t = (el.textContent ?? '').trim()
-          if (t.length > 0) out.push(t)
+          if (t.length === 0) continue
+          if (el.matches(sel!)) {
+            ordered.push({ b: 1, t })
+          } else if (!el.closest('div[role="presentation"], div[role="row"]')) {
+            // A span[dir=auto] outside every bubble: a candidate date separator. The
+            // anchored parser decides; prose here can never become a date.
+            ordered.push({ b: 0, t })
+          }
         }
       }
-      return out
+      return { collected, ordered }
     },
     [SEL, KEY] as const,
   )
 
-  if (texts === null) return null
+  if (swept === null) return null
+
+  /** Nearest parseable separator ABOVE each bubble, keyed by the bubble's raw text. */
+  const approx = new Map<string, Date | null>()
+  {
+    let current: Date | null = null
+    for (const e of swept.ordered) {
+      if (e.b === 0) {
+        const ts = parseThreadTimestamp(e.t)
+        if (ts) current = ts
+      } else if (!approx.has(e.t)) {
+        approx.set(e.t, current)
+      }
+    }
+  }
+
+  const texts = [...swept.collected, ...swept.ordered.filter((e) => e.b === 1).map((e) => e.t)]
 
   /**
    * De-duplicate on RAW text, not normalised text, preserving first-seen order.
@@ -269,7 +310,7 @@ export async function collectMessages(
     const raw = text.trim()
     if (normalise(raw).length === 0 || seen.has(raw)) continue
     seen.add(raw)
-    messages.push({ text, ours: isOneOfOurs(text, bodies.allOurs) })
+    messages.push({ text, ours: isOneOfOurs(text, bodies.allOurs), approxAt: approx.get(raw) ?? null })
   }
 
   /* Completeness is judged against THIS PAIR's deliveries — see ThreadBodies. */

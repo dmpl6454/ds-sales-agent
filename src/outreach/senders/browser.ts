@@ -2,6 +2,7 @@ import type { OutreachSender, SendOutcome, SendRequest } from './types'
 import { env } from '@/lib/env'
 import { log } from '@/lib/logger'
 import { sendDm } from '@/outreach/browser/sendDm'
+import { recordSendStarted } from '@/outreach/paceClock'
 import {
   CheckpointError,
   IdentityCheckFailedError,
@@ -40,6 +41,22 @@ export const browserSender: OutreachSender = {
       chars: req.body.length,
       dryRun: env.DRY_RUN,
     })
+
+    /**
+     * THE PACE CLOCK IS STAMPED HERE — the moment a message drive actually begins.
+     *
+     * This function is the ONE implementation every delivered message passes through
+     * (the dispatcher's `deliverWaiting` and the dashboard's operator send both call it,
+     * and both hold the fleet send lock, so the stamp cannot race). Before `sendDm` so
+     * the gap stays a PERIOD rather than idle time bolted onto a ~47s drive; a failed
+     * drive still counts, because the bound paces BROWSER DRIVES, not deliveries.
+     *
+     * It moved here from `withSendLock` on 2026-08-21: stamping on lock ACQUISITION let
+     * a dispatch tick that then delivered nothing reset the clock — twelve consecutive
+     * minutes of "the last message went out 0 minute(s) ago" with zero sends, measured
+     * in watch.log the same evening the lock-level stamp shipped.
+     */
+    await recordSendStarted(new Date())
 
     try {
       const result = await sendDm({

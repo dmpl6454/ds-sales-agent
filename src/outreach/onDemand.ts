@@ -266,7 +266,7 @@ export async function prepareOnDemand(senderHandle: string, targetHandle: string
         // longer halts, so warning about it would name a rule that is not in force.
         where: {
           pair: { targetId: target.id },
-          repliedAt: { gte: replyHaltFloor(settings.replyResumeHours) },
+          replyPostedAt: { gte: replyHaltFloor(settings.replyResumeHours) },
           replyHandledAt: null,
         },
         orderBy: { repliedAt: 'desc' },
