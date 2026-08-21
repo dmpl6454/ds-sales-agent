@@ -71,6 +71,95 @@ properly rather than kept on a handle we could never confirm.
 
 ---
 
+## 21 AUGUST, EVENING — THE GREEN-RUN THAT KEPT FINDING RED: SIX DEFECTS IN ONE MONITORED SESSION
+
+Tabish asked for a supervised end-to-end run: autopilot on from the real UI, three paid posts
+detected accurately, blocker 5 resolving itself, three more sends, everything reflected on the
+pages. Each step of watching it surfaced something real. **All fixed, deployed, and re-verified
+live the same evening** — and the pattern across all six is the same sentence: *a rule reached
+one of the places it needed to reach.*
+
+### THE SWEEP HAD BEEN BLIND SINCE 03:39, AND A LIVE RATE NEGOTIATION SAT UNSEEN
+
+Every sweep read since ~03:39 reported `incomplete=4`. Driving one read by hand showed why, and
+it is the worst near-miss in this file: **@taniya_chatterjee had been NEGOTIATING** — *"Hi,
+this will cost you 8k per post"*, *"10 posts deal lelo"*, a phone number — in a thread the
+sweep had "read" that same hour and could not vouch for.
+
+The completeness bar was gathered FLEET-WIDE (`ourBodies` by `targetId`) while a thread holds
+ONE pair's conversation. The ring fan-out had put the identical template in front of her from
+five pages — five copies in five different threads — so `expectedOurs` was 5 in a thread that
+can only ever show 1: **structurally unsatisfiable, for every fanned-out recipient, forever.**
+The guard's fail-closed design held perfectly (incomplete never vouches for silence, so
+`replyCheckedAt` was never stamped) and that is precisely what made it a blindfold: replies
+could never be recorded, and other pages kept messaging her. **A fail-closed guard with an
+unsatisfiable precondition is a blindfold wearing a seatbelt.** The old comment defending the
+fleet-wide set — "it can only make 'not ours' a stricter test" — was TRUE for classification
+and inherited by completeness silently: two questions with OPPOSITE safe directions sharing one
+input. `ThreadBodies { expected, allOurs }` splits them by name. Her reply is recorded, the
+fleet is halted to her, and **she is a live lead for a person**. VERIFIED: every sweep since
+reads `incomplete=0` and coverage is growing for the first time.
+
+**The lesson with teeth: a fail-closed guard holding for DAYS is itself the alarm.** Permanent
+fail-closed means the precondition is unsatisfiable, not that the world keeps misbehaving.
+
+### BLOCKER 6 — THE ACCEPT DOES NOT STICK UNTIL "MOVE TO PRIMARY" IS ANSWERED
+
+Blocker 5 (the Accept-message-request panel) fired live on @sohamrockstrent — and the accept
+was UNDONE, because Instagram follows it with *"Move messages from X into: **Primary** /
+General / Cancel"* and nothing answered. Tabish's screenshot named it within minutes.
+**Primary only**: General files the lead in a tab the sweep never opens, Cancel abandons the
+accept — which is also why `dismissBlockingDialog` must never know this dialog (it DECLINES
+things, and declining here undoes the acceptance; a test pins its clickable vocabulary to
+exactly "Not Now"). VERIFIED on the real thread under the send lock: pass 1 — *accepting the
+message request* → *filing the accepted conversation under Primary*; pass 2 — **the panel is
+gone.** Six blockers now, all in `messageEntry.ts`, both paths, and the all-five order was
+re-verified when he asked whether fixing 5 broke 3 (it had not: 4/4 sends delivered post-fix;
+what he watched "fail" was the blind sweep above).
+
+### THE UNLOCK COULD NEVER FIRE, AND THE FLEET WENT QUIET WITHIN THE HOUR
+
+*"The queue also doesn't seem to move forward … I only see gea_saudi, kumarmangatpathak
+repeatedly."* Both halves measured true, same root: `materialAllowance` counted
+`DetectedCampaign.targetId === recipient` — and **`targetId` is the channel that POSTED**, so
+for a prospect the count is zero forever. `max(1, 0)` clamped every recipient to ONE message
+per window; the unlock half of his rule ("another paid post … and only then") was structurally
+unreachable. MEASURED: 133/139 verified prospects at allowance, `skipped=851 queued=0`.
+
+`campaignsNamingHandle` counts what actually links a campaign to a prospect — the same
+Instagram-asserted evidence that MINTED it: caption @mentions and media tags, quoted-tag and
+boundary-regex matched so `zee5` never credits `@zee5_marathi`, brand STRINGS deliberately not
+consulted (`fg6` was one). **The first draft used `caption ~*` — Postgres-only, and the suite
+drives the gate on SQLite: the two-provider trap, caught before shipping.** Portable now:
+`contains` prefilter, exact boundary test in JS.
+
+And the UI half of his observation was the fifth entry in the "a page reporting a rule by a
+different rule than the one enforcing it" series: **"Up next" kept showing the two held drafts
+as sends**, because the partition predates the allowance. It now asks the enforcer's own
+predicate and renders the enforcer's own sentence.
+
+### THE REST OF THE MONITORED RUN, MEASURED GREEN
+
+- **Autopilot ON from the real UI toggle** (Playwright on the rebuilt local dashboard), audited
+  as tabish@dashmani.com; the switch renders checked with the honest sentence.
+- **4 sends delivered** in the first minutes (sanyamalhotra_, vibe, zee5, sonylivindia — all
+  verified PROSPECTs, real thread URLs, the fixed ~79s period), then the queue drained to
+  held-only, which is what exposed the unlock bug above.
+- **8 fresh paid posts read for accuracy**: the "Ohh My Dog" film campaign syndicated across
+  THREE channels, "Bandar on Zee5" ×2 with dates and platform — and ONE more filmygyan
+  anniversary false positive, which exposed that the publisher input had missed
+  `detector.classify()`, the production caption path (fixed above, then the fresh row
+  re-judged: 42→7→5 filmygyan CAMPAIGNs).
+- **All 13 channels re-judged** with the publisher context: filmygyan 38/200 changed; every
+  other channel 0–5 of ~100 — confirming filmygyan was the anomaly and the input is surgical.
+- **Two zombie SENDING rows parked as uncertain** (one killed by my own `kickstart -k` during
+  an active send — an agent restart during sending is an interrupt, take the log's word on
+  whether a drive is in flight first). They take the "check the conversation" flow.
+- The verified bar refused three fake filmygyan lookalikes at discovery (`@filmygyanindia`
+  etc., all unverified) — working unattended, printed for a person.
+
+---
+
 ## 21 AUGUST, LATE — THE DUPLICATE DM, AND A PUBLISHER'S OWN WATERMARK READ AS A PAID PLACEMENT
 
 Two independent defects, both found from Tabish's screenshots, both measured before anything
