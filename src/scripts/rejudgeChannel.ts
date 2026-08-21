@@ -33,6 +33,8 @@
  */
 import { prisma } from '@/lib/db'
 import { judgeWithFrame } from '@/detection/judge'
+import { classifyCaption, modelVerdictToStored } from '@/detection/detectors/semantic'
+import { publisherForPrompt } from '@/detection/publisherContext'
 import { getDetector } from '@/detection/detectors'
 import { detectionCutoff } from '@/lib/cutoff'
 import { getSettings } from '@/lib/settings'
@@ -94,6 +96,39 @@ async function main() {
      * here would be a second implementation of the sequence.
      */
     const before = post.verdict
+
+    /**
+     * THE CAPTION IS RE-ASKED HERE, with the publisher block, and that is deliberate.
+     *
+     * `judgeWithFrame` takes the caption verdict as an ARGUMENT — it does not recompute one
+     * for a semantic channel — so handing it the stored verdict would compose the frame
+     * against a verdict formed WITHOUT the new input, and handing it UNCLASSIFIED yields
+     * UNCLASSIFIED, since the frame may never give an unjudged post a verdict. Found by
+     * running it: the first version reported all 42 rows "undecided".
+     *
+     * This is the same two-step the pipeline performs (caption verdict, then
+     * `judgeWithFrame`); the SEQUENCE that composes them still lives in one place.
+     */
+    const captionCall = await classifyCaption(
+      post.caption,
+      post.shortcode,
+      null,
+      await tagsForStoredPost({
+        shortcode: post.shortcode,
+        taggedAccounts: post.taggedAccounts,
+        rawPayload: post.rawPayload,
+      }),
+      settings.publisherAsContext
+        ? publisherForPrompt(post.caption, { handle: target.handle, displayName: target.displayName })
+        : null,
+    )
+    /* A failed call decides nothing — the stored verdict stands and the row is reported. */
+    if (!captionCall) {
+      failed += 1
+      console.log(`  ${post.shortcode}  ${before} → (caption call failed) — left alone`)
+      continue
+    }
+
     const judged = await judgeWithFrame(
       {
         shortcode: post.shortcode,
@@ -114,7 +149,7 @@ async function main() {
        * against itself. `judgeWithFrame` re-runs the caption call for a semantic channel when
        * it is handed UNCLASSIFIED, which is the honest starting point here.
        */
-      'UNCLASSIFIED',
+      modelVerdictToStored(captionCall.verdict),
     )
 
     if (judged.verdict === 'UNCLASSIFIED') {
