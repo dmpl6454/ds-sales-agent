@@ -398,7 +398,7 @@ export function evaluateResend(input: ResendInput): ResendResult {
     return {
       ok: false,
       reason: RESEND_BLOCKS.TARGET_REPLIED,
-      detail: `they replied at ${input.targetRepliedAt.toISOString()} — messaging them pauses for seven days, then resumes on its own (or the moment "I have replied" is pressed)`,
+      detail: `they replied (written ${input.targetRepliedAt.toISOString()}) — messaging them pauses for seven days from that date, then resumes on its own (or the moment "I have replied" is pressed)`,
     }
   }
 
@@ -505,11 +505,11 @@ export async function recheckBeforeSend(
        */
       where: {
         pair: { targetId },
-        repliedAt: { gte: replyHaltFloor(settings.replyResumeHours) },
+        replyPostedAt: { gte: replyHaltFloor(settings.replyResumeHours) },
         replyHandledAt: null,
       },
       orderBy: { repliedAt: 'desc' },
-      select: { repliedAt: true },
+      select: { replyPostedAt: true },
     }),
     // DELIVERED_STATUSES, matching plan.ts — a bare 'SENT' filter lets a reply
     // *lower* a daily count and so buy an extra send. See the note there.
@@ -603,7 +603,7 @@ export async function recheckBeforeSend(
     targetOptedOut: target.optedOut,
     targetIsWatchOnly: target.role === 'WATCH',
     targetIsVerified: target.isVerified,
-    targetRepliedAt: replied?.repliedAt ?? null,
+    targetRepliedAt: replied?.replyPostedAt ?? null,
     pairSentTodayCount: pairToday,
     maxPerPairPerDay: settings.maxPerPairPerDay,
     crossSpacing: crossSpacingVerdict({

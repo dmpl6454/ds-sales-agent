@@ -124,8 +124,15 @@ export default async function AnalyticsPage({
     .filter((r) => r.sent > 0)
     .sort((a, b) => b.sent - a.sent)
 
-  /* Null, not 0%: "nothing sent" and "nobody replied" are different facts. */
-  const replyRate = v.week.sent > 0 ? Math.round((v.week.replies / v.week.sent) * 100) : null
+  /**
+   * Null, not 0%: "nothing sent" and "nobody replied" are different facts.
+   *
+   * And the denominator is conversations CHECKED, not messages sent (2026-08-21). A
+   * rate over messages nobody looked at is not a rate — coverage was 10% when Tabish
+   * reported the figure "substantially wrong", and dividing by every send understated
+   * reality tenfold. The tile names its own denominator underneath.
+   */
+  const replyRate = v.week.checked > 0 ? Math.round((v.week.replies / v.week.checked) * 100) : null
 
   return (
     <>
@@ -151,7 +158,9 @@ export default async function AnalyticsPage({
             </div>
             <div className="stat">
               <span className="stat-n">{replyRate === null ? '—' : `${replyRate}%`}</span>
-              <span className="stat-l">reply rate</span>
+              <span className="stat-l">
+                reply rate, of {v.week.checked} checked
+              </span>
             </div>
           </div>
           {/*

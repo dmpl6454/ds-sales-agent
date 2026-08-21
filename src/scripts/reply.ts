@@ -165,7 +165,7 @@ async function main(): Promise<void> {
   await prisma.$transaction([
     prisma.outreachAttempt.update({
       where: { id: attempt.id },
-      data: { repliedAt: at, status: 'REPLIED' },
+      data: { repliedAt: at, replyPostedAt: at, status: 'REPLIED' },
     }),
     prisma.auditLog.create({
       data: {

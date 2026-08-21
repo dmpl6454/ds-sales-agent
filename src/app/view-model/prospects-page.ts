@@ -230,7 +230,7 @@ export async function buildProspectsPage(): Promise<ProspectsPageView> {
     prisma.outreachAttempt.findMany({
       // ACTIVE halts only — the chip says messaging is stopped, so it must use the same
       // one-day window the gate does (Tabish, 2026-08-07; see outreach/replyHalt.ts).
-      where: { repliedAt: { gte: replyHaltFloor(settings.replyResumeHours) }, replyHandledAt: null },
+      where: { replyPostedAt: { gte: replyHaltFloor(settings.replyResumeHours) }, replyHandledAt: null },
       select: { targetId: true },
       distinct: ['targetId'],
     }),

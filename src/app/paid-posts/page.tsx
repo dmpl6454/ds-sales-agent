@@ -217,6 +217,14 @@ export default async function PaidPostsPage() {
                     <th>Brand</th>
                     <th>Post</th>
                     <th>Verdict</th>
+                    {/*
+                      Who this post earns a message TO (Tabish, 2026-08-21) — the verified
+                      prospect(s) the system linked to it, via the post's own @mentions and
+                      tags or via discovery from an untagged post. The SAME linkage the
+                      allowance rule counts, so this column can never disagree with the
+                      enforcer about who a paid post unlocks.
+                    */}
+                    <th>We message</th>
                     {/* The only labelling control in the system. See dismiss.tsx. */}
                     <th></th>
                   </tr>
@@ -261,6 +269,24 @@ export default async function PaidPostsPage() {
                           paid, so saying what was read is no longer a nicety.
                         */}
                         {p.frameEvidence ? <span className="muted"> — from the footage: {p.frameEvidence}</span> : null}
+                      </td>
+                      <td>
+                        {p.recipients.length > 0 ? (
+                          p.recipients.map((r, i) => (
+                            <span key={r.handle}>
+                              {i > 0 ? ', ' : ''}@{r.handle}
+                              {/* A retired prospect is named, not hidden: "we found them
+                                  and chose not to write" and "we found nobody" are
+                                  different facts. */}
+                              {r.retired ? <span className="muted"> (retired)</span> : null}
+                            </span>
+                          ))
+                        ) : (
+                          /* The honest empty state: many paid posts name nobody Instagram
+                             can vouch for, and a fully anonymous paid post yields NO
+                             prospect by design — existence is not identity. */
+                          <span className="muted">nobody verified</span>
+                        )}
                       </td>
                       <td>
                         <DismissButton shortcode={p.shortcode} dismissed={p.dismissed} />

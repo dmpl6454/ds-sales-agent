@@ -29,6 +29,7 @@ import { visibleChannelFilter, ourOwnPageHandles } from '@/detection/visibleChan
 import { detectionCutoff } from '@/lib/cutoff'
 import { readLabelledSet } from '@/detection/labels'
 import { replyHaltFloor } from '@/outreach/replyHalt'
+import { mentionsHandleExactly } from '@/outreach/materialAllowance'
 import { readHeartbeat, machineId } from '@/worker/scheduler'
 import { assessWatch, watchHealthSentence } from '@/detection/watchHealth'
 import { getDetector } from '@/detection/detectors'
@@ -60,7 +61,7 @@ export interface CeoView {
   nowLabel: string
 
   replies: ReplyCard[]
-  week: { detected: number; sent: number; replies: number }
+  week: { detected: number; sent: number; replies: number; checked: number }
   activity: ActivityDay[]
   channels: ChannelCard[]
   accounts: AccountCard[]
@@ -408,7 +409,7 @@ export async function buildCeoView(): Promise<CeoView> {
   const weekStart = daysAgo(7)
   const settings = await getSettings()
 
-  const [senders, targets, lastRun, weekSent, weekReplies, recentSends, unreadReplies, awaitingRaw] =
+  const [senders, targets, lastRun, weekSent, weekReplies, weekChecked, recentSends, unreadReplies, awaitingRaw] =
     await Promise.all([
       prisma.senderAccount.findMany({
         orderBy: { handle: 'asc' },
@@ -433,6 +434,20 @@ export async function buildCeoView(): Promise<CeoView> {
         where: { status: { in: [...DELIVERED_STATUSES] }, sentAt: { gte: weekStart } },
       }),
       prisma.outreachAttempt.count({ where: { repliedAt: { gte: weekStart } } }),
+      /**
+       * How many of the week's delivered messages have had their conversation READ at
+       * all. A reply rate over messages nobody looked at is not a rate — with coverage
+       * at 10% it understated reality tenfold, which is what Tabish reported on
+       * 2026-08-21 ("the number of replies and reply rate is wrong substantially").
+       * The rate's denominator is this count, and the page says so.
+       */
+      prisma.outreachAttempt.count({
+        where: {
+          status: { in: [...DELIVERED_STATUSES] },
+          sentAt: { gte: weekStart },
+          OR: [{ replyCheckedAt: { not: null } }, { repliedAt: { not: null } }],
+        },
+      }),
       prisma.outreachAttempt.findMany({
         where: { sentAt: { gte: daysAgo(14) } },
         include: { pair: { include: { sender: true, target: true } }, campaign: true },
@@ -450,7 +465,7 @@ export async function buildCeoView(): Promise<CeoView> {
       prisma.outreachAttempt.findMany({
         // Only ACTIVE halts — replies inside the one-day resume window (Tabish,
         // 2026-08-07). Older ones released themselves and left the card with them.
-        where: { repliedAt: { gte: replyHaltFloor(settings.replyResumeHours) }, replyHandledAt: null },
+        where: { replyPostedAt: { gte: replyHaltFloor(settings.replyResumeHours) }, replyHandledAt: null },
         include: { pair: { include: { sender: true, target: true } } },
         orderBy: { repliedAt: 'desc' },
       }),
@@ -821,7 +836,7 @@ export async function buildCeoView(): Promise<CeoView> {
     nextSlotLabel: nextSlotLabel(),
     nowLabel: istStamp(),
     replies,
-    week: { detected: weekDetected, sent: weekSent, replies: weekReplies },
+    week: { detected: weekDetected, sent: weekSent, replies: weekReplies, checked: weekChecked },
     activity,
     channels,
     accounts,
@@ -898,7 +913,7 @@ export interface TodayView {
    * halt. Handing this projection only a COUNT is what stops it being rendered here again.
    */
   repliesWaiting: number
-  week: { detected: number; sent: number; replies: number }
+  week: { detected: number; sent: number; replies: number; checked: number }
   activity: ActivityDay[]
   detection: DetectionHealth
   channelCount: number
@@ -1084,6 +1099,12 @@ export interface PaidPostRow {
    * what to look at is a nag, not information.
    */
   frameEvidence: string | null
+  /**
+   * The prospect(s) this post earns a message to — via the post's own @mentions/tags
+   * (materialAllowance's linkage) or via a prospect DISCOVERED from this post. Empty
+   * means the post named nobody we could verify, which is the honest answer, not a gap.
+   */
+  recipients: { handle: string; retired: boolean }[]
 }
 
 export async function buildPaidPostsView(): Promise<PaidPostsView> {
@@ -1169,6 +1190,7 @@ export async function buildPaidPostsView(): Promise<PaidPostsView> {
       orderBy: { postedAt: 'desc' },
       take: POSTS_SHOWN,
       select: {
+        id: true,
         shortcode: true,
         postedAt: true,
         // For the lateness note: how far behind publication detection actually was.
@@ -1178,6 +1200,10 @@ export async function buildPaidPostsView(): Promise<PaidPostsView> {
         humanLabel: true,
         signals: true,
         frameText: true,
+        // For the "we message" column: the same Instagram-asserted evidence that links a
+        // campaign to a prospect everywhere else (materialAllowance's own predicate).
+        caption: true,
+        taggedAccounts: true,
         target: { select: { handle: true, displayName: true } },
       },
     }),
@@ -1238,6 +1264,17 @@ export async function buildPaidPostsView(): Promise<PaidPostsView> {
   const labelsByChannel = new Map<string, number>()
   for (const r of labelled.rows) labelsByChannel.set(r.channel, (labelsByChannel.get(r.channel) ?? 0) + 1)
 
+  /**
+   * Every prospect once, for the per-post "we message" column — matched in JS with
+   * `mentionsHandleExactly` rather than a query per row, because this page has a query
+   * budget and a loop over a list whose size is a product decision must not cost
+   * queries per row (the buildChannelCards lesson, one panel over).
+   */
+  const prospectRefs = await prisma.targetAccount.findMany({
+    where: { role: 'PROSPECT' },
+    select: { handle: true, optedOut: true, discoveredFromCampaignId: true },
+  })
+
   return {
     weekDetected: v.week.detected,
     totalDetected,
@@ -1265,6 +1302,26 @@ export async function buildPaidPostsView(): Promise<PaidPostsView> {
     detection: v.detection,
     brands: v.brands,
     posts: paidRows.map((p) => ({
+      /**
+       * WHO THIS POST EARNS A MESSAGE TO (Tabish, 2026-08-21: "right next to them depict
+       * in a column … the instagram target which is going to send a message to — the one
+       * we detected even if they were not mentioned in caption").
+       *
+       * Two linkages, and they are the SYSTEM'S OWN, not a UI mirror:
+       *   - `mentionsHandleExactly` — the same Instagram-asserted evidence (caption
+       *     @mentions + media tags) that `materialAllowance` counts when deciding whether
+       *     a recipient has earned another message;
+       *   - `discoveredFromCampaignId` — a prospect minted FROM this post by discovery,
+       *     which covers exactly the "not mentioned in caption" case he named
+       *     (`discoverOfficialPages` resolving an untagged post).
+       */
+      recipients: prospectRefs
+        .filter(
+          (t) =>
+            t.discoveredFromCampaignId === p.id ||
+            mentionsHandleExactly({ caption: p.caption, taggedAccounts: p.taggedAccounts }, t.handle),
+        )
+        .map((t) => ({ handle: t.handle, retired: t.optedOut })),
       shortcode: p.shortcode,
       url: postUrl(p.shortcode),
       dayLabel: istDateKey(p.postedAt),

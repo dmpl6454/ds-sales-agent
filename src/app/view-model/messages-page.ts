@@ -386,8 +386,11 @@ export async function buildMessagesPage(): Promise<MessagesPageView> {
       orderBy: { sentAt: 'asc' },
     }),
     prisma.outreachAttempt.findMany({
-      where: { repliedAt: { gte: replyHaltFloor(settings.replyResumeHours) }, replyHandledAt: null },
-      select: { targetId: true, repliedAt: true },
+      where: { replyPostedAt: { gte: replyHaltFloor(settings.replyResumeHours) }, replyHandledAt: null },
+      // The DATED clock, matching the gate: the halt counts seven days from when the
+      // reply was WRITTEN, and a resume time computed from the observation clock would
+      // promise a later release than the enforcer's (2026-08-21).
+      select: { targetId: true, replyPostedAt: true },
     }),
     eligibleFleetSenderIds(),
   ])
@@ -402,8 +405,8 @@ export async function buildMessagesPage(): Promise<MessagesPageView> {
   /** target → when its reply halt releases (newest reply wins, matching replyHalt.ts). */
   const replyResumesAt = new Map<string, Date>()
   for (const r of repliedRows) {
-    if (r.repliedAt === null) continue
-    const resumes = new Date(r.repliedAt.getTime() + settings.replyResumeHours * 3_600_000)
+    if (r.replyPostedAt === null) continue
+    const resumes = new Date(r.replyPostedAt.getTime() + settings.replyResumeHours * 3_600_000)
     const prev = replyResumesAt.get(r.targetId)
     if (prev === undefined || resumes > prev) replyResumesAt.set(r.targetId, resumes)
   }

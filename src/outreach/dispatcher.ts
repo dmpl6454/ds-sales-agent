@@ -14,6 +14,7 @@ import {
   type DispatchVerdict,
 } from './pacing'
 import { deliverWaiting, type DeliverResult } from './deliver'
+import { LAST_SEND_STARTED_KEY, gapClock } from './paceClock'
 
 /**
  * The paced dispatcher: the thing that decides a message may go out NOW, and the lock
@@ -66,36 +67,11 @@ export const DISPATCH_STATE_KEY = 'dispatchState'
 export const DISPATCH_PAUSE_KEY = 'dispatchPaused'
 
 /**
- * When the last send STARTED — the clock the fleet gap is measured from since 2026-08-21.
- *
- * A `Setting` row rather than a column, for the reason the accuracy history is one too: this
- * machine cannot deploy a migration to the server, and a schema change applied to a live
- * database from a host that cannot ship the code using it is a split-brain window for no
- * gain. It is a single scalar the whole fleet shares, which is exactly what a Setting is for.
+ * The pace clock lives in `paceClock.ts` now — the WRITE site moved to
+ * `browserSender.send` (see that module for the measured reason), and re-exporting here
+ * keeps every existing reader pointed at one implementation.
  */
-export const LAST_SEND_STARTED_KEY = 'fleetLastSendStartedAt'
-
-/** Stamp the moment a browser drive begins. Called inside the send lock, before the drive. */
-export async function recordSendStarted(at: Date): Promise<void> {
-  await prisma.setting.upsert({
-    where: { key: LAST_SEND_STARTED_KEY },
-    create: { key: LAST_SEND_STARTED_KEY, value: at.toISOString() },
-    update: { value: at.toISOString() },
-  })
-}
-
-/**
- * PURE. Which clock does the fleet gap measure from, given both candidates?
- *
- * Extracted so the answer is testable without a database, because the bug it encodes was a
- * one-line comparison that a source grep could not see and that the caller exercised
- * perfectly — see the docblock inside `lastSendStartedAt`.
- */
-export function gapClock(started: Date | null, lastCompleted: Date | null): Date | null {
-  /* The stamp wins whenever it exists; completion is the fallback, never the maximum. */
-  if (started) return started
-  return lastCompleted
-}
+export { LAST_SEND_STARTED_KEY, recordSendStarted, gapClock } from './paceClock'
 
 /**
  * The gap clock: when did a send last BEGIN?
@@ -292,29 +268,22 @@ let heldInThisProcess = false
  * message: whatever was waiting is still waiting, with its Send button.
  */
 /**
- * IS THIS OPERATION A SEND? Required, with no default, on purpose.
+ * ── WHY THE LOCK NO LONGER STAMPS THE PACE CLOCK (2026-08-21, evening) ────
  *
- * `withSendLock` is the one place every browser-driving path passes through, which makes it
- * the right place to stamp the fleet's pace clock — but two of its four callers are NOT sends
- * (the reply sweep reads a conversation; the pruner deletes cache), and stamping those would
- * make a read cost a send's worth of spacing.
+ * `withSendLock` briefly carried an `{ isSend }` flag and stamped `fleetLastSendStartedAt`
+ * on acquisition. That placement was measured wrong the same day it shipped: acquiring the
+ * lock is a statement of INTENT, and a dispatch tick acquires it before it knows whether any
+ * draft passes the gate. On a drained queue every passing tick stamped the clock, the log
+ * read "the last message went out 0 minute(s) ago" for twelve consecutive minutes with zero
+ * sends, and a draft that became sendable waited up to a full gap period behind stamps from
+ * ticks that delivered nothing.
  *
- * So the answer is a REQUIRED field rather than an optional flag with a default: the compiler
- * names every call site the day a new one appears, exactly as making `RenderTarget.kind`
- * required named all 24 of its call sites. A default here would be a decision made by
- * omission, and the omission this repo keeps paying for is a rule that reached one caller and
- * not the others.
+ * The stamp lives in `browserSender.send` now — the ONE implementation every delivered
+ * message passes through, still inside this lock (both its callers hold it), still before
+ * the browser moves. The reply sweep and the pruner never reach it, so a read can never
+ * cost a send's worth of spacing, which is the property the deleted flag existed to protect.
  */
-export interface SendLockKind {
-  /** True only when a message is about to be delivered. Stamps the pace clock. */
-  isSend: boolean
-}
-
-export async function withSendLock<T>(
-  what: string,
-  { isSend }: SendLockKind,
-  fn: () => Promise<T>,
-): Promise<T | null> {
+export async function withSendLock<T>(what: string, fn: () => Promise<T>): Promise<T | null> {
   /**
    * MAY THIS MACHINE SEND AT ALL? Checked here because this function is the ONE place
    * every path that drives a browser passes through — the dispatcher, the dashboard's
@@ -345,17 +314,6 @@ export async function withSendLock<T>(
   if (!(await acquireSendLock(what))) return null
   heldInThisProcess = true
   try {
-    /**
-     * THE PACE CLOCK IS STAMPED HERE, FOR EVERY SEND PATH, BEFORE THE BROWSER MOVES.
-     *
-     * Inside the lock (so it cannot race) and before `fn()` (so the gap is a PERIOD rather
-     * than idle time bolted onto a ~47s drive). In `withSendLock` rather than in the
-     * dispatcher, because the dashboard's Send button and the on-demand dialog are sends too
-     * — a stamp that reached only the dispatcher would let a manual send land seconds after
-     * an automatic one, which is the "one rule, several callers" gap this function's own
-     * docblock is about.
-     */
-    if (isSend) await recordSendStarted(new Date())
     return await fn()
   } finally {
     heldInThisProcess = false
@@ -502,8 +460,9 @@ export async function dispatchTick(reason: string): Promise<DispatchTickResult> 
    * was never going to send does not block the dashboard's Send button for the duration
    * of its own queries.
    */
-  const result = await withSendLock(`dispatch:${reason}`, { isSend: true }, async () => {
-    /* The pace clock is stamped by `withSendLock` itself now — every send path, one place. */
+  const result = await withSendLock(`dispatch:${reason}`, async () => {
+    /* The pace clock is stamped by `browserSender.send` when a drive actually begins —
+       a tick that holds every draft must not reset it (see recordSendStarted). */
     return deliverWaiting({ maxSends: settings.maxSendsPerTick })
   })
 

@@ -122,6 +122,7 @@ bootstrap.exec(`
     "attempts" INTEGER NOT NULL DEFAULT 0,
     "failureCode" TEXT,
     "repliedAt" DATETIME,
+    "replyPostedAt" DATETIME,
     "replyText" TEXT,
     "replyCheckedAt" DATETIME,
     "replyHandledAt" DATETIME,
@@ -262,6 +263,8 @@ beforeEach(async () => {
       status: 'REPLIED',
       sentAt: new Date(Date.now() - 60 * 60_000),
       repliedAt: new Date(Date.now() - 10 * 60_000),
+      // The halt reads the DATED clock (2026-08-21): a recorded reply seeds both.
+      replyPostedAt: new Date(Date.now() - 10 * 60_000),
       replyText: 'Let us connect?',
     },
   })
@@ -326,7 +329,7 @@ describe('marking a reply handled resumes messaging to that recipient', () => {
     await prisma.outreachAttempt.update({
       where: { id: 'delivered' },
       // Two hours old: inside the 48-hour window, nobody has handled it.
-      data: { repliedAt: new Date(Date.now() - 2 * 60 * 60_000) },
+      data: { repliedAt: new Date(Date.now() - 2 * 60 * 60_000), replyPostedAt: new Date(Date.now() - 2 * 60 * 60_000) },
     })
     const gate = await recheckBeforeSend(await attemptForGate('waiting'), { unattended: true })
     if (gate.ok) throw new Error('unexpected: an unhandled fresh reply must halt')

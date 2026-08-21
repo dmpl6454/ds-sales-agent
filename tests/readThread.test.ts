@@ -50,7 +50,7 @@ const OURS_B = [
 
 const THEIRS = 'Hi'
 
-const bubble = (text: string, ourBodies: readonly string[]) => ({ text, ours: isOneOfOurs(text, ourBodies) })
+const bubble = (text: string, ourBodies: readonly string[]) => ({ text, ours: isOneOfOurs(text, ourBodies), approxAt: null })
 
 describe('assessRead', () => {
   it('is complete when every message we sent is visible', () => {
@@ -187,11 +187,11 @@ describe('completeness on a fanned-out recipient', () => {
   /** The taniya thread, shaped exactly: 8 of theirs, ONE of ours, five pages' worth fleet-wide. */
   it('one pair-delivered bubble plus their replies is COMPLETE, and the replies are theirs', () => {
     const messages: ThreadMessage[] = [
-      { text: '?', ours: false },
-      { text: 'please message', ours: false },
-      { text: 'Hi, this will cost you 8k per post', ours: false },
-      { text: '10 posts deal lelo', ours: false },
-      { text: TEMPLATE, ours: true },
+      { text: '?', ours: false, approxAt: null },
+      { text: 'please message', ours: false, approxAt: null },
+      { text: 'Hi, this will cost you 8k per post', ours: false, approxAt: null },
+      { text: '10 posts deal lelo', ours: false, approxAt: null },
+      { text: TEMPLATE, ours: true, approxAt: null },
     ]
     /* Five identical deliveries exist FLEET-WIDE; this pair delivered ONE. */
     const read = assessRead(messages, [TEMPLATE])
@@ -204,7 +204,7 @@ describe('completeness on a fanned-out recipient', () => {
 
   /** The direction the 17 Aug fix exists for is UNCHANGED: two sends by THIS pair need two bubbles. */
   it('a pair that delivered twice is still incomplete when only one bubble is visible', () => {
-    const read = assessRead([{ text: TEMPLATE, ours: true }], [TEMPLATE, TEMPLATE])
+    const read = assessRead([{ text: TEMPLATE, ours: true, approxAt: null }], [TEMPLATE, TEMPLATE])
     expect(read.complete).toBe(false)
     expect(read.foundOurs).toBe(1)
   })
