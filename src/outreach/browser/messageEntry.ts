@@ -390,6 +390,50 @@ export async function acceptMessageRequest(page: Page, targetHandle: string): Pr
   await acceptBtn.hover()
   await jitter(300, 900)
   await acceptBtn.click()
+  await jitter(800, 1_500)
+
+  /**
+   * ── BLOCKER 6: ACCEPT IS FOLLOWED BY "MOVE MESSAGES INTO: PRIMARY / GENERAL / CANCEL" ──
+   *
+   * Found by Tabish from a screenshot, 2026-08-21, minutes after blocker 5 shipped — and it
+   * is WHY the accept did not stick: the verification run clicked Accept, this dialog rose
+   * over the thread, nothing answered it, and the next visit found the request panel intact.
+   * An accept that is not filed is not an accept.
+   *
+   * **PRIMARY is the only destination ever chosen** (his instruction: "must add them to our
+   * primary"). It is also the only correct one structurally: the reply sweep reads the
+   * inbox a person reads, and a conversation filed under General is a lead in a tab nothing
+   * opens. Cancel would abandon the accept — which is also why this dialog must never be
+   * handled by `dismissBlockingDialog`: that helper declines things, and declining here
+   * undoes the acceptance. Anchored match, same discipline as every button in this file.
+   */
+  const moveDialog = await page
+    .locator('text=/move messages from/i')
+    .first()
+    .isVisible()
+    .catch(() => false)
+  if (moveDialog) {
+    const primaryBtn = await firstVisible(
+      page,
+      [
+        page.getByRole('button', { name: /^primary$/i }),
+        page.locator('div[role="button"]', { hasText: /^Primary$/ }),
+        page.locator('button', { hasText: /^Primary$/ }),
+      ],
+      4_000,
+    )
+    if (primaryBtn) {
+      log.step('filing the accepted conversation under Primary', { target: targetHandle })
+      await primaryBtn.hover()
+      await jitter(250, 700)
+      await primaryBtn.click()
+    } else {
+      /* Seen the dialog but not the button: say so rather than sailing on — the accept may
+         not have been filed, and the next read will find the panel again and retry. */
+      log.warn('the move-to-Primary dialog appeared but its button was not found', { target: targetHandle })
+    }
+  }
+
   /* The panel is replaced by the real thread; give it a moment to render the composer. */
   await jitter(1_200, 2_200)
   return true

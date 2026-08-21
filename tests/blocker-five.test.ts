@@ -96,3 +96,47 @@ describe('only the safe button is ever clicked', () => {
     expect(fn).toMatch(/return true/)
   })
 })
+
+/**
+ * ── BLOCKER 6: ACCEPT IS FOLLOWED BY "MOVE MESSAGES INTO: PRIMARY / GENERAL / CANCEL" ──
+ *
+ * Found by Tabish minutes after blocker 5 shipped — and it is why the first verification
+ * run's Accept did not stick: the dialog rose over the thread, nothing answered it, and the
+ * next visit found the request panel intact. An accept that is not filed is not an accept.
+ * VERIFIED live on @sohamrockstrent: pass 1 logged "accepting the message request" then
+ * "filing the accepted conversation under Primary"; pass 2 found no request panel at all.
+ */
+describe('blocker 6 — the accepted conversation is filed under Primary', () => {
+  const src = read(ENTRY)
+  const fn = src.slice(src.indexOf('export async function acceptMessageRequest'), src.indexOf('export async function passBusinessInterstitial'))
+
+  it('clicks Primary, anchored, and only after confirming the move dialog is present', () => {
+    expect(fn).toMatch(/move messages from/i)
+    expect(fn).toMatch(/\/\^primary\$\/i/)
+  })
+
+  /**
+   * General files the lead in a tab the sweep never reads; Cancel abandons the accept.
+   * Neither may ever be a click target.
+   */
+  it('never clicks General or Cancel', () => {
+    expect(fn).not.toMatch(/name: \/\^general/i)
+    expect(fn).not.toMatch(/hasText: \/\^General\$\//)
+    expect(fn).not.toMatch(/name: \/\^cancel/i)
+    expect(fn).not.toMatch(/hasText: \/\^Cancel\$\//)
+  })
+
+  /**
+   * `dismissBlockingDialog` declines things ("Not Now"), and declining the move dialog would
+   * abandon the acceptance — so that helper must not know this dialog at all. Its clickable
+   * vocabulary staying exactly "Not Now" is what this asserts.
+   */
+  it('the generic dismisser cannot touch the move dialog', () => {
+    const dismiss = src.slice(src.indexOf('export async function dismissBlockingDialog'), src.indexOf('export async function clickPastDialogs'))
+    expect(dismiss).not.toMatch(/primary|general|cancel|move messages/i)
+  })
+
+  it('a seen dialog with a missing button is REPORTED, never sailed past', () => {
+    expect(fn).toMatch(/move-to-Primary dialog appeared but its button was not found/)
+  })
+})
