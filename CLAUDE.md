@@ -165,33 +165,128 @@ of our own pages = **0**, and no watched handle exists as a second non-WATCH row
 cannot create a prospect either, because `brandCandidatesFor` excludes our pages and watched
 publishers *before* the lookup budget.
 
+### BLOCKER 5 — THEY MESSAGED US FIRST, SO THERE IS A REQUEST AND NO COMPOSER
+
+The fifth recipient-side blocker, at the rate this file predicted ("expect a fifth"). When an
+account has sent US a message we never accepted, the conversation opens on **Block · Delete ·
+Accept** with no composer. The send timed out looking for one and was filed `no-composer` — a
+name asserting the account cannot be messaged, about an account that had just messaged us.
+
+`acceptMessageRequest` lives in `messageEntry.ts` and **BOTH paths take it.** For this blocker
+that matters more than usual: an unaccepted request IS a message somebody sent us, so leaving
+the read path out would make the thread most likely to hold a real enquiry the one thread that
+can never be read.
+
+**ACCEPT IS THE ONLY BUTTON EVER CLICKED**, the same discipline as blocker 3's "Not Now":
+**Delete** throws away an inbound lead — the most valuable thing this system can receive — and
+**Block** severs the relationship, and neither is undoable from here. The matcher is anchored
+(`/^accept$/`) because the panel's own prose reads *"Accept message request from …"*, and the
+panel is confirmed to BE a request before anything is clicked. Stated plainly: accepting lets
+the sender see our activity status, which is a small deliberate widening and the direction a
+person would take by hand.
+
+An accepted request usually means a human should look, and that follows by itself — their
+message is now a bubble that is THEIRS, so the reply guard halts outreach on the next read.
+That is the correct outcome, not a side effect to design around.
+
+### ONE MESSAGE PER DETECTED PAID POST — THE 5× FAN-OUT IS GONE
+
+*"If only a single paid post is detected … we send a message to the brand only once unless we
+detect another paid post."* **MEASURED: 133 recipients had heard from more than one of our
+pages, many from all five** — @indiagatefoods got five messages from five pages in twelve
+hours off ONE post — and **493 surplus messages in the last seven days.**
+
+**THE MECHANISM WAS A SCOPE, NOT A MISSING RULE**, and this is the part worth keeping.
+`NO_NEW_MATERIAL` already said exactly this and was defeated twice over:
+
+1. `unusedCampaignCount` counts campaigns unused **by this sender**, so one paid post reads as
+   unused for all five senders at once.
+2. The check only runs when `touchesSoFar > 0`, and each sender's own pair has zero touches —
+   so every one of the five is exempt as a first touch.
+
+`materialAllowance` asks the question about the **RECIPIENT**, which is who the rule was always
+about. Allowance = `max(1, paid posts naming them in the window)` against messages ANY page
+delivered in the SAME window — one window on both sides, because all-time deliveries against
+recent campaigns would retire a recipient permanently the first time a campaign aged out, and
+the reverse would let one old post fund a message a week forever.
+
+**The `max(1, …)` is load-bearing rather than defensive:** a hand-imported prospect, or one
+found by `discoverOfficialPages` from a post that named nobody, would otherwise be unreachable
+forever — absence of data hardening into a permanent refusal, presenting as "the queue never
+drains".
+
+**THROUGHPUT, STATED:** 147 of 173 prospects are now held until their next paid post. That is
+his rule and it is the safer direction, but it is a large reduction; detection finds ~150
+CAMPAIGN posts a day, so material keeps arriving. The remedy is deliberately `href: null` — the
+release is a new paid post, which detection finds by itself, so a button would imply a fault.
+
+### AND THE DOMINANT filmygyan CAUSE WAS AN INPUT GAP, NOT A RULE GAP
+
+Only ONE of the 42 rested on the frame. The rest were caption-decided, and the model's own
+stored reasons say why: *"Promotes video on own channel, likely paid promo"*, *"Promotes
+Filmygyan's 10-year party event"*.
+
+**THE SYSTEM PROMPT ALREADY GETS THIS RIGHT.** Its editorial list contains, verbatim, *"The
+publisher promoting its OWN newsletter, show, merch or account"*. The model simply had no way
+to know the "Filmygyan" in the caption IS the account that posted it — and reading *"watch it
+on Filmygyan's YouTube channel"* without knowing whose feed it is, a third-party promotion is
+the **correct** inference from the evidence given.
+
+So `publisherContext.ts` adds an INPUT and changes no rule, which is what makes it safe. Three
+properties make it measurable and reversible:
+
+- **Cache-safe.** The system prompt stays a module-level constant (the 50× discount needs that
+  prefix to match in full, and destroying it is silent and permanent), so the block goes in the
+  USER message beside the tags and the frame. A test asserts nothing is interpolated into it.
+- **Emitted only when the caption NAMES its publisher.** A caption without one has no ambiguity
+  to resolve and produces a byte-identical user message — which is what makes most of the
+  corpus structurally unable to move rather than merely measured not to have moved.
+- **Both calls or neither.** Derived once in `judge.ts` and passed to both `classifyCaption`
+  calls, under the same rule `tagText` documents: `applyFrameSignal` attributes any difference
+  to THE FOOTAGE, so reaching one call only would score a publisher-driven change as a
+  frame-driven one. A grep pins every call site.
+
+**MEASURED BEFORE TURNING IT ON, `ig:accuracy --repeat 3` both ways:**
+
+| | baseline | with the publisher |
+|---|---|---|
+| @madovermarketing_mom recall | 97% | **97%** |
+| @viralbhayani recall | 100% | **100%** |
+
+**Recall did not move**, which is this project's standing gate. And the direct evidence, read
+rather than scored, on 14 real @filmygyan CAMPAIGN rows: **9 flip to ORGANIC** with reasons like
+*"Publisher's own anniversary celebration, not a paid placement"* — while the two genuine film
+promos (`Toxic` and `VIBE`, both with release dates and booking links) **hold at CAMPAIGN 95%,
+unchanged**, because neither names its publisher and their prompt is byte-identical. That
+control is the whole argument: self-promotion moves, real placements do not.
+
+`publisherAsContext` is **ON**, audited with that measurement. `pnpm ig:rejudge-channel <handle>`
+(DRY RUN BY DEFAULT) revisits stored verdicts after an input changes — `ig:classify` only ever
+selected `verdictSource: 'none'`, so there was no way to reconsider a judged row. It never
+selects a human label, goes through `judgeWithFrame`, and leaves a failed call alone.
+
+**FOUND BY RUNNING IT:** the first version reported all 42 rows "undecided". `judgeWithFrame`
+takes the caption verdict as an ARGUMENT and does not recompute one for a semantic channel, so
+`UNCLASSIFIED` in means `UNCLASSIFIED` out — a frame may never give an unjudged post a verdict.
+It re-asks the caption now, because the stored verdict was formed without the new input and
+composing against it would measure the change against itself.
+
 ### WHAT IS NOT DONE FROM THIS MESSAGE — READ THIS BEFORE ASSUMING IT IS
 
-1. **The dominant filmygyan cause is still live.** Only 1 of the 42 rested on the frame alone;
-   the rest are `frame:not-needed-caption-decided` with the model's own reasons reading
-   *"Promotes video on own channel, likely paid promo"* and *"Promotes Filmygyan's 10-year
-   party event"*. **The model is not told whose feed it is reading**, so it cannot know that
-   "Filmygyan's YouTube channel" is the publisher itself. That is an INPUT change of the same
-   shape as `tagsAsEvidence` and it **must go through `pnpm ig:accuracy --repeat 3` before and
-   after** — recall is never traded. Not attempted here.
-2. **The existing false CAMPAIGN rows are not re-judged**, and the 54 brand lists are not
-   cleaned. Both want a bounded `--run` command, not a silent sweep.
-3. **BLOCKER 5 is real and unhandled**: when a recipient has messaged US first, the thread
-   opens on Accept / Delete / Block with no composer, which is what produced `no-composer`
-   ×6 on @sohamrockstrent. The agent must click **Accept** and proceed. It belongs in
-   `messageEntry.ts` so BOTH the send path and the read path get it at once.
-4. **THE 5× FAN-OUT.** *"If only a single paid post is detected … we send a message to the
-   brand only once."* MEASURED: **133 recipients have heard from more than one of our pages,
-   many from all five** — @indiagatefoods got five messages from five pages in twelve hours.
-   That is the ring rule working exactly as specified on 2026-08-19, and he is now asking for
-   one message per DETECTED PAID POST instead. It is the safer direction and it is a real
-   change to `crossSpacing`.
-5. **REPLY DETECTION COVERS 50 OF 640 delivered messages (7.8%).** No send has yet crossed a
-   *recorded* reply, but the sweep reads four conversations a run against 640 open threads, so
-   most replies are simply unknown. The 5× fan-out multiplies this: a recipient who replies to
-   one page still hears from four others.
-6. **`/paid-posts` has no per-channel filter and no pagination**, and the "not paid" cascade
-   has not been re-verified end to end against drafts already written.
+1. **REPLY DETECTION COVERS 50 OF 640 delivered messages (7.8%).** No send has ever crossed a
+   *recorded* reply — measured, zero — but the sweep reads four conversations a run against 640
+   open threads, so most replies are simply unknown. The 5× fan-out used to multiply this and
+   no longer does, which shrinks the exposure without closing it.
+2. **`/paid-posts` has no per-channel filter and no pagination**, and the "not paid" cascade has
+   not been re-verified end to end against drafts already written. Both were asked for in the
+   same message.
+3. **The 54 brand lists carrying `fg6`-style codes are not cleaned.** The rule that stops new
+   ones is live (`ownMarks.ts`); the stored rows are cosmetic and want a bounded `--run` sweep.
+   No prospect was ever minted from one — discovery reads @mentions and tags, never the
+   `brands` column — so this is UI noise rather than a live risk.
+4. **The other watched channels have not been re-judged** with the publisher context. Only
+   @filmygyan has, because it is the one Tabish named and the one with a 42-vs-25 anomaly. The
+   command is `pnpm ig:rejudge-channel <handle>` and it is dry-run by default.
 
 ---
 
