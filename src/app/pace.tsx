@@ -175,10 +175,21 @@ export function PaceBand({
       </div>
 
       {!capped && (
+        /**
+         * THE ARITHMETIC, ON THE PAGE (2026-08-21).
+         *
+         * This used to say the rate "settles around 25-35 an hour, not 60" — true as an
+         * observation and useless as an explanation, which is why Tabish had to ask why. The
+         * cause was that the gap was measured from a send's COMPLETION, so the ~47s drive was
+         * added to every gap and the period was 107s at a 1-minute setting. The gap is a
+         * PERIOD now, so the sentence can state the rule and the one thing that still eats
+         * into it rather than quoting a number nobody could derive.
+         */
         <p className="cardnote">
-          One message a minute whenever there is a draft clear to send &mdash; any time of day. A send itself takes
-          about a minute and the reply sweep pauses sending while it reads, so the real rate settles around 25&ndash;35
-          an hour, not 60.
+          One message every {minGapMinutes} minute{minGapMinutes === 1 ? '' : 's'}, measured from the moment a send
+          starts &mdash; any time of day, so about {Math.floor(60 / Math.max(minGapMinutes, 1))} an hour when the queue
+          is deep. A send itself takes roughly 45 seconds, so a gap under a minute is floored by the browser rather
+          than by this rule, and the reply sweep pauses sending while it reads a conversation.
         </p>
       )}
 

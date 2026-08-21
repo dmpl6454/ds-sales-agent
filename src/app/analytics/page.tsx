@@ -6,6 +6,7 @@ import { buildConversationsPage } from '../view-model/conversations-page'
 import { buildAnalyticsCharts } from '../view-model/charts'
 import { CoverageNote } from '../coverage'
 import { SentList } from '../messages/sent'
+import { buildSentHistory } from '../view-model/sent-history'
 import { ExportPanel } from './export-panel'
 import { prisma } from '@/lib/db'
 import { fleetUsage } from '@/outreach/reservations'
@@ -39,6 +40,16 @@ const RANGES = [
   { key: '90d', label: '90 days', days: 90 },
 ] as const
 
+/**
+ * A `?from=` sender filter is a URL anyone can type, and it reaches a Prisma `where`.
+ * Shape-checked here rather than trusted: the same reasoning as `assertSafeHandle` on the
+ * add path, and as `OVERRIDABLE_BLOCKS` being a closed whitelist rather than caller strings.
+ * An unparseable value becomes "no filter", never an error page.
+ */
+function senderHandleLooksReal(v: string): boolean {
+  return /^[a-z0-9._]{1,40}$/i.test(v)
+}
+
 const VERDICT_SERIES: Series[] = [
   { key: 'paid', label: 'Paid', color: 'var(--ac)' },
   { key: 'ordinary', label: 'Ordinary', color: 'var(--idle)' },
@@ -49,15 +60,24 @@ const VERDICT_SERIES: Series[] = [
 export default async function AnalyticsPage({
   searchParams,
 }: {
-  searchParams: Promise<{ range?: string }>
+  searchParams: Promise<{ range?: string; sent?: string; from?: string }>
 }) {
   const user = await currentUser()
   if (!user) redirect('/sign-in')
 
-  const { range } = await searchParams
+  const { range, sent, from } = await searchParams
   const picked = RANGES.find((r) => r.key === range) ?? RANGES[1]
 
-  const [v, c, charts, usage, senderRows, sentBySender, repliedBySender] = await Promise.all([
+  /**
+   * THE HISTORY'S POSITION LIVES IN THE URL (2026-08-21, Tabish: "an ability to go even
+   * beyond"). `sent` is the page, `from` an optional sender filter. Both are strings anyone
+   * can type, so both are parsed defensively and `buildSentHistory` clamps the page into
+   * range — an out-of-range `?sent=999` must show the last page, never an empty table.
+   */
+  const sentPage = Number.parseInt(sent ?? '1', 10)
+  const senderFilter = from && senderHandleLooksReal(from) ? from : null
+
+  const [v, c, charts, usage, history, senderRows, sentBySender, repliedBySender] = await Promise.all([
     buildTodayView(),
     buildConversationsPage(),
     buildAnalyticsCharts(picked.days),
@@ -75,6 +95,8 @@ export default async function AnalyticsPage({
      * get wrong (the Linode is not on IST). Two cheap counts, inside the existing Promise.all.
      */
     fleetUsage(),
+    /* The whole delivered history, a page at a time — see view-model/sent-history.ts. */
+    buildSentHistory({ page: Number.isFinite(sentPage) ? sentPage : 1, senderHandle: senderFilter }),
     prisma.senderAccount.findMany({ orderBy: { handle: 'asc' }, select: { id: true, handle: true } }),
     /**
      * PER-ACCOUNT SENT AND REPLIED (2026-08-19, Tabish: "clearly see the amount of messages
@@ -378,8 +400,21 @@ export default async function AnalyticsPage({
 
         <ExportPanel senders={senderHandles} />
 
-        <section>
-          <SentList recent={c.recent} />
+        {/* `id` so the pager's `#history` lands the reader back on the table, not the page top. */}
+        <section id="history">
+          <SentList
+            recent={history.rows}
+            paging={{
+              page: history.page,
+              pageCount: history.pageCount,
+              total: history.total,
+              from: history.from,
+              to: history.to,
+              /* The range selector must survive paging, and vice versa. */
+              hrefForPage: (n) =>
+                `/analytics?range=${picked.key}${history.senderHandle ? `&from=${history.senderHandle}` : ''}&sent=${n}#history`,
+            }}
+          />
         </section>
       </div>
     </>

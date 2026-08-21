@@ -80,6 +80,46 @@ export const ACTIVE_TO_HOUR = 0
 export const FLEET_MIN_GAP_MINUTES = 1
 
 /**
+ * ── THE GAP IS A PERIOD, NOT IDLE TIME AFTER A SEND (2026-08-21) ───────────
+ *
+ * Tabish: *"If we are sending every 1 min or so why are only 25-35/hour being sent?"* The
+ * arithmetic, MEASURED over the flat overnight run (276 deliveries, midnight→09:00 IST):
+ *
+ *     gap between consecutive sends:  min 104s   p50 107s   p90 124s
+ *     235 of 275 gaps inside ONE 15-second bucket (105-119s)
+ *
+ * A distribution that tight is not jitter — it is an equation. `sentAt` is written when a
+ * send COMPLETES, and `minutesSinceLastSend` was measured from it, so the next send could
+ * only START a full minute after the previous one FINISHED, and then took ~47s itself:
+ *
+ *     period = gap (60s) + browser drive (~47s) = 107s = 33.6/hour
+ *
+ * So "one message a minute" was really "one message per minute-PLUS-a-send", and the knob
+ * could never produce the rate it named — at any gap the true period was gap + 47s. The
+ * number on `/rules` and the number in force were different rules, which is the
+ * `MAX_TOTAL_SENDS` failure in the pacing layer.
+ *
+ * **Measuring from the START makes the configured number mean what it says.** The gap is now
+ * the period between one send beginning and the next beginning, so `fleetMinGapMinutes = 1`
+ * is genuinely one message a minute (~60/hour), and at any value below the ~47s drive time
+ * the drive itself becomes the floor. `withSendLock` is what keeps that safe: it is
+ * fleet-wide and refuses to nest, so two sends can never overlap however small this gets —
+ * the gap controls PACE, the lock enforces SERIALISATION, and those were conflated while
+ * the gap was measured from completion.
+ *
+ * **THE EXPOSURE CHANGE, STATED RATHER THAN SHIPPED QUIETLY (rule 1).** This takes the fleet
+ * from ~33/hour to ~55-60/hour at the same setting — the volume Tabish has asked for twice,
+ * but nearly double what has actually been running, from one residential IP with a
+ * near-identical template. `fleetMinGapMinutes = 2` restores the old rate in one write, and
+ * autopilot OFF still stops everything at the next decision point.
+ *
+ * The other measured cost is NOT this: the long tail (20 gaps of 135-290s) is the reply
+ * sweep holding the fleet send lock for its whole run — known, documented, and a different
+ * change (per-conversation locking) than this one.
+ */
+export const GAP_MEASURED_FROM_SEND_START = true
+
+/**
  * Fleet sends allowed per IST hour. UNLIMITED since 2026-08-18, Tabish's instruction
  * ("Remove all caps … no ceiling to send messages"). What paces the fleet now is the
  * minimum gap above — one send every FLEET_MIN_GAP_MINUTES inside the active window,

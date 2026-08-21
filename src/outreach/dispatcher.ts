@@ -65,6 +65,47 @@ export const DISPATCH_STATE_KEY = 'dispatchState'
 /** Setting key holding a human's explicit pause: `{"at":...,"by":...,"reason":...}`. */
 export const DISPATCH_PAUSE_KEY = 'dispatchPaused'
 
+/**
+ * When the last send STARTED — the clock the fleet gap is measured from since 2026-08-21.
+ *
+ * A `Setting` row rather than a column, for the reason the accuracy history is one too: this
+ * machine cannot deploy a migration to the server, and a schema change applied to a live
+ * database from a host that cannot ship the code using it is a split-brain window for no
+ * gain. It is a single scalar the whole fleet shares, which is exactly what a Setting is for.
+ */
+export const LAST_SEND_STARTED_KEY = 'fleetLastSendStartedAt'
+
+/** Stamp the moment a browser drive begins. Called inside the send lock, before the drive. */
+export async function recordSendStarted(at: Date): Promise<void> {
+  await prisma.setting.upsert({
+    where: { key: LAST_SEND_STARTED_KEY },
+    create: { key: LAST_SEND_STARTED_KEY, value: at.toISOString() },
+    update: { value: at.toISOString() },
+  })
+}
+
+/**
+ * The gap clock: when did a send last BEGIN?
+ *
+ * Falls back to the newest `sentAt` when the row does not exist yet — a fleet that has
+ * never run under the new code must not read "never sent" and fire immediately, which would
+ * ignore the gap exactly once on every deploy. `null` only when nothing has ever been sent.
+ */
+export async function lastSendStartedAt(): Promise<Date | null> {
+  const [row, lastSend] = await Promise.all([
+    prisma.setting.findUnique({ where: { key: LAST_SEND_STARTED_KEY } }),
+    prisma.outreachAttempt.findFirst({
+      where: { status: { in: [...DELIVERED_STATUSES] }, sentAt: { not: null } },
+      orderBy: { sentAt: 'desc' },
+      select: { sentAt: true },
+    }),
+  ])
+  const started = row?.value ? new Date(String(row.value)) : null
+  const completed = lastSend?.sentAt ?? null
+  if (started && completed) return started > completed ? started : completed
+  return started ?? completed
+}
+
 export interface SendLockHolder {
   pid: number
   what: string
@@ -357,18 +398,20 @@ export async function dispatchTick(reason: string): Promise<DispatchTickResult> 
     return { verdict, at: at.toISOString() }
   }
 
-  const [breaker, waitingCount, lastSend] = await Promise.all([
+  const [breaker, waitingCount, lastStart] = await Promise.all([
     assessFleetBreaker(at),
     prisma.outreachAttempt.count({ where: { status: 'READY' } }),
-    prisma.outreachAttempt.findFirst({
-      where: { status: { in: [...DELIVERED_STATUSES] }, sentAt: { not: null } },
-      orderBy: { sentAt: 'desc' },
-      select: { sentAt: true },
-    }),
+    /**
+     * The gap clock is when a send last BEGAN, not when one finished (2026-08-21).
+     * Measuring from completion added the ~47s browser drive to every gap, so a 1-minute
+     * setting produced a 107-second period — 33/hour where it named 60. See
+     * `GAP_MEASURED_FROM_SEND_START` in pacing.ts for the measurement.
+     */
+    lastSendStartedAt(),
   ])
 
   const minutesSinceLastSend =
-    lastSend?.sentAt == null ? null : Math.floor((at.getTime() - lastSend.sentAt.getTime()) / 60_000)
+    lastStart == null ? null : Math.floor((at.getTime() - lastStart.getTime()) / 60_000)
 
   const verdict = decideDispatch({
     autopilotEnabled: settings.autopilotEnabled,
@@ -393,9 +436,21 @@ export async function dispatchTick(reason: string): Promise<DispatchTickResult> 
    * was never going to send does not block the dashboard's Send button for the duration
    * of its own queries.
    */
-  const result = await withSendLock(`dispatch:${reason}`, () =>
-    deliverWaiting({ maxSends: settings.maxSendsPerTick }),
-  )
+  const result = await withSendLock(`dispatch:${reason}`, async () => {
+    /**
+     * STAMP THE START, INSIDE THE LOCK, BEFORE THE BROWSER MOVES.
+     *
+     * This is the whole of the 2026-08-21 pace fix — see `GAP_MEASURED_FROM_SEND_START` in
+     * pacing.ts for the measurement. Inside the lock so it cannot race, and BEFORE the
+     * drive so the gap is a period rather than idle time bolted onto a ~47s send.
+     *
+     * A crash mid-send leaves this row stamped, which delays the next send by up to one
+     * gap. That is the safe direction and the reason it is not written afterwards: a stamp
+     * written on completion is exactly the behaviour being fixed.
+     */
+    await recordSendStarted(new Date())
+    return deliverWaiting({ maxSends: settings.maxSendsPerTick })
+  })
 
   if (result === null) {
     const busy: DispatchVerdict = {

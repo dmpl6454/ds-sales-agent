@@ -189,6 +189,63 @@ export default async function AutopilotPage() {
         {/* The queue: who sends next (sendable drafts in dispatch order), then counts per account. */}
         <WaitingList queue={m.queueBySender} upNext={m.upNext} heldWaiting={m.heldWaiting} heldUpNext={m.heldUpNext} total={m.waitingTotal} autopilotOn={m.autopilotOn} />
 
+        {/*
+          ── WHAT HAS ACTUALLY GONE OUT, ON THE PAGE THAT ANSWERS "IS IT SENDING" ────
+          (2026-08-21, Tabish: "it should reflect in analytics and autopilot page accurately
+          all the message thread with an ability to go even beyond.")
+
+          This page had the queue, the pace and the switch — everything about what is ABOUT to
+          happen — and no figure at all for what already had. Both counts are real counts
+          (`usage.today` from the pacing guard, `deliveredTotal` its own query), never the
+          length of a capped list: that mistake has now been made three times in three days.
+
+          Deliberately the newest EIGHT and a link, not a table. The complete record is one
+          click away and paginated; duplicating it here would be the third copy of the same
+          list in the product, and duplication is a failure of the same kind as silence.
+        */}
+        <section>
+          <div className="sec-head">
+            <h2>Delivered</h2>
+            <a href="/analytics#history">Every message &rsaquo;</a>
+          </div>
+          <p className="cardnote">
+            <strong>{m.sentToday}</strong> today, since midnight IST &middot; <strong>{m.deliveredTotal}</strong>{' '}
+            all time
+            {m.sentThisWeek !== m.deliveredTotal ? <> &middot; {m.sentThisWeek} in the last 7 days</> : null}
+          </p>
+          {m.recent.length === 0 ? (
+            <p className="empty">No message has reached a recipient yet.</p>
+          ) : (
+            <div className="rows">
+              {m.recent.slice(0, 8).map((r) => (
+                <div className="rowitem" key={r.id}>
+                  <span className="mono dim" style={{ width: 96, flex: '0 0 auto' }}>
+                    {r.sentAt
+                      ? r.sentAt.toLocaleString('en-GB', {
+                          timeZone: 'Asia/Kolkata',
+                          day: 'numeric',
+                          month: 'short',
+                          hour: '2-digit',
+                          minute: '2-digit',
+                          hour12: false,
+                        })
+                      : '—'}
+                  </span>
+                  <span style={{ minWidth: 0 }}>
+                    @{r.senderHandle} &rarr; @{r.targetHandle}{' '}
+                    {r.replied ? <span className="chip chip-soft">replied</span> : null}
+                  </span>
+                  {r.threadUrl ? (
+                    <a style={{ marginLeft: 'auto' }} href={r.threadUrl} target="_blank" rel="noreferrer">
+                      open
+                    </a>
+                  ) : null}
+                </div>
+              ))}
+            </div>
+          )}
+        </section>
+
         {/* THE standard message, editable here since /settings went (2026-08-18). */}
         <section>
           <h2>The message every recipient gets</h2>
