@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { parseThreadTimestamp, parseInboxAge } from '@/outreach/browser/threadDates'
-import { triageInboxRow, snippetIsReplyText, matchInboxRowToTarget } from '@/outreach/inboxTriage'
+import { triageInboxRow, snippetIsReplyText, matchInboxRowToTarget, shouldRecordInboxReply } from '@/outreach/inboxTriage'
 import type { InboxRow } from '@/outreach/browser/inboxScan'
 
 /**
@@ -193,6 +193,40 @@ describe('snippetIsReplyText — states are not words', () => {
     '%s is a state, stored as NULL text for the full read to backfill',
     (s) => expect(snippetIsReplyText(s)).toBe(false),
   )
+})
+
+/**
+ * MEASURED across two live runs before this existed: @medlinkstrichology's "MedLinks
+ * sent an attachment." re-recorded on EVERY sweep, walking down the target's attempt
+ * list one row per run. The decision is per PAIR — the row describes one sender's
+ * thread — and a state snippet can never be "new" twice.
+ */
+describe('shouldRecordInboxReply — once per thread state, again only for new words', () => {
+  it('a pair with no recorded reply records', () => {
+    expect(shouldRecordInboxReply({ snippet: 'MedLinks sent an attachment.', pairReplyTexts: [] })).toBe(true)
+  })
+
+  it('a state snippet never records twice — the @medlinkstrichology loop', () => {
+    expect(shouldRecordInboxReply({ snippet: 'MedLinks sent an attachment.', pairReplyTexts: [null] })).toBe(false)
+    expect(shouldRecordInboxReply({ snippet: '2 new messages', pairReplyTexts: [null] })).toBe(false)
+  })
+
+  it('the same words never record twice', () => {
+    expect(shouldRecordInboxReply({ snippet: 'Regarding?', pairReplyTexts: ['Regarding?'] })).toBe(false)
+  })
+
+  it('genuinely NEW words on an already-replied pair DO record — an active conversation', () => {
+    expect(shouldRecordInboxReply({ snippet: 'Send over the rate card', pairReplyTexts: ['Regarding?'] })).toBe(true)
+  })
+
+  it('a truncated snippet of already-recorded words does not re-record', () => {
+    expect(
+      shouldRecordInboxReply({
+        snippet: 'Thank you for sharing your details with us. Please note…',
+        pairReplyTexts: ['Thank you for sharing your details with us. Please note that our relevant team will get in touch.'],
+      }),
+    ).toBe(false)
+  })
 })
 
 describe('matchInboxRowToTarget — a display name is not an identity', () => {
