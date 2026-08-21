@@ -195,6 +195,15 @@ export interface MessagesPageView {
   sentToday: number
   sentThisWeek: number
   /**
+   * EVERY message ever delivered. Its own `count`, never `recent.length`.
+   *
+   * The Autopilot page had no delivered figure at all and no route to the history, so "what
+   * has this thing actually sent" was answerable only on another page — and there only up to
+   * the newest fifty. Tabish, 2026-08-21: *"it should reflect in analytics and autopilot page
+   * accurately all the message thread with an ability to go even beyond."*
+   */
+  deliveredTotal: number
+  /**
    * TODAY'S NEW-COMPANY ALLOWANCE — the cap that actually governs how many strangers hear
    * from us, and until 2026-08-17 it appeared on no screen an operator looks at.
    *
@@ -235,6 +244,7 @@ export async function buildMessagesPage(): Promise<MessagesPageView> {
     parkedRaw,
     recentRaw,
     sentThisWeek,
+    deliveredTotal,
     dispatch,
     pause,
     coverage,
@@ -288,6 +298,8 @@ export async function buildMessagesPage(): Promise<MessagesPageView> {
     prisma.outreachAttempt.count({
       where: { status: { in: [...DELIVERED_STATUSES] }, sentAt: { gte: weekStart } },
     }),
+    /* Lifetime, counted — the figure the landing page states beside today's. */
+    prisma.outreachAttempt.count({ where: { status: { in: [...DELIVERED_STATUSES] } } }),
     dispatchStatus(),
     readPause(),
     replyCoverage(),
@@ -519,6 +531,7 @@ export async function buildMessagesPage(): Promise<MessagesPageView> {
     })),
     sentToday: dispatch.usage.today,
     sentThisWeek,
+    deliveredTotal,
     onDemandSenders: sendersRaw.map((x) => ({ handle: x.handle, name: operatorName(x.displayName), status: x.status })),
     onDemandRecipients: recipientsRaw.map((x) => ({
       handle: x.handle,

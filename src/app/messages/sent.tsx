@@ -13,8 +13,25 @@ import type { SentMessage } from '../view-model/messages-page'
  * read as though the system decided it was fine — so a crossed rule is named, in words, in warn
  * colour. See `describeSentBy`.
  */
-export function SentList({ recent }: { recent: SentMessage[] }) {
-  if (recent.length === 0) {
+/**
+ * Paging, when this list is showing a slice of the whole history rather than a recent window.
+ *
+ * OPTIONAL, so the callers that legitimately want "the newest few" keep working unchanged —
+ * but when it is present the heading states the TRUE total, which is the fix: this component
+ * rendered `Delivered ({recent.length})`, labelling the size of its own window as the total.
+ */
+export interface SentPaging {
+  page: number
+  pageCount: number
+  total: number
+  from: number
+  to: number
+  /** Builds the href for a page — the caller owns the URL shape and its other params. */
+  hrefForPage: (page: number) => string
+}
+
+export function SentList({ recent, paging }: { recent: SentMessage[]; paging?: SentPaging }) {
+  if (recent.length === 0 && !paging) {
     return (
       <section className="group">
         <h2>Nothing delivered yet</h2>
@@ -40,7 +57,24 @@ export function SentList({ recent }: { recent: SentMessage[] }) {
         the second still sitting there concludes it did not work.
       */}
       <section className="group">
-        <h2>Delivered ({recent.length})</h2>
+        {/*
+          THE HEADING STATES THE TRUE TOTAL (2026-08-21).
+
+          It read `Delivered ({recent.length})` — the size of its own `take: 50` window,
+          labelled as the total. At ~280 sends a day that is a number that is simply wrong,
+          and it is the third face in three days of a bounded list read as a complete record.
+          With paging present the heading says which slice of what, and never invents a total.
+        */}
+        <h2>Delivered ({paging ? paging.total : recent.length})</h2>
+        {paging && paging.total > 0 && (
+          <p className="group-blurb">
+            Showing {paging.from}&ndash;{paging.to} of {paging.total} &middot; newest first &middot; page{' '}
+            {paging.page} of {paging.pageCount}
+          </p>
+        )}
+        {paging && paging.total === 0 && (
+          <p className="group-blurb">No message has reached a recipient from this system yet.</p>
+        )}
         {/*
           `.table-wrap` — the convention this file never used. A table cannot shrink below
           its content, so without it the widest row pushes the whole PAGE sideways, which
@@ -89,6 +123,36 @@ export function SentList({ recent }: { recent: SentMessage[] }) {
           </tbody>
         </table>
         </div>
+
+        {/*
+          "AN ABILITY TO GO EVEN BEYOND" — plain links, not a client control.
+          The page is `force-dynamic`, so a round trip costs what a re-render would have cost,
+          and this way a position in the history survives a refresh and can be linked to or
+          bookmarked — the same reasoning as the range selector on /analytics.
+
+          First and Last are offered explicitly: with 280+ rows and growing, "the oldest
+          message we ever sent" is a real question and stepping to it one page at a time is
+          not an answer.
+        */}
+        {paging && paging.pageCount > 1 && (
+          <nav className="seg" aria-label="History pages" style={{ marginTop: 10 }}>
+            {paging.page > 1 ? (
+              <>
+                <a href={paging.hrefForPage(1)}>&laquo; Newest</a>
+                <a href={paging.hrefForPage(paging.page - 1)}>&lsaquo; Newer</a>
+              </>
+            ) : null}
+            <span className="muted" style={{ padding: '0 8px' }}>
+              page {paging.page} of {paging.pageCount}
+            </span>
+            {paging.page < paging.pageCount ? (
+              <>
+                <a href={paging.hrefForPage(paging.page + 1)}>Older &rsaquo;</a>
+                <a href={paging.hrefForPage(paging.pageCount)}>Oldest &raquo;</a>
+              </>
+            ) : null}
+          </nav>
+        )}
       </section>
     </>
   )
