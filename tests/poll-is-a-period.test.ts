@@ -102,7 +102,9 @@ describe('the loop as written', () => {
   it('subtracts the elapsed tick time from the wait', () => {
     const loop = src.slice(src.indexOf('while (!stopping)'), src.indexOf('clearInterval(presence)'))
     expect(loop).toMatch(/POLL_INTERVAL_MS - \(Date\.now\(\) - startedAt\)/)
-    expect(loop).toMatch(/if \(remaining > 0\)/)
+    /* `wait` since the boundary-wake change: the remainder, capped by the dispatcher's
+       own retryInMs when that is sooner. Still never an unconditional full sleep. */
+    expect(loop).toMatch(/if \(wait > 0\)/)
     /* The old, additive line must be gone rather than merely shadowed. */
     expect(loop).not.toMatch(/setTimeout\(r, POLL_INTERVAL_MS\)/)
   })
@@ -247,5 +249,61 @@ describe('the inbox scan cannot hang the sweep', () => {
   it('never returns an empty-inbox success on failure', () => {
     const cat = src.slice(src.indexOf('} catch (err) {'), src.indexOf('} finally {'))
     expect(cat).not.toMatch(/ok: true/)
+  })
+})
+
+/**
+ * ── THE REMAINDER ALONE WAS STILL 77s: THE GRID (measured 2026-08-22, same day) ──
+ *
+ * First live interval after the remainder fix: 77s again. A ~47s drive puts the next tick
+ * at +47s — held, 13s before the 60s gap clears — and the following grid tick at +77s.
+ * "Expected ~60s" was written without walking that arithmetic; one measured interval
+ * disproved it. The dispatcher now returns `retryInMs` on a too-soon hold and the loop
+ * sleeps exactly that long. These drive the composed arithmetic in the direction that
+ * failed: the period must be max(drive, gap), not drive + grid-overshoot.
+ */
+describe('the loop wakes at the gap boundary, not on its grid', () => {
+  const POLL = 30_000
+  const GAP = 60_000
+
+  /** The loop's wait rule, as written: the dispatcher's boundary wins when sooner. */
+  const waitAfter = (tickTookMs: number, retryInMs?: number): number => {
+    const remaining = POLL - tickTookMs
+    return retryInMs !== undefined ? Math.min(Math.max(remaining, 0), Math.max(retryInMs, 0)) : Math.max(remaining, 0)
+  }
+
+  it('THE 77s CASE: a 47s drive then a held tick sleeps 13s, and the period is the GAP', () => {
+    /* t=0 send starts; t=47 drive ends, loop returns instantly (remainder 0). */
+    const afterDrive = waitAfter(47_000, undefined)
+    expect(afterDrive).toBe(0)
+    /* t=47 tick: held too-soon, gap clears at t=60 → dispatcher says 13s. */
+    const heldWait = waitAfter(1_000, 13_000)
+    expect(heldWait).toBe(13_000)
+    /* Composed period: 47s drive + 0 + ~1s tick + 13s = the 60s gap, not 77. */
+    expect(47_000 + afterDrive + 1_000 + heldWait).toBe(GAP + 1_000)
+  })
+
+  it('the hint can only wake the loop EARLIER, never later than the grid', () => {
+    expect(waitAfter(1_000, 45_000)).toBe(29_000) // grid wins when the boundary is beyond it
+    expect(waitAfter(1_000, 5_000)).toBe(5_000) // boundary wins when sooner
+  })
+
+  it('a garbage hint degrades to the plain poll, never to a negative sleep', () => {
+    expect(waitAfter(1_000, -500)).toBe(0)
+    expect(waitAfter(40_000, undefined)).toBe(0)
+  })
+
+  it('the dispatcher computes the boundary from the same clock its refusal read', () => {
+    const src = read('src/outreach/dispatcher.ts')
+    const hold = src.slice(src.indexOf("if (verdict.action === 'hold')"), src.indexOf('withSendLock(`dispatch:'))
+    expect(hold).toMatch(/verdict\.reason === 'too-soon' && lastStart !== null/)
+    expect(hold).toMatch(/lastStart\.getTime\(\) \+ settings\.fleetMinGapMinutes \* 60_000/)
+    expect(hold).toMatch(/Math\.max\(0, clearsAt - at\.getTime\(\)\)/)
+  })
+
+  it('the agent consumes the hint with min(), so it cannot extend the wait', () => {
+    const src = read('src/agent/index.ts')
+    const loop = src.slice(src.indexOf('while (!stopping)'), src.indexOf('clearInterval(presence)'))
+    expect(loop).toMatch(/retryInMs !== undefined \? Math\.min\(/)
   })
 })
