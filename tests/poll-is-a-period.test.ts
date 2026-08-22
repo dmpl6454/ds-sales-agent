@@ -206,3 +206,46 @@ describe('the planner explains a quiet pass', () => {
 
 /** Silence the unused-import lint in environments that check it. */
 void vi
+
+/**
+ * AND THE INBOX SCAN IS BOUNDED TOO (2026-08-22).
+ *
+ * It is the newest browser drive inside the reply sweep, and the sweep holds the fleet-wide
+ * SEND LOCK for its whole run — so a hung scan does not merely delay reading, it stops the
+ * fleet sending. Per-navigation timeouts do not bound the `page.evaluate` scroll loop.
+ * Measured the same morning: an unbounded lookup in the brand pass wedged that pass for
+ * 70+ minutes behind its own "still running" flag.
+ */
+describe('the inbox scan cannot hang the sweep', () => {
+  const src = read('src/outreach/browser/inboxScan.ts')
+
+  it('has a deadline that closes the context', () => {
+    expect(src).toMatch(/SCAN_DEADLINE_MS/)
+    expect(src).toMatch(/setTimeout\(\(\) => \{[\s\S]*?context\.close\(\)/)
+  })
+
+  it('matches the thread reader rather than inventing a second number', async () => {
+    const { SCAN_DEADLINE_MS } = await import('@/outreach/browser/inboxScan')
+    const { READ_DEADLINE_MS } = await import('@/outreach/browser/readThread')
+    expect(SCAN_DEADLINE_MS).toBe(READ_DEADLINE_MS)
+  })
+
+  /**
+   * THE ASSERTION CARRYING REAL WEIGHT. Closing a context mid-flight throws Playwright text
+   * we do not control, and `checkConversation` marks an account CHALLENGED on
+   * /checkpoint|challenge|suspend/i — which halts the WHOLE FLEET through the breaker. A
+   * network stall must never be able to flag a healthy revenue account.
+   */
+  it('a deadline is unreadable, and is decided BEFORE the checkpoint branch', () => {
+    const cat = src.slice(src.indexOf('} catch (err) {'), src.indexOf('} finally {'))
+    expect(cat).toMatch(/if \(deadlineFired\)/)
+    expect(cat.indexOf('deadlineFired')).toBeLessThan(cat.indexOf('CheckpointError'))
+    expect(cat).toMatch(/reason: 'unreadable'/)
+  })
+
+  /** A timeout must never read as "nobody has written to us". */
+  it('never returns an empty-inbox success on failure', () => {
+    const cat = src.slice(src.indexOf('} catch (err) {'), src.indexOf('} finally {'))
+    expect(cat).not.toMatch(/ok: true/)
+  })
+})
