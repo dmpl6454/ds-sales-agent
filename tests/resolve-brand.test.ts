@@ -250,6 +250,7 @@ describe('the model decides only the endpoint blind spot', () => {
     followers: 1_000_000,
     fullName: 'Adidas',
     reason: null,
+    status: null,
   }
 
   beforeEach(() => {
@@ -466,6 +467,7 @@ describe('the rate-limit back-off is TIME-BOUNDED, not permanent', () => {
       followers: 1,
       fullName: null,
       reason: null,
+      status: null,
     })
   })
 
@@ -663,6 +665,7 @@ describe('a CACHED UNRESOLVED the model has never seen is offered to it', () => 
       followers: 30_000_000,
       fullName: 'adidas',
       reason: null,
+      status: null,
     })
     vi.mocked(prisma.brandLookup.findUnique).mockReset()
     vi.mocked(prisma.brandLookup.upsert).mockReset()

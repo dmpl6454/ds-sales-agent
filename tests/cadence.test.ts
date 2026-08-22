@@ -131,6 +131,7 @@ describe('planning on the detect clock', () => {
     for (const autopilotEnabled of [true, false]) {
       let planned = 0
       await detectThenDraft({
+        recordOk: async () => undefined,
         detect: async () => pass,
         plan: async () => {
           planned++
@@ -151,6 +152,7 @@ describe('planning on the detect clock', () => {
   it('does not ask about the switch to decide whether to draft', async () => {
     let planned = 0
     await detectThenDraft({
+        recordOk: async () => undefined,
       detect: async () => pass,
       plan: async () => {
         planned++
@@ -179,6 +181,7 @@ describe('planning on the detect clock', () => {
     console.warn = (m: unknown) => void warned.push(String(m))
     try {
       await detectThenDraft({
+        recordOk: async () => undefined,
         detect: async () => pass,
         plan: async () => {
           planned++
@@ -200,6 +203,7 @@ describe('planning on the detect clock', () => {
     for (const autopilotEnabled of [true, false]) {
       let detected = 0
       await detectThenDraft({
+        recordOk: async () => undefined,
         detect: async () => {
           detected++
           return pass
@@ -239,6 +243,7 @@ describe('planning on the detect clock', () => {
     try {
       await expect(
         detectThenDraft({
+        recordOk: async () => undefined,
           detect: async () => {
             detected++
             return pass
@@ -272,6 +277,7 @@ describe('planning on the detect clock', () => {
     let planned = 0
     await expect(
       detectThenDraft({
+        recordOk: async () => undefined,
         detect: async () => {
           throw new Error('feed down')
         },
@@ -284,6 +290,84 @@ describe('planning on the detect clock', () => {
       }),
     ).resolves.toBeUndefined()
     expect(planned).toBe(0)
+  })
+})
+
+/**
+ * ── EACH PASS STAMPS ITS OWN LAST SUCCESS (2026-08-22) ─────────────────────────────────
+ *
+ * The heartbeat is written by the LOOP, so it stayed seconds fresh while every pass threw
+ * at the top level for 1h45m on the connection-starved Linode — the planner wrote no draft
+ * for 158 minutes and no screen said so. Liveness, success and output are three different
+ * facts; these stamps carry the second, and the dashboard alarms on a fresh heartbeat
+ * beside a stale stamp.
+ */
+describe('the pass-health stamps', () => {
+  const pass = { newPosts: 0, detected: 0 } as Awaited<ReturnType<typeof import('@/detection/pipeline').runDetection>>
+  const grantLock = (async <T,>(_label: string, fn: () => Promise<T>) => fn()) as never
+
+  it('stamps detect and plan on a clean pass, in that order', async () => {
+    const stamped: string[] = []
+    await detectThenDraft({
+      recordOk: async (kind) => void stamped.push(kind),
+      detect: async () => pass,
+      plan: async () => ({}) as never,
+      settings: async () => ({ autopilotEnabled: false }) as never,
+      lock: grantLock,
+    })
+    expect(stamped).toEqual(['detect', 'plan'])
+  })
+
+  it('stamps nothing when detection throws — a failed pass must read as failed', async () => {
+    const stamped: string[] = []
+    await detectThenDraft({
+      recordOk: async (kind) => void stamped.push(kind),
+      detect: async () => {
+        throw new Error('feed down')
+      },
+      plan: async () => ({}) as never,
+      settings: async () => ({ autopilotEnabled: true }) as never,
+      lock: grantLock,
+    })
+    expect(stamped).toEqual([])
+  })
+
+  it('stamps detect but NOT plan when planning fails', async () => {
+    const stamped: string[] = []
+    const warn = console.warn
+    console.warn = () => undefined
+    try {
+      await detectThenDraft({
+        recordOk: async (kind) => void stamped.push(kind),
+        detect: async () => pass,
+        plan: async () => {
+          throw new Error('planner exploded')
+        },
+        settings: async () => ({ autopilotEnabled: true }) as never,
+        lock: grantLock,
+      })
+    } finally {
+      console.warn = warn
+    }
+    expect(stamped).toEqual(['detect'])
+  })
+
+  /**
+   * THE STAMPS MUST REACH A SCREEN. `readPassHealth` with no caller is `repliedAt` written
+   * in none and read in six — this codebase's signature failure. No behavioural test can
+   * fail for a caller nobody wrote, so this is a SOURCE GREP over the health ladder.
+   */
+  it('the health ladder consults the stamps', async () => {
+    const { readFileSync } = await import('node:fs')
+    const src = readFileSync('src/app/view-model.ts', 'utf8')
+    expect(src).toContain('readPassHealth')
+    expect(src).toMatch(/planStale|detectStale/)
+  })
+
+  it('the staleness threshold is three missed passes, not one', async () => {
+    const { PASS_STALE_MS } = await import('@/worker/scheduler')
+    const { DETECT_INTERVAL_MINUTES } = await import('@/detection/cadence')
+    expect(PASS_STALE_MS).toBeGreaterThanOrEqual(3 * DETECT_INTERVAL_MINUTES * 60 * 1000)
   })
 })
 

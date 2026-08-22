@@ -57,6 +57,14 @@ export interface HandleEnrichment {
   fullName: string | null
   /** Why we could not reach it, when `reachable` is false. */
   reason: string | null
+  /**
+   * The HTTP status when the endpoint ANSWERED and refused (404 for a dead handle, 429 for
+   * a throttle); null when the request never completed (timeout, reset) or succeeded.
+   * Carried so a caller can tell "this handle does not exist" from "the network failed" —
+   * the badge door was retrying dead handles at the front of every pass because both wore
+   * the same `reachable: false`.
+   */
+  status: number | null
 }
 
 /**
@@ -76,6 +84,7 @@ export async function enrichHandle(handle: string): Promise<HandleEnrichment> {
     followers: null,
     fullName: null,
     reason: null,
+    status: null,
   }
 
   try {
@@ -95,7 +104,9 @@ export async function enrichHandle(handle: string): Promise<HandleEnrichment> {
 
     if (!res.ok) {
       // Not reachable is not the same as not a brand. It stays UNRESOLVED either way.
-      return { ...empty, reason: `HTTP ${res.status}` }
+      // The status travels so the CALLER can tell a dead handle (404) from a throttle —
+      // this function still never converts either into a verdict.
+      return { ...empty, reason: `HTTP ${res.status}`, status: res.status }
     }
 
     const body = (await res.json()) as {
@@ -116,6 +127,7 @@ export async function enrichHandle(handle: string): Promise<HandleEnrichment> {
           : ((user.edge_followed_by as { count?: number } | undefined)?.count ?? null),
       fullName: typeof user.full_name === 'string' && user.full_name.trim() !== '' ? user.full_name.trim() : null,
       reason: null,
+      status: null,
     }
   } catch (err) {
     log.step('handle enrichment failed', { handle: h, error: err instanceof Error ? err.message : String(err) })

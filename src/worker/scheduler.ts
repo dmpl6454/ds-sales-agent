@@ -73,6 +73,62 @@ async function writeHeartbeat(host: SchedulerHeartbeat['host']): Promise<void> {
     .catch(() => undefined) // a failed heartbeat must never take the scheduler down
 }
 
+/**
+ * ── THE HEARTBEAT IS NOT PROOF THE WORK SUCCEEDED (2026-08-22) ────────────────────────
+ *
+ * The heartbeat is written by the LOOP, so it proves the process is alive and says nothing
+ * about whether a pass SUCCEEDED. MEASURED: the Linode ran out of Postgres connections at
+ * 14:15 IST and every 15-minute pass threw at the top level for 1h45m — `detection pass
+ * threw`, `dispatcher tick threw`, `slot threw` — while this heartbeat stayed seconds
+ * fresh throughout. The planner wrote no draft for 158 minutes, the fleet went silent, and
+ * every screen looked healthy, because the device agent's per-draft hold reasons were all
+ * individually true and nothing renders the drafts that never came into existence.
+ *
+ * So each pass now stamps its own LAST SUCCESS, and the dashboard alarms on the signature
+ * that was invisible: a fresh heartbeat beside a stale success stamp. Liveness, success
+ * and output are three different facts; these keys carry the second.
+ *
+ * ABSENCE NEVER ALARMS: a deployment that has not written the key yet (first quarter-hour
+ * after this ships) reads as "not yet measured", not as a failure — absence of data must
+ * not harden into a verdict, here least of all.
+ */
+export const PASS_OK_KEYS = { detect: 'detectLastOkAt', plan: 'planLastOkAt' } as const
+
+/** Three consecutive 15-minute passes missed. One failure is a blip; three is the incident. */
+export const PASS_STALE_MS = 45 * 60 * 1000
+
+async function recordPassOk(kind: keyof typeof PASS_OK_KEYS): Promise<void> {
+  const key = PASS_OK_KEYS[kind]
+  const value = new Date().toISOString()
+  await prisma.setting
+    .upsert({ where: { key }, update: { value }, create: { key, value } })
+    .catch(() => undefined) // like the heartbeat: recording success must never fail the pass
+}
+
+export interface PassHealth {
+  detectOkAt: Date | null
+  planOkAt: Date | null
+  detectStale: boolean
+  planStale: boolean
+}
+
+/** What the dashboard reads beside the heartbeat. Null timestamps never read as stale. */
+export async function readPassHealth(now: Date = new Date()): Promise<PassHealth> {
+  const rows = await prisma.setting.findMany({
+    where: { key: { in: [PASS_OK_KEYS.detect, PASS_OK_KEYS.plan] } },
+  })
+  const at = (key: string): Date | null => {
+    const row = rows.find((r) => r.key === key)
+    if (!row) return null
+    const d = new Date(row.value)
+    return Number.isNaN(d.getTime()) ? null : d
+  }
+  const detectOkAt = at(PASS_OK_KEYS.detect)
+  const planOkAt = at(PASS_OK_KEYS.plan)
+  const stale = (d: Date | null) => d !== null && now.getTime() - d.getTime() > PASS_STALE_MS
+  return { detectOkAt, planOkAt, detectStale: stale(detectOkAt), planStale: stale(planOkAt) }
+}
+
 /** What the dashboard reads. `null` when no scheduler has ever run. */
 export async function readHeartbeat(): Promise<{ beat: SchedulerHeartbeat; fresh: boolean } | null> {
   const row = await prisma.setting.findUnique({ where: { key: HEARTBEAT_KEY } })
@@ -143,15 +199,19 @@ export async function detectThenDraft(
     plan?: typeof runOutreach
     settings?: typeof getSettings
     lock?: typeof withSlotLock
+    /** Injectable so the cadence tests stay hermetic — the default writes a Setting row. */
+    recordOk?: typeof recordPassOk
   } = {},
 ): Promise<void> {
   const detect = deps.detect ?? runDetection
   const plan = deps.plan ?? runOutreach
   const settings = deps.settings ?? getSettings
   const lock = deps.lock ?? withSlotLock
+  const recordOk = deps.recordOk ?? recordPassOk
 
   try {
     const d = await detect()
+    await recordOk('detect')
     // Quiet on the ordinary case — 96 passes a day must not fill the log. `0 parsed`
     // is an alarm inside runDetection itself, which is where it belongs.
     if (d.newPosts > 0 || d.detected > 0) {
@@ -191,8 +251,14 @@ export async function detectThenDraft(
      * stale recency claim. That makes a larger queue safer than it was this morning; it
      * does not make it free.
      */
-    await lock('detect-draft', plan).catch((e) =>
-      log.warn('outreach planning after detect failed', { error: String(e) }),
+    await lock('detect-draft', plan).then(
+      /**
+       * Stamped on the lock resolving, which includes a lock-skip: a held lock means a
+       * SLOT is planning at this moment, so "planning is happening" is true either way.
+       * The stamp answers "when did planning last work", not "when did THIS call plan".
+       */
+      () => recordOk('plan'),
+      (e) => log.warn('outreach planning after detect failed', { error: String(e) }),
     )
   } catch (err) {
     log.alarm('detection pass threw at top level', {

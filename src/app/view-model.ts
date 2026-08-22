@@ -31,7 +31,7 @@ import { detectionCutoff } from '@/lib/cutoff'
 import { readLabelledSet } from '@/detection/labels'
 import { replyHaltFloor } from '@/outreach/replyHalt'
 import { mentionsHandleExactly, brandStringsNameProspect } from '@/outreach/materialAllowance'
-import { readHeartbeat, machineId } from '@/worker/scheduler'
+import { readHeartbeat, readPassHealth, machineId } from '@/worker/scheduler'
 import { assessWatch, watchHealthSentence } from '@/detection/watchHealth'
 import { getDetector } from '@/detection/detectors'
 /**
@@ -538,6 +538,16 @@ export async function buildCeoView(): Promise<CeoView> {
   })
 
   /**
+   * A HEARTBEAT IS NOT PROOF THE WORK SUCCEEDED (2026-08-22). The Linode ran out of
+   * Postgres connections and every 15-minute pass threw at the top level for 1h45m —
+   * while the heartbeat stayed seconds fresh, so `assessWatch` above saw nothing and the
+   * planner silently wrote no draft for 158 minutes. Each pass stamps its own last
+   * success now; a fresh heartbeat beside a stale stamp is the signature this rung
+   * exists to catch. Absent stamps (a deployment's first minutes) never alarm.
+   */
+  const passes = await readPassHealth()
+
+  /**
    * The ceiling must be counted the way the PLANNER counts it, or the page reports
    * a limit that is not the one being enforced.
    *
@@ -596,6 +606,25 @@ export async function buildCeoView(): Promise<CeoView> {
      */
     health = 'broken'
     headline = watchHealthSentence(watch) ?? 'The watch is not running.'
+  } else if (passes.detectStale || passes.planStale) {
+    /**
+     * Below the dead-process rung (that one is unrecoverable loss; this one is work
+     * failing while the process lives) and above replies and drafts, because nothing
+     * downstream can happen while the passes fail: no detection means no material, no
+     * planning means no drafts, however healthy everything else looks.
+     */
+    health = 'broken'
+    const failing =
+      passes.detectStale && passes.planStale
+        ? 'finding paid posts and writing messages'
+        : passes.detectStale
+          ? 'finding paid posts'
+          : 'writing messages'
+    const lastOk = passes.detectStale ? passes.detectOkAt : passes.planOkAt
+    const minutes = lastOk ? Math.round((Date.now() - lastOk.getTime()) / 60_000) : null
+    headline =
+      `The watch process is running, but ${failing} keeps failing — last succeeded ` +
+      `${minutes !== null ? `${minutes} minutes ago` : 'unknown'}. The server's own log says why.`
   } else if (unreadReplies.length > 0) {
     // A reply outranks a waiting draft: it is the only event here that is revenue.
     health = 'attention'
