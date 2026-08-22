@@ -190,6 +190,28 @@ vi.mock('@/detection/resolveBrand', async (importOriginal) => {
   }
 })
 
+/**
+ * Same reasoning as the `resolveBrand` mock above: `createBrandTarget` enriches every new
+ * row at birth (2026-08-20, the VERIFIED ONLY rule), and `enrichHandle` is a real HTTP call
+ * to Instagram — so without this mock the suite phones Instagram once per created target,
+ * and the admission outcome depends on the live badge of whatever handle a fixture names.
+ * Unseeded handles read as UNREACHABLE (badge unknown), which is also the offline behaviour
+ * the real function has.
+ */
+const enrichAnswers = new Map<string, boolean | null>()
+vi.mock('@/detection/enrichHandle', () => ({
+  enrichHandle: async (handle: string) => ({
+    handle,
+    reachable: enrichAnswers.has(handle),
+    accountType: null,
+    isVerified: enrichAnswers.get(handle) ?? null,
+    followers: null,
+    fullName: null,
+    reason: enrichAnswers.has(handle) ? null : 'not seeded in this test',
+    status: null,
+  }),
+}))
+
 const { autoResolveBrands, MODEL_RETRY_AFTER_MS, UNKNOWN_RETRY_AFTER_MS, orderForLookup } =
   await import('@/detection/autoResolve')
 /**
@@ -247,6 +269,7 @@ beforeEach(async () => {
   await prisma.senderAccount.deleteMany({})
   await prisma.targetAccount.deleteMany({})
   answers.clear()
+  enrichAnswers.clear()
   calls.length = 0
 
   const channel = await prisma.targetAccount.create({
@@ -286,6 +309,67 @@ describe('a BRAND becomes a prospect with routes', () => {
     expect(audit).toHaveLength(1)
     // The actor is what separates "a person ran a command" from "a pass decided this".
     expect(audit[0]).toMatchObject({ actor: 'auto-resolve', action: 'brand.auto-decided' })
+  })
+
+  /**
+   * ADMISSION REFUSES A MEASURED `isVerified: false` (2026-08-22). The VERIFIED ONLY rule
+   * already made such a row unmessageable at the governor and the gate — but the creator
+   * still WROTE it: six live PROSPECT rows carried `isVerified: false` (@nifborivali,
+   * @carpisa.in, …), each refused by the planner on every pass, forever. A row the rule
+   * permanently refuses is not a lead; it is clutter that reads as one.
+   */
+  it('refuses a brand whose verdict carries a measured unverified badge', async () => {
+    await addSender('bollywoodsocietyy')
+    await addCampaign('UNV', 'Launch with @carpisa.in', channelId)
+    answers.set('carpisa.in', {
+      kind: 'BRAND',
+      handle: 'carpisa.in',
+      displayName: 'carpisa.in',
+      category: 'Retail',
+      followers: 1000,
+      isVerified: false,
+    })
+
+    const out = await autoResolveBrands()
+
+    expect(out.decided).toBe(0)
+    expect(await prisma.targetAccount.findUnique({ where: { handle: 'carpisa.in' } })).toBeNull()
+    expect(await prisma.outreachPair.count()).toBe(0)
+    // The lead is on the record, not silently dropped.
+    const audit = await prisma.auditLog.findMany()
+    expect(audit).toHaveLength(1)
+    expect(audit[0]).toMatchObject({ action: 'brand.refused-unverified' })
+  })
+
+  it('refuses when the verdict has no badge fact and the birth enrichment measures false', async () => {
+    await addSender('bollywoodsocietyy')
+    await addCampaign('UNV2', 'Launch with @nifborivali', channelId)
+    answers.set('nifborivali', brand('nifborivali')) // no isVerified on the verdict
+    enrichAnswers.set('nifborivali', false)
+
+    const out = await autoResolveBrands()
+
+    expect(out.decided).toBe(0)
+    expect(await prisma.targetAccount.findUnique({ where: { handle: 'nifborivali' } })).toBeNull()
+  })
+
+  /**
+   * THE OTHER DIRECTION, pinned so the refusal cannot creep: an enrichment that DID NOT
+   * ANSWER still creates the row. Refusing on NULL would let a network blip discard a real
+   * lead permanently — absence of data hardening into a verdict, the codebase's
+   * most-repeated defect. The NULL row is held by the gate and backfilled by ig:audit-targets.
+   */
+  it('still creates the row when the badge could not be read at all', async () => {
+    await addSender('bollywoodsocietyy')
+    await addCampaign('UNK', 'Launch with @unreachable.brand', channelId)
+    answers.set('unreachable.brand', brand('unreachable.brand')) // enrichAnswers NOT seeded
+
+    const out = await autoResolveBrands()
+
+    expect(out.decided).toBe(1)
+    const target = await prisma.targetAccount.findUnique({ where: { handle: 'unreachable.brand' } })
+    expect(target).not.toBeNull()
+    expect(target?.isVerified).toBeNull()
   })
 
   /**

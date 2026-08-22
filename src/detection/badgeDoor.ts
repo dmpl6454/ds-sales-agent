@@ -61,17 +61,60 @@ const REVISIT_KINDS = new Set(['PERSON', 'UNRESOLVED', 'MISSING', 'UNKNOWN'])
 /** 6s, the same politeness every other consumer of this endpoint pays. */
 const ENRICH_SPACING_MS = 6_000
 
+/**
+ * ── A DEAD HANDLE MUST NOT HOLD THE FRONT OF THE QUEUE (2026-08-22) ───────────────────
+ *
+ * MEASURED from the device log: `enriched=10 unreachable=10` on pass after pass, for
+ * HOURS, with `candidates` pinned at ~25 — the same ~10 handles (dead accounts like
+ * @rajasthaliresort.com, a URL typed as a handle; @aaflims.official, a documented 404)
+ * consumed the whole per-pass budget every 30 minutes while fresh candidates from new
+ * paid posts waited behind them. Tabish saw the symptom from the other end: paid posts
+ * plainly naming companies, and the companies never arriving as prospects.
+ *
+ * The queue is rebuilt newest-post-first each pass, an unreachable handle was skipped
+ * with nothing recorded, so the SAME queue came back in the SAME order — the exact
+ * livelock `resolveBrand` fixed on 2026-08-12 ("sort a just-failed handle LAST"), one
+ * module over. That lesson never reached here.
+ *
+ * The memory is IN-PROCESS and time-based, deliberately: a failure must not become a
+ * verdict (this file's own rule), so nothing is persisted about the handle — it is only
+ * SENT TO THE BACK and not retried within the cooldown. The device agent is long-lived,
+ * so the memory holds between passes; an agent restart forgets it, which costs one pass
+ * of re-learning and can never wedge anything — the safe direction, per the
+ * `resetBrandResolverLimit` lesson (a latch that means "forever" the day a resident
+ * process calls it).
+ *
+ * Excluded candidates are REPORTED (`coolingOff` in the summary), never silently
+ * dropped — a bounded pass that hides what it skipped reads as "covered everything".
+ */
+const UNREACHABLE_RETRY_AFTER_MS = 24 * 60 * 60 * 1000
+const unreachableAt = new Map<string, number>()
+
+/** Test seam: module state would otherwise leak between cases in one suite process. */
+export function resetBadgeDoorMemory(): void {
+  unreachableAt.clear()
+}
+
 export interface BadgeDoorSummary {
   candidates: number
   enriched: number
   admitted: number
   refusedUnverified: number
   unreachable: number
+  /** Candidates skipped this pass because a recent enrichment failed — retried after the cooldown. */
+  coolingOff: number
   haltedEarly: boolean
 }
 
-export async function badgeDoorPass(opts: { maxEnrichments: number; dryRun?: boolean }): Promise<BadgeDoorSummary> {
+export async function badgeDoorPass(opts: {
+  maxEnrichments: number
+  dryRun?: boolean
+  /** Politeness spacing between enrichments. Overridden ONLY by tests — a suite cannot
+   *  wait 6 real seconds per call, and faking timers around awaited sleeps is worse. */
+  enrichSpacingMs?: number
+}): Promise<BadgeDoorSummary> {
   const dryRun = opts.dryRun ?? false
+  const spacingMs = opts.enrichSpacingMs ?? ENRICH_SPACING_MS
   const excluded = await excludedHandles()
   const settings = await getSettings()
 
@@ -102,7 +145,7 @@ export async function badgeDoorPass(opts: { maxEnrichments: number; dryRun?: boo
   const minted = new Set(targets.map((t) => t.handle))
   const lookupBy = new Map(lookups.map((l) => [l.handle, l]))
 
-  const queue = handles.filter((h) => {
+  const eligible = handles.filter((h) => {
     if (minted.has(h)) return false
     const l = lookupBy.get(h)
     if (!l) return false // never-looked belongs to autoResolveBrands, which owns fresh handles
@@ -112,12 +155,29 @@ export async function badgeDoorPass(opts: { maxEnrichments: number; dryRun?: boo
     return l.isVerified !== false
   })
 
+  /* Fairness: candidates that never failed go first (newest-post order, as before);
+     candidates whose cooldown expired go after them, oldest failure first; candidates
+     still inside the cooldown are excluded from this pass entirely — and counted, so
+     the log says what was skipped rather than reading as a quiet day. */
+  const now = Date.now()
+  const coolingOff = eligible.filter((h) => {
+    const failedAt = unreachableAt.get(h)
+    return failedAt != null && now - failedAt < UNREACHABLE_RETRY_AFTER_MS
+  })
+  const cooling = new Set(coolingOff)
+  const fresh = eligible.filter((h) => !cooling.has(h) && !unreachableAt.has(h))
+  const retryable = eligible
+    .filter((h) => !cooling.has(h) && unreachableAt.has(h))
+    .sort((a, b) => unreachableAt.get(a)! - unreachableAt.get(b)!)
+  const queue = [...fresh, ...retryable]
+
   const summary: BadgeDoorSummary = {
-    candidates: queue.length,
+    candidates: eligible.length,
     enriched: 0,
     admitted: 0,
     refusedUnverified: 0,
     unreachable: 0,
+    coolingOff: coolingOff.length,
     haltedEarly: false,
   }
 
@@ -134,11 +194,20 @@ export async function badgeDoorPass(opts: { maxEnrichments: number; dryRun?: boo
       }
       summary.enriched += 1
       const e = await enrichHandle(handle)
-      await new Promise((r) => setTimeout(r, ENRICH_SPACING_MS))
+      await new Promise((r) => setTimeout(r, spacingMs))
       if (!e.reachable) {
         summary.unreachable += 1
-        continue // a refusal to answer is never a verdict — retried on a later pass
+        // A refusal to answer is never a verdict — but it IS a reason to stop spending
+        // the front of every queue on this handle. Sent to the back for a day.
+        unreachableAt.set(handle, Date.now())
+        log.step('badge door could not reach a candidate — sent to the back of the queue', {
+          handle,
+          reason: e.reason ?? 'unknown',
+          deadHandle: e.status === 404 || e.status === 400,
+        })
+        continue
       }
+      unreachableAt.delete(handle)
       isVerified = e.isVerified
       displayName = displayName ?? e.fullName
       followers = followers ?? e.followers

@@ -36,7 +36,7 @@ import { enrichHandle } from '@/detection/enrichHandle'
  * deduplication (a brand appearing on two channels is the same row) and `is-our-sender` is
  * a safety refusal worth reporting.
  */
-export type BrandTargetOutcome = 'created' | 'exists' | 'is-our-sender'
+export type BrandTargetOutcome = 'created' | 'exists' | 'is-our-sender' | 'refused-unverified'
 
 export async function createBrandTarget(
   verdict: Extract<BrandVerdict, { kind: 'BRAND' }>,
@@ -83,6 +83,42 @@ export async function createBrandTarget(
    */
   const verified =
     opts.isVerified !== undefined ? opts.isVerified : (await enrichHandle(handle)).isVerified
+
+  /**
+   * A MEASURED `false` IS REFUSED AT THE DOOR, NOT STORED AS A LIVE PROSPECT.
+   *
+   * The VERIFIED ONLY rule (Tabish, 2026-08-20) is enforced at the governor and the gate,
+   * so an unverified row could never be MESSAGED — but this creator was still WRITING such
+   * rows: measured 2026-08-22, six live PROSPECT rows carried `isVerified: false`
+   * (@nifborivali, @carpisa.in, …), each admitted here after its own enrichment said no
+   * badge, each then refused by the planner on every pass, forever. A row the rule
+   * permanently refuses is not a lead, it is clutter that reads as one — the exact state
+   * Tabish's 2026-08-20 cleanup retired 18 rows to remove, being recreated one door
+   * earlier.
+   *
+   * ONLY a measured `false` refuses. NULL — the enrichment did not answer — still creates
+   * the row: refusing on NULL would let a network blip discard a real lead permanently,
+   * absence of data hardening into a verdict. A NULL row is visible, held by the gate, and
+   * backfillable by `pnpm ig:audit-targets`, which is the designed remedy.
+   *
+   * The refusal is AUDITED so the lead is on the record: the "We message" column reads the
+   * same fact from BrandLookup, and a person who believes the account is genuine can still
+   * admit it deliberately.
+   */
+  if (verified === false) {
+    await prisma.auditLog.create({
+      data: {
+        actor,
+        action: 'brand.refused-unverified',
+        entity: `TargetAccount:${handle}`,
+        detail:
+          `admission refused: Instagram shows no verified badge` +
+          ` campaign=${campaign?.id ?? 'none'}` +
+          (campaign?.shortcode ? ` post=${campaign.shortcode}` : ''),
+      },
+    })
+    return 'refused-unverified'
+  }
 
   const target = await prisma.targetAccount.create({
     data: {
