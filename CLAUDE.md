@@ -71,6 +71,119 @@ properly rather than kept on a handle we could never confirm.
 
 ---
 
+## 22 AUGUST, AFTERNOON — A DEV DASHBOARD ON THE LAPTOP STARVED THE SERVER THAT DRAFTS
+
+**Tabish: *"audit autopilot and paid messages to queue e2e, make sure messages are sent at a
+rapid pace, and all these three functionalities are accurate and work rapidly."*** All three
+were audited. Two were healthy. The third found a live outage that no screen was reporting.
+
+### THE FLEET HAD BEEN SILENT FOR 158 MINUTES AND EVERY HOLD REASON WAS TRUE
+
+MEASURED 15:40 IST: **98 of 100 Postgres connection slots in use, 83 held against
+`ds_sales_agent`, 82 of them IDLE**, and new connections refused with *"remaining connection
+slots are reserved for roles with the SUPERUSER attribute"*. The Linode's scheduler had been
+throwing at the **TOP LEVEL on every 15-minute pass since 14:15 IST** — `detection pass
+threw`, `dispatcher tick threw`, `slot threw`. The planner's last successful run was 14:02,
+so `max(queuedAt)` sat **158 minutes stale** and the queue could not refill.
+
+**WHAT MAKES THIS THE WORST-DISGUISED FAULT IN THIS FILE:** every layer a person checks was
+honest. The device agent was alive, ticking every 30 seconds, printing four per-draft hold
+reasons — one reply halt, three at the material allowance — and **all four were individually
+TRUE**. `schedulerHeartbeat` was **seconds fresh throughout**. The missing half was drafts
+that never came into existence, and *nothing renders an absence*. Only the pm2 error log knew.
+
+**So the heartbeat is not the witness this file has been treating it as.** It is written by
+the loop, not by the work: it proves the PROCESS is alive and says nothing about whether the
+pass SUCCEEDED. Third face of a shape already recorded twice — *"a pass that finds nothing
+leaves no record"* and *"nothing runs unless a process is running"*. **Liveness, success and
+output are three different facts.** The signature to look for is a FRESH heartbeat beside a
+STALE `max(queuedAt)`.
+
+### THE CULPRIT WAS A VIEWER ON THE MAC, AND `client_addr` POINTED AT THE WRONG MACHINE
+
+76 connections came from **`::1`** and only 2 from `127.0.0.1`, which reads as the server's
+own dashboard leaking. It is the reverse. **The tunnel forwards to `localhost:5432`, which
+resolves to `::1` on the Linode — so every connection arriving from a Mac appears as `::1`**,
+while the server's own app (whose `DATABASE_URL` says `127.0.0.1`) is the small group.
+
+**Restarting the Linode changed nothing, and that is what proved it** — the control probe
+beating the obvious diagnosis, the same diagnostic that has now corrected this project three
+times. The holder was **`pnpm local`, a Next DEV dashboard started on the Mac at 13:19 IST**;
+the oldest leaked backend is 13:37 and the server starved at 14:15. This file documents that
+dashboard as *a VIEWER* that cannot send — true, and it obscured the point: **it talks to the
+same production Postgres through the tunnel and competes for the same 100 slots.** Stopping
+it restored detection within minutes and the planner queued 6 drafts at 15:42.
+
+**Treat `pnpm local` as a production database client, not a read-only window.** And when the
+fleet is quiet, `select count(*) from pg_stat_activity` against `max_connections` is ONE
+query that would have found this in a minute.
+
+### THE UNBOUNDED DEFAULT UNDERNEATH, NOW BOUNDED
+
+`PrismaPg` forwards its config straight to `new pg.Pool(config)`, whose default is **`max:
+10`** — and `db.ts` caches the client on `globalThis` only OUTSIDE production, so a
+production build holds **one pool PER ROUTE BUNDLE**. Eight bundles is eighty connections
+from one process, against a `max_connections` of 100 **shared with six other pm2 apps**. The
+architecture was already documented here; it was never sized against the server it runs on.
+
+`POSTGRES_POOL_MAX = 5` and `POSTGRES_POOL_IDLE_MS` live in **`src/lib/dbPool.ts`** — its own
+module because `db.ts` CONSTRUCTS a client at import time, so anything wanting to READ the
+numbers would open a connection to ask. **Found by running it:** the first version of the
+test imported `db.ts` and broke `tests/auto-resolve.test.ts`, which owns its own temp
+database — a test about connection budgets opening a stray connection to ask what the budget
+is. `max` is the load-bearing half (it bounds a connection checked out and never returned,
+which `idleTimeoutMillis` cannot reach); it is 5 rather than 1 because **a pool of one
+deadlocks a bundle instead of erroring, and a guard that turns an outage into a hang is not
+an improvement.** `tests/pool-bounds.test.ts` is a source grep, mutation-tested both ways.
+
+**Killed connections linger as orphans** until TCP keepalive, so the count falls gradually
+(98 → 87 → 83 → 78) rather than at once — do not read a slow drain as the fix not working.
+
+### THE OTHER TWO LEGS, MEASURED HEALTHY
+
+- **PACE IS AT ITS FLOOR AND THE FIX HOLDS.** Post-restart intervals **61s, 63s** against
+  **77s** for every pre-fix pair, i.e. the composed `max(drive, gap) = 60s`.
+  `FLEET_MIN_GAP_MINUTES = 1`, no Setting override. **A `sentAt` delta BELOW 60s is not a
+  violation** — one observed at 46s — because the gap is enforced from a send's START while
+  `sentAt` records COMPLETION, so a shorter drive legitimately closes the gap.
+- **THE PIPELINE FLOWS END TO END IN HOURS.** 87 CAMPAIGN posts in 24h (newest 10 min old),
+  **285 prospects minted in 24h, 284 of them verified**, all 285 carrying campaign
+  provenance, **median mint→first-delivery 3.6 hours** (min ~1 min), 292 distinct recipients
+  drafted, **504 delivered — 504 of 504 to `isVerified: true` recipients.**
+- **THE INVARIANTS HOLD ON CURRENT CODE.** WATCH pages ever messaged: **0, ever**. Pair
+  daily cap: **0** violations. The 4 unverified deliveries are all from the morning of 20 Aug
+  *before* the rule shipped (**0 since**), and the single reply-halt crossing is the
+  documented @drongofilms mis-dating, **7 minutes before its fix deployed** (0 since).
+
+### WHAT LIMITS THROUGHPUT NOW IS MATERIAL, NOT PACE — AND THE PLANNER SAYS SO
+
+`outreach skips by reason total=2250`: **material-exhausted=1688**, target-replied=190,
+target-recently-contacted=135, target-opted-out=131, not-this-senders-turn=56,
+target-not-verified=30, uncertain-delivery-unsettled=11, recipient-is-a-person=6,
+pending-attempt-exists=3. **75% of all pairs are waiting for the next paid post naming that
+recipient**, which is Tabish's own rule and releases automatically. At a 60-second period the
+pace ceiling is ~1,440/day; the fleet delivered 504. **Pace is not the constraint and raising
+it would change nothing** — the lever, if more volume is wanted, is watched channels and the
+badge door, not the gap.
+
+### OUTSTANDING, HONESTLY
+
+1. **6 live PROSPECT rows carry `isVerified: false`** (nifborivali, nifglobal.southmumbai,
+   manav_rachna, pinkvillabiz, theninespune, carpisa.in — one created 21 Aug, so the path
+   still fires). **They are structurally unmessageable** — 0 attempts each, and the planner
+   reports `target-not-verified=30` refusing them every pass — but admission is writing rows
+   the rule then refuses forever, rather than refusing at creation. Retire them, or fix the
+   creator; the row state should match the rule.
+2. **@drongofilms is an unhandled live inbound lead** (`replyHandledAt` NULL) — *"Hi Kunal
+   this side, saw your poster 'vibe'"*. The halt is correctly active; a person is owed a reply.
+3. **~55 orphaned backends were still draining** at hand-over. They clear on TCP keepalive.
+   Reclaiming them immediately needs `pg_terminate_backend`, which this session was not
+   permitted to run.
+4. **Nothing surfaces a throwing scheduler.** The health ladder should carry *"last successful
+   planner run"* beside the heartbeat — a check that cannot fail is a check that cannot warn.
+
+---
+
 ## 22 AUGUST — "NOT SENDING EVERY MINUTE" WAS TRUE, AND CHASING IT FOUND THE QUEUE'S REAL LID
 
 **Tabish: *"What is the health of the system, autopilot is not sending every minute (monitor
