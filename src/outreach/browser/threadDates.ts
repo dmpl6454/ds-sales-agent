@@ -149,6 +149,46 @@ export function parseThreadTimestamp(text: string, now: Date = new Date()): Date
 }
 
 /**
+ * ── A PARSED DATE MUST BE ONE THAT COULD BE TRUE (2026-08-22) ─────────────
+ *
+ * MEASURED, and it cost a live lead: @drongofilms wrote *"Hi Kunal this side, saw your
+ * poster 'vibe', we can amplify your content"*, the sweep observed it at 11:14 IST, and
+ * `parseThreadTimestamp` dated it **19 May** — three months earlier. Because the halt keys
+ * on the reply's own date, and an old date does not hold it (Tabish's rule), the fleet sent
+ * that recipient another message NINE MINUTES after they replied. Six of 41 stored replies
+ * carried a date earlier than the message they answer.
+ *
+ * The rule that makes any parser mistake harmless: **a reply cannot predate the message it
+ * answers, and cannot postdate the moment we saw it.** Both bounds are DB facts, not
+ * guesses. Anything outside that window is not a date; the nearest bound is used instead,
+ * which is conservative for the halt — a reply to a recent send lands inside the window and
+ * HOLDS, while a reply in a thread we last wrote to a month ago clamps to that old send and
+ * correctly does NOT hold, which is exactly the "it might be answering an older
+ * conversation" case Tabish's rule is about.
+ *
+ * PURE, so both recorders (the thread read and the inbox scan) share one answer.
+ */
+export function plausibleReplyDate(args: {
+  /** What the thread separator or inbox age parsed to. Null when nothing parsed. */
+  parsed: Date | null
+  /** Our newest delivered message to this recipient BEFORE we observed the reply. */
+  lastSentAt: Date | null
+  /** When we saw the reply. The reply cannot be newer than this. */
+  observedAt: Date
+}): Date | null {
+  const { parsed, lastSentAt, observedAt } = args
+  /* No send to answer means no lower bound we can defend — leave it to the parser, and to
+     NULL if that found nothing. A reply to a message we never sent is not a case this
+     system produces, so this branch is a fallback rather than a path. */
+  if (!lastSentAt) return parsed && parsed <= observedAt ? parsed : null
+  if (parsed && parsed >= lastSentAt && parsed <= observedAt) return parsed
+  /* Outside the window (or unparsed): the earliest it could have been written is the
+     moment we last wrote to them. Using the LOWER bound rather than the observation keeps
+     Tabish's rule intact — an old thread stays old and does not halt. */
+  return lastSentAt
+}
+
+/**
  * An inbox row's relative age ("41m", "1h", "2d", "3w") → the instant it names, or null.
  *
  * The age dates the row's NEWEST message. Instagram floors these ("2d" covers [2d, 3d)),
