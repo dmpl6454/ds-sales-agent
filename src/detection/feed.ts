@@ -203,8 +203,17 @@ const RETRY_BASE_MS = 800
  * "Freshness is not liveness" — already learned once for the scheduler heartbeat.
  *
  * 12 s matches `exists.ts`, which has always had this. Median response is 1090 ms.
+ *
+ * EXPORTED since 2026-08-22, because the lesson above reached THIS file and not the other
+ * two callers of the same endpoints — `enrichHandle` and `resolveBrand` both awaited a
+ * bare `fetch`. MEASURED that morning: the Mac's network dropped, the brand pass's lookup
+ * hung, and `brandPassRunning` stayed true for 70+ minutes, so brand discovery AND the
+ * badge door were skipped every 30 minutes with the log honestly reporting "still running
+ * from the last pass". It recovered only because the network came back and the socket
+ * errored; a socket that stalls instead of resetting would have wedged both passes
+ * FOREVER, silently. One constant, three callers.
  */
-const REQUEST_TIMEOUT_MS = 12_000
+export const REQUEST_TIMEOUT_MS = 12_000
 
 /** Transport-level retry with exponential backoff. Never retries a 429 or a 4xx. */
 async function fetchPageWithRetry(url: string, handle: string): Promise<Response> {

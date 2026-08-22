@@ -67,12 +67,23 @@ import { getSettings } from '@/lib/settings'
  *
  * 30 SECONDS SINCE 2026-08-19, because the fleet gap became ONE minute the same day and
  * the poll interval is the real ceiling: one send per tick means a 60-second poll delivers
- * at best every 60s, and on average waits half a poll past the moment the gap clears. At
- * 30s the gap is what paces the fleet rather than this timer, which is where the decision
- * belongs — `pacing.ts` is the file with the rules and the tests in it.
+ * at best every 60s, and on average waits half a poll past the moment the gap clears.
  *
- * It does NOT widen anything: `dispatchTick` still sends at most one message and still
- * asks every guard. A tick with nothing to do is a handful of cheap queries.
+ * ── AND THE CLAIM THIS DOCBLOCK USED TO MAKE WAS FALSE (measured 2026-08-22) ──
+ *
+ * It said "at 30s the gap is what paces the fleet rather than this timer, which is where
+ * the decision belongs". It was not: the loop slept 30 s AFTER each tick, so the wait was
+ * additive to the ~47 s a send spends driving a browser, and the true period was **77 s**
+ * (473 intervals: min 73, p50 77, p90 81). The timer was pacing the fleet and the gap was
+ * inert — a false invariant stated in a comment, which is why nobody looked.
+ *
+ * The loop now sleeps only the REMAINDER of this interval, so a tick that took longer than
+ * 30 s comes straight back and `pacing.ts` decides — which is what this paragraph always
+ * claimed. Keep it that way; the number here is a POLL FLOOR for idle ticks, not the pace.
+ *
+ * It does NOT widen anything: `dispatchTick` still sends at most one message, still asks
+ * every guard, and still refuses anything inside `fleetMinGapMinutes` of the last send's
+ * start. A tick with nothing to do is a handful of cheap queries.
  */
 const POLL_INTERVAL_MS = 30_000
 
@@ -469,6 +480,36 @@ export async function runDeviceAgent(): Promise<void> {
   replies.unref?.()
 
   while (!stopping) {
+    /**
+     * ── THE POLL IS A PERIOD, NOT IDLE TIME AFTER A SEND (2026-08-22) ────────
+     *
+     * This was `await tick()` then an unconditional `sleep(POLL_INTERVAL_MS)`, which makes
+     * the wait ADDITIVE to whatever the tick just did. A tick that delivers a message takes
+     * ~47 s of browser driving, so the real period was 47 + 30 = **77 s** — measured over
+     * 473 consecutive intervals: min 73 s, p50 77 s, p90 81 s, 439 of them inside 90 s. A
+     * distribution that tight is an equation, not jitter.
+     *
+     * So `fleetMinGapMinutes = 1` could not produce a one-minute cadence at any value: the
+     * loop added half a minute to every send after the gap had already been satisfied. That
+     * is EXACTLY the defect fixed one layer up the day before — the gap was being measured
+     * from a send's completion instead of its start — surviving in the sleep that wraps it,
+     * and this file's own docblock claimed the opposite ("at 30s the gap is what paces the
+     * fleet rather than this timer"). A false invariant in a comment is how it went unseen.
+     *
+     * Sleeping only the REMAINDER fixes it structurally rather than by picking a smaller
+     * number: after a 47 s send the remainder is zero, the loop comes straight back, and
+     * `dispatchTick` — which still refuses anything inside `fleetMinGapMinutes` of the last
+     * send's START — becomes the thing that decides, which is where the decision belongs.
+     * An idle tick costs a handful of queries and still waits its full 30 s, so polling gets
+     * no busier when there is nothing to send.
+     *
+     * IT CANNOT SEND FASTER THAN THE GAP. The gap is a hard refusal inside the tick, not a
+     * property of this sleep; removing the additive wait cannot cross it. What changes is
+     * that the knob on `/rules` now means what it says: ~60 s, ~60/hour at the current
+     * setting, against a measured 77 s. `fleetMinGapMinutes = 2` remains the one-write
+     * lever back to a slower fleet, and autopilot OFF still stops everything.
+     */
+    const startedAt = Date.now()
     try {
       await tick()
     } catch (err) {
@@ -476,7 +517,8 @@ export async function runDeviceAgent(): Promise<void> {
       // whole process exists to prevent.
       log.error('device tick failed', { error: err instanceof Error ? err.message : String(err) })
     }
-    await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS))
+    const remaining = POLL_INTERVAL_MS - (Date.now() - startedAt)
+    if (remaining > 0) await new Promise((r) => setTimeout(r, remaining))
   }
 
   clearInterval(presence)
