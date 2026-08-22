@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { parseThreadTimestamp, parseInboxAge } from '@/outreach/browser/threadDates'
+import { parseThreadTimestamp, parseInboxAge, plausibleReplyDate } from '@/outreach/browser/threadDates'
 import { triageInboxRow, snippetIsReplyText, matchInboxRowToTarget, shouldRecordInboxReply } from '@/outreach/inboxTriage'
 import type { InboxRow } from '@/outreach/browser/inboxScan'
 
@@ -268,5 +268,82 @@ describe('matchInboxRowToTarget — a display name is not an identity', () => {
   it('squashing never becomes a prefix guess — Kama Ayurveda stays unmatched', () => {
     const t = [...targets, { id: '7', handle: 'kamaayurvedaindia', displayName: 'kamaayurvedaindia' }]
     expect(matchInboxRowToTarget('Kama Ayurveda', t)).toBeNull()
+  })
+})
+
+/**
+ * ── A PARSED DATE MUST BE ONE THAT COULD BE TRUE (2026-08-22) ─────────────
+ *
+ * THE INCIDENT, and it is the only time the reply halt has ever been crossed. @drongofilms
+ * wrote *"Hi Kunal this side, saw your poster 'vibe', we can amplify your content"* — a live
+ * lead. The sweep observed it at 11:14 IST and `parseThreadTimestamp` dated it **19 May**,
+ * three months earlier. The halt keys on the reply's own date and an old date does not hold
+ * it (Tabish's rule), so the fleet sent that recipient another message NINE MINUTES later.
+ * Six of 41 stored replies carried a date earlier than the message they answer.
+ *
+ * The rule that makes any parser mistake harmless: a reply cannot predate the message it
+ * answers, and cannot postdate the moment we saw it. Both bounds are DB facts. Outside that
+ * window the parse is discarded and the LOWER bound used — conservative for the halt, and it
+ * preserves Tabish's rule exactly, because a thread we last wrote to a month ago clamps to
+ * that old send and still does not halt.
+ */
+describe('plausibleReplyDate — a date that cannot be true is not a date', () => {
+  const observed = new Date('2026-08-22T05:44:19Z')
+  const lastSent = new Date('2026-08-20T05:24:41Z')
+
+  it('a plausible parse is kept as-is', () => {
+    const parsed = new Date('2026-08-22T05:30:00Z')
+    expect(plausibleReplyDate({ parsed, lastSentAt: lastSent, observedAt: observed })).toBe(parsed)
+  })
+
+  it('THE INCIDENT: a date before the message it answers is discarded, and the halt holds', () => {
+    const parsed = new Date('2026-05-19T09:39:00Z') // what the thread actually gave us
+    const got = plausibleReplyDate({ parsed, lastSentAt: lastSent, observedAt: observed })!
+    expect(got).toEqual(lastSent)
+    /* And that lands inside a seven-day window measured from the observation, so the halt
+       that failed on 22 August would now hold. */
+    const floor = new Date(observed.getTime() - 7 * 86_400_000)
+    expect(got.getTime()).toBeGreaterThanOrEqual(floor.getTime())
+  })
+
+  it('a date after we saw it is discarded too — nothing is written in the future', () => {
+    const parsed = new Date('2026-08-25T00:00:00Z')
+    expect(plausibleReplyDate({ parsed, lastSentAt: lastSent, observedAt: observed })).toEqual(lastSent)
+  })
+
+  it('an unparsed date falls back to our last send, not to the observation', () => {
+    expect(plausibleReplyDate({ parsed: null, lastSentAt: lastSent, observedAt: observed })).toEqual(lastSent)
+  })
+
+  /**
+   * TABISH'S RULE IS PRESERVED, which is the half that keeps this honest. A reply appearing
+   * in a thread we last wrote to five weeks ago clamps to that old send, lands OUTSIDE the
+   * window, and does not halt — because it may well be answering that old conversation.
+   */
+  it('an old thread stays old — the permissive direction he chose is intact', () => {
+    const longAgo = new Date('2026-07-15T00:00:00Z')
+    const got = plausibleReplyDate({ parsed: null, lastSentAt: longAgo, observedAt: observed })!
+    const floor = new Date(observed.getTime() - 7 * 86_400_000)
+    expect(got.getTime()).toBeLessThan(floor.getTime())
+  })
+
+  it('with no send to answer, only a self-consistent parse survives', () => {
+    const parsed = new Date('2026-08-22T05:00:00Z')
+    expect(plausibleReplyDate({ parsed, lastSentAt: null, observedAt: observed })).toBe(parsed)
+    expect(plausibleReplyDate({ parsed: new Date('2026-08-25T00:00:00Z'), lastSentAt: null, observedAt: observed })).toBeNull()
+    expect(plausibleReplyDate({ parsed: null, lastSentAt: null, observedAt: observed })).toBeNull()
+  })
+})
+
+/** Both recorders must clamp — a rule that reaches one write site is this repo's oldest defect. */
+describe('both reply write sites clamp', () => {
+  it('the thread path and the inbox path both call plausibleReplyDate', async () => {
+    const { readFileSync } = await import('node:fs')
+    const { join } = await import('node:path')
+    const src = readFileSync(join(import.meta.dirname, '..', 'src/outreach/replyCheck.ts'), 'utf8')
+    expect([...src.matchAll(/plausibleReplyDate\(/g)].length).toBeGreaterThanOrEqual(2)
+    /* And neither may write a raw parse straight into the column. */
+    expect(src).not.toMatch(/replyPostedAt: newest\.approxAt/)
+    expect(src).not.toMatch(/replyPostedAt: parseInboxAge/)
   })
 })

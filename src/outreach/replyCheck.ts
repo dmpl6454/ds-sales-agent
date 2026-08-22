@@ -5,7 +5,7 @@ import { hoursAgo } from '@/lib/time'
 import { profileStatus } from './browser/profile'
 import { openAndReadThread } from './browser/readThread'
 import { scanInbox } from './browser/inboxScan'
-import { parseInboxAge } from './browser/threadDates'
+import { parseInboxAge, plausibleReplyDate } from './browser/threadDates'
 import { triageInboxRow, snippetIsReplyText, matchInboxRowToTarget, shouldRecordInboxReply } from './inboxTriage'
 import { normalise } from './matching'
 import { markChallenged } from './challenge'
@@ -389,6 +389,20 @@ export async function checkConversation(args: {
   const replyText = newest.text.slice(0, 2000)
 
   /**
+   * The parsed separator is CLAMPED to a window that could be true — see
+   * `plausibleReplyDate`. Unclamped, a mis-read separator dated @drongofilms' reply three
+   * months early and the halt released nine minutes after they wrote to us.
+   */
+  const lastSentAt = (
+    await prisma.outreachAttempt.findFirst({
+      where: { targetId, status: { in: [...DELIVERED_STATUSES] }, sentAt: { not: null, lte: now } },
+      orderBy: { sentAt: 'desc' },
+      select: { sentAt: true },
+    })
+  )?.sentAt ?? null
+  const writtenAt = plausibleReplyDate({ parsed: newest.approxAt, lastSentAt, observedAt: now })
+
+  /**
    * TWO CLOCKS, RECORDED SEPARATELY (2026-08-21). `repliedAt` is when WE SAW it — the
    * observation. `replyPostedAt` is when THEY WROTE it, from the thread's own date
    * separator above the bubble (`ThreadMessage.approxAt`), and it is what the seven-day
@@ -400,14 +414,14 @@ export async function checkConversation(args: {
   await prisma.$transaction([
     prisma.outreachAttempt.update({
       where: { id: attachToId },
-      data: { repliedAt: now, replyPostedAt: newest.approxAt, status: 'REPLIED', replyText, replyCheckedAt: now },
+      data: { repliedAt: now, replyPostedAt: writtenAt, status: 'REPLIED', replyText, replyCheckedAt: now },
     }),
     prisma.auditLog.create({
       data: {
         actor: 'reply-check',
         action: 'reply.record.auto',
         entity: `OutreachAttempt:${attachToId}`,
-        detail: `@${targetHandle} replied to @${senderHandle} (observed ${now.toISOString()}; written ${newest.approxAt ? newest.approxAt.toISOString() : 'UNDATED — does not hold the 7-day halt'})`,
+        detail: `@${targetHandle} replied to @${senderHandle} (observed ${now.toISOString()}; written ${writtenAt ? writtenAt.toISOString() : 'UNDATED — does not hold the 7-day halt'}${newest.approxAt && writtenAt && newest.approxAt.getTime() !== writtenAt.getTime() ? `, clamped from the thread's ${newest.approxAt.toISOString()} which predates the message it answers` : ''})`,
       },
     }),
   ])
@@ -585,7 +599,21 @@ async function inboxPhase(
         }
       }
 
-      const replyPostedAt = row.ageText ? parseInboxAge(row.ageText, now) : null
+      /* Clamped like the thread path: an inbox age is floored by Instagram ("8h" covers
+         8-9 hours), which can date a reply just before the message it answers. */
+      const lastSentToTarget =
+        (
+          await prisma.outreachAttempt.findFirst({
+            where: { targetId: target.id, status: { in: [...DELIVERED_STATUSES] }, sentAt: { not: null, lte: now } },
+            orderBy: { sentAt: 'desc' },
+            select: { sentAt: true },
+          })
+        )?.sentAt ?? null
+      const replyPostedAt = plausibleReplyDate({
+        parsed: row.ageText ? parseInboxAge(row.ageText, now) : null,
+        lastSentAt: lastSentToTarget,
+        observedAt: now,
+      })
       const replyText = snippetIsReplyText(row.snippet) ? row.snippet.slice(0, 2000) : null
 
       await prisma.$transaction([
