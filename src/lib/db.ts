@@ -3,6 +3,7 @@ import { PrismaBetterSqlite3 } from '@prisma/adapter-better-sqlite3'
 import { PrismaPg } from '@prisma/adapter-pg'
 import { PrismaClient } from '@/generated/prisma/client'
 import { env } from './env'
+import { POSTGRES_POOL_IDLE_MS, POSTGRES_POOL_MAX } from './dbPool'
 import { queryCountingEnabled, markSubscribed, noteQuery } from './queryCount'
 
 /**
@@ -172,7 +173,11 @@ function createClient(): PrismaClient {
    * a guard reading the past — through a different door.
    */
   if (isPostgresUrl(env.DATABASE_URL)) {
-    const adapter = new PrismaPg({ connectionString: env.DATABASE_URL })
+    const adapter = new PrismaPg({
+      connectionString: env.DATABASE_URL,
+      max: POSTGRES_POOL_MAX,
+      idleTimeoutMillis: POSTGRES_POOL_IDLE_MS,
+    })
     return new PrismaClient({
       adapter,
       log: queryLog(),
