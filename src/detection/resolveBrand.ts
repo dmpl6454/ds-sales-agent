@@ -2,6 +2,7 @@ import { prisma } from '@/lib/db'
 import { log } from '@/lib/logger'
 import type { BrandLookupKind } from '@/lib/constants'
 import { decideBrand, interpretDecision, type BrandDecision } from './decideBrand'
+import { REQUEST_TIMEOUT_MS } from './feed'
 import { enrichHandle, describeEnrichment, type HandleEnrichment } from './enrichHandle'
 
 /**
@@ -843,7 +844,18 @@ export async function resolveBrand(
 
   let verdict: BrandVerdict
   try {
-    const res = await fetch(ENDPOINT + encodeURIComponent(h), { headers: HEADERS })
+    /**
+     * BOUNDED, same constant as the feed and `enrichHandle` (2026-08-22). An unbounded
+     * `fetch` here is what hung the agent's brand pass for 70+ minutes when the Mac's
+     * network dropped — `brandPassRunning` stayed true and the pass was skipped every 30
+     * minutes. A timeout throws and lands in `interpretLookupFailure`'s network branch,
+     * which is UNKNOWN — "we never got to look", retried later. That is the correct
+     * reading and it is emphatically not a verdict about the account.
+     */
+    const res = await fetch(ENDPOINT + encodeURIComponent(h), {
+      headers: HEADERS,
+      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+    })
 
     if (res.status === 404) {
       verdict = { kind: 'MISSING', handle: h }

@@ -660,6 +660,37 @@ export async function runOutreach(): Promise<PlanSummary> {
     dryRun: env.DRY_RUN,
   })
 
+  /**
+   * WHY those skips, not just how many (2026-08-22).
+   *
+   * This logged `skipped=861` and nothing else, which is the exact failure the dispatcher's
+   * `holdReasons` was added to fix — one level up, and worse, because the planner is where a
+   * message either comes into existence or does not. Asked "why is the queue empty when 39
+   * recipients have allowance room", the honest answer from the logs was *we cannot tell*:
+   * every reason had been computed, recorded on the outcome, and then thrown away at the one
+   * place a person reads.
+   *
+   * Counted per reason, top reasons named, so the shape of a quiet pass is visible at a
+   * glance: `ring-complete` on most of a drained fleet is the 7-day rest working, while the
+   * same number under `sender-not-active` or `no-session` would be an outage wearing its
+   * costume.
+   */
+  if (summary.skipped > 0) {
+    const byReason = new Map<string, number>()
+    for (const o of outcomes) {
+      if (o.eligible) continue
+      const key = o.skipReason ?? 'unrecorded'
+      byReason.set(key, (byReason.get(key) ?? 0) + 1)
+    }
+    log.info('outreach skips by reason', {
+      total: summary.skipped,
+      reasons: [...byReason.entries()]
+        .sort((a, b) => b[1] - a[1])
+        .map(([r, n]) => `${r}=${n}`)
+        .join(' '),
+    })
+  }
+
   return summary
 }
 

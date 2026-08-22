@@ -1,5 +1,5 @@
 import { log } from '@/lib/logger'
-import { FEED_HEADERS } from './feed'
+import { FEED_HEADERS, REQUEST_TIMEOUT_MS } from './feed'
 
 /**
  * What can we still learn about a handle whose category Instagram will not serve?
@@ -79,8 +79,18 @@ export async function enrichHandle(handle: string): Promise<HandleEnrichment> {
   }
 
   try {
+    /**
+     * BOUNDED. `fetch` has no default timeout, and an unbounded one here is what hung the
+     * agent's brand pass for 70+ minutes on 2026-08-22 when the Mac's network dropped:
+     * `brandPassRunning` stayed true, so brand discovery and the badge door were skipped
+     * every 30 minutes until the socket happened to error. Same constant as the feed and
+     * `exists.ts` — see REQUEST_TIMEOUT_MS's docblock for the measured cost of not having
+     * it. A timeout surfaces as a thrown AbortError and lands in the catch below, which
+     * already reports "not reachable", and NOT-REACHABLE IS NEVER A VERDICT here.
+     */
     const res = await fetch(`https://i.instagram.com/api/v1/feed/user/${encodeURIComponent(h)}/username/`, {
       headers: FEED_HEADERS,
+      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
     })
 
     if (!res.ok) {
