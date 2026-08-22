@@ -102,6 +102,19 @@ no busier. **It cannot send faster than the gap**: the gap is a refusal inside t
 a property of this sleep. `tests/poll-is-a-period.test.ts` is behavioural because a grep
 passes against BOTH shapes, and it was mutation-tested by restoring the additive line.
 
+**AND THE REMAINDER ALONE WAS STILL 77s — MEASURED THE SAME DAY, ONE INTERVAL, DETERMINISTIC.**
+The first two post-fix sends were 77s apart. The additive sleep was gone; **the GRID
+remained**: a ~47s drive puts the immediate next tick at +47s — held, 13 seconds before the
+60s gap clears — and the following 30s-grid tick at +77s. Period = drive + grid-overshoot,
+not max(drive, gap). *"Expected ~60s"* had been written in this file without walking that
+arithmetic, and it is left corrected here rather than erased: **predicting a period from a
+fix without composing the actual timeline is how both 77s bugs shipped.** The finish:
+`dispatchTick` returns **`retryInMs`** on a `too-soon` hold — when the gap clears, computed
+from the SAME clock the refusal read — and the loop sleeps exactly that, consumed with
+`min()` so a hint can only ever wake the loop EARLIER than its grid. The boundary tick
+re-asks every rule, so nothing can send faster than the gap. Composed period:
+**max(drive, gap) = 60s** at the current setting.
+
 ### AND THEN: EVERY PROSPECT WAS CAPPED AT ONE MESSAGE PER PAGE, FOREVER
 
 The cadence explains the rate when there IS a queue. The queue was EMPTY — 4 drafts, all
