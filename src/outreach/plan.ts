@@ -7,7 +7,7 @@ import { newMaterialFloor } from '@/lib/cutoff'
 import { DELIVERED_STATUSES, IN_FLIGHT_STATUSES } from '@/lib/constants'
 import { evaluatePair, type GovernorDecision } from './governor'
 import { crossSpacingVerdict } from './crossSpacing'
-import { materialAllowance, campaignsNamingHandle } from './materialAllowance'
+import { materialAllowance, campaignsNamingHandle, campaignsNamingHandleRows } from './materialAllowance'
 import { eligibleFleetSenderIds } from './availability'
 import { routeAllowed } from './routes'
 import { composeForPair, usedCampaignIds } from './compose'
@@ -408,15 +408,25 @@ export async function runOutreach(): Promise<PlanSummary> {
        * (31 Jul 18:30 UTC = 1 Aug 00:00 IST). So the CUTOFF is the binding rule today.
        * Reading `hoursAgo(72)` and assuming the cutoff is redundant is wrong by six and a
        * half hours — the kind of near-miss an IST/UTC boundary produces.
+       *
+       * ── AND THE ROWS COME FROM THE SHARED LINKAGE NOW (2026-08-22) ─────────
+       *
+       * This was `count({ targetId: pair.targetId, … })` — a FOURTH copy of "campaigns for
+       * this recipient", and `targetId` on `DetectedCampaign` is the CHANNEL THAT POSTED,
+       * so it returned 0 for every prospect and `NO_NEW_MATERIAL` refused every follow-up
+       * to every prospect permanently. `compose.ts` held the same bug for the on-demand
+       * path; the allowance's own copy was fixed a day earlier and these two were not,
+       * because nothing compared them. MEASURED: @amazonmgmstudios, 17 paid posts naming
+       * it inside the window, 5 messages, capped forever — and 40 recipients the allowance
+       * would have permitted another message to, every one refused by every sender.
+       *
+       * One implementation (`campaignsNamingHandleRows`), and `tests/naming-linkage.test.ts`
+       * greps for a reintroduced `targetId` copy, because the defect is a query somebody
+       * writes next rather than one that is here now.
        */
-      prisma.detectedCampaign.count({
-        where: {
-          targetId: pair.targetId,
-          verdict: 'CAMPAIGN',
-          postedAt: { gte: newMaterialFloor(now) },
-          id: { notIn: alreadyUsedIds },
-        },
-      }),
+      campaignsNamingHandleRows(prisma, pair.target, newMaterialFloor(now)).then(
+        (rows) => rows.filter((r) => !alreadyUsedIds.includes(r.id)).length,
+      ),
       /**
        * ── THE RECIPIENT'S ALLOWANCE (2026-08-21) ─────────────────────────────
        *

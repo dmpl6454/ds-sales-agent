@@ -1,6 +1,7 @@
 import { prisma } from '@/lib/db'
 import { DELIVERED_STATUSES, IN_FLIGHT_STATUSES } from '@/lib/constants'
 import { newMaterialFloor } from '@/lib/cutoff'
+import { campaignsNamingHandleRows } from './materialAllowance'
 import { readStringArray } from '@/lib/json'
 import { log } from '@/lib/logger'
 import { getSettings } from '@/lib/settings'
@@ -91,33 +92,70 @@ export async function usedCampaignIds(pairId: string): Promise<string[]> {
  * "which piece of it?"). This codebase has been bitten twice by exactly these two queries
  * drifting, so they now share a floor, a status filter and a file.
  */
+/**
+ * ── `targetId` IS THE POSTING CHANNEL, SO THIS WAS ZERO FOREVER FOR A PROSPECT ──
+ *
+ * MEASURED 2026-08-22, from Tabish's question about the send cadence: the queue was empty
+ * while **40 recipients had allowance room**, and every one of them was refused for every
+ * sender. The reason is one column. `DetectedCampaign.targetId` is the CHANNEL THAT POSTED
+ * — never the brand named in the post — so counting campaigns "for this recipient" that way
+ * returns 0 for every prospect, always. `NO_NEW_MATERIAL` therefore refused every follow-up
+ * to every prospect PERMANENTLY: each (sender → prospect) pair could send exactly one
+ * message ever, the first touch that is exempt by construction, and never another however
+ * many placements that brand bought. @amazonmgmstudios: **17 paid posts naming it, 5
+ * messages, capped forever.**
+ *
+ * This is the SAME defect fixed in `materialAllowance` the day before — where it had made
+ * the unlock half of Tabish's rule unreachable and the fleet went quiet — surviving here in
+ * the older rule, unfixed, because the two rules were never compared. *"A fail-closed guard
+ * with an unsatisfiable precondition is a blindfold wearing a seatbelt."*
+ *
+ * So both queries now ask `campaignsNamingHandleRows` — the ONE place the linkage lives
+ * (caption @mentions, media tags, and a brand string that exactly names the prospect). The
+ * guard is unchanged in strength and finally satisfiable: a follow-up still requires a paid
+ * post naming this recipient that THIS PAIR has not written about, which is strictly more
+ * than the recipient-level allowance asks on its own.
+ */
+/**
+ * The RECIPIENT ROW, not its id — required, so the compiler names every call site.
+ *
+ * The linkage matches on the handle and the display name, and the callers all already hold
+ * the row. Taking an id and looking it up again would have cost a query per pair per pass
+ * AND made this untestable without a full Prisma mock, which is how the first version of
+ * this fix was caught: `tests/compose.test.ts` stubs the models it needs and rightly had no
+ * `targetAccount`.
+ */
+export interface NamedRecipient {
+  handle: string
+  displayName?: string | null
+}
+
 export async function unusedCampaignCount(args: {
-  targetId: string
+  target: NamedRecipient
   pairId: string
   now?: Date
 }): Promise<number> {
-  const { targetId, pairId, now = new Date() } = args
-  return prisma.detectedCampaign.count({
-    where: {
-      targetId,
-      verdict: 'CAMPAIGN',
-      postedAt: { gte: newMaterialFloor(now) },
-      id: { notIn: await usedCampaignIds(pairId) },
-    },
-  })
+  const { pairId, target, now = new Date() } = args
+  const [naming, used] = await Promise.all([
+    campaignsNamingHandleRows(prisma, target, newMaterialFloor(now)),
+    usedCampaignIds(pairId),
+  ])
+  const usedSet = new Set(used)
+  return naming.filter((c) => !usedSet.has(c.id)).length
 }
 
 /** The freshest campaign this pair has not written about yet, or null. */
-async function pickHook(args: { targetId: string; pairId: string; now: Date }) {
-  return prisma.detectedCampaign.findFirst({
-    where: {
-      targetId: args.targetId,
-      verdict: 'CAMPAIGN',
-      postedAt: { gte: newMaterialFloor(args.now) },
-      id: { notIn: await usedCampaignIds(args.pairId) },
-    },
-    orderBy: [{ postedAt: 'desc' }, { detectedAt: 'desc' }],
-  })
+async function pickHook(args: { target: NamedRecipient; pairId: string; now: Date }) {
+  const [naming, used] = await Promise.all([
+    campaignsNamingHandleRows(prisma, args.target, newMaterialFloor(args.now)),
+    usedCampaignIds(args.pairId),
+  ])
+  const usedSet = new Set(used)
+  const fresh = naming
+    .filter((c) => !usedSet.has(c.id))
+    .sort((a, b) => b.postedAt.getTime() - a.postedAt.getTime())[0]
+  if (!fresh) return null
+  return prisma.detectedCampaign.findUnique({ where: { id: fresh.id } })
 }
 
 /**
@@ -216,7 +254,7 @@ export async function composeForPair(args: {
   const { pair, senderHandle, touchNumber, now = new Date() } = args
   const settings = await getSettings()
 
-  const hook = await pickHook({ targetId: pair.targetId, pairId: pair.id, now })
+  const hook = await pickHook({ target: pair.target, pairId: pair.id, now })
 
   /**
    * Least-recently-used variant, SCOPED TO THE POOL THIS TARGET BELONGS TO, and never one

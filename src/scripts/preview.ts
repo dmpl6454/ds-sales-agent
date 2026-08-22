@@ -1,4 +1,5 @@
 import { prisma } from '@/lib/db'
+import { campaignsNamingHandleRows } from '@/outreach/materialAllowance'
 import { env } from '@/lib/env'
 import { describeCap, getSettings } from '@/lib/settings'
 import { hoursAgo } from '@/lib/time'
@@ -26,14 +27,11 @@ async function main() {
   console.log(`\n  DRY_RUN=${env.DRY_RUN ? '1 (nothing sends)' : '0 (LIVE)'}   max/pair/day=${describeCap(settings.maxPerPairPerDay)}\n`)
 
   for (const pair of pairs) {
-    const hook = await prisma.detectedCampaign.findFirst({
-      where: {
-        targetId: pair.targetId,
-        verdict: 'CAMPAIGN',
-        postedAt: { gte: hoursAgo(settings.hookMaxAgeHours) },
-      },
-      orderBy: [{ postedAt: 'desc' }, { detectedAt: 'desc' }],
-    })
+    /* Campaigns NAMING this recipient, through the shared linkage — `targetId` here is
+       the posting channel and was null for every prospect (2026-08-22). */
+    const naming = await campaignsNamingHandleRows(prisma, pair.target, hoursAgo(settings.hookMaxAgeHours))
+    const freshest = naming.sort((a, b) => b.postedAt.getTime() - a.postedAt.getTime())[0]
+    const hook = freshest ? await prisma.detectedCampaign.findUnique({ where: { id: freshest.id } }) : null
 
     const variants = await prisma.messageVariant.findMany({
       where: { senderId: pair.senderId, enabled: true },

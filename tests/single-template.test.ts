@@ -36,6 +36,10 @@ vi.mock('@/lib/db', () => ({
       findFirst: (...a: unknown[]) => campaignFindFirst(...a),
       findUnique: (...a: unknown[]) => campaignFindUnique(...a),
       count: () => Promise.resolve(0),
+      /* The naming linkage reads rows (campaignsNamingHandleRows, 2026-08-22). Empty is
+         the honest default here: this file describes the template path, where no hook is
+         used at all. */
+      findMany: () => Promise.resolve([]),
     },
     messageVariant: { findMany: (...a: unknown[]) => variantFindMany(...a) },
     outreachAttempt: { findMany: (...a: unknown[]) => attemptFindMany(...a) },

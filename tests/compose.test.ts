@@ -26,6 +26,7 @@ const campaignFindUnique = vi.fn()
 const variantFindMany = vi.fn()
 const attemptFindMany = vi.fn()
 const campaignCount = vi.fn()
+const campaignFindMany = vi.fn()
 
 /**
  * `outreachAttempt.findMany` has TWO callers here — `usedCampaignIds` and `usedVariantIds`
@@ -49,6 +50,8 @@ vi.mock('@/lib/db', () => ({
       findFirst: (...a: unknown[]) => campaignFindFirst(...a),
       findUnique: (...a: unknown[]) => campaignFindUnique(...a),
       count: (...a: unknown[]) => campaignCount(...a),
+      /* The naming linkage reads rows now (campaignsNamingHandleRows), 2026-08-22. */
+      findMany: (...a: unknown[]) => campaignFindMany(...a),
     },
     messageVariant: { findMany: (...a: unknown[]) => variantFindMany(...a) },
     outreachAttempt: { findMany: (...a: unknown[]) => attemptFindMany(...a) },
@@ -94,6 +97,9 @@ beforeEach(() => {
   campaignFindFirst.mockReset().mockResolvedValue(null)
   campaignFindUnique.mockReset().mockResolvedValue(null)
   campaignCount.mockReset().mockResolvedValue(0)
+  /* The naming-linkage reader. Reset like the rest, or calls[0] belongs to an earlier test
+     — which is exactly how the first version of these assertions failed. */
+  campaignFindMany.mockReset().mockReturnValue([])
   usedCampaignRows.mockReset().mockReturnValue([])
   usedVariantRows.mockReset().mockReturnValue([])
   attemptFindMany.mockReset().mockImplementation((args: { select?: Record<string, boolean> }) =>
@@ -298,44 +304,100 @@ describe('a variant is never reused on the same pair', () => {
 describe('the campaign floor is newMaterialFloor, not the hook window alone', () => {
   const NOW = new Date('2026-08-04T12:00:00Z')
 
+  /**
+   * ── THESE NOW ASSERT THE NAMING LINKAGE, NOT `targetId` (2026-08-22) ──────
+   *
+   * Both queries used to be `{ targetId: <the recipient>, … }`, and `DetectedCampaign.targetId`
+   * is the CHANNEL THAT POSTED — so both returned nothing for every prospect and
+   * `NO_NEW_MATERIAL` refused every follow-up to every prospect permanently. MEASURED:
+   * @amazonmgmstudios, 17 paid posts naming it, 5 messages, capped forever.
+   *
+   * The pair of them now asks `campaignsNamingHandleRows`, so what these tests pin is the
+   * property that survived the change: ONE floor, ONE definition of "used", and the count
+   * and the lookup agreeing — which is the drift this describe block was written for.
+   */
+  const namingRow = (id: string, postedAt: string, handle = 'acme') => ({
+    id,
+    postedAt: new Date(postedAt),
+    /* The caption must NAME the recipient, or the shared linkage correctly drops the row —
+       which is how the first version of these fixtures failed: they named @acme while the
+       pair's target was @madovermarketing_mom. The filter working is the point. */
+    caption: `a promo naming @${handle}`,
+    taggedAccounts: '[]',
+    brands: '[]',
+  })
+
   it('uses newMaterialFloor for the hook lookup', async () => {
+    campaignFindMany.mockReturnValue([namingRow('camp_a', '2026-08-20T00:00:00Z', 'madovermarketing_mom')])
     await composeForPair({ pair: pair(), senderHandle: 'x', touchNumber: 2, now: NOW })
-    const where = (campaignFindFirst.mock.calls[0]![0] as { where: { postedAt: { gte: Date } } }).where
+    const where = (campaignFindMany.mock.calls[0]![0] as { where: { postedAt: { gte: Date } } }).where
     expect(where.postedAt.gte.getTime()).toBe(newMaterialFloor(NOW).getTime())
   })
 
   it('uses the SAME floor for the count that gates it', async () => {
-    await unusedCampaignCount({ targetId: 'targ_1', pairId: 'pair_1', now: NOW })
-    const where = (campaignCount.mock.calls[0]![0] as { where: { postedAt: { gte: Date } } }).where
+    campaignFindMany.mockReturnValue([namingRow('camp_a', '2026-08-20T00:00:00Z')])
+    await unusedCampaignCount({ target: { handle: 'acme', displayName: 'Acme' }, pairId: 'pair_1', now: NOW })
+    const where = (campaignFindMany.mock.calls[0]![0] as { where: { postedAt: { gte: Date } } }).where
     expect(where.postedAt.gte.getTime()).toBe(newMaterialFloor(NOW).getTime())
   })
 
   /**
-   * The two queries answer halves of one question — "is there new material?" and "which
-   * piece of it?" — and this codebase has been bitten twice by them drifting. Asserted
-   * against each other rather than against a literal, so neither can move alone.
+   * The two answer halves of one question — "is there new material?" and "which piece of
+   * it?" — and this codebase has been bitten twice by them drifting. Asserted against each
+   * other rather than against a literal, so neither can move alone.
    */
-  it('the count and the lookup agree on both the floor and what counts as used', async () => {
+  it('the count and the lookup agree on the floor and on what counts as used', async () => {
     usedCampaignRows.mockReturnValue([{ campaignId: 'camp_used' }])
-    await composeForPair({ pair: pair(), senderHandle: 'x', touchNumber: 2, now: NOW })
-    await unusedCampaignCount({ targetId: 'targ_1', pairId: 'pair_1', now: NOW })
+    campaignFindMany.mockReturnValue([
+      namingRow('camp_used', '2026-08-21T00:00:00Z', 'madovermarketing_mom'),
+      namingRow('camp_free', '2026-08-20T00:00:00Z', 'madovermarketing_mom'),
+    ])
 
-    const lookup = (campaignFindFirst.mock.calls[0]![0] as { where: Record<string, unknown> }).where
-    const count = (campaignCount.mock.calls[0]![0] as { where: Record<string, unknown> }).where
-    expect(count.postedAt).toEqual(lookup.postedAt)
-    expect(count.id).toEqual(lookup.id)
-    expect(count.verdict).toEqual(lookup.verdict)
-    expect(lookup.id).toEqual({ notIn: ['camp_used'] })
+    await composeForPair({ pair: pair(), senderHandle: 'x', touchNumber: 2, now: NOW })
+    const lookupWhere = (campaignFindMany.mock.calls[0]![0] as { where: Record<string, unknown> }).where
+    /* The USED campaign is excluded in JS, so the hook must be the free one — this is the
+       assertion that would have caught the old shape returning nothing at all. */
+    expect(campaignFindUnique).toHaveBeenCalledWith({ where: { id: 'camp_free' } })
+
+    campaignFindMany.mockClear()
+    const n = await unusedCampaignCount({ target: { handle: 'madovermarketing_mom', displayName: 'Mad Over Marketing' }, pairId: 'pair_1', now: NOW })
+    const countWhere = (campaignFindMany.mock.calls[0]![0] as { where: Record<string, unknown> }).where
+    expect(countWhere.postedAt).toEqual(lookupWhere.postedAt)
+    expect(countWhere.verdict).toEqual(lookupWhere.verdict)
+    expect(n, 'one of the two naming campaigns is already used').toBe(1)
   })
 
   /** "Used" means the recipient may have seen it — a discarded draft referenced nothing. */
   it('counts only in-flight attempts as having used a campaign', async () => {
-    await unusedCampaignCount({ targetId: 'targ_1', pairId: 'pair_1', now: NOW })
+    await unusedCampaignCount({ target: { handle: 'acme', displayName: 'Acme' }, pairId: 'pair_1', now: NOW })
     const where = (attemptFindMany.mock.calls[0]![0] as { where: { status: { in: string[] } } }).where
     expect(where.status.in).toContain('SENT')
     expect(where.status.in).toContain('READY')
     expect(where.status.in).not.toContain('SKIPPED')
     expect(where.status.in).not.toContain('FAILED')
+  })
+
+  /**
+   * THE REGRESSION ITSELF, in the direction that failed. A recipient with naming campaigns
+   * must report material; the old `targetId` shape reported zero for every prospect, which
+   * is what capped every pair at one message ever.
+   */
+  it('a prospect NAMED by a paid post has new material — the whole defect', async () => {
+    usedCampaignRows.mockReturnValue([])
+    campaignFindMany.mockReturnValue([
+      namingRow('c1', '2026-08-21T00:00:00Z'),
+      namingRow('c2', '2026-08-20T00:00:00Z'),
+      namingRow('c3', '2026-08-19T00:00:00Z'),
+    ])
+    const n = await unusedCampaignCount({ target: { handle: 'acme', displayName: 'Acme' }, pairId: 'pair_1', now: NOW })
+    expect(n).toBe(3)
+  })
+
+  it('and a recipient no paid post names still reports none, so the guard still guards', async () => {
+    usedCampaignRows.mockReturnValue([])
+    campaignFindMany.mockReturnValue([])
+    const n = await unusedCampaignCount({ target: { handle: 'nobody', displayName: 'Nobody' }, pairId: 'pair_1', now: NOW })
+    expect(n).toBe(0)
   })
 })
 
@@ -397,7 +459,12 @@ describe('bespoke is the FIRST touch only', () => {
   })
 
   it('uses a variant plus a fresh campaign on touch 2', async () => {
-    campaignFindFirst.mockResolvedValue({ id: 'c1', brands: '["RoyalCanin"]', postedAt: new Date(), verdict: 'CAMPAIGN' })
+    /* The hook is found through the shared naming linkage now: findMany selects the rows
+       that NAME this recipient, then findUnique loads the freshest. */
+    campaignFindMany.mockReturnValue([
+      { id: 'c1', postedAt: new Date(), caption: 'a promo naming @madovermarketing_mom', taggedAccounts: '[]', brands: '["RoyalCanin"]' },
+    ])
+    campaignFindUnique.mockResolvedValue({ id: 'c1', brands: '["RoyalCanin"]', postedAt: new Date(), verdict: 'CAMPAIGN' })
     const out = await composeForPair({ pair: withBespoke, senderHandle: 'x', touchNumber: 2 })
     expect(out.usedBespoke).toBe(false)
     expect(out.body).not.toContain('A hand-written first message')
