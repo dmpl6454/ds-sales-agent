@@ -295,7 +295,7 @@ export async function prepareOnDemand(senderHandle: string, targetHandle: string
        * `no-new-material` is a WARNING here, so the operator could cross a rule using a
        * campaign the system does not consider new at all.
        */
-      pair ? unusedCampaignCount({ targetId: target.id, pairId: pair.id }) : 0,
+      pair ? unusedCampaignCount({ target, pairId: pair.id }) : 0,
     ])
 
   const verdict = describeOnDemand({

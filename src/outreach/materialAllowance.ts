@@ -169,18 +169,35 @@ export function brandStringsNameProspect(
   return arr.some((b) => typeof b === 'string' && names.includes(squash(b)))
 }
 
-export async function campaignsNamingHandle(
+/**
+ * ── THE ROWS, so every rule that asks "which paid posts name this recipient?" asks ONE
+ *    implementation (2026-08-22) ─────────────────────────────────────────────
+ *
+ * `campaignsNamingHandle` returns the COUNT for the allowance. `NO_NEW_MATERIAL` needs the
+ * IDS — which campaigns this pair has not written about yet — and `pickHook` needs the
+ * freshest of them. Both used to ask `DetectedCampaign.targetId`, i.e. **campaigns posted BY
+ * the recipient**, which for a prospect is zero forever: exactly the defect found in this
+ * file's own count on 2026-08-21, surviving one rule over. See `unusedCampaignCount`.
+ */
+export interface NamingCampaign {
+  id: string
+  postedAt: Date
+}
+
+export async function campaignsNamingHandleRows(
   /* Structurally typed so tests can hand in a stub; `any`-shaped findMany because Prisma's
      own generic signature does not narrow through a structural constraint. */
   prismaClient: {
     detectedCampaign: {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      findMany: (args: any) => Promise<Array<{ caption: string; taggedAccounts: string; brands: string }>>
+      findMany: (args: any) => Promise<
+        Array<{ id?: string; postedAt?: Date; caption: string; taggedAccounts: string; brands: string }>
+      >
     }
   },
   prospect: { handle: string; displayName?: string | null },
   windowFloor: Date,
-): Promise<number> {
+): Promise<NamingCampaign[]> {
   const handle = prospect.handle
   const candidates = await prismaClient.detectedCampaign.findMany({
     where: {
@@ -196,7 +213,17 @@ export async function campaignsNamingHandle(
         { brands: { not: '[]' } },
       ],
     },
-    select: { caption: true, taggedAccounts: true, brands: true },
+    select: { id: true, postedAt: true, caption: true, taggedAccounts: true, brands: true },
   })
-  return candidates.filter((c) => mentionsHandleExactly(c, handle) || brandStringsNameProspect(c.brands, prospect)).length
+  return candidates
+    .filter((c) => mentionsHandleExactly(c, handle) || brandStringsNameProspect(c.brands, prospect))
+    .map((c) => ({ id: c.id ?? '', postedAt: c.postedAt ?? new Date(0) }))
+}
+
+export async function campaignsNamingHandle(
+  prismaClient: Parameters<typeof campaignsNamingHandleRows>[0],
+  prospect: { handle: string; displayName?: string | null },
+  windowFloor: Date,
+): Promise<number> {
+  return (await campaignsNamingHandleRows(prismaClient, prospect, windowFloor)).length
 }

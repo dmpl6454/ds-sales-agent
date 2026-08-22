@@ -1,4 +1,5 @@
 import { prisma } from '@/lib/db'
+import { campaignsNamingHandleRows } from '@/outreach/materialAllowance'
 import { DELIVERED_STATUSES } from '@/lib/constants'
 import { newMaterialFloor } from '@/lib/cutoff'
 import { deepseekCostUsd } from '@/lib/modelCall'
@@ -82,11 +83,16 @@ async function main() {
   let failed = 0
 
   for (const pair of chosen) {
-    // The same observation the planner would hand the model: a campaign we actually detected.
-    const hook = await prisma.detectedCampaign.findFirst({
-      where: { targetId: pair.targetId, verdict: 'CAMPAIGN', postedAt: { gte: newMaterialFloor(now) } },
-      orderBy: [{ postedAt: 'desc' }],
-    })
+    /**
+     * The same observation the planner would hand the model: a campaign we actually
+     * detected — and one that NAMES this recipient, via the shared linkage. This asked
+     * `targetId: pair.targetId`, which is the posting CHANNEL, so it was null for every
+     * prospect and the comment below ("the SAME function the planner uses") was true of
+     * the function and false of its input. Fourth copy of that query, 2026-08-22.
+     */
+    const naming = await campaignsNamingHandleRows(prisma, pair.target, newMaterialFloor(now))
+    const freshest = naming.sort((a, b) => b.postedAt.getTime() - a.postedAt.getTime())[0]
+    const hook = freshest ? await prisma.detectedCampaign.findUnique({ where: { id: freshest.id } }) : null
     // The SAME function the planner uses. A copy here would show a reader something the
     // planner would not actually produce, which is the one thing this command must not do.
     const observation = await observationFor(pair.target, hook)
