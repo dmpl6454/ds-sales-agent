@@ -166,6 +166,37 @@ eventually errored; a socket that stalls instead of resetting would have wedged 
 forever, silently. One exported constant, three callers. A timeout stays `UNKNOWN` /
 unreachable and is never a verdict.
 
+### AND THE REPLY HALT WAS CROSSED FOR THE FIRST TIME EVER — BY YESTERDAY'S OWN FIX
+
+**Found by watching a monitor fire on a send while writing the report.** @drongofilms wrote
+*"Hi Kunal this side, saw your poster 'vibe', we can amplify your content"* — a live inbound
+lead. The sweep observed it at 11:14 IST and **`parseThreadTimestamp` dated it 19 MAY**,
+three months early. The halt keys on the reply's own date and an old date does not hold it
+(Tabish's rule), so **the fleet delivered that recipient another message nine minutes after
+they wrote to us.** CLAUDE.md's standing measurement — *"sends that went out AFTER a
+recipient's reply was recorded: 0"* — was true until this.
+
+MEASURED across all 41 stored replies: **9 carried a date earlier than the message they
+answer.** Most by minutes (Instagram floors inbox ages — "8h" covers 8-9 hours — which can
+date a reply just before our own send), harmless against a seven-day rule. @drongofilms was
+three months off, and that is the class that releases a halt.
+
+**`plausibleReplyDate` is the rule that makes any parser mistake harmless: a reply cannot
+predate the message it answers, and cannot postdate the moment we saw it.** Both bounds are
+DB facts rather than guesses. Outside that window the parse is discarded and the lower bound
+used. **Tabish's rule survives intact, which is what makes this a fix and not a reversal:** a
+reply appearing in a thread we last wrote to five weeks ago clamps to that old send, lands
+outside the window, and still does not halt — precisely the "it might be answering an older
+conversation" case he asked for. Both directions pinned; both write sites clamp, with a test
+grepping for the raw-parse shape at either.
+
+The 9 rows were clamped with an audit row each, and the halt was verified by **executing the
+real gate**: `HELD — target-replied`. **The general lesson, which is new here: a date read
+off a screen is EVIDENCE, and evidence that contradicts a fact we hold is not usable.** The
+permissive direction Tabish chose for undatable replies is only safe when "undatable" is
+honest — a confidently wrong date is worse than no date, because it silently satisfies the
+rule instead of falling to the default.
+
 ### THE HEALTH PICTURE, MEASURED
 
 360 delivered on 22 Aug by 11:00 IST; 36-47/hour through the night, which is the 77s period.
