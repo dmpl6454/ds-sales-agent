@@ -71,7 +71,109 @@ properly rather than kept on a handle we could never confirm.
 
 ---
 
-## 21 AUGUST, NIGHT — THE INBOX WAS THE ANSWER ALL ALONG: 20 REPLIES WHERE 6 HAD EVER BEEN FOUND
+## 22 AUGUST — "NOT SENDING EVERY MINUTE" WAS TRUE, AND CHASING IT FOUND THE QUEUE'S REAL LID
+
+**Tabish: *"What is the health of the system, autopilot is not sending every minute (monitor
+and verify this claim)."*** Verified, and it led to two defects of the same family, one of
+them the reason the queue kept emptying.
+
+### THE PERIOD WAS 77 SECONDS BECAUSE THE POLL SLEPT *AFTER* THE SEND
+
+473 consecutive live intervals: **min 73s, p50 77s, p90 81s, 439 inside 90s.** A
+distribution that tight is an equation, and the loop was the equation:
+
+```
+while (!stopping) { await tick(); await sleep(POLL_INTERVAL_MS) }   // 47s drive + 30s = 77s
+```
+
+The sleep is **additive to whatever the tick just did**, so `fleetMinGapMinutes = 1` could
+not produce a one-minute cadence at ANY value — the loop added half a minute after the gap
+had already been satisfied. **This is the defect fixed one layer up the day before** (the
+fleet gap measured from a send's completion instead of its start) surviving inside the sleep
+that wraps it, and `agent/index.ts`'s own docblock asserted the opposite — *"at 30s the gap
+is what paces the fleet rather than this timer"*. **A false invariant in a comment, twice in
+two days: it is why nobody looked.**
+
+The loop sleeps only the **REMAINDER** now, which is structural rather than a smaller magic
+number: after a 47s send the remainder is zero, the loop returns at once, and `dispatchTick`
+— which still refuses anything inside the gap of the last send's START — is what decides,
+exactly as that docblock always claimed. Idle ticks still wait the full 30s, so polling gets
+no busier. **It cannot send faster than the gap**: the gap is a refusal inside the tick, not
+a property of this sleep. `tests/poll-is-a-period.test.ts` is behavioural because a grep
+passes against BOTH shapes, and it was mutation-tested by restoring the additive line.
+
+### AND THEN: EVERY PROSPECT WAS CAPPED AT ONE MESSAGE PER PAGE, FOREVER
+
+The cadence explains the rate when there IS a queue. The queue was EMPTY — 4 drafts, all
+held — so the second half of the question was why. **40 recipients had allowance room and
+every one was refused by every sender.**
+
+`DetectedCampaign.targetId` is **the channel that POSTED**, never the brand named in the
+post. So `count({ targetId: <recipient> })` is zero for a prospect, always — and that query
+existed in **FOUR** places. The allowance's own copy was fixed on 21 August (it had made the
+unlock half of Tabish's rule unreachable and the fleet went quiet at `skipped=851 queued=0`).
+**The other three were not, because nothing compared them:** `plan.ts` inlined it (the
+production path), `compose.ts` in `unusedCampaignCount` AND `pickHook` (the on-demand path),
+and `scripts/generate.ts` + `scripts/preview.ts` — both of which carry comments claiming to
+mirror the planner.
+
+**So `NO_NEW_MATERIAL` refused every follow-up to every prospect PERMANENTLY.** Each
+(sender → prospect) pair could send exactly ONE message ever — the first touch, exempt by
+construction — and never another, however many placements that brand bought.
+**@amazonmgmstudios: 17 paid posts naming it inside the window, 5 messages, capped forever.**
+*A fail-closed guard with an unsatisfiable precondition is a blindfold wearing a seatbelt* —
+third time that sentence has been earned here.
+
+All four now ask **`campaignsNamingHandleRows`**, one linkage returning ROWS so the count and
+the hook lookup cannot drift. `unusedCampaignCount` takes the recipient **ROW** rather than an
+id — required, so the compiler named every call site, and it costs no extra query.
+
+**MEASURED BOTH WAYS with the real planner on the same corpus, which is the part that made
+it safe to ship:**
+
+| | before | after |
+|---|---|---|
+| `no-new-material-to-reference` | **137** | **0** |
+| `target-recently-contacted` (the 7-day ring rest) | 0 | **135** |
+| drafts released | — | **2** |
+
+The refusal moved from a rule that COULD NOT PASS to **the rule Tabish actually specified**,
+and two drafts released rather than a flood — because the ring rule correctly holds the rest.
+That is the shape a blindfold-removal should have. `tests/naming-linkage.test.ts` greps every
+`src` file for a recipient id used as `DetectedCampaign.targetId`, with **the variable name as
+the carve-out** (in detection `target` IS the publisher and that usage is correct); it found
+`generate.ts` and `preview.ts` on its first run.
+
+### THE PLANNER NOW SAYS WHY IT SKIPPED, AND TWO FETCHES COULD HANG FOREVER
+
+`outreach summary skipped=861` and nothing else — the exact failure the dispatcher's
+`holdReasons` exists to fix, one level up and worse, because the planner is where a message
+either comes into existence or does not. Asked *"why is the queue empty when 39 recipients
+have room"*, the logs could not answer, though every reason had been computed and recorded
+on the outcome and then thrown away at the one place a person reads. Grouped by reason now.
+The live answer: `material-exhausted=1718 target-replied=165 target-recently-contacted=135
+target-opted-out=131 not-verified=30 is-a-person=6`.
+
+**AND A ~2-HOUR OUTAGE THAT MORNING, 08:28→10:29, was the Mac's network dropping** — the SSH
+tunnel logged `Network is unreachable` repeatedly and the agent could not read the database
+at all. It recovered by itself (the tunnel's KeepAlive working). What it exposed is worse
+than the outage: **`brandPassRunning` stayed true for 70+ minutes**, so brand discovery AND
+the badge door were skipped every 30 minutes while the log honestly said *"still running from
+the last pass"*. `feed.ts` had learned that `fetch` has no default timeout and bounded itself
+at 12s — with a docblock recording PARTIAL slots that ran up to **6.85 hours** — and **the
+lesson never reached `enrichHandle` or `resolveBrand`.** It recovered only because the socket
+eventually errored; a socket that stalls instead of resetting would have wedged both passes
+forever, silently. One exported constant, three callers. A timeout stays `UNKNOWN` /
+unreachable and is never a verdict.
+
+### THE HEALTH PICTURE, MEASURED
+
+360 delivered on 22 Aug by 11:00 IST; 36-47/hour through the night, which is the 77s period.
+All 5 senders ACTIVE, none challenged, no dead sessions. Detection healthy: 108 CAMPAIGN
+posts in 24h, newest 10 minutes old, `linode-detect` heartbeat fresh. 14 FAILED rows, all
+`not-in-thread` (the ambiguous class, parked for a person by design). Replies: 35 recorded,
+**0 undated** (so none is holding the halt on a date we could not read), coverage 13.2% and
+rising with the inbox scan.
 
 Tabish's audit request named five discrepancies; measuring them found four real defects, all
 fixed, tested (1,793), deployed to both hosts, and re-verified live the same night. The
