@@ -293,6 +293,9 @@ async function brandPass(): Promise<void> {
         admitted: badge.admitted,
         refusedUnverified: badge.refusedUnverified,
         unreachable: badge.unreachable,
+        // A bounded pass that hides what it skipped reads as "covered everything" —
+        // this is how many eligible candidates sat out the pass on a failure cooldown.
+        coolingOff: badge.coolingOff,
       })
     }
   } catch (err) {
