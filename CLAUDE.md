@@ -166,21 +166,68 @@ pace ceiling is ~1,440/day; the fleet delivered 504. **Pace is not the constrain
 it would change nothing** — the lever, if more volume is wanted, is watched channels and the
 badge door, not the gap.
 
-### OUTSTANDING, HONESTLY
+### OUTSTANDING, HONESTLY — AND WHAT THE AFTERNOON CLOSED (SAME DAY)
 
-1. **6 live PROSPECT rows carry `isVerified: false`** (nifborivali, nifglobal.southmumbai,
-   manav_rachna, pinkvillabiz, theninespune, carpisa.in — one created 21 Aug, so the path
-   still fires). **They are structurally unmessageable** — 0 attempts each, and the planner
-   reports `target-not-verified=30` refusing them every pass — but admission is writing rows
-   the rule then refuses forever, rather than refusing at creation. Retire them, or fix the
-   creator; the row state should match the rule.
+1. ~~**6 live PROSPECT rows carry `isVerified: false`**~~ **CLOSED, both ends.** The six are
+   retired through `ig:retire-target` with audit rows, and `createBrandTarget` now REFUSES a
+   measured `isVerified: false` at creation (`brand.refused-unverified` audit row,
+   `refused-unverified` outcome). NULL still creates — a network blip must not discard a
+   lead — and that direction is pinned by its own test in `tests/auto-resolve.test.ts`.
 2. **@drongofilms is an unhandled live inbound lead** (`replyHandledAt` NULL) — *"Hi Kunal
    this side, saw your poster 'vibe'"*. The halt is correctly active; a person is owed a reply.
 3. **~55 orphaned backends were still draining** at hand-over. They clear on TCP keepalive.
    Reclaiming them immediately needs `pg_terminate_backend`, which this session was not
    permitted to run.
-4. **Nothing surfaces a throwing scheduler.** The health ladder should carry *"last successful
-   planner run"* beside the heartbeat — a check that cannot fail is a check that cannot warn.
+4. ~~**Nothing surfaces a throwing scheduler.**~~ **CLOSED.** Each pass stamps its own last
+   success (`detectLastOkAt` / `planLastOkAt`, written by `detectThenDraft`, read by
+   `readPassHealth`), and the health ladder alarms on the signature that was invisible — a
+   FRESH heartbeat beside a STALE stamp, at three missed passes. Absent stamps never alarm
+   (a fresh deployment must not boot into a false alarm).
+
+---
+
+## 22 AUGUST, LATE AFTERNOON — "PAID POSTS ARE BLATANTLY MISSING COMPANY TAGS" WAS A LIVELOCK
+
+**Tabish: *"Paid posts are blatantly missing company tags. Also make sure autopilot works as
+intended, unique targets when discovered are messaged according to the queue e2e."*** The tag
+complaint was real and the cause was none of the obvious suspects — measured in order:
+
+- **Tag CAPTURE is healthy.** Every tag the live feed asserts is in our rows, including
+  @sencogoldanddiamonds on `DcVtws5KLLZ` stored 25 minutes after posting. The carousel
+  hypothesis (children carry tags the pipeline never reads) was REFUTED by probing three
+  channels live: carousels repeat their tags at the top level, `child_tags_only=0`.
+- **The funnel is healthy.** Of 323 handles asserted on 7 days of CAMPAIGN posts: 226 live
+  prospects, 64 refused at the badge bar, 16 retired/watch, 7 never-looked, 0
+  verified-but-no-target.
+- **THE LEAK WAS THE BADGE DOOR'S QUEUE.** `enriched=10 unreachable=10` pass after pass for
+  HOURS, candidates pinned at ~25: the queue is rebuilt newest-post-first, an unreachable
+  enrichment recorded NOTHING, so the same ~10 dead handles (@rajasthaliresort.com — a URL
+  typed as a handle; @aaflims.official — a documented 404; `enrichHandle` files a 404 and a
+  timeout under the same `reachable: false`) held the front of the queue and consumed the
+  entire budget every 30 minutes, while companies asserted on NEW paid posts waited behind
+  them. **This is the `resolveBrand` livelock of 2026-08-12 — "sort a just-failed handle
+  LAST" — one module over; the lesson never reached here.**
+
+The fix is the same shape: a failed handle goes to the BACK for 24h (in-process and
+time-based — a failure must never become a verdict, and an agent restart forgetting the
+memory costs one relearning pass, the safe direction per the `resetBrandResolverLimit`
+lesson). Skips are REPORTED (`coolingOff` in the summary), never silent. `enrichHandle` now
+carries the HTTP `status` so the log can tell a dead handle from a throttle.
+`tests/badge-door-fairness.test.ts` drives two passes against a real SQLite file and was
+mutation-tested: removing the one `unreachableAt.set` line fails exactly the fairness cases.
+
+**AND THE SUITE HAD BEEN PHONING INSTAGRAM.** `enrichHandle` was never mocked in
+`tests/auto-resolve.test.ts`, so since enrich-at-birth (2026-08-20) every created fixture
+target made a REAL HTTP call — the file ran 12.3s and runs 0.8s with the mock, which is the
+measurement that proved it. The admission outcome of a test depended on the live badge of
+whatever handle a fixture named.
+
+**E2E, verified live the same afternoon:** @jayantilalgadaofficial was admitted by the badge
+door at 10:50 IST from a paid post's assertion and DELIVERED to at 16:04 — discovery → queue
+→ send inside six hours, with @prateekgroup_official (tagged in that morning's post) already
+under reply-watch. Post-recovery sends run at 61s/63s intervals; a 46s `sentAt` delta was
+observed and is NOT a violation — the gap is enforced from a send's START, `sentAt` records
+COMPLETION, so a shorter drive legitimately closes the delta.
 
 ---
 
