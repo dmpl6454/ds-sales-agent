@@ -390,6 +390,19 @@ export interface DispatchTickResult {
   delivered?: DeliverResult
   /** True when another send was already running, so this tick did nothing. */
   lockBusy?: boolean
+  /**
+   * On a `too-soon` hold: milliseconds until the fleet gap clears, so a caller can wake
+   * exactly then instead of on its own grid (2026-08-22).
+   *
+   * WHY, MEASURED TWICE THE SAME DAY: the device poll's 30s grid put the first eligible
+   * tick at drive-end + 30s, so a ~47s drive produced a 77s period — first through an
+   * additive sleep, then, after that was fixed, through pure discretisation: ticks landed
+   * at +47s (held, 13s early) and +77s (sent, 17s late). "Expected ~60s" was written
+   * without walking the grid, and one live interval disproved it. The dispatcher is the
+   * one place that knows when the gap clears, so it SAYS so rather than letting every
+   * caller rediscover the boundary by polling past it.
+   */
+  retryInMs?: number
   at: string
 }
 
@@ -452,6 +465,12 @@ export async function dispatchTick(reason: string): Promise<DispatchTickResult> 
     // silently reintroduces it four times an hour.
     log.step('dispatcher held', { reason: verdict.reason, detail: verdict.detail, tick: reason })
     await recordDispatchState({ at, verdict, sent: 0 })
+    /* On too-soon, say exactly when the gap clears — computed from the same clock the
+       decision just read, so caller and rule cannot disagree about the boundary. */
+    if (verdict.reason === 'too-soon' && lastStart !== null) {
+      const clearsAt = lastStart.getTime() + settings.fleetMinGapMinutes * 60_000
+      return { verdict, retryInMs: Math.max(0, clearsAt - at.getTime()), at: at.toISOString() }
+    }
     return { verdict, at: at.toISOString() }
   }
 

@@ -404,7 +404,7 @@ export async function replyPass(): Promise<void> {
   }
 }
 
-async function tick(): Promise<void> {
+async function tick(): Promise<{ retryInMs?: number }> {
   const handles = await localSenderHandles()
   await writePresence(handles)
 
@@ -420,7 +420,7 @@ async function tick(): Promise<void> {
     // Not an error, and said plainly: a machine with no signed-in profile has nothing to
     // do, and the dashboard will show it as present-but-empty rather than silently idle.
     log.step('no signed-in Instagram profiles on this device — nothing to send from')
-    return
+    return {}
   }
 
   /**
@@ -428,7 +428,8 @@ async function tick(): Promise<void> {
    * whether any of it is this device's business. It sends AT MOST ONE message, which is
    * the fleet's pacing rule and not something the agent may relax.
    */
-  await dispatchTick('device')
+  const result = await dispatchTick('device')
+  return { retryInMs: result.retryInMs }
 }
 
 export async function runDeviceAgent(): Promise<void> {
@@ -503,22 +504,37 @@ export async function runDeviceAgent(): Promise<void> {
      * An idle tick costs a handful of queries and still waits its full 30 s, so polling gets
      * no busier when there is nothing to send.
      *
+     * ── AND THE REMAINDER ALONE WAS STILL 77 s, MEASURED THE SAME DAY ────────
+     *
+     * The first live interval after the remainder fix: 77 s again. The additive sleep was
+     * gone; the GRID remained. A ~47 s drive puts the immediate next tick at +47 s — held,
+     * 13 s before the gap clears — and the tick after on the 30 s grid at +77 s. "Expected
+     * ~60 s" had been written without walking that arithmetic, and one measured interval
+     * disproved it. So on a `too-soon` hold the dispatcher now RETURNS when the gap clears
+     * (`retryInMs`, computed from the same clock the refusal read), and the loop sleeps
+     * exactly that long instead of its grid step. The decision still lives in the
+     * dispatcher; the loop just stops overshooting the boundary it cannot see.
+     *
      * IT CANNOT SEND FASTER THAN THE GAP. The gap is a hard refusal inside the tick, not a
-     * property of this sleep; removing the additive wait cannot cross it. What changes is
-     * that the knob on `/rules` now means what it says: ~60 s, ~60/hour at the current
-     * setting, against a measured 77 s. `fleetMinGapMinutes = 2` remains the one-write
+     * property of this sleep; waking exactly at the boundary cannot cross it — the tick at
+     * the boundary re-asks every rule. `fleetMinGapMinutes = 2` remains the one-write
      * lever back to a slower fleet, and autopilot OFF still stops everything.
      */
     const startedAt = Date.now()
+    let retryInMs: number | undefined
     try {
-      await tick()
+      const r = await tick()
+      retryInMs = r.retryInMs
     } catch (err) {
       // One bad tick must never end the loop: the device going quiet is the failure this
       // whole process exists to prevent.
       log.error('device tick failed', { error: err instanceof Error ? err.message : String(err) })
     }
     const remaining = POLL_INTERVAL_MS - (Date.now() - startedAt)
-    if (remaining > 0) await new Promise((r) => setTimeout(r, remaining))
+    /* The dispatcher's own boundary wins when it is sooner than the grid — never later:
+       a hint may only ever wake us EARLIER, so a wrong hint degrades to the plain poll. */
+    const wait = retryInMs !== undefined ? Math.min(Math.max(remaining, 0), Math.max(retryInMs, 0)) : remaining
+    if (wait > 0) await new Promise((r) => setTimeout(r, wait))
   }
 
   clearInterval(presence)
