@@ -124,8 +124,34 @@ async function collectRows(page: Page, folder: InboxRow['folder']): Promise<Inbo
  * request" file there, which is where the probe found a live buyer conversation the
  * sweep had never seen.
  */
+/**
+ * ── ONE SCAN IS BOUNDED, BECAUSE A HUNG PASS WEDGES THE WHOLE SWEEP ───────
+ *
+ * Same value and same mechanism as `READ_DEADLINE_MS` in readThread.ts, and for a reason
+ * measured on 2026-08-22 rather than imagined: when the Mac's network dropped, the brand
+ * pass's unbounded lookup hung and `brandPassRunning` stayed true for 70+ MINUTES, so that
+ * pass was skipped every 30 minutes while the log honestly said "still running". The reply
+ * sweep's flag does the same job and this scan is the newest thing inside it — per-navigation
+ * timeouts (60s) do not bound the `page.evaluate` scroll loop, which can hang on a stalled
+ * renderer. The sweep also holds the fleet-wide SEND LOCK for its whole run, so a hung scan
+ * does not merely delay reading: it stops the fleet sending.
+ *
+ * CLOSING THE CONTEXT IS THE INTERRUPT AND THE CLEANUP — never racing the promise and
+ * walking away, which would leave a live context on a profile a send may pick up seconds
+ * later. And a timeout is `unreadable`, NEVER "an empty inbox": a stalled network must not
+ * become an assertion that nobody has written to us.
+ */
+export const SCAN_DEADLINE_MS = 6 * 60 * 1000
+
 export async function scanInbox(senderHandle: string): Promise<InboxScanResult> {
   const context = await launchProfile(senderHandle)
+  let deadlineFired = false
+  const deadline = setTimeout(() => {
+    deadlineFired = true
+    // Errors ignored on purpose: the `finally` closes again, and a double close must not
+    // mask the real outcome.
+    void context.close().catch(() => {})
+  }, SCAN_DEADLINE_MS)
   try {
     const page = context.pages()[0] ?? (await context.newPage())
     await page.goto('https://www.instagram.com/', { waitUntil: 'domcontentloaded', timeout: 60_000 })
@@ -166,6 +192,21 @@ export async function scanInbox(senderHandle: string): Promise<InboxScanResult> 
     }
     return { ok: true, rows }
   } catch (err) {
+    /**
+     * THE DEADLINE IS CHECKED BEFORE THE CHECKPOINT BRANCH, and that order is the point.
+     * Closing the context mid-flight throws a Playwright error whose text we do not
+     * control, and `checkConversation` marks an account CHALLENGED on
+     * /checkpoint|challenge|suspend/i — so a network stall must never be able to flag a
+     * healthy revenue account and halt the whole fleet through the breaker. Same
+     * assertion `tests/read-deadline.test.ts` carries for the thread reader.
+     */
+    if (deadlineFired) {
+      log.warn('inbox scan exceeded its deadline — the context was closed, nothing recorded', {
+        sender: senderHandle,
+        deadlineMs: SCAN_DEADLINE_MS,
+      })
+      return { ok: false, reason: 'unreadable', detail: `the inbox did not finish loading within ${SCAN_DEADLINE_MS / 60000} minutes` }
+    }
     if (err instanceof CheckpointError) {
       return { ok: false, reason: 'checkpoint', detail: err.message }
     }
@@ -175,6 +216,7 @@ export async function scanInbox(senderHandle: string): Promise<InboxScanResult> 
     })
     return { ok: false, reason: 'unreadable', detail: err instanceof Error ? err.message : String(err) }
   } finally {
-    await context.close() // closing is what flushes cookies to disk
+    clearTimeout(deadline)
+    await context.close().catch(() => {}) // closing is what flushes cookies to disk
   }
 }
