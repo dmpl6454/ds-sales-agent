@@ -65,7 +65,8 @@
     "ig:audit-targets": "tsx src/scripts/audit-targets.ts",
     "ig:find-official": "tsx src/scripts/find-official.ts",
     "ig:reaudit": "tsx src/scripts/reaudit.ts",
-    "ig:reverify-identity": "tsx src/scripts/reverify-identity.ts"
+    "ig:reverify-identity": "tsx src/scripts/reverify-identity.ts",
+    "ig:discard-retired-drafts": "tsx src/scripts/discard-retired-drafts.ts"
   },
   "dependencies": {
     "@prisma/adapter-better-sqlite3": "^7.9.1",
