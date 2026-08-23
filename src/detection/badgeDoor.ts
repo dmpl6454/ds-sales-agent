@@ -1,5 +1,6 @@
 import { prisma } from '@/lib/db'
 import { log } from '@/lib/logger'
+import { createFailureMemory } from './lookupCooldown'
 import { enrichHandle } from './enrichHandle'
 import { brandCandidatesFor, excludedHandles } from './brandCandidates'
 import { createBrandTarget } from '@/outreach/brandTarget'
@@ -87,12 +88,11 @@ const ENRICH_SPACING_MS = 6_000
  * Excluded candidates are REPORTED (`coolingOff` in the summary), never silently
  * dropped — a bounded pass that hides what it skipped reads as "covered everything".
  */
-const UNREACHABLE_RETRY_AFTER_MS = 24 * 60 * 60 * 1000
-const unreachableAt = new Map<string, number>()
+const unreachable = createFailureMemory()
 
 /** Test seam: module state would otherwise leak between cases in one suite process. */
 export function resetBadgeDoorMemory(): void {
-  unreachableAt.clear()
+  unreachable.reset()
 }
 
 export interface BadgeDoorSummary {
@@ -155,21 +155,11 @@ export async function badgeDoorPass(opts: {
     return l.isVerified !== false
   })
 
-  /* Fairness: candidates that never failed go first (newest-post order, as before);
-     candidates whose cooldown expired go after them, oldest failure first; candidates
-     still inside the cooldown are excluded from this pass entirely — and counted, so
-     the log says what was skipped rather than reading as a quiet day. */
-  const now = Date.now()
-  const coolingOff = eligible.filter((h) => {
-    const failedAt = unreachableAt.get(h)
-    return failedAt != null && now - failedAt < UNREACHABLE_RETRY_AFTER_MS
-  })
-  const cooling = new Set(coolingOff)
-  const fresh = eligible.filter((h) => !cooling.has(h) && !unreachableAt.has(h))
-  const retryable = eligible
-    .filter((h) => !cooling.has(h) && unreachableAt.has(h))
-    .sort((a, b) => unreachableAt.get(a)! - unreachableAt.get(b)!)
-  const queue = [...fresh, ...retryable]
+  /* Fairness lives in `lookupCooldown.ts` — one implementation, several callers, because
+     this same livelock has now been fixed in three separate modules. Candidates that never
+     failed keep their newest-post order; ones whose cooldown expired follow, oldest failure
+     first; ones still cooling off sit this pass out and are COUNTED. */
+  const { queue, coolingOff } = unreachable.order(eligible, (h) => h)
 
   const summary: BadgeDoorSummary = {
     candidates: eligible.length,
@@ -177,7 +167,7 @@ export async function badgeDoorPass(opts: {
     admitted: 0,
     refusedUnverified: 0,
     unreachable: 0,
-    coolingOff: coolingOff.length,
+    coolingOff,
     haltedEarly: false,
   }
 
@@ -199,7 +189,7 @@ export async function badgeDoorPass(opts: {
         summary.unreachable += 1
         // A refusal to answer is never a verdict — but it IS a reason to stop spending
         // the front of every queue on this handle. Sent to the back for a day.
-        unreachableAt.set(handle, Date.now())
+        unreachable.note(handle)
         log.step('badge door could not reach a candidate — sent to the back of the queue', {
           handle,
           reason: e.reason ?? 'unknown',
@@ -207,7 +197,7 @@ export async function badgeDoorPass(opts: {
         })
         continue
       }
-      unreachableAt.delete(handle)
+      unreachable.clear(handle)
       isVerified = e.isVerified
       displayName = displayName ?? e.fullName
       followers = followers ?? e.followers

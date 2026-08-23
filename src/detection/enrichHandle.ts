@@ -113,8 +113,43 @@ export async function enrichHandle(handle: string): Promise<HandleEnrichment> {
       items?: Array<{ user?: Record<string, unknown> }>
       user?: Record<string, unknown>
     }
-    const user = body.items?.[0]?.user ?? body.user
-    if (!user) return { ...empty, reason: 'no user object in payload' }
+    /**
+     * ── THE PAYLOAD CAN HAND BACK SOMEBODY ELSE'S IDENTITY ────────────────────────
+     *
+     * This used to read `body.items?.[0]?.user ?? body.user`. `items[0].user` is the owner
+     * of the NEWEST POST in the feed, and on a co-authored post that is the COLLABORATOR,
+     * not the account we asked about.
+     *
+     * MEASURED LIVE 2026-08-23, this endpoint, these handles:
+     *
+     *   asked @yamigautam   → items[0].user = @amazonmgmstudiosin "Amazon MGM Studios India"
+     *   asked @akshaykumar  → items[0].user = @jiohotstar         "JioHotstar"
+     *
+     * and in BOTH cases `body.user` was correct ("Yami Gautam Dhar", "Akshay Kumar").
+     *
+     * That is not cosmetic. `is_verified` was being read off the collaborator too, so a
+     * paid post's celebrity could be admitted on a STUDIO's badge — the VERIFIED ONLY rule
+     * satisfied by the wrong account. It also stamped the studio's name onto the person's
+     * row: 26 display names were shared between prospects, "Netflix India" across three
+     * actors, and that name reaches message copy.
+     *
+     * So the identity is now CHECKED rather than assumed, `body.user` (the feed's own user
+     * object) is preferred, and a payload that describes somebody else is NOT REACHABLE —
+     * never a verdict, per this file's standing rule. "Existence is not identity" applied
+     * one layer in: it is not enough that a user object came back.
+     */
+    const asked = h.toLowerCase()
+    const isWhoWeAsked = (u?: Record<string, unknown>): boolean =>
+      !!u && typeof u.username === 'string' && u.username.toLowerCase() === asked
+
+    const fromItem = body.items?.[0]?.user
+    const user = isWhoWeAsked(body.user) ? body.user : isWhoWeAsked(fromItem) ? fromItem : undefined
+    if (!user) {
+      const sawSomeone = body.user ?? fromItem
+      if (!sawSomeone) return { ...empty, reason: 'no user object in payload' }
+      const who = typeof sawSomeone.username === 'string' ? sawSomeone.username : 'unknown'
+      return { ...empty, reason: `payload described @${who}, not @${h}` }
+    }
 
     return {
       handle: h,
