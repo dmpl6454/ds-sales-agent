@@ -119,12 +119,30 @@ const BRAND_INTERVAL_MS = 30 * 60_000
  */
 const BRAND_LOOKUPS_PER_PASS = 25
 /**
- * Untagged-post discovery shares the same throttled endpoint as the brand pass above, so it
- * gets a small slice rather than a budget of its own. Five lookups every 30 minutes is ~240
- * a day against a population of 172 posts — enough to work through it in days, not minutes,
- * which is the right speed for a rule whose failure mode is a pitch to the wrong company.
+ * ── THE OLD JUSTIFICATION FOR 5 WAS MEASURABLY WRONG, AND IT BOUNDED THE LEAD FUNNEL ──
+ *
+ * This used to read "shares the same throttled endpoint as the brand pass above". It does
+ * not. MEASURED 2026-08-23: the brand pass calls `resolveBrand` → `web_profile_info`, the
+ * endpoint that 429s a datacenter IP; official discovery calls `enrichHandle` → the anonymous
+ * FEED endpoint (`i.instagram.com/api/v1/feed/user/<h>/username/`), which answers on ANY host
+ * and is the same one detection already hits ~5,000 times a day across 13 channels. The
+ * badge door, right below, was given 10 on that same feed endpoint.
+ *
+ * So a false premise had been capping the one pass whose whole job is recovering leads —
+ * "paid posts are blatantly missing company tags", in Tabish's words.
+ *
+ * The population also grew when discovery stopped skipping posts that assert a handle:
+ * **303 brand names per pass → 947**. At 5 lookups per 30 minutes that is ~240 a day and
+ * about four days to work through once; at 15 it is ~720 a day and under a day and a half.
+ * The drain is one-off — a name that resolves or fails leaves the pool — so this buys the
+ * initial sweep, not a permanently higher rate.
+ *
+ * THE EXPOSURE, STATED: ~480 extra anonymous feed requests a day on top of detection's
+ * ~5,000. Nothing about the SAFETY of what gets created changes — `isOfficialMatch` is
+ * untouched, so the badge bar still decides, and a junk name still costs one lookup and a
+ * printed line. **If a 429 ever appears on the feed endpoint, lower this first.**
  */
-const OFFICIAL_LOOKUPS_PER_PASS = 5
+const OFFICIAL_LOOKUPS_PER_PASS = 15
 /** Badge checks per brand pass — the FEED endpoint, 6s spacing inside the pass. */
 const BADGE_ENRICHMENTS_PER_PASS = 10
 
