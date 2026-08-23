@@ -33,6 +33,8 @@ import { detectionCutoff } from '@/lib/cutoff'
 import { enrichHandle } from './enrichHandle'
 import { candidateHandlesFor, isOfficialMatch } from './officialHandle'
 import { brandCandidatesFor, excludedHandles } from './brandCandidates'
+import { createFailureMemory } from './lookupCooldown'
+import { isOwnMark } from './ownMarks'
 import { createBrandTarget } from '@/outreach/brandTarget'
 
 /** 6s apart, like every other use of this endpoint: politeness against an undocumented API. */
@@ -61,11 +63,115 @@ export function frameBrandTokens(frameText: string | null): string[] {
   return [...out].slice(0, 3)
 }
 
+/** Failure memory for candidate HANDLES. See `lookupCooldown.ts` — third module to need it. */
+const unreachable = createFailureMemory()
+
+/** Test seam: module state would otherwise leak between cases in one suite process. */
+export function resetOfficialDiscoveryMemory(): void {
+  unreachable.reset()
+}
+
+export interface HarvestPost {
+  id: string
+  shortcode: string
+  caption: string
+  taggedAccounts: string
+  rawPayload: string | null
+  brands: string
+  frameText: string | null
+  target: { handle: string }
+}
+
+export interface BrandNameHarvest {
+  names: Map<string, { source: 'caption' | 'frame'; shortcode: string; campaignId: string; posts: number }>
+  anonymousPosts: number
+  postsWithNames: number
+}
+
+/**
+ * ── EVERY PAID POST'S BRAND NAMES, NOT ONLY THOSE OF POSTS THAT NAME NOBODY ──────
+ *
+ * PURE, and exported so the regression below is testable without a database.
+ *
+ * The caller used to filter to `brandCandidatesFor(...).length === 0` before reading the
+ * `brands` column, so a post that asserted ONE handle had ALL of its other brand names
+ * discarded — permanently, because nothing else reads that column for discovery.
+ *
+ * MEASURED 2026-08-23, the morning Tabish reported "paid posts are blatantly missing
+ * company tags": of 638 in-window CAMPAIGN posts carrying brand names, **385 asserted at
+ * least one handle and were skipped entirely** — 60% of the population. His own examples
+ * are exactly this: a @naughtyworld post tagging @fukra_insaan carried the brands "Prime
+ * Video" and "The Traitors", and neither was ever looked up because that one tag
+ * disqualified the whole row.
+ *
+ * The tag and the brand name are DIFFERENT ADVERTISERS as often as not — the tag is usually
+ * the talent in shot, the brand name is who paid. Treating the presence of one as evidence
+ * about the other is the same shape as the bugs this file already guards against.
+ *
+ * Widening is safe by construction: `isOfficialMatch` is unchanged, so a junk name still
+ * cannot auto-create anything. The worst a bad name costs is one bounded lookup and a
+ * printed line for a person.
+ *
+ * FREQUENCY is the ranking signal, and it is the honest one: a brand named on five separate
+ * paid posts is a far better lead than one named once, and junk (a publisher's series code,
+ * an OCR fragment) is almost always named once. The budget is small, so what it is spent on
+ * FIRST is the whole game.
+ */
+export function harvestBrandNames(
+  posts: readonly HarvestPost[],
+  excluded: Parameters<typeof brandCandidatesFor>[1],
+): BrandNameHarvest {
+  let anonymousPosts = 0
+  const names: BrandNameHarvest['names'] = new Map()
+
+  for (const p of posts) {
+    const assertsNobody =
+      brandCandidatesFor(
+        { caption: p.caption, taggedAccounts: p.taggedAccounts, rawPayload: p.rawPayload },
+        excluded,
+      ).length === 0
+    if (assertsNobody) anonymousPosts += 1
+
+    let fromCaption: string[] = []
+    try {
+      fromCaption = (JSON.parse(p.brands) as string[]).filter(
+        (b) =>
+          typeof b === 'string' &&
+          b.length >= 3 &&
+          // A publisher's own name or series code is not a third party. `ownMarks` already
+          // stops these reaching a VERDICT; it never reached discovery, so `fg9` and
+          // `rvcjinsta` were still being offered a scarce lookup budget.
+          !isOwnMark(b, { handle: p.target.handle, displayName: null }),
+      )
+    } catch {
+      /* a malformed brands column is that row's problem, not the pass's */
+    }
+
+    const list: Array<{ name: string; source: 'caption' | 'frame' }> =
+      fromCaption.length > 0
+        ? fromCaption.map((name) => ({ name, source: 'caption' as const }))
+        : frameBrandTokens(p.frameText).map((name) => ({ name, source: 'frame' as const }))
+
+    for (const { name, source } of list) {
+      const key = name.toLowerCase()
+      const seen = names.get(key)
+      if (seen) seen.posts += 1
+      else names.set(key, { source, shortcode: p.shortcode, campaignId: p.id, posts: 1 })
+    }
+  }
+
+  return { names, anonymousPosts, postsWithNames: posts.length }
+}
+
 export interface OfficialDiscoverySummary {
-  /** CAMPAIGN posts in the window that name nobody — the population being worked. */
+  /** In-window CAMPAIGN posts carrying at least one brand NAME — the population worked. */
+  postsWithNames: number
+  /** Of those, the ones that assert no handle at all. Reported for continuity. */
   anonymousPosts: number
   /** Distinct brand names extracted from them. */
   names: number
+  /** Candidate handles held back by an unexpired failure cooldown. Never silent. */
+  coolingOff: number
   looked: number
   created: number
   /** Resolved, but failed the badge bar. Reported, never created. */
@@ -79,7 +185,9 @@ export async function discoverOfficialPages(
   const maxLookups = opts.maxLookups ?? 10
   const dryRun = opts.dryRun ?? false
   const out: OfficialDiscoverySummary = {
+    postsWithNames: 0,
     anonymousPosts: 0,
+    coolingOff: 0,
     names: 0,
     looked: 0,
     created: 0,
@@ -120,42 +228,34 @@ export async function discoverOfficialPages(
     ...excluded,
   ])
 
-  const anonymous = posts.filter(
-    (p) =>
-      brandCandidatesFor(
-        { caption: p.caption, taggedAccounts: p.taggedAccounts, rawPayload: p.rawPayload },
-        excluded,
-      ).length === 0,
-  )
-  out.anonymousPosts = anonymous.length
-
-  const names = new Map<string, { source: 'caption' | 'frame'; shortcode: string; campaignId: string }>()
-  for (const p of anonymous) {
-    let fromCaption: string[] = []
-    try {
-      fromCaption = (JSON.parse(p.brands) as string[]).filter((b) => typeof b === 'string' && b.length >= 3)
-    } catch {
-      /* a malformed brands column is that row's problem, not the pass's */
-    }
-    const list: Array<{ name: string; source: 'caption' | 'frame' }> =
-      fromCaption.length > 0
-        ? fromCaption.map((name) => ({ name, source: 'caption' as const }))
-        : frameBrandTokens(p.frameText).map((name) => ({ name, source: 'frame' as const }))
-    for (const { name, source } of list) {
-      const key = name.toLowerCase()
-      if (!names.has(key)) names.set(key, { source, shortcode: p.shortcode, campaignId: p.id })
-    }
-  }
+  const harvest = harvestBrandNames(posts, excluded)
+  const names = harvest.names
+  out.anonymousPosts = harvest.anonymousPosts
   out.names = names.size
+  out.postsWithNames = harvest.postsWithNames
 
-  /** Caption names before OCR tokens: the trustworthy source spends the budget first. */
-  const ordered = [...names.entries()].sort((a, b) =>
-    a[1].source === b[1].source ? 0 : a[1].source === 'caption' ? -1 : 1,
-  )
+  /**
+   * Caption names before OCR tokens — the trustworthy source spends the budget first — and
+   * within each source, the name asserted on the MOST paid posts first.
+   */
+  const ordered = [...names.entries()].sort((a, b) => {
+    if (a[1].source !== b[1].source) return a[1].source === 'caption' ? -1 : 1
+    return b[1].posts - a[1].posts
+  })
 
+  /* Fairness, shared with the badge door (`lookupCooldown.ts`). The queue here is over
+     NAMES but a failure belongs to a candidate HANDLE, so the cooldown is applied inside
+     the loop: a candidate that just failed is skipped WITHOUT a lookup, which is what stops
+     dead handles consuming a 5-lookup budget every pass. That was this pass's actual state,
+     measured as `names=304 looked=5 created=0 needsHuman=1` repeating byte-identically
+     across six consecutive passes. */
   outer: for (const [name, info] of ordered) {
     for (const candidate of candidateHandlesFor(name)) {
       if (known.has(candidate)) continue
+      if (unreachable.isCoolingOff(candidate)) {
+        out.coolingOff += 1
+        continue
+      }
       if (out.looked >= maxLookups) break outer
       const e = await enrichHandle(candidate)
       out.looked += 1
@@ -163,6 +263,9 @@ export async function discoverOfficialPages(
       await new Promise((r) => setTimeout(r, LOOKUP_SPACING_MS))
 
       if (!e.reachable) {
+        // A refusal to answer is never a verdict — but it IS a reason to stop spending the
+        // front of every pass on this candidate. Sent to the back for a day.
+        unreachable.note(candidate)
         /**
          * A REAL THROTTLE STOPS THE PASS. Continuing after being told to stop is what turns
          * throttling into an IP block — the same split `interpretLookupFailure` owns for the
@@ -175,6 +278,8 @@ export async function discoverOfficialPages(
         }
         continue
       }
+
+      unreachable.clear(candidate)
 
       if (isOfficialMatch({ brandName: name, fullName: e.fullName, isVerified: e.isVerified })) {
         if (!dryRun) {
@@ -196,8 +301,10 @@ export async function discoverOfficialPages(
   }
 
   log.info('official-page discovery pass', {
+    postsWithNames: out.postsWithNames,
     anonymousPosts: out.anonymousPosts,
     names: out.names,
+    coolingOff: out.coolingOff,
     looked: out.looked,
     created: out.created,
     needsHuman: out.needsHuman.length,

@@ -152,6 +152,68 @@ export function mentionsHandleExactly(row: { caption: string; taggedAccounts: st
  * characters). `fg6` can never equal a verified prospect's name; prose can never
  * substring-match its way in.
  */
+/**
+ * ── AN OFFICIAL PAGE IS THE BRAND'S NAME PLUS A REGION, AND EXACT EQUALITY MISSED THAT ──
+ *
+ * Tabish, 2026-08-23, reading the "We message" column on a @naughtyworld paid post whose
+ * caption named *Prime Video*: *"the column only shows fukra insaan ... traitors is also a
+ * target, its a prime tv show among other things."*
+ *
+ * MEASURED: `@primevideoin` is ALREADY a verified PROSPECT. The post named "Prime Video".
+ * Squashed that is `primevideo`, the prospect's handle is `primevideoin`, and exact equality
+ * says no — so a paid post naming a company we had already approved unlocked nothing, and
+ * the column stayed silent about a lead we owned. The same miss covers `@kfcindia` for
+ * "KFC", `@nutellaindia` for "Nutella", `@adidasindia` for "Adidas".
+ *
+ * The widening is a CLOSED ALLOWLIST of the suffixes an official page appends to its own
+ * brand name, applied to BOTH sides, and never a prefix or substring test — prefix matching
+ * is what would let `fg6`-class junk and single generic words back in, which is the whole
+ * reason this arm was exact in the first place.
+ *
+ * THE @philips TRAP STILL HOLDS, and it is the fixture that proves the direction is safe:
+ * brand "Philips India" against prospect `@philips`/"Philips" does NOT match, because
+ * stripping a suffix from the prospect side leaves `philips`, which is not `philipsindia`.
+ * The reverse — brand "Philips" crediting the verified prospect `@philipsindia` — DOES
+ * match, and that is correct: Philips India is the account that ran the campaign.
+ *
+ * This arm still only ever CREDITS a prospect that already exists and already passed the
+ * verified badge. Minting stays string-free.
+ */
+/**
+ * ONLY THE PROSPECT'S NAME IS EVER STRIPPED. THE CAPTION'S IS NOT, AND THAT IS THE SAFETY.
+ *
+ * An official page appends a region to the brand's own name — `@primevideoin`,
+ * `@netflix_in`, `@kfcindia`, `@tseries.official` — so stripping the PROSPECT side lets a
+ * caption saying "Prime Video" credit `@primevideoin`. Stripping the CAPTION side would do
+ * the opposite and is forbidden, for two reasons both found by driving it:
+ *
+ *   1. THE @philips TRAP, a permanent fixture here. "Philips India" stripped to `philips`
+ *      would credit the GLOBAL page `@philips` for the INDIA campaign — the exact wrong-
+ *      account match `isOfficialMatch` was built to refuse. Its test failed on the first
+ *      run of this rule and is why the brand side is now never touched.
+ *   2. THE ENGLISH PREPOSITION. "Vanshika Dhir in" squashes to `vanshikadhirin`; stripping
+ *      `in` stems it to `vanshikadhir` and credits the ACTRESS for 20 posts that merely
+ *      used her name in a sentence. @aanandlrai gained 20 the same way and @yamigautam 17
+ *      — every one a person, inside a run whose headline (+170 credits) read as a success.
+ *
+ * So the test is: does the caption's brand string equal the prospect's name, or the
+ * prospect's name with one regional suffix removed. Nothing else.
+ */
+const HANDLE_SUFFIXES = ['india', 'official', 'ind', 'in'] as const
+
+/** Squash, then strip ONE trailing suffix from the given list if a real stem survives. */
+function stemWith(squashed: string, suffixes: readonly string[]): string {
+  for (const suffix of suffixes) {
+    if (squashed.length > suffix.length && squashed.endsWith(suffix)) {
+      const stem = squashed.slice(0, -suffix.length)
+      // A stem shorter than this is not a brand name, it is the wreckage of one —
+      // "berlin" minus "in" is "berl", and that must never match a four-letter brand.
+      if (stem.length >= 5) return stem
+    }
+  }
+  return squashed
+}
+
 export function brandStringsNameProspect(
   brandsJson: string,
   prospect: { handle: string; displayName?: string | null },
@@ -166,7 +228,14 @@ export function brandStringsNameProspect(
   const squash = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, '')
   const names = [prospect.displayName ?? '', prospect.handle].map(squash).filter((n) => n.length >= 4)
   if (names.length === 0) return false
-  return arr.some((b) => typeof b === 'string' && names.includes(squash(b)))
+  const stems = new Set(names.map((n) => stemWith(n, HANDLE_SUFFIXES)))
+  return arr.some((b) => {
+    if (typeof b !== 'string') return false
+    const squashed = squash(b)
+    if (squashed.length < 4) return false
+    if (names.includes(squashed)) return true
+    return stems.has(squashed)
+  })
 }
 
 /**
