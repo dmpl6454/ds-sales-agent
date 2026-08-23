@@ -71,6 +71,97 @@ properly rather than kept on a handle we could never confirm.
 
 ---
 
+## 23 AUGUST — IDENTITY CAME OFF A COLLABORATOR, AND DISCOVERY IGNORED 60% OF PAID POSTS
+
+**Tabish: *"paid post detection is missing targets from clear paid posts ... the column only
+shows fukra insaan and vibe as the targets ... traitors is also a target its a prime tv show
+among other things and the other one kitkat possibly."*** He was right, and measuring it
+found four defects, one of them a live breach of the VERIFIED ONLY rule.
+
+### `enrichHandle` READ THE NEWEST POST'S OWNER, WHICH ON A COLLAB IS SOMEBODY ELSE
+
+`const user = body.items?.[0]?.user ?? body.user`. `items[0]` is the newest POST in that
+feed, and on a co-authored post its `user` is the **COLLABORATOR**. PROBED LIVE, this
+endpoint, these handles:
+
+| asked | `items[0].user` | `body.user` (correct) |
+|---|---|---|
+| `@yamigautam` | **@amazonmgmstudiosin** "Amazon MGM Studios India" ✓verified | "Yami Gautam Dhar" |
+| `@akshaykumar` | **@jiohotstar** "JioHotstar" ✓verified | "Akshay Kumar" |
+
+**`is_verified` came from that object too, so VERIFIED ONLY could be satisfied by SOMEBODY
+ELSE'S BADGE.** This is not theoretical: of the 40 newest live prospects, **four were not
+verified at all** — `@bigfmvibe`, stored as *"Nasha Boy"*, really *"BIG Vibe"*, unverified,
+**and messaged 25 minutes before the probe found it.**
+
+The full repair sweep (`pnpm ig:reverify-identity`, dry-run by default) over all 449 live
+prospects: **294 confirmed, 126 renamed, 29 RETIRED AS UNVERIFIED, 0 unreachable.** Twenty-
+nine unverified accounts had been sitting in the live list. The 126 wrong names were reaching
+message copy — 26 display names were shared between prospects, *"Netflix India"* stamped on
+three different actors, *"JioHotstar"* on @akshaykumar.
+
+Identity is CHECKED against the handle asked for now; `body.user` is preferred; a payload
+describing anyone else is **not reachable, never a verdict**. *Existence is not identity*,
+one layer in: it is not enough that a user object came back. Mutation-tested — restoring the
+old line fails exactly the three safety cases and leaves the "normal account" case green.
+
+### DISCOVERY ONLY READ THE BRAND NAMES OF POSTS THAT NAMED NOBODY
+
+`officialDiscovery` filtered to `brandCandidatesFor(...).length === 0`, so **one tag
+disqualified the whole row** and every other brand name on it was discarded permanently —
+nothing else reads the `brands` column for discovery. MEASURED: of 638 in-window CAMPAIGN
+posts carrying brand names, **385 asserted at least one handle and were skipped — 60%.**
+Tabish's own example is exactly this: the @naughtyworld post tagging @fukra_insaan carried
+"Prime Video" and "The Traitors", and neither was ever looked up.
+
+**The tag and the brand name are DIFFERENT ADVERTISERS as often as not** — the tag is usually
+the talent in shot, the brand name is who paid. It works every paid post now; `isOfficialMatch`
+is unchanged, so a junk name still cannot create anything. VERIFIED LIVE: names per pass
+**303 → 947**. Own marks (`fg9`, `rvcjinsta`) no longer spend a lookup, and frequency ranks
+the queue — a name on five paid posts beats one named once, which is also how junk sinks.
+
+### THE SAME LIVELOCK, A THIRD TIME — SO IT IS ONE SHARED MODULE NOW
+
+`names=304 looked=5 created=0 needsHuman=1`, **byte-identical across six consecutive passes**.
+That is `resolveBrand` (2026-08-12) and `badgeDoor` (2026-08-22) for the third time. Twice
+the lesson was written down and twice it failed to reach the next module, so the mechanism
+lives in `src/detection/lookupCooldown.ts` with several callers.
+
+**THE SIGNATURE, recorded so a fourth is recognised in seconds: identical summary numbers on
+consecutive passes of a bounded queue.** A pass genuinely finding nothing varies; a
+livelocked one does not.
+
+### BRAND-STRING CREDITING REQUIRED EXACT EQUALITY, SO AN OFFICIAL PAGE NEVER MATCHED
+
+`@primevideoin` was ALREADY a verified prospect when a paid post named *"Prime Video"*.
+Squashed that is `primevideo` against a handle of `primevideoin`; exact equality said no, so
+a post naming a company we already owned unlocked nothing. One regional suffix may now be
+stripped **from the PROSPECT side only, never the caption's**, and both halves were forced by
+driving it:
+
+- stripping the BRAND side let *"Philips India"* credit the GLOBAL `@philips` — the permanent
+  trap fixture, which failed on the rule's first run;
+- and let *"Vanshika Dhir in"* credit the ACTRESS, the English **preposition** read as a region.
+
+**MEASURED BOTH WAYS on the live corpus, and the first measurement was a trap worth recording:**
+it read **+170 credits across 31 prospects** and looked like a success — with @vanshika.dhir
++20, @aanandlrai +20, @yamigautam +17 sitting in the same list. Those were the CORRUPT display
+names above. After the identity repair the honest figure is **+44 credits across 13 prospects,
+every one a genuine regional official page**: primevideoin +10, amazonmgmstudiosin +9,
+netflix_in +6, philipsindia +2 (the correct direction of the trap). Zero people, zero junk.
+
+**A measurement taken over corrupt data agrees with itself.** Repair first, then measure.
+
+### AND A ZOMBIE `SENDING` ROW HAD BLOCKED THE PAIR FOR NINE HOURS
+
+`bollywoodchronicle → experience.ent` logged *"sending from Chrome profile"* at 02:14 IST and
+never logged a result — `attempts: 0`, still SENDING nine hours later. Parked as
+`not-in-thread` (the honest code: the recipient MAY hold it) with an audit row, which is the
+"check the conversation" flow. **It also made `status='SENDING'` never reach zero, so any
+wait-for-a-quiet-moment loop hangs forever** — worth knowing before restarting the agent.
+
+---
+
 ## 22 AUGUST, AFTERNOON — A DEV DASHBOARD ON THE LAPTOP STARVED THE SERVER THAT DRAFTS
 
 **Tabish: *"audit autopilot and paid messages to queue e2e, make sure messages are sent at a
