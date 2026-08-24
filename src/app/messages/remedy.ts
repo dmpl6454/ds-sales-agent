@@ -45,11 +45,13 @@ export const REMEDIES = {
   [RESEND_BLOCKS.TARGET_REPLIED]: { href: '/', label: 'Read the reply — messaging resumes by itself after seven days' },
 
   /**
-   * Both point at the landing page because that is where the controls that RELEASE them
-   * live: "check the conversation" for the unaccounted-for send, and re-queue / discard for
-   * a parked one. A stop whose remedy is a control on another screen must name that screen —
-   * the gate says WHY, this says WHERE, and `href: null` is reserved for stops with no
-   * control at all.
+   * A stop whose remedy is a control on another screen must NAME that screen — the gate says
+   * WHY, this says WHERE — and `href: null` is reserved for stops with no control at all.
+   *
+   * The two parked stops used to be a matched pair, both pointing here. They are not any more:
+   * re-queue / discard still exist for a capped failure, and the "check the conversation"
+   * buttons for an unaccounted-for send were removed on 2026-08-24, so that one is now genuinely
+   * a stop with nothing to press.
    */
   /**
    * No control, deliberately. The release is a NEW paid post from that recipient, which
@@ -57,10 +59,24 @@ export const REMEDIES = {
    * would imply the wait is a fault. `href: null` is a real answer here.
    */
   [RESEND_BLOCKS.MATERIAL_EXHAUSTED]: { href: null, label: 'Waits for their next paid post — nothing to do' },
+  /**
+   * NO CONTROL SINCE 2026-08-24, and that is a change of answer rather than a change of rule.
+   *
+   * This used to read *'Open the conversation and say whether it arrived — under "check the
+   * conversation"'*, and that section is gone on Tabish's instruction. `href: null` is the only
+   * honest value left: the stop still holds, the row still sits in FAILED, and there is now
+   * nothing on any screen to press. Naming a screen that cannot answer the refusal is the
+   * failure this file exists to prevent, and it would be the fifth entry in that series.
+   */
   [RESEND_BLOCKS.UNCERTAIN_DELIVERY]: {
-    href: '/',
-    label: 'Open the conversation and say whether it arrived — under "check the conversation"',
+    href: null,
+    label: 'An earlier message to them may already have arrived — this route stays closed',
   },
+  /**
+   * Still a control, and still on the landing page — but that list now shows only drafts the
+   * retry cap actually gave up on (`attempts >= MAX_DELIVERY_ATTEMPTS`), so a stop pointing at
+   * it is pointing at a row that is genuinely there.
+   */
   [RESEND_BLOCKS.PARKED_FAILURE]: {
     href: '/',
     label: 'Re-queue or discard the parked message — under "Gave up after repeated failures"',

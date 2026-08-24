@@ -1,11 +1,13 @@
 import { redirect } from 'next/navigation'
 import { currentUser } from '@/lib/session'
 import { buildProspectsPage } from '../view-model/prospects-page'
+import { buildRestTally } from '../view-model/rest-tally'
 import { buildChannelsView } from '../view-model'
 import { Nav } from '../nav'
 import { PageHead } from '../page-head'
 import { ImportForm } from '../prospects/import-form'
 import { ProspectList } from '../prospects/list'
+import { RestBand } from '../rest-band'
 import { ChannelsPanel } from '../channels'
 import { DETECT_INTERVAL_MINUTES } from '@/detection/cadence'
 
@@ -25,7 +27,7 @@ export default async function TargetsPage() {
   const user = await currentUser()
   if (!user) redirect('/sign-in')
 
-  const [v, ch] = await Promise.all([buildProspectsPage(), buildChannelsView()])
+  const [v, ch, rest] = await Promise.all([buildProspectsPage(), buildChannelsView(), buildRestTally()])
 
   return (
     <>
@@ -35,6 +37,15 @@ export default async function TargetsPage() {
           title="Targets"
           sub={`${v.prospects.length} in the list · ${v.watched} whose posts we read`}
         />
+
+        {/*
+          HOW MANY OF THIS LIST WE CANNOT WRITE TO TODAY, and why (2026-08-24, Tabish: "a user
+          does not know how many targets are on hold from total"). It sits directly under the
+          count in the subtitle, because "471 in the list" and "469 of them resting" are the two
+          halves of one fact, and reading the first without the second is what made the list look
+          like capacity it does not have.
+        */}
+        <RestBand tally={rest} />
 
         {/*
           A TREND, not the last sample — a channel failing every slot for two days must not

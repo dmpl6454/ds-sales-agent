@@ -5,10 +5,22 @@ import { requeueParkedAttempt, skipAttempt } from '../actions'
 import type { MessagesPageView } from '../view-model/messages-page'
 
 /**
- * Drafts the retry cap parked: they failed the same way several times, nothing was
- * delivered (every failure code here is in the provably-undelivered class — the
- * may-have-arrived case has its own list above), and nothing automatic will touch them
- * again.
+ * Drafts the retry cap parked: they failed the same way three times, nothing was delivered
+ * (every failure code here is in the provably-undelivered class), and nothing automatic will
+ * touch them again.
+ *
+ * ── THE ONLY FAILURE LIST ON THE PAGE, SINCE 2026-08-24 ────────────────────
+ *
+ * The may-have-arrived case used to have its own list above this one. Tabish removed it — *"the
+ * 'Check Conversation' section must not exist, only failures after '3' attempts must be
+ * displayed. Certain ones have '0' attempts and have been displayed in the UI."* — and the view
+ * model now filters this list on `attempts >= MAX_DELIVERY_ATTEMPTS` as well, so both halves of
+ * that instruction are enforced where the rows are selected rather than in this component.
+ *
+ * MEASURED the day it changed: 18 rows sat in FAILED, every one of them `not-in-thread`, 3 with
+ * `attempts: 0` — and this list rendered ZERO, because a not-in-thread park never reaches the
+ * cap. So the page's only failure section was the one being removed, and the section named for
+ * the cap has never had a row in it.
  *
  * Parking is only safe because of this list. MEASURED the morning the cap shipped: one
  * recipient whose profile opened a dialog instead of a message box was retried once a
@@ -27,9 +39,9 @@ export function ParkedList({ parked }: { parked: MessagesPageView["parked"] }) {
     <section className="group">
       <h2>Gave up after repeated failures ({parked.length})</h2>
       <p className="group-blurb">
-        These failed the same way several times, so they stopped being retried — nothing was delivered. Fix
-        what stopped them and put them back in the queue, or discard them and retire the recipient if they
-        simply cannot be messaged.
+        These failed three times, so they stopped being retried — nothing was delivered. Fix what stopped
+        them and put them back in the queue, or discard them and retire the recipient if they simply cannot
+        be messaged.
       </p>
       <div className="group-rows">
         {parked.map((m) => (

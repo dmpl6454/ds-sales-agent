@@ -363,9 +363,13 @@ export async function sendNow(attemptId: string, overrides?: readonly string[]):
     return {
       ok: false,
       message:
+        /* This used to end `the message is waiting under "check the thread"` and named a
+           section removed on 2026-08-24. A refusal that sends a person to a screen which
+           cannot answer it is worse than one that says plainly there is nothing to press. */
         `The message was accepted by the composer but never appeared in the thread with @${target.handle}. ` +
-        `It has NOT been re-queued: @${target.handle} may already have it. Open the conversation and tell us ` +
-        `which it was — the message is waiting under "check the thread".`,
+        `It has NOT been re-queued and will not be retried: @${target.handle} may already have it. ` +
+        `Open the conversation if you want to know which it was — nothing on the dashboard will ask you again, ` +
+        `and @${sender.handle} will not write to them again.`,
     }
   }
 
@@ -722,7 +726,13 @@ export async function requeueParkedAttempt(attemptId: string): Promise<MutationR
     data: { status: 'READY', attempts: 0, error: null, failureCode: null },
   })
   if (claimed.count === 0) {
-    return { ok: false, message: 'That message is not parked — it may have moved, or it needs the check-the-conversation flow.' }
+    /* `not-in-thread` is excluded by the where clause above, and since 2026-08-24 there is no
+       flow to point at — so the refusal says what is true rather than naming a deleted screen. */
+    return {
+      ok: false,
+      message:
+        'That message is not parked, or it is one Instagram may already have delivered — those are never re-queued.',
+    }
   }
   await audit(user.email, 'attempt.requeued', `OutreachAttempt:${attemptId}`, 'parked draft returned to the queue by an operator')
   revalidatePath('/')
@@ -1606,6 +1616,15 @@ export async function resumeDispatch(): Promise<MutationResult> {
  *
  * That asymmetry is the same one `settleClaims` argues for, resolved here by evidence
  * instead of by inference.
+ *
+ * ── THIS ACTION HAS NO CALLER SINCE 2026-08-24, AND THAT IS SAID OUT LOUD ──
+ *
+ * Tabish removed the "Check the conversation" section that rendered its two buttons. The
+ * action is kept — deleting the only writer that can settle one of these rows would make the
+ * decision irreversible from the product side — but a server action nothing can reach is this
+ * codebase's signature defect (`addSender` sat unreachable for weeks), so it is LABELLED
+ * rather than left looking wired. Reaching it again means either putting a control back or
+ * calling it from a CLI; do not assume a screen is using it.
  */
 export async function resolveUncertainSend(
   attemptId: string,

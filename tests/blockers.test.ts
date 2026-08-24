@@ -16,7 +16,6 @@ const CLEAR: BlockerInput = {
   breaker: null,
   pausedBy: null,
   repliesWaiting: 0,
-  uncertain: 0,
   draftsWaiting: 0,
   topRefusal: null,
 }
@@ -26,7 +25,6 @@ const EVERYTHING: BlockerInput = {
   breaker: { reason: 'An account was questioned by Instagram in the last 24 hours.' },
   pausedBy: null,
   repliesWaiting: 1,
-  uncertain: 1,
   draftsWaiting: 3,
   topRefusal: {
     detail: 'This account has no working Instagram session.',
@@ -38,7 +36,7 @@ const EVERYTHING: BlockerInput = {
 describe('what is stopping it', () => {
   it('ranks the unrecoverable thing first, and drafts last', () => {
     const keys = rankBlockers(EVERYTHING).map((b) => b.key)
-    expect(keys).toEqual(['watch', 'breaker', 'replies', 'uncertain', 'drafts'])
+    expect(keys).toEqual(['watch', 'breaker', 'replies', 'drafts'])
   })
 
   it('says nothing at all when every check is clear', () => {

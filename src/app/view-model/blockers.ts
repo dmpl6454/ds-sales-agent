@@ -14,10 +14,12 @@ import type { Remedy } from '../messages/remedy'
  *                     listed above the reason every draft is going nowhere.
  *   3. REPLIES        a person is waiting on a human. Recoverable, but the cost of being
  *                     late is borne by the one prospect who actually engaged.
- *   4. UNCERTAIN      a send Instagram accepted that never appeared. Nothing automatic
- *                     touches it, so it waits forever until someone looks.
- *   5. DRAFTS         written and held. Nothing is lost by waiting; the material is
+ *   4. DRAFTS         written and held. Nothing is lost by waiting; the material is
  *                     stored and the Send button still works.
+ *
+ * Rank 4 used to be UNCERTAIN — a send Instagram accepted that never appeared, waiting
+ * "forever until someone looks". Tabish removed the section that let anyone look
+ * (2026-08-24), so an alarm about it could only point at a screen that cannot answer it.
  *
  * `assessWatch`'s own docblock records why watch health sits at the top, and the copy here
  * repeats its warning that THIS IS NOT ABOUT SENDING — the previous wording lived inside
@@ -68,8 +70,6 @@ export interface BlockerInput {
   pausedBy: { at: string; by: string; reason?: string } | null
   /** Replies waiting for a person to take over. */
   repliesWaiting: number
-  /** Sends that cleared the composer and never appeared in the thread. */
-  uncertain: number
   /** Drafts written and waiting. */
   draftsWaiting: number
   /**
@@ -163,22 +163,17 @@ export function rankBlockers(input: BlockerInput): Blocker[] {
     })
   }
 
-  /* ── 4. parked where nothing automatic will ever pick it up ─────────────── */
-  if (input.uncertain > 0) {
-    out.push({
-      key: 'uncertain',
-      rank: 'Uncertain',
-      headline:
-        input.uncertain === 1
-          ? 'One send was accepted and never appeared'
-          : `${input.uncertain} sends were accepted and never appeared`,
-      verdict:
-        'Instagram took the keystroke and the message never showed in the thread. There is no retry — the recipient may have it, and a duplicate is worse than a gap. Only a person looking at the conversation settles it.',
-      remedy: null,
-      tone: 'warn',
-    })
-  }
+  /*
+    ── 4. WAS "UNCERTAIN", AND IS GONE (2026-08-24, Tabish) ──────────────────
 
+    This rank held "N sends were accepted and never appeared … only a person looking at the
+    conversation settles it" — a sentence naming a control that no longer exists, now that the
+    "Check the conversation" section and its two buttons have been removed. An alarm pointing at
+    a screen that cannot answer it is worse than no alarm: it is the "a page reporting a rule by
+    a different rule than the one enforcing it" failure, in the one list that claims to say what
+    to fix first. The rows still exist in `FAILED` and still block their own route at the gate;
+    what is gone is the demand that somebody open eighteen Instagram conversations.
+  */
   /* ── 5. nothing is lost by this one, which is why it is last ────────────── */
   if (input.draftsWaiting > 0 && input.topRefusal) {
     out.push({

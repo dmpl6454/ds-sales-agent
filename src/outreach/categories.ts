@@ -141,6 +141,80 @@ export async function fleetRingFor(targetId: string): Promise<RingMember[]> {
 }
 
 /**
+ * ROUTES A RECIPIENT'S OWN PAGES CANNOT USE — and rotation must skip them, not stall on them.
+ *
+ * ── THE STALL THIS CLOSES, MEASURED ───────────────────────────────────────
+ *
+ * An unsettled `not-in-thread` park refuses its PAIR at both the governor and the gate, and
+ * that refusal is correct and permanent: the recipient may already hold that page's message,
+ * so that page must never write to them again. What was wrong is what happened next.
+ * `unavailable` carried ACCOUNT facts only (`readSenderAvailability`: flagged, signed out), so
+ * rotation went on electing the parked page, `plan.ts` refused it with
+ * `uncertain-delivery-unsettled`, and every OTHER pair — eligible on every rule — was skipped
+ * as `not-this-senders-turn`. Nothing was ever drafted, and the turn only advances on a
+ * DELIVERY, which a parked pair can never produce. A self-locking stall.
+ *
+ * MEASURED 2026-08-24: 18 parked rows across 14 recipients, and for 10 of them the parked page
+ * was the elected one. Nine were otherwise writable — @sonypicturesin, @saarthakoberoi,
+ * @smritisingh29, @sabazad, @danubeproperties, @acegroupofficial, @zeemarathiofficial,
+ * @sachintendulkar, @ohhmydogindia — each with FOUR clean routes and no draft. @sabazad and
+ * @zeemarathiofficial were minted on 21 August and had never received anything at all.
+ *
+ * ── WHY IT LIVES INSIDE ROTATION AND NOT AT THE CALLERS ───────────────────
+ *
+ * `whoseTurn`'s own docblock says `unavailable` "must carry MACHINE-INDEPENDENT facts only",
+ * and a parked route is exactly that — a row in the shared database. Loading it HERE rather
+ * than asking each caller to merge it in is the discipline this file already argues for: the
+ * planner, the dashboard's "next message comes from @x", `ig:dedupe-drafts` and the hand-off
+ * broom all ask rotation the same question, and a fact reaching one of them and not the others
+ * is the drift `gate.ts` and `messageEntry.ts` were extracted to stop. No caller can forget it.
+ *
+ * NOTHING IS WEAKENED. The pair stays refused at the governor and at the gate; this only stops
+ * rotation from ELECTING a page that is already forbidden, so the recipient's other pages take
+ * their turn. If every page is parked, `nextSender` returns `all-unavailable` and says so —
+ * fail-closed, and named, rather than a silent skip.
+ */
+export async function readBlockedRoutes(
+  targetIds?: readonly string[],
+): Promise<Map<string, Map<string, string>>> {
+  const rows = await prisma.outreachAttempt.findMany({
+    where: {
+      status: 'FAILED',
+      failureCode: { not: null },
+      ...(targetIds ? { targetId: { in: [...new Set(targetIds)] } } : {}),
+    },
+    select: { failureCode: true, pair: { select: { targetId: true, senderId: true, sender: { select: { handle: true } } } } },
+  })
+  const out = new Map<string, Map<string, string>>()
+  for (const r of rows) {
+    const m = out.get(r.pair.targetId) ?? new Map<string, string>()
+    m.set(
+      r.pair.senderId,
+      r.failureCode === 'not-in-thread'
+        ? 'an earlier message from this page may already have reached them'
+        : `an earlier message from this page is parked (${r.failureCode})`,
+    )
+    out.set(r.pair.targetId, m)
+  }
+  return out
+}
+
+/** PURE. The account facts, plus any route this recipient's pages cannot use. */
+export function unavailableForTarget(
+  fleetWide: ReadonlyMap<string, string> | undefined,
+  blocked: ReadonlyMap<string, ReadonlyMap<string, string>>,
+  targetId: string,
+): ReadonlyMap<string, string> {
+  const routes = blocked.get(targetId)
+  if (!routes || routes.size === 0) return fleetWide ?? new Map()
+  const merged = new Map<string, string>(fleetWide ?? [])
+  /* The ROUTE reason wins where both apply: "signed out" and "they may already have our
+     message" are different facts, and the second is the one specific to this recipient. */
+  for (const [senderId, why] of routes) merged.set(senderId, why)
+  return merged
+}
+
+/**
  * Whose turn is it to write to this recipient?
  *
  * NEVER NULL SINCE 2026-08-13, and that is the whole fix. It used to return null for a
@@ -182,14 +256,22 @@ export async function whoseTurn(args: {
    */
   const category = categories[0] ?? null
 
-  const [ring, lastSenderId] = await Promise.all([
+  const [ring, lastSenderId, blocked] = await Promise.all([
     category !== null
       ? ringFor(category.id)
       : (args.fleet ?? (await fleetRingFor(args.targetId))),
     lastSenderTo(args.targetId),
+    /* Loaded here so no caller can forget it — see `readBlockedRoutes`. */
+    readBlockedRoutes([args.targetId]),
   ])
 
-  return decideTurn({ targetId: args.targetId, category, ring, lastSenderId, unavailable: args.unavailable })
+  return decideTurn({
+    targetId: args.targetId,
+    category,
+    ring,
+    lastSenderId,
+    unavailable: unavailableForTarget(args.unavailable, blocked, args.targetId),
+  })
 }
 
 /**
@@ -250,7 +332,7 @@ export async function whoseTurnForMany(
   if (targetIds.length === 0) return out
   const ids = [...new Set(targetIds)]
 
-  const [pairRows, groupRows, ringRows, delivered] = await Promise.all([
+  const [pairRows, groupRows, ringRows, delivered, blocked] = await Promise.all([
     prisma.outreachPair.findMany({
       where: { targetId: { in: ids }, sender: { fleetMember: true } },
       select: { targetId: true, sender: { select: { id: true, handle: true, cohort: true } } },
@@ -273,6 +355,8 @@ export async function whoseTurnForMany(
       orderBy: { sentAt: 'desc' },
       select: { targetId: true, senderId: true },
     }),
+    /* ONE batched query for the whole page, not one per target. */
+    readBlockedRoutes(ids),
   ])
 
   const fleetByTarget = new Map<string, { id: string; handle: string; cohort: number }[]>()
@@ -309,7 +393,7 @@ export async function whoseTurnForMany(
         category,
         ring,
         lastSenderId: lastSenderByTarget.get(targetId) ?? null,
-        unavailable,
+        unavailable: unavailableForTarget(unavailable, blocked, targetId),
       }),
     )
   }

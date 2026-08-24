@@ -1,9 +1,8 @@
 import { prisma } from '@/lib/db'
-import { DELIVERED_STATUSES } from '@/lib/constants'
+import { DELIVERED_STATUSES, MAX_DELIVERY_ATTEMPTS } from '@/lib/constants'
 import { daysAgo } from '@/lib/time'
 import { dispatchStatus, readPause } from '@/outreach/dispatcher'
 import { replyCoverage } from '@/outreach/replyCheck'
-import { profileUrl } from '@/lib/urls'
 // Never a raw `displayName` — see the note on the import in `view-model.ts`.
 import { operatorName } from '@/outreach/render'
 import { getSettings } from '@/lib/settings'
@@ -89,35 +88,6 @@ export interface SentMessage {
   replyText: string | null
 }
 
-/**
- * A send that cleared the composer and never appeared in the thread.
- *
- * Its own list, and that is the point. Since Phase 5 these park in FAILED rather than
- * going back to READY, because READY is what the delivery loop picks up and re-sending is
- * wrong in both readings of what happened — the recipient may already have it, and the
- * account may be restricted. Parking a message where nothing automatic touches it is only
- * safe if a person can SEE it, so this list exists in the same commit as that change.
- */
-export interface UncertainMessage {
-  id: string
-  senderHandle: string
-  targetHandle: string
-  queuedAt: Date
-  attempts: number
-  error: string | null
-  /**
-   * A link to the recipient's profile, so the operator can open the conversation and look.
-   *
-   * NOT the `pnpm ig:thread` command. "Never put a shell command on the page" is a rule
-   * here with a history: the old "Needs you" list read `Send the next one: pnpm send` and
-   * `Check which channels are failing: pnpm ig:audit`, which is a developer instruction
-   * standing in for something the page could simply offer. The CLI still exists and is
-   * still the right tool from a terminal; it is not what belongs in front of a CEO who has
-   * to decide whether a message arrived.
-   */
-  profileUrl: string
-}
-
 /** A waiting draft that is resting, with the enforcer's sentence and when it frees up. */
 export interface HeldRow {
   senderHandle: string
@@ -150,8 +120,21 @@ export interface MessagesPageView {
    */
   autopilotOn: boolean
   waitingTotal: number
-  uncertain: UncertainMessage[]
-  /** Parked by the retry cap: repeated failures, provably undelivered. */
+  /**
+   * Failures the retry cap gave up on — and NOTHING ELSE (2026-08-24, Tabish: *"the 'Check
+   * Conversation' section must not exist, only failures after '3' attempts must be displayed.
+   * Certain ones have '0' attempts and have been displayed in the UI. Remove this."*).
+   *
+   * The separate "Check the conversation" list is gone with the `UncertainMessage` type that
+   * fed it. MEASURED the day it went: all 18 live FAILED rows were `not-in-thread`, 3 of them
+   * with `attempts: 0` (a zombie SENDING row parked by hand never runs the counter), and the
+   * parked list rendered ZERO — so the page's only failure section was the one asking a person
+   * to open eighteen Instagram conversations, and the section named for the retry cap was empty.
+   *
+   * `attempts >= MAX_DELIVERY_ATTEMPTS` is the filter, read from the constant the ENFORCER
+   * parks on rather than a literal 3, so the heading "Gave up after repeated failures" cannot
+   * come to mean something different from what `deliver.ts` did.
+   */
   parked: Array<{
     id: string
     senderHandle: string
@@ -241,7 +224,6 @@ export async function buildMessagesPage(): Promise<MessagesPageView> {
   const [
     waitingBySenderRaw,
     waitingTotal,
-    uncertainRaw,
     parkedRaw,
     recentRaw,
     sentThisWeek,
@@ -268,25 +250,32 @@ export async function buildMessagesPage(): Promise<MessagesPageView> {
     }),
     prisma.outreachAttempt.count({ where: { status: { in: ['READY', 'QUEUED', 'SENDING'] } } }),
     /**
-     * Sends we cannot account for. BOTH conditions, not either.
+     * FAILURES THE RETRY CAP GAVE UP ON. Three conditions, and each one is load-bearing.
      *
-     * `status: 'FAILED'` alone would sweep in ordinary failures, and `failureCode` alone
-     * would keep showing an attempt after a person had already resolved it — the resolve
-     * action clears the code precisely so that cannot happen, and so a settled incident
-     * stops counting toward the circuit breaker.
+     * `status: 'FAILED'` alone sweeps in a draft that failed once and is still being retried.
+     *
+     * `failureCode: { not: 'not-in-thread' }` keeps the may-have-arrived class out. Those are
+     * provably NOT what this list describes: the copy says nothing was delivered, and for a
+     * not-in-thread park that sentence is the one thing we cannot say. They no longer get a
+     * list of their own either (Tabish, 2026-08-24) — the row stays a permanent record on that
+     * one route, and rotation's other pages are unaffected by it.
+     *
+     * `attempts: { gte: MAX_DELIVERY_ATTEMPTS }` is the new half, and it is what Tabish asked
+     * for: a row appears only once the cap has actually given up on it. MEASURED before the
+     * change — 3 of the 18 live FAILED rows carried `attempts: 0`, because a zombie SENDING row
+     * parked by hand never runs the counter, so a screen headed "gave up after repeated
+     * failures" was reporting drafts that had not failed once.
+     *
+     * Read from the CONSTANT, never a literal 3: `deliver.ts` parks on that number, and a page
+     * that hard-codes it starts describing a rule the enforcer no longer holds the first time
+     * the cap moves. Same reason `DELIVERED_STATUSES` stopped being spelled out per call site.
      */
     prisma.outreachAttempt.findMany({
-      where: { status: 'FAILED', failureCode: 'not-in-thread' },
-      include: { sender: { select: { handle: true } }, target: { select: { handle: true } } },
-      orderBy: { queuedAt: 'asc' },
-    }),
-    /**
-     * Drafts the retry cap PARKED — repeated failures, provably undelivered (every code
-     * except not-in-thread is in that class). Rendered with the failure named and two
-     * controls, because parking is only safe while it is visible.
-     */
-    prisma.outreachAttempt.findMany({
-      where: { status: 'FAILED', failureCode: { not: 'not-in-thread' } },
+      where: {
+        status: 'FAILED',
+        failureCode: { not: 'not-in-thread' },
+        attempts: { gte: MAX_DELIVERY_ATTEMPTS },
+      },
       include: { sender: { select: { handle: true } }, target: { select: { handle: true } } },
       orderBy: { queuedAt: 'asc' },
     }),
@@ -539,15 +528,6 @@ export async function buildMessagesPage(): Promise<MessagesPageView> {
     queueBySender: waitingBySenderRaw
       .map((r) => ({ handle: senderHandles.get(r.senderId) ?? r.senderId, count: r._count._all }))
       .sort((a, b) => b.count - a.count),
-    uncertain: uncertainRaw.map((a) => ({
-      id: a.id,
-      senderHandle: a.sender.handle,
-      targetHandle: a.target.handle,
-      queuedAt: a.queuedAt,
-      attempts: a.attempts,
-      error: a.error,
-      profileUrl: profileUrl(a.target.handle),
-    })),
     parked: parkedRaw.map((a) => ({
       id: a.id,
       senderHandle: a.sender.handle,
