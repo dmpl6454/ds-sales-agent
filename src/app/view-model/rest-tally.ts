@@ -107,9 +107,46 @@ import { usedCampaignIds } from '@/outreach/compose'
  */
 const ROTATION_STUCK = 'no-account-can-write'
 
+/**
+ * THE HALF OF THE MATERIAL RULE THAT IS WAITING FOR A FIRST PAID POST, NOT A NEXT ONE.
+ *
+ * Both are `MATERIAL_EXHAUSTED` at the governor and both are correct, but they are opposite
+ * facts to read and collapsing them produced a sentence Tabish could not parse: *"every paid
+ * post we have seen from them has already been written about — the next message waits for their
+ * next one."*
+ *
+ * MEASURED the day he asked: of 423 companies the material rule was holding, **208 (49%) have
+ * ZERO paid posts naming them inside the window** — the single commonest shape is
+ * `campaigns=0 delivered=1`, 145 companies. For every one of those the sentence is FALSE: there
+ * is no paid post of theirs that has been written about, and there is no "their next one" to
+ * wait for either. They are held by the `max(1, …)` FLOOR — the deliberate rule that a company
+ * with no detected paid post still gets one message, so a hand-imported prospect is not
+ * unreachable forever — and what they are waiting for is a FIRST post, from any channel we
+ * watch. (60 of them read `campaigns=0 delivered=5`, which is the 20-21 August five-page
+ * fan-out that pre-dates the one-message-per-paid-post rule.)
+ *
+ * BOTH SENTENCES WERE TIGHTENED BY READING THE RENDERED ROWS, which is the only way either
+ * error was ever going to surface. The first said "once for every paid post" — false for the
+ * ~40 companies at `campaigns=1 delivered=5`, who had five. The second said "their one
+ * introduction" — false for the 60 at `campaigns=0 delivered=5`, who had five. Neither is a
+ * wording nit: an aggregate sentence has to be true of every row it counts, and both were
+ * describing the commonest shape as though it were the only one.
+ *
+ * So the bucket splits on `campaigns === 0`. Same enforcer verdict, same window, two sentences —
+ * because a reader deciding whether to act needs to know whether the thing they are waiting for
+ * has ever happened.
+ */
+const AWAITING_FIRST_POST = 'awaiting-a-first-paid-post'
+
 const REST_RULES: Record<string, { label: string; needsAPerson: boolean }> = {
   [SKIP_REASONS.MATERIAL_EXHAUSTED]: {
-    label: 'every paid post we have seen from them has already been written about — the next message waits for their next one',
+    label:
+      'they have had a message for every paid post of theirs we have found — the next one waits until a channel we watch posts about them again',
+    needsAPerson: false,
+  },
+  [AWAITING_FIRST_POST]: {
+    label:
+      'we have not found a paid post of theirs yet — they have already been written to, so the next message waits until a channel we watch posts about them',
     needsAPerson: false,
   },
   [SKIP_REASONS.TARGET_REPLIED]: {
@@ -410,8 +447,9 @@ export async function buildRestTally(now: Date = new Date()): Promise<RestTally>
          the row is NOT called self-releasing, because the paid post is the release Tabish's
          rule intends and it is the one that usually comes first. */
       const nth = inWindow[material.allowance - 1]
+      /* Split on whether a paid post of theirs has been FOUND at all — see AWAITING_FIRST_POST. */
       bump(
-        SKIP_REASONS.MATERIAL_EXHAUSTED,
+        camps.length === 0 ? AWAITING_FIRST_POST : SKIP_REASONS.MATERIAL_EXHAUSTED,
         nth ? new Date(nth.sentAt.getTime() + settings.defaultCooldownDays * 86_400_000) : null,
       )
       continue
