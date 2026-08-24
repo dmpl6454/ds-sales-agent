@@ -417,7 +417,24 @@ h3 { margin: 0; font-size: 14px; font-weight: 600; }
 .card-bad  { border-color: color-mix(in srgb, var(--bad) 45%, var(--ln-1)); background: var(--bad-sub); }
 .card-idle { border-color: var(--ln-1); }
 
-.stack { display: grid; gap: 12px; }
+/*
+  A GRID ITEM DEFAULTS TO `min-width: auto` — "never shrink below your content" — so one
+  wide descendant makes the whole column refuse to fit and the PAGE scrolls sideways. The
+  same trap `.rowitem` carries a comment about below, one container up.
+
+  MEASURED 2026-08-24 by `pnpm ig:layout`: `/` scrolled to 1590px in a 1440px viewport.
+  The chain was `section.grid-2` (two 550px columns) → `div.stack`, whose own grid column
+  resolved to **739.75px inside its 550px slot**, pushing the replies section out to
+  right=1590. It is DATA-DEPENDENT, which is why it went unseen: the replies section renders
+  only when a reply exists, so the page was clean on the day the harness was last green and
+  broke silently once conversations started coming back.
+
+  `min-width: 0` on the item AND on its children, because the constraint has to reach the
+  descendant that is actually too wide — putting it on one level only moves the overflow
+  down a level.
+*/
+.stack { display: grid; gap: 12px; min-width: 0; }
+.stack > * { min-width: 0; }
 .stack-sm { display: grid; gap: 8px; }
 .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
 .row-between { display: flex; gap: 16px; align-items: center; justify-content: space-between; }
@@ -431,6 +448,8 @@ h3 { margin: 0; font-size: 14px; font-weight: 600; }
   itself, a bare minimum is larger than the container and overflows in the other direction.
 */
 .grid-2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(22rem, 100%), 1fr)); gap: 12px; }
+/* Same reason as `.stack`: a column that cannot shrink scrolls the page, not itself. */
+.grid-2 > * { min-width: 0; }
 .grid-4 { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; }
 
 /* ── STATUS ──────────────────────────────────────────────────────────────── */

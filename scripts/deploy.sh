@@ -75,7 +75,15 @@ find src prisma tests docs scripts -type f 2>/dev/null \
   | grep -v '^src/generated/' \
   | LC_ALL=C sort > /tmp/ds-server-files.txt
 
-STALE=\$(comm -13 /tmp/ds-repo-scoped.txt /tmp/ds-server-files.txt || true)
+# LC_ALL=C on `comm` ITSELF, not only on the two sorts feeding it (2026-08-24). Both inputs
+# were already sorted with LC_ALL=C, but `comm` was left to the server's own locale, so it
+# collated differently from the files it was reading and printed
+# "comm: input is not in sorted order" on a real deploy. It happened to be right that time
+# (1 stale file, correctly identified, verified afterwards by a 399-vs-399 file-list match) —
+# but the docblock above says a mismatched sort makes `comm` report files as present in both
+# "only here" and "only there", and this script ACTS on that output with `rm -f`. A warning
+# from the step that deletes live files is not something to leave running.
+STALE=\$(LC_ALL=C comm -13 /tmp/ds-repo-scoped.txt /tmp/ds-server-files.txt || true)
 if [[ -n "\$STALE" ]]; then
   echo "    removing \$(echo "\$STALE" | wc -l | tr -d ' ') stale file(s):"
   echo "\$STALE" | sed 's/^/      /'

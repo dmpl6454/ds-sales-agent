@@ -142,8 +142,14 @@ describe('the resting tally', () => {
   it('excludes retired companies from the denominator and reports them apart', () => {
     // A retired row can never be written to, so counting it as "resting" pads the share with
     // rows that are not waiting for anything.
-    expect(src).toMatch(/role: 'PROSPECT', optedOut: false/)
-    expect(src).toMatch(/retired/)
+    // The partition moved from three WHERE clauses into one query filtered in JS when `/`'s
+    // query budget bound at 161/160 — the property is unchanged, so the assertion follows it
+    // rather than pinning the old shape.
+    expect(src).toMatch(/t\.role === 'PROSPECT' && !t\.optedOut/)
+    expect(src).toMatch(/t\.role === 'PROSPECT' && t\.optedOut/)
+    expect(src).toMatch(/t\.role === 'WATCH'/)
+    // `total` is the live prospects only — retired must never be folded into the denominator.
+    expect(src).toMatch(/total: prospects\.length/)
     const band = readFileSync(join(repo, 'src/app/rest-band.tsx'), 'utf8')
     expect(band).toMatch(/[Nn]ot counted here/)
   })
