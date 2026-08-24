@@ -36,26 +36,89 @@ import { SKIP_REASONS } from '@/outreach/governor'
 const repo = join(__dirname, '..')
 const src = readFileSync(join(repo, 'src/app/view-model/rest-tally.ts'), 'utf8')
 
+/**
+ * The DECISION LOOP only — not the whole file.
+ *
+ * Scoping matters: `SKIP_REASONS.MATERIAL_EXHAUSTED` also appears in the `REST_RULES` table, so
+ * a search over the file would find the sentence and conclude the rule is applied. What decides
+ * a company's bucket is this loop, and it is the loop the order assertions have to read.
+ */
+const loop = src.slice(src.indexOf('for (const p of prospects)'), src.indexOf('/* The last rule'))
+
+/**
+ * Every reason key bumped inside the loop, whatever form the argument takes.
+ *
+ * It reads the FIRST ARGUMENT of each `bump(` — parsed to the comma at paren depth 0 — rather
+ * than scanning a fixed window, because a window picks up ordinary prose: the first version
+ * matched a capitalised word out of a nearby comment and failed on `bump(ALREA)`. A ternary is
+ * still handled, since both branches sit inside that first argument.
+ */
+function bumpedKeys(): string[] {
+  const keys: string[] = []
+  for (const m of loop.matchAll(/bump\(/g)) {
+    let depth = 1
+    let i = m.index! + 'bump('.length
+    const start = i
+    for (; i < loop.length && depth > 0; i += 1) {
+      const c = loop[i]
+      if (c === '(') depth += 1
+      else if (c === ')') depth -= 1
+      else if (c === ',' && depth === 1) break
+    }
+    const arg = loop.slice(start, i)
+    for (const k of arg.matchAll(/SKIP_REASONS\.[A-Z_]+|\b[A-Z][A-Z0-9_]*\b/g)) keys.push(k[0])
+  }
+  return keys
+}
+
 describe('the resting tally', () => {
   it('has a sentence for every reason it can report', () => {
-    /* Every `bump(X, …)` call site, read out of the source — so a new hold added tomorrow is
-       caught even though this test cannot know its name in advance. */
-    const bumped = [...src.matchAll(/bump\(\s*SKIP_REASONS\.([A-Z_]+)/g)].map((m) => m[1])
+    /**
+     * EVERY `bump()` key, whatever kind of identifier it is.
+     *
+     * The first version matched `bump(SKIP_REASONS.X)` only, so a bucket keyed on a
+     * module-level const — `ROTATION_STUCK`, `AWAITING_FIRST_POST` — could be added with no
+     * sentence and this test would pass. That is the totality check failing at exactly the
+     * thing it exists to catch, so it reads any identifier now.
+     */
+    const bumped = bumpedKeys()
     expect(bumped.length, 'no bump() call sites found — the grep has gone stale').toBeGreaterThan(3)
 
     const table = src.slice(src.indexOf('const REST_RULES'), src.indexOf('/** One rule, how many'))
     for (const key of new Set(bumped)) {
       expect(
         table,
-        `bump(SKIP_REASONS.${key}) has no entry in REST_RULES — that bucket would render with an empty explanation`,
-      ).toContain(`SKIP_REASONS.${key}`)
+        `bump(${key}) has no entry in REST_RULES — that bucket would render with an empty explanation`,
+      ).toContain(key)
+    }
+    // And the two const-keyed buckets specifically, because they are the ones a SKIP_REASONS-only
+    // grep used to miss entirely.
+    for (const key of ['ROTATION_STUCK', 'AWAITING_FIRST_POST']) {
+      expect(bumped, `${key} must still be one of the reasons this can report`).toContain(key)
     }
   })
 
+  it('splits the material rule on whether a paid post has ever been FOUND', () => {
+    /**
+     * Both halves are MATERIAL_EXHAUSTED at the governor and they are opposite facts to read.
+     * MEASURED when Tabish said the old sentence made no sense: of 423 companies the rule was
+     * holding, 208 (49%) had ZERO paid posts naming them — so "every paid post we have seen from
+     * them has already been written about" was false for half the row, and "their next one" was
+     * waiting on something that had never happened once.
+     */
+    expect(src).toMatch(/camps\.length === 0 \? AWAITING_FIRST_POST : SKIP_REASONS\.MATERIAL_EXHAUSTED/)
+    const table = src.slice(src.indexOf('const REST_RULES'), src.indexOf('/** One rule, how many'))
+    // Neither sentence may claim a paid post exists for the half where none does.
+    expect(table).not.toMatch(/every paid post we have seen from them/)
+  })
+
   it('every reason it reports is a real governor reason, not an invented one', () => {
-    const bumped = [...src.matchAll(/bump\(\s*SKIP_REASONS\.([A-Z_]+)/g)].map((m) => m[1])
     const known = Object.keys(SKIP_REASONS)
-    for (const key of new Set(bumped)) expect(known, `SKIP_REASONS.${key} does not exist`).toContain(key)
+    for (const key of new Set(bumpedKeys())) {
+      if (!key.startsWith('SKIP_REASONS.')) continue
+      const name = key.slice('SKIP_REASONS.'.length)
+      expect(known, `SKIP_REASONS.${name} does not exist`).toContain(name)
+    }
   })
 
   it('derives the totals from the breakdown, so they cannot disagree with it', () => {
@@ -101,8 +164,8 @@ describe('the resting tally', () => {
      * different-looking chart.
      */
     const order = ['TARGET_NOT_VERIFIED', 'TARGET_REPLIED', 'MATERIAL_EXHAUSTED', 'TARGET_RECENTLY_CONTACTED']
-    /* The bump calls are formatted across lines, so match the way the totality check does. */
-    const positions = order.map((k) => src.search(new RegExp(`bump\\(\\s*SKIP_REASONS\\.${k}`)))
+    /* Positions within the DECISION LOOP, and tolerant of a ternary argument. */
+    const positions = order.map((k) => loop.indexOf(`SKIP_REASONS.${k}`))
     for (const [i, at] of positions.entries()) {
       expect(at, `bump(SKIP_REASONS.${order[i]}) is missing`).toBeGreaterThan(-1)
     }
