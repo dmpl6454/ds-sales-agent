@@ -151,7 +151,7 @@ describe('the resting tally', () => {
     // And the per-row query is BOUNDED, so this can never become an N+1 over a list whose
     // size is a product decision — the defect killed twice already in this codebase.
     expect(src).toMatch(/PAIR_PRECISION_LIMIT/)
-    expect(src).toMatch(/needsPairCheck\.length < PAIR_PRECISION_LIMIT/)
+    expect(src).toMatch(/pairChecksDone < PAIR_PRECISION_LIMIT/)
   })
 
   it('attributes in the GOVERNOR\'s order, because the order changes the answer', () => {
@@ -163,7 +163,16 @@ describe('the resting tally', () => {
      * here has to be the order there, and a reordering has to fail rather than quietly produce a
      * different-looking chart.
      */
-    const order = ['TARGET_NOT_VERIFIED', 'TARGET_REPLIED', 'MATERIAL_EXHAUSTED', 'TARGET_RECENTLY_CONTACTED']
+    /* NO_NEW_MATERIAL is in this list because leaving it out is how the inversion shipped: the
+       governor asks it BEFORE the ring rule, this asked it after, and four companies were filed
+       under the wrong sentence with the wrong release date. */
+    const order = [
+      'TARGET_NOT_VERIFIED',
+      'TARGET_REPLIED',
+      'MATERIAL_EXHAUSTED',
+      'NO_NEW_MATERIAL',
+      'TARGET_RECENTLY_CONTACTED',
+    ]
     /* Positions within the DECISION LOOP, and tolerant of a ternary argument. */
     const positions = order.map((k) => loop.indexOf(`SKIP_REASONS.${k}`))
     for (const [i, at] of positions.entries()) {

@@ -391,8 +391,8 @@ export async function buildRestTally(now: Date = new Date()): Promise<RestTally>
   let clear = 0
   let queued = 0
   let pairChecksSkipped = 0
-  /** Only a company whose ELECTED pair has already delivered can be held by NO_NEW_MATERIAL. */
-  const needsPairCheck: Array<{ pairId: string; prospect: { handle: string; displayName: string | null } }> = []
+  /** Bounded count of the one per-row query. See PAIR_PRECISION_LIMIT. */
+  let pairChecksDone = 0
 
   for (const p of prospects) {
     /* VERIFIED ONLY, checked where the governor checks it — third of its stops, before the
@@ -455,6 +455,41 @@ export async function buildRestTally(now: Date = new Date()): Promise<RestTally>
       continue
     }
 
+    /**
+     * NOTHING NEW TO SAY — and it is asked BEFORE the ring rule because that is the order
+     * `evaluatePair` asks them in (governor.ts: NO_NEW_MATERIAL, then TARGET_RECENTLY_CONTACTED).
+     *
+     * IT WAS THE OTHER WAY ROUND AND FOUR COMPANIES WERE FILED UNDER THE WRONG RULE. Measured by
+     * running this tally and the planner side by side over all 473: they agreed on
+     * resting-vs-not for 473 of 473 and on the exact RULE for 469 — the four misses were
+     * @amazonmgmstudios, @amazonmgmstudiosin, @abhishek_as_it_is and @realpz, each held by both
+     * rules, where this said "every one of our pages has written to them this week" (with a
+     * release date) and the planner said "nothing new to reference". Both hold them, so the
+     * headline never moved; the SENTENCE and the CLOCK were wrong, which is the whole point of
+     * the breakdown. The order test now names this rule so the inversion cannot come back.
+     *
+     * It is the only hold that costs a query per row, so it stays bounded — and it can only fire
+     * where the ELECTED pair has already delivered (`touchesSoFar > 0` in the governor), which is
+     * a small set by construction because rotation elects the page AFTER whoever wrote last.
+     */
+    const key = `${p.id}:${electedId}`
+    const electedPairId = pairIdByKey.get(key)
+    if (electedPairId && deliveredPairKeys.has(key)) {
+      if (pairChecksDone < PAIR_PRECISION_LIMIT) {
+        pairChecksDone += 1
+        const used = await usedCampaignIds(electedPairId)
+        /* `newMaterialFloor`, NOT the allowance window — that is the floor the governor's own
+           query uses, and the two are genuinely different (72h vs 7 days). */
+        const rows = await campaignsNamingHandleRows(preloaded, p, materialFloor)
+        if (rows.filter((r) => !used.includes(r.id)).length === 0) {
+          bump(SKIP_REASONS.NO_NEW_MATERIAL, null)
+          continue
+        }
+      } else {
+        pairChecksSkipped += 1
+      }
+    }
+
     const spacing = crossSpacingVerdict({
       now,
       windowDays: settings.defaultCooldownDays,
@@ -492,29 +527,7 @@ export async function buildRestTally(now: Date = new Date()): Promise<RestTally>
       continue
     }
 
-    const key = `${p.id}:${electedId}`
-    const electedPairId = pairIdByKey.get(key)
-    if (electedPairId && deliveredPairKeys.has(key)) {
-      if (needsPairCheck.length < PAIR_PRECISION_LIMIT) {
-        needsPairCheck.push({ pairId: electedPairId, prospect: p })
-        continue
-      }
-      pairChecksSkipped += 1
-    }
     clear += 1
-  }
-
-  /* The last rule, and the only one that costs a query per row. `newMaterialFloor` — NOT the
-     allowance window — because that is the floor the governor's own query uses. */
-  for (const { pairId, prospect } of needsPairCheck) {
-    const used = await usedCampaignIds(pairId)
-    const rows = await campaignsNamingHandleRows(preloaded, prospect, materialFloor)
-    const unused = rows.filter((r) => !used.includes(r.id)).length
-    if (unused === 0) {
-      bump(SKIP_REASONS.NO_NEW_MATERIAL, null)
-    } else {
-      clear += 1
-    }
   }
 
   const byReason: RestReason[] = [...buckets.entries()]
