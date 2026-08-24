@@ -217,13 +217,21 @@ export async function buildRestTally(now: Date = new Date()): Promise<RestTally>
   /* Preload from the EARLIER of the two floors: the stub narrows per caller, it cannot widen. */
   const preloadFloor = allowanceFloor < materialFloor ? allowanceFloor : materialFloor
 
-  const [prospects, retired, watched, posts, deliveries, replies, pending, parked, pairs, eligibleSenderIds, unavailable] =
+  const [targetRows, posts, deliveries, replies, inFlightAndParked, pairs, eligibleSenderIds, unavailable] =
     await Promise.all([
+      /**
+       * EVERY target row in ONE query, partitioned in JS.
+       *
+       * This was three — live prospects, a retired count, a watched count — and `/`'s query
+       * budget is a CEILING OVER A BOUNDED DESIGN, not a number to raise when something new
+       * arrives: `pnpm ig:layout` measured 161 against a ceiling of 160 the first time this
+       * builder ran on the Autopilot page. Three round trips to partition 557 rows by two
+       * columns is the wrong trade over an SSH tunnel, and the columns are tiny.
+       *
+       * `kind`/`brandCategory`/`campaignTalent`/`isVerified` are what the remaining guards
+       * need, and they are COLUMNS — reading them costs nothing on a query already being made.
+       */
       prisma.targetAccount.findMany({
-        where: { role: 'PROSPECT', optedOut: false },
-        /* `kind`/`brandCategory`/`campaignTalent`/`isVerified` are what the remaining guards
-           need, and they are COLUMNS — reading them costs nothing on a query already being
-           made, which is why closing those gaps needs no extra round trip. */
         select: {
           id: true,
           handle: true,
@@ -232,10 +240,10 @@ export async function buildRestTally(now: Date = new Date()): Promise<RestTally>
           brandCategory: true,
           campaignTalent: true,
           isVerified: true,
+          role: true,
+          optedOut: true,
         },
       }),
-      prisma.targetAccount.count({ where: { role: 'PROSPECT', optedOut: true } }),
-      prisma.targetAccount.count({ where: { role: 'WATCH' } }),
       prisma.detectedCampaign.findMany({
         where: { verdict: 'CAMPAIGN', postedAt: { gte: preloadFloor } },
         select: { id: true, postedAt: true, caption: true, taggedAccounts: true, brands: true },
@@ -255,13 +263,13 @@ export async function buildRestTally(now: Date = new Date()): Promise<RestTally>
         where: { replyPostedAt: { gte: replyHaltFloor(settings.replyResumeHours, now) }, replyHandledAt: null },
         select: { replyPostedAt: true, pair: { select: { targetId: true } } },
       }),
+      /* Drafts in flight AND parked routes in one read, partitioned below on `status`: two
+         filters over one table is two round trips for no reason. Same budget argument. */
       prisma.outreachAttempt.findMany({
-        where: { status: { in: ['QUEUED', 'READY', 'SENDING'] } },
-        select: { pair: { select: { targetId: true } } },
-      }),
-      prisma.outreachAttempt.findMany({
-        where: { status: 'FAILED', failureCode: { not: null } },
-        select: { pair: { select: { targetId: true, senderId: true } } },
+        where: {
+          OR: [{ status: { in: ['QUEUED', 'READY', 'SENDING'] } }, { status: 'FAILED', failureCode: { not: null } }],
+        },
+        select: { status: true, pair: { select: { targetId: true, senderId: true } } },
       }),
       prisma.outreachPair.findMany({
         where: { sender: { fleetMember: true } },
@@ -270,6 +278,12 @@ export async function buildRestTally(now: Date = new Date()): Promise<RestTally>
       eligibleFleetSenderIds(),
       readSenderAvailability(),
     ])
+
+  const prospects = targetRows.filter((t) => t.role === 'PROSPECT' && !t.optedOut)
+  const retired = targetRows.filter((t) => t.role === 'PROSPECT' && t.optedOut).length
+  const watched = targetRows.filter((t) => t.role === 'WATCH').length
+  const pending = inFlightAndParked.filter((a) => a.status !== 'FAILED')
+  const parked = inFlightAndParked.filter((a) => a.status === 'FAILED')
 
   /** The enforcer's own linkage, fed from one query. The floor is honoured — see the docblock. */
   const preloaded = {
