@@ -129,9 +129,18 @@ export interface GovernorInput {
    * each — eighteen browser drives at one revenue profile against a recipient whose
    * composer cannot open (see blocker 5) — because each park was invisible to the guard.
    *
-   * Blocking is only safe because it is VISIBLE, which is the condition this repo already
-   * sets for parking: `not-in-thread` rows have the two-button "check the conversation"
-   * flow, and other parked rows have re-queue and discard. Both release this stop.
+   * ── WHAT RELEASES IT, AS OF 2026-08-24 ───────────────────────────────────
+   *
+   * A capped failure still has re-queue and discard on the landing page, and either releases
+   * this stop. An unaccounted-for send no longer has anything: Tabish removed the two-button
+   * "check the conversation" flow, so a `not-in-thread` park is now PERMANENT on the pair that
+   * produced it. That is deliberate and it is the safe direction for the recipient — the page
+   * that may already have delivered never writes to them again — but note the consequence,
+   * because it is not obvious: rotation elects ONE sender per recipient and `unavailable` is
+   * built from account facts (`readSenderAvailability`), not from parked routes, so if the
+   * elected page is the parked one that recipient is skipped every pass. MEASURED the day the
+   * flow was removed: 14 recipients carried a park, and for 10 of them the parked page was the
+   * elected one.
    */
   parkedFailureCode: string | null
 
@@ -255,7 +264,7 @@ export function evaluatePair(input: GovernorInput): GovernorDecision {
           eligible: false,
           reason: SKIP_REASONS.UNCERTAIN_DELIVERY,
           detail:
-            'a message to them cleared the composer and never appeared in the thread, so they may already have it — settle that on the dashboard before another is written',
+            'a message to them cleared the composer and never appeared in the thread, so they may already have it — this page writes nothing further to them',
         }
       : {
           eligible: false,

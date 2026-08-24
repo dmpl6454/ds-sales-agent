@@ -78,13 +78,13 @@ export interface DeliverOptions {
 }
 
 /**
- * How many delivery failures one draft may accumulate before it stops being offered to
- * the loop. Three, matching the counter the incident reached before a person stepped in —
- * enough to ride out a transient (a slow render, a network blip), few enough that a
- * structural refusal (an account that cannot be messaged) stops costing a browser drive
- * per minute against a revenue account.
+ * The retry cap now lives in `src/lib/constants.ts` and is re-exported here so this file —
+ * the enforcer — still owns the name its callers import. It moved because the FAILURES LIST
+ * on the dashboard reads it as well, and a view model importing this module to get one number
+ * would pull the browser stack into the Next server bundle. See the docblock there.
  */
-export const MAX_DELIVERY_ATTEMPTS = 3
+export { MAX_DELIVERY_ATTEMPTS } from '@/lib/constants'
+import { MAX_DELIVERY_ATTEMPTS } from '@/lib/constants'
 
 export async function deliverWaiting(opts: DeliverOptions = {}): Promise<DeliverResult> {
   const maxSends = opts.maxSends ?? 1
@@ -473,16 +473,22 @@ export async function deliverWaiting(opts: DeliverOptions = {}): Promise<Deliver
        *
        * So it parks in FAILED. Nothing automatic reads FAILED: this loop queries
        * `status: 'READY'`, and `evaluateResend` refuses anything that is not READY or
-       * QUEUED with `not-waiting`, which is NOT in OVERRIDABLE_BLOCKS. A person decides,
-       * having read the actual thread (`pnpm ig:thread <sender> <target>`), and
-       * `resolveUncertainSend` on the dashboard records which way it went.
+       * QUEUED with `not-waiting`, which is NOT in OVERRIDABLE_BLOCKS. Reading the actual
+       * thread (`pnpm ig:thread <sender> <target>`) is what settles it for a person.
        *
        * The reservation is KEPT, as it already was. Releasing it would permit a second
        * message on top of one that probably landed.
        *
-       * Parking a message where nothing picks it up is only safe because it is VISIBLE:
-       * `/messages` lists these under "check the thread", with the two buttons that
-       * resolve them. A parked message nobody can see is worse than a retried one.
+       * ── AND IT IS NO LONGER VISIBLE ON ANY SCREEN (2026-08-24) ──────────────
+       *
+       * This used to read: *parking a message where nothing picks it up is only safe because
+       * it is VISIBLE — `/messages` lists these under "check the thread", with the two buttons
+       * that resolve them.* Tabish removed that section, so the sentence is false and is
+       * corrected here rather than deleted, because the reasoning still holds and the trade is
+       * now a knowing one: a not-in-thread park is PERMANENT on its pair, nothing surfaces it,
+       * and `resolveUncertainSend` still exists but has no caller. What that costs, measured
+       * the day it changed: 18 such rows across 14 recipients, and for 10 of those recipients
+       * the parked page was also the one rotation had elected, so they are skipped every pass.
        */
       await prisma.outreachAttempt.update({
         where: { id: attempt.id },

@@ -72,6 +72,25 @@ export const DELIVERED_STATUSES = ['SENT', 'REPLIED'] as const
  */
 export const IN_FLIGHT_STATUSES = ['SENT', 'REPLIED', 'SENDING', 'READY', 'QUEUED'] as const
 
+/**
+ * How many delivery failures one draft may accumulate before it stops being offered to the
+ * loop and parks in `FAILED`. Three, matching the counter the incident reached before a
+ * person stepped in — enough to ride out a transient (a slow render, a network blip), few
+ * enough that a structural refusal (an account that cannot be messaged) stops costing a
+ * browser drive per minute against a revenue account.
+ *
+ * ── WHY IT LIVES HERE AND NOT IN `deliver.ts` (2026-08-24) ─────────────────
+ *
+ * The SCREEN now reads it too: the failures list shows only drafts that have exhausted the
+ * cap, so the page and the enforcer must agree by construction rather than by a literal 3
+ * typed twice — the `DELIVERED_STATUSES` lesson, which drifted across four call sites before
+ * it moved into this file. `deliver.ts` re-exports it, so the enforcer's own import is
+ * unchanged; the reason for the move is that `deliver.ts` reaches the browser stack, and a
+ * view model importing it to read one number would pull Patchright into the Next server
+ * bundle. Same reasoning as `dbPool.ts`: a number you want to READ must cost nothing to read.
+ */
+export const MAX_DELIVERY_ATTEMPTS = 3
+
 export const SENDER_STATUSES = ['ACTIVE', 'PAUSED', 'CHALLENGED'] as const
 export type SenderStatus = (typeof SENDER_STATUSES)[number]
 

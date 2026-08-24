@@ -66,9 +66,48 @@ export function frameBrandTokens(frameText: string | null): string[] {
 /** Failure memory for candidate HANDLES. See `lookupCooldown.ts` — third module to need it. */
 const unreachable = createFailureMemory()
 
+/**
+ * AND A SECOND MEMORY, FOR CANDIDATES THAT ANSWERED AND DID NOT MATCH (2026-08-24).
+ *
+ * ── THE FOURTH LIVELOCK, AND THE COOLDOWN COVERED THE WRONG HALF ───────────
+ *
+ * `lookupCooldown.ts` records the signature to look for — *identical summary numbers on
+ * consecutive passes of a bounded queue* — and this pass was showing it again, one branch
+ * over from the fix that was supposed to end it. MEASURED on the live agent log, 61 passes
+ * since 23 Aug: **855 lookups spent, 3 prospects created**, and
+ * `coolingOff=60 looked=15 created=0 needsHuman=15` byte-identical across four consecutive
+ * passes, with the needsHuman line itself byte-identical across eight:
+ *
+ *     "prime video" → @prime_video (Rosiane Silva, verified=false)
+ *                   | @primevideoindia (MEMENAUTIX, verified=false)
+ *                   | @primevideo.official (—, verified=false)
+ *
+ * The cause is that `unreachable` only remembers a candidate that DID NOT ANSWER. A
+ * candidate that answers and then fails `isOfficialMatch` was `clear()`ed — correctly, as far
+ * as reachability goes — and `known` is per-pass, and this pass never persists a candidate to
+ * `BrandLookup`. So the name queue, sorted by how many paid posts assert each name, kept
+ * "prime video" at the front permanently and re-resolved the same three wrong accounts every
+ * thirty minutes. `looked=15` with `needsHuman=15` is 100% of the budget going to candidates
+ * that were already resolved and rejected on the previous pass, while the 1,025 harvested
+ * names behind the stuck front were never reached at all.
+ *
+ * TWO MEMORIES, NOT ONE, because they answer different questions and a reachable answer must
+ * still clear the unreachability memory without also forgetting the rejection — the same
+ * discipline that keeps `not-in-thread` out of the provably-undelivered class, and that
+ * `ThreadBodies` applied when one input was serving two questions with opposite safe
+ * directions.
+ *
+ * IN-PROCESS AND TIME-BASED, like its sibling: a rejection is a verdict about the profile as
+ * it reads TODAY, and a page can be verified or renamed tomorrow. Persisting it would make
+ * `known` exclude that handle forever, which is absence-of-a-match hardening into a permanent
+ * refusal — this codebase's most-repeated defect. A restart costs one pass of relearning.
+ */
+const rejected = createFailureMemory()
+
 /** Test seam: module state would otherwise leak between cases in one suite process. */
 export function resetOfficialDiscoveryMemory(): void {
   unreachable.reset()
+  rejected.reset()
 }
 
 export interface HarvestPost {
@@ -252,7 +291,9 @@ export async function discoverOfficialPages(
   outer: for (const [name, info] of ordered) {
     for (const candidate of candidateHandlesFor(name)) {
       if (known.has(candidate)) continue
-      if (unreachable.isCoolingOff(candidate)) {
+      /* Did not answer last time, or answered and was not this brand's official page. Either
+         way it must not spend a lookup this pass. Both are COUNTED, never silently dropped. */
+      if (unreachable.isCoolingOff(candidate) || rejected.isCoolingOff(candidate)) {
         out.coolingOff += 1
         continue
       }
@@ -296,6 +337,10 @@ export async function discoverOfficialPages(
         }
         continue outer // one official page per brand name is the whole point
       }
+      /* It answered and it is not them. Report it for a person (`--accept` is the deliberate
+         door), and send it to the back for a day so the next pass reaches a NEW name instead
+         of re-resolving this one. Without this line the front of the queue never moves. */
+      rejected.note(candidate)
       out.needsHuman.push(`"${name}" → @${candidate} (${e.fullName ?? '—'}, verified=${e.isVerified ?? '?'})`)
     }
   }

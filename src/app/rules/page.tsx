@@ -51,7 +51,7 @@ const STOP_LABELS: Record<(typeof RESEND_BLOCKS)[keyof typeof RESEND_BLOCKS], st
   [RESEND_BLOCKS.MATERIAL_EXHAUSTED]:
     'every paid post we have seen from them has already been written about — one message per detected paid post, from one of our pages, not five',
   [RESEND_BLOCKS.UNCERTAIN_DELIVERY]:
-    'an earlier message to them cleared the composer and never appeared in the thread, so they may already have it — a person settles that before another goes',
+    'an earlier message to them cleared the composer and never appeared in the thread, so they may already have it — that one page never writes to them again',
   [RESEND_BLOCKS.PARKED_FAILURE]:
     'an earlier message to them was parked after repeated failures — re-queue or discard that one first',
   [RESEND_BLOCKS.NO_SESSION]: 'the account is not signed in',

@@ -67,10 +67,24 @@ async function navCounts(): Promise<NavCounts> {
    * forever made the badge a nag that outlived the rule it reported.
    */
   const settings = await getSettings()
-  const [waiting, repliesToHandle, prospects, senders, uncertain, channels, paidPosts] = await Promise.all([
+  const [waiting, repliesToHandle, prospects, senders, channels, paidPosts] = await Promise.all([
     prisma.outreachAttempt.count({ where: { status: 'READY' } }),
+    /**
+     * `replyPostedAt`, NOT `repliedAt` — the badge must count the halt by the rule that
+     * ENFORCES it (2026-08-24).
+     *
+     * This filtered `repliedAt`, the sweep's OBSERVATION clock, while every enforcer — gate,
+     * planner, on-demand, three view models — filters `replyPostedAt`, the date the reply was
+     * WRITTEN. MEASURED when it was found: both queries returned 64, and 0 rows disagreed in
+     * either direction, so the divergence was LATENT rather than live. It becomes visible the
+     * first time a reply is undatable or discovered late: `replyPostedAt: null` never holds the
+     * halt (Tabish's permissive rule) but would still have been counted here, so the badge would
+     * summon a person to a halt the gate is not applying. Sixth entry in this project's "a page
+     * reporting a rule by a different rule than the one enforcing it" family, and the cheapest
+     * one to have closed before it fired.
+     */
     prisma.outreachAttempt.count({
-      where: { repliedAt: { gte: replyHaltFloor(settings.replyResumeHours) }, replyHandledAt: null },
+      where: { replyPostedAt: { gte: replyHaltFloor(settings.replyResumeHours) }, replyHandledAt: null },
     }),
     prisma.targetAccount.count({ where: { optedOut: false } }),
     prisma.senderAccount.findMany({
@@ -80,7 +94,6 @@ async function navCounts(): Promise<NavCounts> {
         sessionInvalidAt: true,
       },
     }),
-    prisma.outreachAttempt.count({ where: { status: 'FAILED', failureCode: 'not-in-thread' } }),
     prisma.targetAccount.count({ where: { kind: 'CHANNEL', optedOut: false } }),
     prisma.detectedCampaign.count({ where: { verdict: 'CAMPAIGN', detectedAt: { gte: daysAgo(7) } } }),
   ])
@@ -98,7 +111,14 @@ async function navCounts(): Promise<NavCounts> {
     prospects,
     senders: senders.length,
     needSignIn,
-    needsAttention: repliesToHandle + uncertain + challenged,
+    /**
+     * Unaccounted-for sends were counted here until 2026-08-24 and are not any more: the
+     * "Check the conversation" section they pointed at is gone (Tabish), so the badge was
+     * summoning a person to a screen with nothing on it. A badge that cannot be cleared stops
+     * being read — the same reason the replies badge counts only ACTIVE halts rather than every
+     * un-handled reply forever.
+     */
+    needsAttention: repliesToHandle + challenged,
     channels,
     paidPosts,
   }

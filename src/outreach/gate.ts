@@ -413,7 +413,7 @@ export function evaluateResend(input: ResendInput): ResendResult {
           ok: false,
           reason: RESEND_BLOCKS.UNCERTAIN_DELIVERY,
           detail:
-            'an earlier message to them cleared the composer and never appeared in the thread, so they may already have it — open the conversation and settle it before this one goes',
+            'an earlier message to them cleared the composer and never appeared in the thread, so they may already have it — this page does not write to them again',
         }
       : {
           ok: false,

@@ -1,6 +1,7 @@
 import { redirect } from 'next/navigation'
 import { buildTodayView } from './view-model'
 import { buildMessagesPage } from './view-model/messages-page'
+import { buildRestTally } from './view-model/rest-tally'
 import { buildConversationsPage } from './view-model/conversations-page'
 import { buildWatchChart } from './view-model/charts'
 import { rankBlockers, blockersSummary } from './view-model/blockers'
@@ -10,7 +11,7 @@ import { AutopilotPanel } from './autopilot'
 import { BlockerList } from './blockers'
 import { PaceBand } from './pace'
 import { WaitingList } from './messages/waiting'
-import { UncertainList } from './messages/uncertain'
+import { RestBand } from './rest-band'
 import { ParkedList } from './messages/parked'
 import { RepliesPanel } from './replies'
 import { OnDemandPanel } from './on-demand'
@@ -38,7 +39,7 @@ export const dynamic = 'force-dynamic'
  *   the switch       the single control, with the environment floor beside it
  *   what is stopping it   ranked by what CANNOT BE RECOVERED, not by loudness
  *   the pace         why "on" does not mean "now"
- *   replies · uncertain   the two things only a person can settle
+ *   replies         the one thing only a person can settle
  *   the queue        every draft, with the guard's own refusal on it
  *
  * The ranked list is the piece that was missing before. The page used to show the same
@@ -56,12 +57,21 @@ export default async function AutopilotPage() {
   const user = await currentUser()
   if (!user) redirect('/sign-in')
 
-  const [v, m, c, watch, settings] = await Promise.all([
+  const [v, m, c, watch, settings, rest] = await Promise.all([
     buildTodayView(),
     buildMessagesPage(),
     buildConversationsPage(),
     buildWatchChart(),
     getSettings(),
+    /*
+      WHO IS RESTING, and out of how many (2026-08-24, Tabish). Loaded HERE in the existing
+      Promise.all rather than inside the queue component, so its ~700ms of enforcer work runs
+      concurrently with the four builders already in flight and adds no wall-clock this page
+      was not already spending. It is also why it must not be a client component: reaching the
+      enforcers from the browser bundle is the `waiting.tsx -> gate.ts -> better-sqlite3` trap
+      that returned HTTP 500 on every route.
+    */
+    buildRestTally(),
   ])
 
   /**
@@ -81,8 +91,16 @@ export default async function AutopilotPage() {
     */
     breaker: m.dispatch.breaker.tripped ? { reason: m.dispatch.breaker.detail } : null,
     pausedBy: m.pause,
-    repliesWaiting: c.replies.length,
-    uncertain: m.uncertain.length,
+    /**
+     * DISTINCT RECIPIENTS, not reply rows — the headline this feeds says "N recipients replied
+     * and are on hold", and the halt is per RECIPIENT (a reply stops every one of our pages
+     * writing to them). MEASURED 2026-08-24: 65 unhandled replies across 51 distinct
+     * recipients, so the old `c.replies.length` overstated the number of held recipients by
+     * 30% — a screen reporting one rule by a different rule, which is the most repeated defect
+     * in this project's history. Several recipients have replied more than once, and
+     * @keshavamband four times.
+     */
+    repliesWaiting: new Set(c.replies.map((r) => r.targetHandle)).size,
     draftsWaiting: m.waitingTotal,
     topRefusal,
   })
@@ -160,8 +178,13 @@ export default async function AutopilotPage() {
               </section>
             )}
 
-            {/* A send Instagram accepted that never appeared — the one thing a person must settle. */}
-            <UncertainList uncertain={m.uncertain} />
+            {/*
+              Failures the retry cap gave up on. The "Check the conversation" section that used
+              to sit above this is GONE (2026-08-24, Tabish) along with the list of sends that
+              cleared the composer and never appeared: it was asking a person to open eighteen
+              Instagram conversations, three of them for drafts that had not failed once.
+              `ParkedList` renders nothing at all when there is nothing to show.
+            */}
             <ParkedList parked={m.parked} />
 
             {/*
@@ -185,6 +208,15 @@ export default async function AutopilotPage() {
             </section>
           </div>
         </section>
+
+        {/*
+          WHY THE QUEUE IS THE DEPTH IT IS — immediately above the queue, because it is the
+          answer to the question the queue provokes. MEASURED the day it shipped: 10 drafts
+          waiting and 469 of 473 companies resting, and every number on this page was about the
+          10. A company the planner refused to write for has no draft, so the population that
+          explains a ten-deep queue appeared nowhere.
+        */}
+        <RestBand tally={rest} />
 
         {/* The queue: who sends next (sendable drafts in dispatch order), then counts per account. */}
         <WaitingList queue={m.queueBySender} upNext={m.upNext} heldWaiting={m.heldWaiting} heldUpNext={m.heldUpNext} total={m.waitingTotal} autopilotOn={m.autopilotOn} />
