@@ -239,6 +239,111 @@ admit case green. `@tips_india` is retired with an audit row; `@tips` is untouch
 without discriminating. When a guard's strength depends on the size of its input, measure the
 input.
 
+## 25 AUGUST, EVENING — TWO FLEETS, AND AN ABSENT MEMBERSHIP IS THE DEFAULT ONE
+
+**Tabish: *"we are to have two categories of senders and monitoring targets … brand category
+senders must never send messages to targets … discovered via bollywood categories' monitoring
+targets and vice versa"***, with his own exception — ***"unless they are present common
+elsewhere"***.
+
+### THE LOAD-BEARING DECISION IS THAT "NO CATEGORY" MEANS `bollywood`, NOT "ANY"
+
+The obvious implementation is to tag every existing sender and recipient `bollywood` and
+compare sets — **~500 target rows and 5 sender rows of migration before anything works**, and
+it rewrites the input of a rotation that is currently delivering. That is the ring-resize
+hazard this project has already paid for once (36 surplus drafts, one recipient at a time,
+when removing a sender changed the hash spread).
+
+So `effectiveCategories([])` returns `['bollywood']` and a route is allowed when the two
+effective sets INTERSECT. Every case falls out and the bollywood half needs **no migration at
+all**:
+
+| sender | recipient | verdict |
+|---|---|---|
+| (none) | (none) | **ALLOWED** — today's fleet, untouched |
+| marketing | (none) | refused |
+| (none) | marketing | refused |
+| marketing | marketing | **ALLOWED** |
+| either | **both** | **ALLOWED** — *"unless they are present common elsewhere"* |
+
+**A THIRD CATEGORY COSTS ONE `Category` ROW** and tagging its own senders and channels;
+nothing in the rule changes. That is what *"e2e futureproof"* asks for, and it is why this is
+a set intersection rather than a pair of booleans.
+
+**The thing most likely to be "simplified" is `if (targetCats.length === 0) return true`** —
+which would let a marketing page write to every bollywood company. Both directions are pinned
+in `tests/sender-categories.test.ts`.
+
+### ENFORCED AT BOTH ENDS, AND NOT OVERRIDABLE
+
+`routes.ts` refuses to CREATE a cross-fleet pair so the queue never fills with them;
+`gate.ts` refuses to SEND one written before the rule. **Absent from `OVERRIDABLE_BLOCKS`** —
+every stop a human may cross is about TIMING, and this one is about WHICH FLEET. A company
+that genuinely belongs to both is put in BOTH categories, which is the supported answer rather
+than an override.
+
+`senderCategories` / `targetCategories` are **REQUIRED** fields on `RouteQuestion` and
+`ResendInput` (the `RenderTarget.kind` pattern), so the compiler named all five creators plus
+the gate instead of one of them defaulting silently. `readCategoryMemberships` is TWO queries
+for the whole fleet, loaded once per caller and passed down — a lookup per pair would be an
+N+1 over `senders × targets`, the defect killed four times here.
+
+### WHAT `ig:setup-categories` DID, AND WHAT IT REFUSED
+
+Dry run by default. It verified every channel against Instagram before adding it, and
+**REFUSED `@socialsamosa` — the handle does not exist.** Held for Tabish rather than guessed
+at: a wrong WATCH page is not harmless, its CAMPAIGN posts mint real prospects that get real
+DMs (the @filmigyan measurement — 6 of 14 handles as typed resolved to wrong accounts that
+EXIST). `@afaqs`, `@exchange4media` (verified) and `@marketingmentalist` (unverified, which is
+fine for a page we only READ) were added as WATCH.
+
+**41 prospects discovered from marketing channels moved into the fleet; 0 were named on a
+bollywood post**, so none was shared — the exception was checked per row, because that is a
+fact about today's corpus and not a rule.
+
+**IT CREATES NO SENDER, deliberately.** `@madaboutmarketing` needs a hand login from the home
+IP — the one act in this design that cannot be automated. Until it exists those 41 prospects
+have **no sender at all**, which is exactly his instruction: *"for madovermarketing no messages
+are to be sent currently to targets obtained from them."* They sit correctly unreachable
+rather than being written to by the wrong fleet. `pnpm ig:set-category marketing sender
+madaboutmarketing --run` is the one command that finishes it.
+
+VERIFIED on live data in all four directions, and **1 waiting draft now crosses the line and
+is held by the gate.**
+
+### THE REPLIES PANEL IS A DISCLOSURE, AND THE LINK IS THE POINT
+
+*"remove the text being displayed in autopilot page for replies … just a collapsible … with
+also the sender mentioned who had sent the message) to that thread."* At 75 replies the page
+opened with a wall of somebody else's prose above the queue, and the text was never the
+actionable part: answering needs THE THREAD, and the thread needs the page it was sent from,
+because **Instagram DMs are per account PAIR and only that sender's profile can open it**.
+
+Each row is now: who replied · when · which of our pages · when the halt frees · a link
+straight to that conversation. MEASURED first: **all 75 reply rows carry a `threadUrl`**, so
+the link is real on every row. `<details>` rather than a `useState` toggle keeps the panel a
+SERVER component — a client toggle drags the data into the browser bundle, which is the
+`waiting.tsx → gate.ts → better-sqlite3` trap that returned HTTP 500 on every route.
+
+### AND THE FIGURES HE ASKED ABOUT, MEASURED
+
+- **"75 people have replied" counts ROWS, not people — it is 75 rows across 60 DISTINCT
+  recipients.** Some replied to more than one of our pages. 46 carry text, 29 do not, all 75
+  are currently halting.
+- **`/analytics` now expands each sending page to the companies it has written to.** One
+  query, `distinct` on `pairId`, grouped in JS — never a query per account.
+- **The "—" in the We-message column is honest.** Those posts assert no handle (`taggedAccounts:
+  []`, no `@` in the caption) and their brand strings name no verified prospect we hold —
+  "Haiwaan" is a film, not an account. The fix is upstream in `captionEntities`, which now
+  feeds those names to discovery; the column will fill as those accounts are found and
+  admitted, and it says nothing in the meantime rather than narrating the search.
+- **SENDING AND ROTATION ARE HEALTHY:** 61 recipients messaged in 24h and **61 of 62 got each
+  message from a DISTINCT page**. 0 prospects have no route; 5 have routes but no draft yet.
+  The queue is small (6 waiting) because 70% of pairs are `material-exhausted` — waiting for
+  the next paid post naming that recipient, which is his own rule.
+
+---
+
 ### THE MODEL WAS ASKED FOR THE FILM, SO IT NEVER NAMED THE PEOPLE WHO BUY PLACEMENT
 
 **Tabish, on @taranadarsh's `Toxic` post: *"multiple individuals, brands were named, none of
