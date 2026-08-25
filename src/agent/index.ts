@@ -142,7 +142,23 @@ const BRAND_LOOKUPS_PER_PASS = 25
  * untouched, so the badge bar still decides, and a junk name still costs one lookup and a
  * printed line. **If a 429 ever appears on the feed endpoint, lower this first.**
  */
-const OFFICIAL_LOOKUPS_PER_PASS = 15
+/*
+  RAISED 15 → 40 on 2026-08-25, and the reason is that the queue behind it got much deeper.
+  `captionEntities` took the harvest from 987 distinct names to **2,810** across the in-window
+  corpus — every person and production company a paid post names, not just the film being
+  sold. Tabish: *"Monitoring must be aggressive and accurate."*
+
+  THE TRADE, STATED: 40 lookups every 30 minutes is ~1,920/day against an undocumented,
+  throttled profile endpoint, from the one home IP every account also logs in from. Politeness
+  is still a 6s gap, so a full pass is ~4 minutes of lookups inside a 30-minute window, and
+  `autoResolveBrands` (25) shares the same endpoint. A real 429 HALTS the pass rather than
+  continuing — that guard is what makes raising this recoverable rather than a gamble.
+
+  **If a 429 ever appears, lower this first.** Frequency ordering is what makes the raise worth
+  it rather than just louder: a name on 56 paid posts is looked up before one named once, so
+  the budget buys the best leads first however long the tail is.
+*/
+const OFFICIAL_LOOKUPS_PER_PASS = 40
 /** Badge checks per brand pass — the FEED endpoint, 6s spacing inside the pass. */
 const BADGE_ENRICHMENTS_PER_PASS = 10
 
