@@ -239,6 +239,67 @@ admit case green. `@tips_india` is retired with an audit row; `@tips` is untouch
 without discriminating. When a guard's strength depends on the size of its input, measure the
 input.
 
+### TWELVE PEOPLE WERE RETIRED UNDER A RULE THAT CHANGED THREE DAYS LATER
+
+**Tabish: *"unretire them and add them to queue or prioritised whatever is safest and
+quickest."*** MEASURED: **13 retired prospects carried `isVerified: null`** — retired on
+evidence nobody ever gathered. **Eleven were retired on 17 August with the reason "a person,
+not a company", and the TALENT DOOR superseded that reason on 20 August.** @deepakmukut — the
+producer who bought the Gunmaaster G9 campaign and is tagged on the post — was one of them.
+
+**`pnpm ig:unretire-target` RE-READS THE BADGE BEFORE IT CLEARS ANYTHING, and that is the
+whole design.** Every row it can act on is `isVerified: null` by definition, and VERIFIED ONLY
+is explicit that **NULL is refused** — so flipping `optedOut` alone would take the exact
+population the permanent rule names and admit it on no evidence at all: *absence of data
+hardening into a positive verdict*, inside the command written to undo the opposite mistake.
+
+It enriches from the home IP, **persists the answer whichever way it goes**, and asks
+`admitsAsTalent` — **imported, never restated**, because a second copy of an admission bar is
+how the @lego.mybrickhouse send happened. Unreachable STAYS retired (a timeout is never a
+verdict); a 429 halts the run rather than continuing after being told to stop.
+
+**`campaignTalent` is set on un-retire, and that is required rather than generous:**
+`checkRecipientIsNotAPerson` refuses a person-role category without it — @ananyapanday is
+filed *"Private Investigator"* and @acharyavinodkumar *"Astrologist"* — so un-retiring without
+it produces a live row the planner silently refuses forever. That is "a guard nobody can
+trigger" wearing the opposite costume: a lead that LOOKS re-acquired and can never be written
+to.
+
+**IT WRITES NO DRAFT AND NO PAIR, deliberately.** `ensureFleetPairs` recreates every allowed
+route at the top of each planner pass and `routes.ts` stops refusing the moment the flag
+clears, so **the safest path and the quickest path are the same path**. Hand-writing drafts
+here would bypass the material allowance, the ring rule and the verified bar — every one of
+which this command exists to respect.
+
+**RESULT: all 12 came back VERIFIED.** Their stored names were corrected on the way through —
+`azmishabana18` → *"Shabana Azmi"*, `deepakmukut` → *"Deepak Mukut"*, `kunalkemmu` → *"Kunal
+Kemmu"* — the raw-handle `displayName` problem, fixed as a side effect of looking. Live
+prospects **490 → 502, still 0 unverified**. **@kamala.trust was left retired deliberately:
+it is an NGO ("Ankibai Ghamandiram G. Trust"), and a charity is not campaign talent** — the
+"or a charity" half of its original reason still stands.
+
+### THE NUMBERS HE ASKED FOR, MEASURED
+
+| | |
+|---|---|
+| prospects ever created | **560** (490 live before this, 502 after) |
+| discovered in the last 24h | **44** |
+| recipients ever messaged | **532** |
+| messages delivered, ever | **1,434** (175 in the last 24h) |
+| live prospects already messaged | **486 of 490 — 99.2%** |
+
+**THE QUEUE IS LIVE, and the evidence is movement rather than a number:** drafts written AND
+messages sent in every 30-minute bucket across the last three hours, newest draft 22 min old,
+newest send 21 min old, newest post detected 9 min old. The steady state is
+`material-exhausted=1930` of 2,760 skips — **70% of pairs waiting for the next paid post
+naming that recipient**, which is Tabish's own rule releasing itself as detection finds more.
+
+**AND `autopilot=false` IN THE SERVER LOG IS CORRECT, not a fault.** The Linode carries
+`AUTOPILOT_ENABLED=false` as a hard env floor because it may never send; the Mac's device
+agent does the sending. A reader seeing `dispatcher held reason=autopilot-off` on the server
+is looking at the hosting split working, and the DRAFTING half runs there regardless — which
+is why `planLastOkAt` and not the dispatcher is the stamp to watch on that host.
+
 ---
 
 ## 23 AUGUST — IDENTITY CAME OFF A COLLABORATOR, AND DISCOVERY IGNORED 60% OF PAID POSTS
