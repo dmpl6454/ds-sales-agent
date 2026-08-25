@@ -239,6 +239,131 @@ admit case green. `@tips_india` is retired with an audit row; `@tips` is untouch
 without discriminating. When a guard's strength depends on the size of its input, measure the
 input.
 
+### THE MODEL WAS ASKED FOR THE FILM, SO IT NEVER NAMED THE PEOPLE WHO BUY PLACEMENT
+
+**Tabish, on @taranadarsh's `Toxic` post: *"multiple individuals, brands were named, none of
+which have been discovered as targets with verified accounts to be messaged."*** He is right,
+and the cause is **the QUESTION, not a bug**:
+
+| | stored `brands` | what the caption actually named |
+|---|---|---|
+| Toxic | `["Toxic","KGF2"]` | Yash · Nayanthara · Kiara Advani · Tara Sutaria · Rukmini Vasanth · Huma Qureshi · **Geetu Mohandas** (director) · **Venkat K Narayana** (producer) · **KVN Productions** · Monster Mind Creations |
+| Haiwaan | `["Haiwaan"]` | Akshay Kumar · Saif Ali Khan · **Priyadarshan** · Boman Irani · Saiyami Kher · Shriya Pilgaonkar · Sharib Hashmi · KVN Productions · **Thespian Films** · Shailaja Desai Fenn |
+
+`semantic.ts` asks for *"commercial entities being promoted"* — and for a film release that is
+the film. **The cast, the director and the production house are who buy placement, and nothing
+was reading them.** Both posts were detected CAMPAIGN correctly; detection was never the gap.
+
+**`captionEntities.ts` IS A PURE EXTRACTOR, AND THAT IS THE SAFETY ARGUMENT.** Adding a
+`people` field to the classifier's JSON is the more accurate instrument and is deliberately
+NOT what shipped: a prompt edit is a classification change, the standing gate is
+`ig:accuracy --repeat 3` before and after, and an attempt to catch one missed post by prompt
+once cratered precision **85% → 71%**. This module touches `judge.ts` not at all, so
+**classification is PROVABLY unchanged rather than measured unchanged.**
+
+Four sources: CamelCase hashtags, bare CamelCase tokens (`KiaraAdvani`, `KVNProductions`), an
+anchored `Directed by <Name>` rule — the only way a one-word director like **Priyadarshan** is
+reachable — and capitalised runs in prose. Driven on the two real captions: **12 and 10
+entities, zero junk.** Corpus-wide: **987 → 2,810 distinct names, +1,823 new.**
+
+**AN ALL-CAPS HEADLINE ARM WAS WRITTEN AND DELETED, which is the part worth keeping.** Trade
+captions open in caps. Driving it found that **every name it caught already arrived as a
+hashtag**, while it added `YEARS AFTER`, `YASH RETURNS WITH`, `SAIF ALI KHAN REUNITE` and
+`YEARS FOR PRIYADARSHAN` — four junk candidates for zero new entities. At 5 lookups per 30
+minutes, **an arm that only spends the budget is worse than no arm.** Two other rules came from
+the same exercise: `/gi` on the role-word regex made `[A-Z]` match lowercase and captured
+*"Geetu Mohandas and jointly"*; and a run that is WHOLLY upper case is prose, while an
+initialised company is MIXED (`KVN Productions`) — which is what separates them.
+
+**`OFFICIAL_LOOKUPS_PER_PASS` 15 → 40** (Tabish: *"Monitoring must be aggressive and
+accurate"*), stated at the constant: ~1,920/day against a throttled endpoint from the home IP,
+6s spacing, a real 429 still HALTS the pass. Frequency ordering is what makes the raise worth
+it — a name on 56 paid posts is looked up before one named once.
+
+### "NOBODY NAMED" AND "N NAMES WITH NO VERIFIED ACCOUNT YET" ARE GONE
+
+**Tabish: *"I don't want '1 name with no verified account yet', 'nobody named', etc type of
+nonsensical stuff to be written here … we need definite targets, no need to mention these
+things, also, what does 'yet' even mean?"*** Right on both counts. The disposition was added on
+21 August because the column then collapsed everything into a false *"nobody verified"* — but
+the answer to that was to FIND the accounts, not to narrate our own queue on a screen someone
+reads for decisions. *"Badge check pending"* is a fact about us, not about the post, and *"yet"*
+is a promise with no date on it. **The column is the recipients and an em-dash.**
+
+**AND THE fg2 CODES WERE STILL BEING PRINTED.** MEASURED: **668 @filmygyan rows and 178
+@bollywoodsocietyy rows carry a code like `fg2` / `bs2` / `fg14`, 49 of them stored TODAY** — so
+this was live, not history. `ownMarks` stops a code reaching a verdict, and `harvestBrandNames`
+stops it spending a lookup (**verified: zero `fg*` handles in `BrandLookup`, zero targets**) —
+but nothing stopped it being DISPLAYED. Stripped at render, so every stored row is covered
+rather than only the ones judged from now on.
+
+### A SEARCH BOX, AND WHY IT DOES NOT USE `mode: 'insensitive'`
+
+*"There must also be a simple 'search' button … from our huge and growing library."* Caption,
+brand strings and shortcode, in the same GET form as the channel filter so the two compose.
+
+Prisma's case-insensitive `contains` is **POSTGRES-ONLY** — on the SQLite client the argument
+does not exist and the call throws. That is the `skipDuplicates` trap verbatim, invisible to
+`pnpm typecheck` (which runs against the Postgres schema while the suite runs against SQLite).
+So the term is matched in the three casings a person actually types: **portable by
+construction**, at the cost of a longer `OR` evaluated once. VERIFIED live: `toxic` 32,
+`Haiwaan` 11, `zee` 50, a pasted shortcode exactly 1, `toxic`+`taranadarsh` 5, a one-character
+term ignored.
+
+### "WE ARE MISSING PAID POSTS" — MEASURED FALSE, AND THE REAL LEAK IS ELSEWHERE
+
+Probed the live feed against the corpus: **0 of 24 live @taranadarsh posts are missing.** The
+Toxic post looks fourth on Instagram because the three above it are PINNED; we sort by
+`postedAt`. Capture is complete.
+
+**THE 99% WAS THE RIGHT THING TO BE SUSPICIOUS OF, AND IT MEANS THE OPPOSITE OF DONE.** 507 of
+511 live prospects have been messaged — because the POOL is small, not because outreach is
+finished: **918 in-window paid posts have yielded 511 prospects.** The funnel on tagged handles
+alone:
+
+| | |
+|---|---|
+| handles Instagram asserted on paid posts (25d) | **335** |
+| became live prospects | 232 |
+| refused as unverified — the bar working | 65 |
+| **looked at, but NO BADGE ON RECORD** | **112** |
+| never looked at all | 7 |
+
+**Those 112 are the concrete leak**: `BrandLookup.isVerified` is NULL, so they are neither
+admitted nor refused — *absence of data* sitting in the one place the VERIFIED ONLY rule says
+it must not. That is 112 potential targets from TAGS alone, before counting the 1,823 new
+caption names. **Not fixed here; named with its measurement.** The badge door is what re-enriches
+NULL rows and it is sharing a throttled endpoint with two other passes.
+
+### AND THE QUERY BUDGETS ARE FIXED — 62 → 16 QUERIES IN ONE BUILDER
+
+A **query budget** is what `pnpm ig:layout` enforces: it opens each page in a real browser and
+asks the server how many database queries it issued to render it. It exists because
+`buildBrandsPanel`'s N+1 made `/` a ten-second page over the SSH tunnel and nothing noticed for
+months. **A budget is a ceiling over a bounded design; raising one to make the check pass is
+the one thing not to do.**
+
+Found by logging the SQL rather than by reading: **50 of `buildRestTally`'s 62 queries were
+`usedCampaignIds(electedPairId)` inside the prospect loop**, and since `/` and `/targets` both
+load that builder, both were over — 182/160 and 148/120. The usage is preloaded in one query
+now (two columns), and **`PAIR_PRECISION_LIMIT` is DELETED rather than raised**: it existed only
+to bound the round trips, so with them gone the tally stopped being an approximation above 80
+rows. `/` **137/160**, `/targets` **103/120**, `/paid-posts` 96/120. **189 layout checks green.**
+
+### COST, AUDITED
+
+| | |
+|---|---|
+| total ever | **$0.827** across 27,972 calls, 6 failures |
+| last 24h | $0.093 (2,759 calls) |
+| at this rate | **~$32 a year** |
+| cache hit | **94.2%** |
+| by purpose | classify $0.807 · resolve $0.020 · generate $0.0006 |
+
+**The DeepSeek double-count is still absent** — 3.07M `inputTokens` against 49.9M
+`cachedInputTokens`, i.e. the miss complement, which is the correct field. Detection is not a
+cost problem and never has been; the raised lookup budget costs requests, not dollars.
+
 ### /paid-posts FILTERS BY CHANNEL AND PAGES BACK — the 21 AUGUST ITEM, CLOSED
 
 **Tabish: *"There must be a filter to show in a list (with back button to go further back and
