@@ -239,6 +239,79 @@ admit case green. `@tips_india` is retired with an audit row; `@tips` is untouch
 without discriminating. When a guard's strength depends on the size of its input, measure the
 input.
 
+### /paid-posts FILTERS BY CHANNEL AND PAGES BACK — the 21 AUGUST ITEM, CLOSED
+
+**Tabish: *"There must be a filter to show in a list (with back button to go further back and
+see data page wise) via dropdown where we can select a target channel name via dropdown (the
+monitoring target) and see paid posts with respect to them only. e2e implementation."***
+
+It was a flat `take: 100` with *"Showing the newest 100 of N"* underneath — the **FOURTH face
+of a bounded list read as a complete record**, after `sentToday`, the activity feed and
+`SentList`. Same shape as `buildSentHistory` deliberately: **one pagination idea in this
+product, not two that drift.** 50 a page, `?channel=` and `?page=` in the URL.
+
+**THE OLD "of N" ALREADY COUNTED A DIFFERENT SET THAN ITS ROWS.** The count asked
+`verdict: CAMPAIGN` while the rows asked `CAMPAIGN OR humanLabel: false` — harmless as a
+footnote, **fatal as a pager**, which computes where the END is from that number. `postsWhere`
+is now named once and handed to both.
+
+**`id` IS THE TIEBREAK AND IT DOES REAL WORK.** Detection stores a whole feed page in one
+pass, so **27 `postedAt` values in the corpus are shared by more than one row** — with an
+unstable sort a row silently repeats or vanishes across a boundary. VERIFIED by walking all 18
+pages: **875 rows returned, 875 distinct shortcodes, 0 seen twice, 0 missed.**
+
+**BOTH URL PARAMS ARE VALIDATED, NOT TRUSTED.** An unknown `?channel=` falls back to NO filter
+rather than an empty table — *an empty table and a channel that posted nothing look identical,
+and telling those apart is this page's entire job*. `?page=999` clamps to the last page. The
+dropdown is built from `v.channels`, already scoped by `visibleChannels.ts`, so it **cannot
+offer one of our own pages** — verified: `?channel=bollywoodsocietyy` resolves to no filter.
+All 13 options checked, **0 rows leaked from another channel**.
+
+**IT IS A GET FORM, and that is load-bearing.** The state lives in the URL so a position
+survives a refresh and can be pasted to somebody; `onChange` submits, the button submits
+without JavaScript, and both do the identical plain GET. A `useState` dropdown would need the
+table to become a client component — the `waiting.tsx → gate.ts → better-sqlite3` trap that
+returned HTTP 500 on every route. **There is deliberately no hidden `page` input:** carrying
+the page across a channel change lands the reader on "page 7 of 2", which the view model
+clamps, so they would silently get the LAST page of the new channel with nothing explaining
+why. A filter change is a new question; it starts at the newest post.
+
+**AND THE VISIBLE-CHANNELS GREP HAD TO LEARN A NEW NAME, WHICH IS THE INTERESTING PART.**
+`tests/visible-channels.test.ts` walks 14 lines after every `detectedCampaign` query looking
+for `inWindow`, and `count({ where: postsWhere })` does not contain that word — so it failed,
+correctly. The carve-out is the VARIABLE NAME, like `cardTargetIds` before it — **and it is
+only safe because a second assertion directly below it PROVES `postsWhere` spreads
+`inWindow`.** Without that, someone rebuilding the predicate would silently start surveying
+every channel including our own pages while the grep kept passing on a name.
+Mutation-tested: deleting `...inWindow` fails exactly that assertion.
+
+### AND RUNNING `ig:layout` CAUGHT A REGRESSION FROM THE SAME MORNING
+
+The reply card rewritten earlier that day took `/` **1590px wide inside a 1440px viewport**,
+and the page went sideways with it. The cause is not the card: **@miabytanishq's reply
+contains a 132-character Office Forms URL**, and a `<p>` will not break an unbroken token
+without being told to. `overflow-wrap: anywhere` on `.preview`, never a fixed width — *a reply
+is somebody else's text and its length is not ours to bound*. Gone at both widths after.
+
+**TWO QUERY BUDGETS ARE OVER, AND THEY ARE NOT THIS CHANGE — STATED RATHER THAN RAISED.**
+`/` reads **182 against 160**, `/targets` **148 against 120**. `/paid-posts` is **96 against
+120 and green** (it went DOWN: 50 rows a page instead of 100). MEASURED per builder:
+
+| | queries |
+|---|---|
+| `buildCeoView` (via `buildChannelsView`) | **55** |
+| `buildRestTally` | **61** |
+| `buildProspectsPage` | 32 |
+
+`/targets` calls `buildChannelsView` for **four fields** and pays the whole CEO view for them.
+Neither number is an N+1 over a row loop — both are bounded builders that GREW with the fleet
+(2 → 13 watched channels, 91 → 502 live prospects), and the budgets were set when the system
+was smaller. **The fix is decomposing `buildCeoView` so a caller takes only what it needs, and
+that is its own change with its own regression risk.** Recorded here rather than fixed inside
+a paid-posts feature, and *emphatically* rather than raising the ceilings — **a budget is a
+ceiling over a bounded design, and raising one to make the check pass is the one thing not to
+do.**
+
 ### TWELVE PEOPLE WERE RETIRED UNDER A RULE THAT CHANGED THREE DAYS LATER
 
 **Tabish: *"unretire them and add them to queue or prioritised whatever is safest and
