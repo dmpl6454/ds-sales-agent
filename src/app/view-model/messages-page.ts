@@ -412,6 +412,38 @@ export async function buildMessagesPage(): Promise<MessagesPageView> {
    * stop being written by the governor's copy of the same rule), so this is a handful of
    * `campaignsNamingHandle` reads.
    */
+  /**
+   * ── PRELOADED, BECAUSE "THE QUEUE IS SMALL BY CONSTRUCTION" IS NOT A BOUND ──
+   *
+   * This loop's own comment said the queue is small so a query per draft is fine. MEASURED
+   * 2026-08-25: it is not bounded by anything, and as the queue grew `/` went to **163
+   * against a 160 budget** — the exact ceiling `ig:layout` refuses to have raised.
+   *
+   * The way out is the one `rest-tally.ts` already takes for the same function: load the
+   * in-window CAMPAIGN posts ONCE and hand `campaignsNamingHandle` a stub whose `findMany`
+   * serves them. Its `where` is a PREFILTER — the exact test
+   * (`mentionsHandleExactly || brandStringsNameProspect`) runs in JS on whatever comes back —
+   * so a superset in and the enforcer's own predicate deciding is the SAME answer for one
+   * query instead of one per draft.
+   *
+   * **THE STUB MUST HONOUR THE DATE BOUND IT IS ASKED FOR.** The JS filter tests NAMING only;
+   * the `postedAt` floor lives in the `where` and nothing downstream re-checks it, so a stub
+   * that ignored `args` would over-count every caller passing a narrower floor.
+   */
+  const preloadedPosts = await prisma.detectedCampaign.findMany({
+    where: { verdict: 'CAMPAIGN', postedAt: { gte: cooldownFloor } },
+    select: { id: true, postedAt: true, caption: true, taggedAccounts: true, brands: true },
+  })
+  const preloaded = {
+    detectedCampaign: {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      findMany: async (args: any) => {
+        const floor: Date | undefined = args?.where?.postedAt?.gte
+        return floor ? preloadedPosts.filter((p) => p.postedAt >= floor) : preloadedPosts
+      },
+    },
+  }
+
   const materialHolds = new Map<string, { why: string }>()
   for (const a of upNextRaw) {
     if (materialHolds.has(a.pair.target.handle)) continue
@@ -419,7 +451,7 @@ export async function buildMessagesPage(): Promise<MessagesPageView> {
       ? [...(deliveriesByTarget.get(a.pair.targetId) ?? new Map()).values()].length
       : 0
     if (delivered === 0) continue /* nothing delivered in window — the allowance cannot hold */
-    const campaigns = await campaignsNamingHandle(prisma, { handle: a.pair.target.handle, displayName: a.pair.target.displayName }, cooldownFloor)
+    const campaigns = await campaignsNamingHandle(preloaded, { handle: a.pair.target.handle, displayName: a.pair.target.displayName }, cooldownFloor)
     const v = materialAllowance({ campaignsInWindow: campaigns, deliveredInWindow: delivered })
     if (v.held) materialHolds.set(a.pair.target.handle, { why: materialAllowanceDetail(v)! })
   }

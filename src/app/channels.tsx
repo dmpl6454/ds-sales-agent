@@ -15,7 +15,13 @@ import type { ChannelCard } from './view-model'
  * contacted channel is retired: marked never-contact and kept. A channel that was
  * never messaged has no such history and is simply deleted.
  */
-export function ChannelsPanel({ channels }: { channels: ChannelCard[] }) {
+export function ChannelsPanel({
+  channels,
+  fleets = [],
+}: {
+  channels: ChannelCard[]
+  fleets?: { slug: string; name: string }[]
+}) {
   const [adding, setAdding] = useState(false)
   const watched = channels.filter((c) => !c.retired)
   const retired = channels.filter((c) => c.retired)
@@ -58,7 +64,7 @@ export function ChannelsPanel({ channels }: { channels: ChannelCard[] }) {
       ) : null}
 
       {adding ? (
-        <AddChannelForm onDone={() => setAdding(false)} />
+        <AddChannelForm onDone={() => setAdding(false)} fleets={fleets} />
       ) : (
         <div className="row">
           <button onClick={() => setAdding(true)}>Add a channel</button>
@@ -153,8 +159,14 @@ function ChannelBlock({ channel: c }: { channel: ChannelCard }) {
  * @viralbhayani to watch it also made it a recipient, and MEASURED, both competitors were
  * carrying 13 attempts each with 6 drafts waiting.
  */
-function AddChannelForm({ onDone }: { onDone: () => void }) {
+function AddChannelForm({ onDone, fleets }: { onDone: () => void; fleets: { slug: string; name: string }[] }) {
   const [role, setRole] = useState<'WATCH' | 'PROSPECT'>('WATCH')
+  /**
+   * WHICH FLEET (2026-08-25, Tabish). On a WATCH page this is the decisive field: every
+   * prospect discovered from its paid posts INHERITS this fleet (`brandTarget.ts`), so the
+   * choice made here decides which senders will ever write to companies found through it.
+   */
+  const [fleet, setFleet] = useState('')
   const [handle, setHandle] = useState('')
   const [name, setName] = useState('')
   const [greeting, setGreeting] = useState('')
@@ -165,7 +177,7 @@ function AddChannelForm({ onDone }: { onDone: () => void }) {
     setBusy(true)
     setMsg(null)
     try {
-      const r = await addTarget(handle, name, greeting, role)
+      const r = await addTarget(handle, name, greeting, role, fleet)
       setMsg({ ok: r.ok, text: r.message })
       if (r.ok) {
         setHandle('')
@@ -207,6 +219,23 @@ function AddChannelForm({ onDone }: { onDone: () => void }) {
             <option value="PROSPECT">A company to message</option>
           </select>
         </label>
+        {/*
+          Only when a second fleet exists — a dropdown with one option implies a decision
+          nobody has to make. The empty value is the DEFAULT category, not "unassigned".
+        */}
+        {fleets.length > 0 && (
+          <label>
+            <span>Which fleet?</span>
+            <select value={fleet} onChange={(e) => setFleet(e.target.value)}>
+              <option value="">Bollywood (the original fleet)</option>
+              {fleets.map((f) => (
+                <option key={f.slug} value={f.slug}>
+                  {f.name}
+                </option>
+              ))}
+            </select>
+          </label>
+        )}
         <label>
           <span>Instagram handle</span>
           <input
