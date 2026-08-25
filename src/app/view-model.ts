@@ -31,6 +31,8 @@ import { detectionCutoff } from '@/lib/cutoff'
 import { readLabelledSet } from '@/detection/labels'
 import { replyHaltFloor } from '@/outreach/replyHalt'
 import { mentionsHandleExactly, brandStringsNameProspect } from '@/outreach/materialAllowance'
+// A publisher's own watermark/series code is not a third party — see ownMarks.ts.
+import { stripOwnMarksFromBrands } from '@/detection/ownMarks'
 import { readHeartbeat, readPassHealth, machineId } from '@/worker/scheduler'
 import { assessWatch, watchHealthSentence } from '@/detection/watchHealth'
 import { getDetector } from '@/detection/detectors'
@@ -163,12 +165,22 @@ export interface AutopilotState {
 }
 
 export interface ReplyCard {
-  /** Needed so the card can carry a "handled" button. */
+  /** Stable React key. It no longer carries a control — see `replies.tsx`. */
   attemptId: string
   targetName: string
   targetHandle: string
   senderName: string
   whenLabel: string
+  /**
+   * When the halt on this recipient releases, in IST — "frees 31 Aug 2026, 12:49".
+   *
+   * REQUIRED SINCE THE BUTTONS WENT (2026-08-25). `whenLabel` is the OBSERVATION clock
+   * (`repliedAt`, when the sweep found the reply); the seven days are counted from
+   * `replyPostedAt` (when they WROTE it). Measured on the live corpus those two differ by
+   * up to 24 hours, so an age is not a release date — and with no control left on the
+   * card, the release date is the only thing worth saying.
+   */
+  freesLabel: string
   /**
    * What they actually said, from `replyText`.
    *
@@ -650,7 +662,7 @@ export async function buildCeoView(): Promise<CeoView> {
   // Built by `toReplyCards`, shared with `/conversations`. Step D moved the CARD to that page
   // and left the headline here, so two files now describe the same reply — through one function,
   // because two mappings of the same row is how a preview once came to be read out of `error`.
-  const replies = toReplyCards(unreadReplies)
+  const replies = toReplyCards(unreadReplies, settings.replyResumeHours)
 
   // ── Activity, as sentences, grouped by day ────────────────────────────────
   const events: { at: Date; event: ActivityEvent }[] = []
@@ -681,17 +693,34 @@ export async function buildCeoView(): Promise<CeoView> {
    * has taken over, and a history entry asserting a halt that has been released is worse than no
    * entry at all.
    */
+  /*
+    THE SENTENCE MUST ASK THE HALT, NOT THE HANDLED COLUMN (2026-08-25).
+
+    This read `replyHandledAt === null ? 'on hold' : 'taken over'`, which never asked whether
+    the seven days had ELAPSED. That was accidentally correct for its entire life: measured on
+    the live database on 25 Aug, 0 of 71 halts had expired, because the seven-day window only
+    shipped on 19 Aug and the oldest reply frees on the 26th. From that morning it would have
+    printed "all outreach to them is on hold" about recipients the fleet had already resumed
+    writing to, for the feed's full fourteen-day window — a history entry asserting a halt that
+    has released, which the previous docblock here already called worse than no entry at all.
+
+    `replyHandledAt` is now VESTIGIAL: the control that wrote it was removed with the reply
+    card's buttons and nothing writes it any more. It is still read here so the 0 rows that
+    could ever carry it keep their meaning, and so re-adding an early release is one UI change.
+  */
+  const replyFloor = replyHaltFloor(settings.replyResumeHours)
   for (const r of repliesInWindow) {
     if (!r.repliedAt) continue
+    const holding =
+      r.replyHandledAt === null && r.replyPostedAt !== null && r.replyPostedAt >= replyFloor
     events.push({
       at: r.repliedAt,
       event: {
         timeLabel: timeOnly(r.repliedAt),
         kind: 'reply',
-        sentence:
-          r.replyHandledAt === null
-            ? `${operatorName(r.pair.target.displayName)} replied — all outreach to them is on hold`
-            : `${operatorName(r.pair.target.displayName)} replied — someone has taken the conversation over`,
+        sentence: holding
+          ? `${operatorName(r.pair.target.displayName)} replied — all outreach to them is on hold`
+          : `${operatorName(r.pair.target.displayName)} replied — the seven-day pause has since released`,
       },
     })
   }
@@ -889,9 +918,13 @@ export function toReplyCards(
   rows: Array<{
     id: string
     repliedAt: Date | null
+    /** The WRITTEN clock. The halt counts from this, never from `repliedAt`. */
+    replyPostedAt: Date | null
     replyText: string | null
     pair: { target: { displayName: string; handle: string }; sender: { displayName: string } }
   }>,
+  /** `settings.replyResumeHours` — passed in so this shares the enforcer's number, never a literal. */
+  resumeHours: number,
 ): ReplyCard[] {
   return rows.map((r) => ({
     attemptId: r.id,
@@ -899,6 +932,17 @@ export function toReplyCards(
     targetHandle: r.pair.target.handle,
     senderName: operatorName(r.pair.sender.displayName),
     whenLabel: relative(r.repliedAt),
+    /*
+      Same arithmetic as `replyHaltActive` and as the Resting list, from the SAME column the
+      gate filters on. `replyPostedAt: null` cannot reach here — every query feeding this is
+      windowed `replyPostedAt: { gte: floor }`, which never matches NULL — but an undatable
+      reply does not halt at all, so if one ever did arrive the honest sentence is that
+      nothing is being held.
+    */
+    freesLabel:
+      r.replyPostedAt === null
+        ? 'not holding anything — no date on the reply'
+        : `frees ${istStamp(new Date(r.replyPostedAt.getTime() + resumeHours * 3_600_000))} IST`,
     preview: r.replyText && r.replyText.length > 0 ? r.replyText : null,
   }))
 }
@@ -1134,8 +1178,11 @@ export interface PaidPostRow {
    * (materialAllowance's linkage) or via a prospect DISCOVERED from this post. Empty
    * means the post named nobody we could verify, which is the honest answer, not a gap.
    */
-  recipients: { handle: string; retired: boolean }[]
-  /** Unminted candidates' state — 'N unverified, refused · M badge check pending', or null. */
+  recipients: { handle: string }[]
+  /**
+   * Unminted candidates' state — 'N unverified, refused · M badge check pending ·
+   * N names with no verified account yet', or null when every candidate became a recipient.
+   */
   candidateNote: string | null
 }
 
@@ -1375,26 +1422,68 @@ export async function buildPaidPostsView(): Promise<PaidPostsView> {
        *     which covers exactly the "not mentioned in caption" case he named
        *     (`discoverOfficialPages` resolving an untagged post).
        */
+      /**
+       * RETIRED PROSPECTS ARE NOT LISTED (2026-08-25, Tabish: *"just do not show retired
+       * targets in this column or anywhere"*). The column used to render "@deepakmukut
+       * (retired)" on the reasoning that "we found them and chose not to write" and "we
+       * found nobody" are different facts — true, and it made a reader decode a state they
+       * cannot act on. `optedOut` is still enforced at the governor, the gate and
+       * `routes.ts`; only the screen stops mentioning it.
+       */
       recipients: prospectRefs
         .filter(
           (t) =>
-            t.discoveredFromCampaignId === p.id ||
-            mentionsHandleExactly({ caption: p.caption, taggedAccounts: p.taggedAccounts }, t.handle) ||
-            /* A brand STRING that IS a verified prospect's name links too (2026-08-21) —
-               the same arm campaignsNamingHandle counts, so column and enforcer agree. */
-            brandStringsNameProspect(p.brands, { handle: t.handle, displayName: t.displayName }),
+            !t.optedOut &&
+            (t.discoveredFromCampaignId === p.id ||
+              mentionsHandleExactly({ caption: p.caption, taggedAccounts: p.taggedAccounts }, t.handle) ||
+              /* A brand STRING that IS a verified prospect's name links too (2026-08-21) —
+                 the same arm campaignsNamingHandle counts, so column and enforcer agree. */
+              brandStringsNameProspect(p.brands, { handle: t.handle, displayName: t.displayName })),
         )
-        .map((t) => ({ handle: t.handle, retired: t.optedOut })),
+        .map((t) => ({ handle: t.handle })),
       candidateNote: (() => {
+        /**
+         * ── A NAME IS A CANDIDATE TOO, AND THE COLUMN USED TO CALL IT NOBODY ─────────
+         *
+         * Tabish, 2026-08-25, on a @trolls_official post: *"we have detected it as paid and
+         * brand/celeb name in the column as Akshay Khanna correctly, why then is the column
+         * 'We message' showcasing 'Nobody Named'?"*
+         *
+         * Because the disposition below was built from `brandCandidatesFor`, which reads
+         * caption @mentions and media TAGS — handles Instagram asserts. That post asserts no
+         * handle at all: `taggedAccounts: []`, no `@` in the caption, and one brand STRING,
+         * "Akshay Khanna". So there were no candidates, no note, and the fallback printed
+         * "nobody named" beside a Brands column displaying the name it had just found.
+         *
+         * MEASURED: **166 in-window CAMPAIGN posts carry brand names with no tag and no
+         * @mention** — every one of them was reading "nobody named" while naming somebody.
+         *
+         * A name that credits no live prospect is `discoverOfficialPages`'s queue, not an
+         * absence: it becomes candidate handles and meets the badge bar on the brand timer.
+         * So it gets its own clause, and "nobody named" is now reserved for a post that
+         * genuinely asserts nothing. Own marks are stripped first — a publisher's own
+         * watermark or series code ("fg6") is not a third party, by the same rule the judge
+         * already applies one modality over.
+         */
         const minted = new Set(prospectRefs.map((t) => t.handle))
         const rest = (candidatesByPost.get(p.id) ?? []).filter((h) => !minted.has(h))
-        if (rest.length === 0) return null
         const refused = rest.filter((h) => candidateLookups.get(h)?.isVerified === false).length
         const pending = rest.length - refused
+        const namesUnresolved = stripOwnMarksFromBrands(readStringArray(p.brands), {
+          handle: p.target.handle,
+          displayName: p.target.displayName,
+        }).filter(
+          (name) =>
+            !prospectRefs.some(
+              (t) => !t.optedOut && brandStringsNameProspect(JSON.stringify([name]), { handle: t.handle, displayName: t.displayName }),
+            ),
+        ).length
         const parts: string[] = []
         if (refused > 0) parts.push(`${refused} unverified, refused`)
         if (pending > 0) parts.push(`${pending} badge check pending`)
-        return parts.join(' · ')
+        if (namesUnresolved > 0)
+          parts.push(`${namesUnresolved} name${namesUnresolved === 1 ? '' : 's'} with no verified account yet`)
+        return parts.length === 0 ? null : parts.join(' · ')
       })(),
       shortcode: p.shortcode,
       url: postUrl(p.shortcode),

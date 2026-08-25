@@ -418,41 +418,24 @@ export async function prepareOnDemandSend(
   return preview
 }
 
-/**
- * "I have dealt with this reply" — releases the halt so outreach can resume.
- *
- * A reply stops every sender to that target, which is right: a human conversation has
- * started and cold follow-ups must not fire into it. But nothing could ever clear it.
- * The first reply retired a channel permanently, the dashboard nagged about it with no
- * control to dismiss, and the only exit was editing the database. A hard stop with no
- * release is a bug wearing a safety feature's clothes.
- *
- * This does NOT erase the reply. `repliedAt`, `replyText` and status REPLIED all
- * remain — the record of what happened is not editable, and the conversation still
- * shows as answered. It records that a person has seen it and taken over, which is a
- * different fact and deserves its own field.
- */
-export async function markReplyHandled(attemptId: string): Promise<MutationResult> {
-  const user = await requireOperator()
-  const attempt = await prisma.outreachAttempt.findUnique({
-    where: { id: attemptId },
-    include: { pair: { include: { target: true } } },
-  })
-  if (!attempt) return { ok: false, message: 'That message no longer exists.' }
-  if (!attempt.repliedAt) return { ok: false, message: 'No reply is recorded on that message.' }
-  if (attempt.replyHandledAt) return { ok: true, message: 'Already marked as handled.' }
+/*
+  ── `markReplyHandled` WAS DELETED HERE (2026-08-25, Tabish) ──────────────────
 
-  await prisma.outreachAttempt.update({
-    where: { id: attemptId },
-    data: { replyHandledAt: new Date(), replyHandledBy: user.email },
-  })
-  await audit(user.email, 'reply.handled', `OutreachAttempt:${attemptId}`, `@${attempt.pair.target.handle}`)
-  revalidatePath('/')
-  return {
-    ok: true,
-    message: `Marked as handled. Automated outreach to @${attempt.pair.target.handle} can resume.`,
-  }
-}
+  It wrote `replyHandledAt` / `replyHandledBy` and was the "I have replied" button's only
+  caller. Both that button and "Open inbox" were removed from the reply card on his
+  instruction: *"There is no need for clicking 'I have replied' or 'Open Inbox'. Remove
+  this entirely, fleet resumes on its own after 7 days anyways."*
+
+  He is right on the mechanism and the measurement agreed with him before it went: across
+  ALL 71 replies this system has ever recorded, `replyHandledAt` was non-null 0 times. The
+  early release had never once been used, and the halt has never leaked (0 sends delivered
+  to a recipient inside their own halt window).
+
+  An exported server action with no caller is not free — it is reachable by anything that
+  can reach the page — so it is deleted rather than orphaned. The COLUMNS survive: dropping
+  them is a live-Postgres migration for no behavioural gain, and the queries still filter
+  `replyHandledAt: null` so re-adding a release is one UI change and no schema work.
+*/
 
 /**
  * Settle a post the classifier could not: was this actually a paid placement?

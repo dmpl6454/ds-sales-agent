@@ -236,7 +236,7 @@ export function evaluatePair(input: GovernorInput): GovernorDecision {
     return {
       eligible: false,
       reason: SKIP_REASONS.TARGET_REPLIED,
-      detail: `replied at ${input.targetRepliedAt.toISOString()} — paused for seven days, then resumes (or the moment "I have replied" is pressed)`,
+      detail: `replied at ${input.targetRepliedAt.toISOString()} — paused for seven days, then resumes on its own`,
     }
   }
 

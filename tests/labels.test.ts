@@ -105,7 +105,19 @@ describe('no view model hands a raw displayName to the screen', () => {
  * prospect's name, and feeding it anything but the raw stored name would break the match.
  * Nothing inside these calls reaches prose.
  */
-const SAFE_WRAPPERS = ['operatorName(', 'campaignsNamingHandle(', 'brandStringsNameProspect(']
+/*
+ * `stripOwnMarksFromBrands(` joined the list on 2026-08-25 for the same reason as the two
+ * allowance functions: `isOwnMark` decides whether a brand string is the PUBLISHER'S OWN
+ * watermark or series code by comparing it against that publisher's stored name and its
+ * initialisms. Handing it a trimmed name would silently stop "FILMYGYAN" matching
+ * @filmygyan, which is the one thing that rule exists to do. Nothing inside it reaches prose.
+ */
+const SAFE_WRAPPERS = [
+  'operatorName(',
+  'campaignsNamingHandle(',
+  'brandStringsNameProspect(',
+  'stripOwnMarksFromBrands(',
+]
 
 function unwrappedReads(src: string): string[] {
   let out = ''

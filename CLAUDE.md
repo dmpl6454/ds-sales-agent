@@ -71,6 +71,176 @@ properly rather than kept on a handle we could never confirm.
 
 ---
 
+## 25 AUGUST — THE REPLY CARD LOST ITS BUTTONS, AND A PARAMEDICAL COLLEGE GOT FOUR PITCHES
+
+**Tabish: *"There is no need for clicking 'I have replied' or 'Open Inbox'. Remove this
+entirely, fleet resumes on its own after 7 days anyways."*** He is right about the mechanism
+and the measurement agreed with him before anything was removed: **across all 71 replies this
+system has ever recorded, `replyHandledAt` was non-null ZERO times.** The early release had
+never once been used, and the halt has never leaked — **0 messages have ever gone out to a
+recipient after they wrote to us, at any gap.**
+
+### REMOVING A BUTTON CAN BE A REGRESSION, AND HERE IT WOULD HAVE BEEN
+
+`markReplyHandled` is deleted (an exported server action with no caller is reachable by
+anything that can reach the page), both buttons are gone, and `replies.tsx` is a plain server
+component. **The load-bearing part is the query underneath it.** The card list was
+`repliedAt: { not: null }, replyHandledAt: null` — *every unhandled reply ever, with no
+reference to the halt at all*. That was survivable ONLY while a button existed to set that
+column. With the button gone it becomes a notification with NO WAY OUT — the exact failure
+that query was originally written to fix, arriving from the other end. It is now windowed
+`replyPostedAt: { gte: replyHaltFloor(...) }`, the enforcers' own filter, so **a card is on
+screen if and only if the fleet is actually held, and it leaves by itself.**
+
+`nav.tsx` and `rest-tally.ts` were already windowed; this one was not, so the sidebar count
+and the list under it would have started disagreeing on 26 August.
+
+**THE CARD STATES ITS RELEASE DATE NOW, and that is not decoration.** `whenLabel` is
+`relative(repliedAt)` — the OBSERVATION clock — while the seven days are counted from
+`replyPostedAt`, the WRITTEN clock. MEASURED on live rows those differ by **up to 24 hours**
+(@deepshikha.nagpal, @anupriyanagar2709). With no control on the card, an age is not a
+release date and the release date is the only thing left worth saying.
+
+### THE ACTIVITY FEED WAS ABOUT TO START LYING, AND HAD BEEN ACCIDENTALLY RIGHT ALL ITS LIFE
+
+`view-model.ts` chose its sentence on `replyHandledAt === null` alone and never asked whether
+the seven days had ELAPSED. **MEASURED 25 Aug: 0 of 71 halts had expired** — the seven-day
+window shipped 19 Aug and the oldest reply frees on the 26th — so the branch had never once
+been wrong. From that morning it would have printed *"all outreach to them is on hold"* about
+recipients the fleet had already resumed writing to, for the feed's full fourteen-day window.
+**A branch that has never been exercised is not a branch that works.**
+
+Copy corrected in six places. `blockers.ts` said *"resumes by itself after **a day**"* (it is
+seven) — that is the banner on the Autopilot page — and `/rules` still said *"until a person
+takes over"*, describing the manual release deleted on 7 August, while line 50 of the same
+file correctly said seven days. **A page contradicting itself within one screen.**
+`replyHandledAt` is now VESTIGIAL: nothing writes it, the queries still filter it, and
+re-adding an early release is one UI change and no schema work.
+
+### THE RING RULE ALREADY FOLLOWS THE PAID-POST COUNT — MEASURED, NOT ASSUMED
+
+**Tabish: *"make sure that the ring rule is following the logic based on number of paid posts
+detected (If sony has two paid posts detected then they are messaged twice using ring rule and
+not 3 times)."*** That is `materialAllowance` and it is in force:
+
+| | |
+|---|---|
+| last 24h | 175 deliveries, 68 recipients, 49 got >1, **0 exceeded their allowance** |
+| last 48h | 249 deliveries, 96 recipients, 64 got >1, **0 exceeded their allowance** |
+
+Every multi-message recipient had that many paid posts naming them. `@jiohotstar` 5 messages
+against **14** naming posts; `@primevideoin` 5 against **24**. **136 of 532 recipients ARE
+over their allowance and every one is pre-21-August history**, from before the rule shipped.
+No change was made, and none was needed — recording it here because the next person to read
+"169 recipients received 5 messages" will reach for the allowance and find it already correct.
+
+**What the fan-out IS: 531 recipients, 1,430 deliveries, and 529 of 531 received every message
+from a DIFFERENT page.** Only three (page → recipient) pairs in the whole history took two from
+the same page. The lever, if five near-identical pitches per inbox is too many, is
+`crossPageGapHours` — one `Setting` row, currently 0 by his own instruction of 20 August.
+
+### RETIRED TARGETS ARE OFF EVERY SCREEN
+
+**Tabish, reading "@deepakmukut (retired)" in the We-message column: *"also what does retired
+even mean, just do not show retired targets in this column or anywhere … user doesn't need to
+know."*** The old comment defended naming them — *"we found them and chose not to write" and
+"we found nobody" are different facts* — which is true and made a reader decode a state they
+cannot act on. 69 retired prospects were listed under a heading about companies we message,
+each carrying a chip saying it is never messaged: **a list whose rows contradict its own
+heading.**
+
+`prospects-page.ts` filters `optedOut: false` at the query, the retired chip / count sentence /
+"Retired — never contacted." row all went, and the paid-posts column filters them out of
+`recipients`. **`optedOut` is untouched as a rule** — the governor, the gate and `routes.ts`
+each still refuse it independently; only the screen stops mentioning it. VERIFIED: `/targets`
+renders 503 rows, 0 retired, with 72 retired rows still in the database.
+
+### "NOBODY NAMED" WAS FALSE ON 166 POSTS, AND THE COLUMN BESIDE IT SAID SO
+
+**Tabish: *"for a post made by trolls official we have detected it as paid and brand/celeb name
+in the column as Akshay Khanna correctly, why then is the column 'We message' showcasing
+'Nobody Named'?"***
+
+Because the disposition was built from `brandCandidatesFor`, which reads caption @mentions and
+media TAGS — **handles Instagram asserts**. That post asserts none: `taggedAccounts: []`, no
+`@` in the caption, and one brand STRING, `"Akshay Khanna"`. No candidates → no note → the
+fallback fired, printing *"nobody named"* beside a Brands column displaying the name it had
+just found. **MEASURED: 166 in-window CAMPAIGN posts carry brand names with no tag and no
+@mention** — every one of them reading "nobody named" while naming somebody.
+
+A name that credits no live prospect is `discoverOfficialPages`'s QUEUE, not an absence. It has
+its own clause now, own marks stripped first (a publisher's `fg6` is not a third party), and
+**"nobody named" is reserved for a post that genuinely asserts nothing.** VERIFIED live: the
+trolls_official row reads *"1 name with no verified account yet"*, and page-wide the fallback
+fell to **8 of 100 rows**.
+
+### AND THE TAGS ARE READ CORRECTLY — the Gunmaaster G9 post, checked end to end
+
+He supplied Instagram's own "Tagged" panel for `Dcc4pQ8sX0N` (@taranadarsh). Our
+`taggedAccounts` holds **all twelve** of them; his screenshot was scrolled and showed six.
+Eight are verified → prospects, being messaged. `@sohammukut` and `@hunarmukut` are refused as
+unverified — **and the missing badge in his own screenshot confirms it.** `@srestudiosofficial`
+is still pending the badge check. The column now reads *"3 unverified, refused · 2 names with
+no verified account yet"* with no retired row in sight.
+
+**The one anomaly, reported and NOT auto-fixed:** `@deepakmukut` — the producer who actually
+bought this campaign — shows a verified badge on Instagram while we hold `isVerified: null`
+and retired him on 17 August as "a person", **three days before the talent door existed.**
+**13 of the 69 retired prospects are `isVerified: null`, i.e. retired on evidence nobody
+gathered.** Re-admitting them is a data decision, not a code change.
+
+### @tips_india IS A PARAMEDICAL COLLEGE, AND A ONE-TOKEN BRAND NAME IS WHY
+
+The sharpest finding of the day, from his screenshot of a media-buying pitch in the inbox of
+the **Tripura Institute of Paramedical Sciences** — 2,863 followers, `tipsindia.co.in`,
+verified, display name "TIPS". It received **five** pitches on 25 August.
+
+**We already owned the right account.** Both existed:
+
+| | handle | name | followers | category | created | messaged |
+|---|---|---|---|---|---|---|
+| correct | **`@tips`** | TIPS | **1,147,014** | Publishers | 12 Aug | 5×, 19–20 Aug |
+| wrong | **`@tips_india`** | TIPS | 2,863 | — | **25 Aug 05:28** | 5×, 25 Aug |
+
+The post's own caption linked the correct one — *"Full song out now on **@Tips** Official
+Youtube channel"* — which is how `@tips` became a prospect on 12 August. Thirteen days later
+the brand STRING went through the name path:
+
+```
+candidateHandlesFor("Tips") → tips, tips.india, tipsindia, tips.official,
+                              tipsofficial, tips_india, tips_official
+nameMatches("Tips", "TIPS")  → want {tips} ⊆ have {tips} → TRUE
+verified badge               → TRUE                       → ADMITTED
+```
+
+**THE @philips TRAP ONLY BITES WHEN THE BRAND NAME HAS MORE TOKENS THAN THE PROFILE NAME.**
+"Philips India" is not covered by "Philips", which is exactly why that permanent fixture works.
+A **one-token** brand name makes the subset test vacuous: every verified account whose name is
+that word passes, and **the badge alone decides** — "existence is not identity" arriving in the
+one door built to answer it. 25 live prospects have a single short display name (`VIBE`,
+`TOXIC`, `ACE`, `Aza`, `Commune`, `1win`), all currently passing on the badge with the name
+test doing no work.
+
+Two things made it reachable, and both are recent: the **23 August widening** put
+`officialDiscovery` on EVERY paid post carrying brand names rather than only untagged ones, so
+a brand already correctly resolved from its own asserted handle gets its name re-guessed into a
+second handle; and **nothing compared a candidate against the prospects we already hold.**
+
+`duplicatesExistingProspect` is the fix and it is deliberately NOT a weakening of the name test
+(which would cost real regional pages like `@primevideoin`). It asks the question the old rule
+never did — *do we already have a live prospect by this name?* — and REPORTS the near-miss for
+a person rather than dropping it. Sized before shipping: **exactly one pair of live prospects
+shares a display name today**, so it refuses one thing and it is the wrong one.
+Mutation-tested: returning null always fails exactly the two refusal cases and leaves every
+admit case green. `@tips_india` is retired with an audit row; `@tips` is untouched.
+
+**THE GENERAL LESSON, new here: a subset test is vacuous when the smaller set has one element.**
+`nameMatches` is correct and was never the bug; what was missing is that it can be SATISFIED
+without discriminating. When a guard's strength depends on the size of its input, measure the
+input.
+
+---
+
 ## 23 AUGUST — IDENTITY CAME OFF A COLLABORATOR, AND DISCOVERY IGNORED 60% OF PAID POSTS
 
 **Tabish: *"paid post detection is missing targets from clear paid posts ... the column only

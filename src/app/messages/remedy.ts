@@ -42,7 +42,7 @@ export const REMEDIES = {
    * dialog can reach someone mid-conversation. It is not crossable from the plain Send button,
    * which carries no acknowledgement, so the remedy is to go and deal with the reply.
    */
-  [RESEND_BLOCKS.TARGET_REPLIED]: { href: '/', label: 'Read the reply — messaging resumes by itself after seven days' },
+  [RESEND_BLOCKS.TARGET_REPLIED]: { href: '/', label: 'Read the reply — messaging resumes by itself seven days after they wrote' },
 
   /**
    * A stop whose remedy is a control on another screen must NAME that screen — the gate says

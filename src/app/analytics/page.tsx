@@ -385,27 +385,11 @@ export default async function AnalyticsPage({
           </div>
         </section>
 
-        {c.handled.length > 0 && (
-          <section>
-            <h2>Replies handled</h2>
-            <p className="blurb">
-              Handling a reply stops it counting against the halt. It does not erase it.
-            </p>
-            <div className="rows">
-              {c.handled.map((h, i) => (
-                <div className="rowitem" key={`${h.targetHandle}-${i}`}>
-                  <div>
-                    <p style={{ margin: 0 }}>{h.targetName}</p>
-                    <p className="blurb" style={{ margin: '1px 0 0' }}>
-                      @{h.targetHandle} · replied {h.whenLabel}
-                      {h.preview ? ` — “${h.preview}”` : ''}
-                    </p>
-                  </div>
-                </div>
-              ))}
-            </div>
-          </section>
-        )}
+        {/*
+          "Replies handled" was removed with the reply card's buttons (2026-08-25, Tabish).
+          `replyHandledAt` had no writer left, so this section could only ever render empty —
+          a heading that is structurally unable to have content is worse than no heading.
+        */}
 
         <ExportPanel senders={senderHandles} />
 

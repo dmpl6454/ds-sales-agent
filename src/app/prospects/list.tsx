@@ -92,19 +92,15 @@ function Group({
   sendersAble: number
 }) {
   if (rows.length === 0) return null
-  /* The heading counts what the heading CLAIMS — a retired row is not one we message. */
-  const retired = rows.filter((r) => r.retired).length
-  const live = rows.length - retired
+  /* Every row here is live: retired targets are excluded at the query (2026-08-25, Tabish),
+     so the heading count and the rows below it cannot disagree. */
   return (
     <section className="group">
       <h2>
-        {title} ({live})
+        {title} ({rows.length})
       </h2>
       {/* Which of the two kinds this is, said once per group rather than once per row. */}
-      <p className="group-blurb">
-        {note}
-        {retired > 0 ? ` ${retired} more ${retired === 1 ? 'is' : 'are'} retired and listed below, never contacted again.` : ''}
-      </p>
+      <p className="group-blurb">{note}</p>
       <div className="group-rows">
         {rows.map((p) => (
           <Row key={p.handle} p={p} sendersAble={sendersAble} />
@@ -130,7 +126,7 @@ function Row({ p, sendersAble }: { p: ProspectRow; sendersAble: number }) {
   }
 
   return (
-    <div className={`message ${p.retired ? 'group-broken' : ''}`}>
+    <div className="message">
       <div className="message-head">
         <div>
           <strong>@{p.handle}</strong>{' '}
@@ -142,7 +138,6 @@ function Row({ p, sendersAble }: { p: ProspectRow; sendersAble: number }) {
           </span>
         </div>
         {p.replied && <span className="chip chip-live">they replied</span>}
-        {p.retired && <span className="chip">retired</span>}
       </div>
 
       {/*
@@ -205,11 +200,9 @@ function Row({ p, sendersAble }: { p: ProspectRow; sendersAble: number }) {
         figure beside a refusal re-reads as a promise.
       */}
       <p className="muted">
-        {p.retired
-          ? 'Retired — never contacted.'
-          : p.nextSenderWillWrite
-            ? `${p.nextSenderSentence} ${sendersAble} account${sendersAble === 1 ? '' : 's'} in the fleet can send right now.`
-            : p.nextSenderSentence}
+        {p.nextSenderWillWrite
+          ? `${p.nextSenderSentence} ${sendersAble} account${sendersAble === 1 ? '' : 's'} in the fleet can send right now.`
+          : p.nextSenderSentence}
       </p>
 
       <div className="account-actions">

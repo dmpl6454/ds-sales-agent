@@ -81,3 +81,54 @@ export function isOfficialMatch(input: {
 }): boolean {
   return input.isVerified === true && nameMatches(input.brandName, input.fullName)
 }
+
+/**
+ * ── WE ALREADY OWN THIS BRAND'S PAGE, SO THIS ONE IS A SECOND ACCOUNT ──────
+ *
+ * MEASURED 2026-08-25, from Tabish's screenshot of a media-buying pitch sitting in
+ * @tips_india's inbox — the **Tripura Institute of Paramedical Sciences**, 2,863 followers,
+ * verified. We already held `@tips`: "TIPS", **1,147,014 followers, category Publishers**,
+ * a prospect since 12 August, messaged five times — the real music label, and the account
+ * the post's own caption linked (*"Full song out now on @Tips Official Youtube channel"*).
+ *
+ * `isOfficialMatch` passed the college on both of its questions and could not have done
+ * otherwise:
+ *
+ *   candidateHandlesFor("Tips")  →  tips, tips.india, tipsindia, tips.official,
+ *                                   tipsofficial, tips_india, tips_official
+ *   nameMatches("Tips", "TIPS")  →  want {tips} ⊆ have {tips}  →  TRUE
+ *   verified badge               →  TRUE
+ *
+ * **The @philips trap only bites when the brand name has MORE tokens than the profile
+ * name.** "Philips India" is not covered by "Philips", which is why that fixture works. A
+ * ONE-TOKEN brand name makes the subset test vacuous: every verified account whose name is
+ * that word passes, and the badge alone decides — which is precisely the "existence is not
+ * identity" failure the badge was never able to answer on its own.
+ *
+ * Rather than weaken the name test (which would cost real regional pages like
+ * @primevideoin), this asks the question the old rule never did: **do we already have a
+ * live prospect by this name?** If we do, this candidate is a DIFFERENT account wearing the
+ * same name, and a second account for one brand is a duplicate lead at best and a stranger's
+ * inbox at worst. It is REPORTED for a person (`--accept` is still the deliberate door),
+ * never silently dropped — the same discipline as every other near-miss in this file.
+ *
+ * Sized before shipping: exactly ONE pair of live prospects shares a display name today
+ * (tips / tips_india), so this refuses one thing and it is the wrong one.
+ */
+export function duplicatesExistingProspect(
+  profileFullName: string | null,
+  candidateHandle: string,
+  existing: readonly { handle: string; displayName: string | null }[],
+): string | null {
+  const squash = (v: string) => v.toLowerCase().replace(/[^a-z0-9]/g, '')
+  const name = squash(profileFullName ?? '')
+  /* Below three characters a "name" is OCR wreckage, and matching on it would refuse
+     legitimate pages for sharing two letters. */
+  if (name.length < 3) return null
+  const candidate = candidateHandle.toLowerCase()
+  for (const t of existing) {
+    if (t.handle.toLowerCase() === candidate) continue
+    if (squash(t.displayName ?? '') === name) return t.handle
+  }
+  return null
+}

@@ -179,6 +179,18 @@ export async function buildProspectsPage(): Promise<ProspectsPageView> {
   const settings = await getSettings()
   const [targets, categoryRows, fleetSenders] = await Promise.all([
     prisma.targetAccount.findMany({
+      /**
+       * RETIRED ROWS ARE NOT SHOWN AT ALL (2026-08-25, Tabish): *"also what does retired even
+       * mean, just do not show retired targets in this column or anywhere … don't show retired
+       * targets in the UI anywhere, user doesn't need to know."*
+       *
+       * `optedOut` is still the hardest promise in the system — the governor, the gate and
+       * `routes.ts` each refuse it independently, and nothing here weakens that. What changes
+       * is that a retired row is no longer a thing an operator has to read past: 69 of them
+       * were listed under a heading about companies we message, every one carrying a chip
+       * saying it is never messaged. A list whose rows contradict its own heading is noise.
+       */
+      where: { optedOut: false },
       orderBy: [{ role: 'asc' }, { handle: 'asc' }],
       include: {
         // The joined `pairs` (one row per sender, with its display name) went with the chips —

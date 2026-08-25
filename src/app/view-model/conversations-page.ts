@@ -3,6 +3,9 @@ import { DELIVERED_STATUSES } from '@/lib/constants'
 // ONE relative-time wording for the whole dashboard. See the docblock in lib/time.ts.
 import { relativeLabel as relative } from '@/lib/time'
 import { replyCoverage } from '@/outreach/replyCheck'
+// The halt's OWN arithmetic — never a second copy. See replyHalt.ts.
+import { replyHaltFloor } from '@/outreach/replyHalt'
+import { getSettings } from '@/lib/settings'
 import { profileUrl } from '@/lib/urls'
 // Never a raw `displayName` — see the note on the import in `view-model.ts`.
 import { operatorName } from '@/outreach/render'
@@ -67,8 +70,6 @@ export interface OpenConversation {
 export interface ConversationsPageView {
   /** Replies waiting for a person. `replyHandledAt: null` is the whole point. */
   replies: ReplyCard[]
-  /** Replies a person has already taken over, kept because handling one is not erasing it. */
-  handled: { targetName: string; targetHandle: string; whenLabel: string; preview: string | null }[]
   open: OpenConversation[]
   coverage: Awaited<ReturnType<typeof replyCoverage>>
   /** Delivered messages, newest first — the history of every conversation. */
@@ -86,25 +87,35 @@ export interface ConversationsPageView {
 }
 
 export async function buildConversationsPage(): Promise<ConversationsPageView> {
-  const [unhandled, handledRaw, delivered, coverage] = await Promise.all([
+  const settings = await getSettings()
+  const [unhandled, delivered, coverage] = await Promise.all([
     /**
-     * Replies still needing a human. `replyHandledAt: null` is the whole point.
+     * Replies that are ACTIVELY HOLDING their recipient — the cards on `/`.
      *
-     * This once had NO filter of any kind, so once anyone replied the card sat on the dashboard
-     * permanently — there was no "handled" state and no control to dismiss it. A notification
-     * that can never be cleared stops being read, which defeats the one event here that
-     * represents revenue.
+     * ── THE WINDOW IS WHAT DISMISSES THE CARD NOW (2026-08-25) ────────────────
+     *
+     * This was `repliedAt: { not: null }, replyHandledAt: null` — every unhandled reply ever,
+     * with no reference to the halt at all. That was survivable only while the card carried an
+     * "I have replied" button to set that column. Both buttons were removed on Tabish's
+     * instruction, so `replyHandledAt` is never written again and an unwindowed list would be a
+     * notification with NO WAY OUT — the exact failure the original version of this query was
+     * written to fix, arriving from the other end.
+     *
+     * So it now matches the enforcers exactly: `replyPostedAt >= replyHaltFloor(...)`, the same
+     * filter `gate.ts`, `plan.ts` and `onDemand.ts` use. A card is on screen if and only if the
+     * fleet is actually being held, and it leaves by itself when the fleet resumes. It also
+     * keys on the WRITTEN clock, so a reply the sweep discovered late is counted from when the
+     * person wrote it — and an undatable reply (`replyPostedAt: null`) never matches a `gte`,
+     * which is correct: it does not halt, so it must not claim a hold.
+     *
+     * `nav.tsx`'s badge and `rest-tally.ts` were already windowed this way; this query was the
+     * one that was not, so the count in the sidebar and the list under it would have started
+     * disagreeing on 26 August, the day the first halt expires.
      */
     prisma.outreachAttempt.findMany({
-      where: { repliedAt: { not: null }, replyHandledAt: null },
+      where: { replyPostedAt: { gte: replyHaltFloor(settings.replyResumeHours) }, replyHandledAt: null },
       include: { pair: { include: { sender: true, target: true } } },
       orderBy: { repliedAt: 'desc' },
-    }),
-    prisma.outreachAttempt.findMany({
-      where: { repliedAt: { not: null }, replyHandledAt: { not: null } },
-      include: { pair: { include: { sender: true, target: true } } },
-      orderBy: { repliedAt: 'desc' },
-      take: 20,
     }),
     prisma.outreachAttempt.findMany({
       where: { status: { in: [...DELIVERED_STATUSES] } },
@@ -155,13 +166,7 @@ export async function buildConversationsPage(): Promise<ConversationsPageView> {
     .map(({ lastSentAt: _drop, ...rest }) => rest)
 
   return {
-    replies: toReplyCards(unhandled),
-    handled: handledRaw.map((r) => ({
-      targetName: operatorName(r.pair.target.displayName),
-      targetHandle: r.pair.target.handle,
-      whenLabel: relative(r.repliedAt),
-      preview: r.replyText && r.replyText.length > 0 ? r.replyText : null,
-    })),
+    replies: toReplyCards(unhandled, settings.replyResumeHours),
     open,
     coverage,
     recent: delivered.map((a) => ({
