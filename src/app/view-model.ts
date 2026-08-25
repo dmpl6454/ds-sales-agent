@@ -1134,6 +1134,8 @@ export interface PaidPostsView {
   channelFilter: string | null
   /** Every channel the dropdown may offer. The visible ones only — see visibleChannels.ts. */
   channelOptions: { handle: string; name: string }[]
+  /** The search term in force, echoed back so the box keeps what was typed. */
+  searchQuery: string | null
   /**
    * The frame check, counted separately from caption verdicts — a flagged frame ASKED a
    * person to look, it did not decide, and adding it to "paid" would overstate a
@@ -1200,10 +1202,22 @@ export interface PaidPostRow {
    */
   recipients: { handle: string }[]
   /**
-   * Unminted candidates' state — 'N unverified, refused · M badge check pending ·
-   * N names with no verified account yet', or null when every candidate became a recipient.
+   * ── THERE IS NO "candidateNote" ANY MORE (2026-08-25, Tabish) ──────────────
+   *
+   * *"I don't want '1 name with no verified account yet', 'nobody named', etc type of
+   * nonsensical stuff to be written here … we need definite targets, no need to mention these
+   * things, also, what does 'yet' even mean?"*
+   *
+   * He is right on both counts. The disposition was added on 21 August because the column
+   * then collapsed everything into a false "nobody verified" — but the answer to that was to
+   * FIND the accounts, not to narrate the search on a screen a person reads for decisions.
+   * "Badge check pending" is a fact about our queue, not about the post; "yet" is a promise
+   * with no date on it. The column now lists the recipients and nothing else.
+   *
+   * The honest half of that complaint is fixed in `captionEntities.ts`, not here: the reason
+   * so many posts had nobody to show is that only the model's `brands` were being read, so
+   * every person and production company a caption named was invisible to discovery.
    */
-  candidateNote: string | null
 }
 
 /** Rows per page of the posts table. Bounded so a page render stays a page render. */
@@ -1214,6 +1228,8 @@ export async function buildPaidPostsView(input?: {
   channel?: string | null
   /** 1-based, from `?page=`. Clamped into range — `?page=999` shows the last page. */
   page?: number
+  /** Free text from `?q=` — matched against the caption, the brand names and the shortcode. */
+  query?: string | null
 }): Promise<PaidPostsView> {
   const v = await buildCeoView()
 
@@ -1280,8 +1296,49 @@ export async function buildPaidPostsView(input?: {
    * than it was describing. Harmless as a footnote; fatal as a pager, which computes where
    * the END is from that number. One predicate, two consumers.
    */
+  /**
+   * ── SEARCH, AND WHY IT DOES NOT USE `mode: 'insensitive'` ─────────────────
+   *
+   * Tabish, 2026-08-25: *"There must also be a simple 'search' button for users to search the
+   * paid post from our huge and growing library."* 887 rows in the window and climbing.
+   *
+   * Prisma's case-insensitive `contains` is POSTGRES-ONLY — on the SQLite client the argument
+   * does not exist and the call throws. That is the `skipDuplicates` trap verbatim, and it is
+   * invisible to `pnpm typecheck`, which runs against the Postgres schema while the suite runs
+   * against SQLite. Rather than depend on which provider generated the client, the term is
+   * matched in the three casings a person actually types. Portable by construction; the cost
+   * is a longer `OR`, evaluated once, inside a window that is already bounded.
+   */
+  const rawQuery = input?.query?.trim() ?? ''
+  const searchQuery = rawQuery.length >= 2 ? rawQuery : null
+  const casings = searchQuery
+    ? [...new Set([
+        searchQuery,
+        searchQuery.toLowerCase(),
+        searchQuery.replace(/\b[a-z]/g, (c) => c.toUpperCase()),
+      ])]
+    : []
+  const searchWhere = searchQuery
+    ? {
+        OR: [
+          ...casings.flatMap((t) => [
+            { caption: { contains: t } },
+            { brands: { contains: t } },
+          ]),
+          /* A shortcode is an exact identifier, so it is matched as one — pasting a post's
+             own code is the fastest way to find the row somebody is asking about. */
+          { shortcode: searchQuery },
+        ],
+      }
+    : null
+
   const postsWhere = {
-    OR: [{ verdict: { in: PAID_VERDICTS } }, { humanLabel: false }],
+    /* `AND` rather than spreading both, because two bare `OR` keys on one object would
+       silently overwrite each other and the search would replace the paid filter. */
+    AND: [
+      { OR: [{ verdict: { in: PAID_VERDICTS } }, { humanLabel: false }] },
+      ...(searchWhere ? [searchWhere] : []),
+    ],
     ...inWindow,
     ...(channelFilter ? { target: { handle: channelFilter } } : {}),
   }
@@ -1509,50 +1566,6 @@ export async function buildPaidPostsView(input?: {
               brandStringsNameProspect(p.brands, { handle: t.handle, displayName: t.displayName })),
         )
         .map((t) => ({ handle: t.handle })),
-      candidateNote: (() => {
-        /**
-         * ── A NAME IS A CANDIDATE TOO, AND THE COLUMN USED TO CALL IT NOBODY ─────────
-         *
-         * Tabish, 2026-08-25, on a @trolls_official post: *"we have detected it as paid and
-         * brand/celeb name in the column as Akshay Khanna correctly, why then is the column
-         * 'We message' showcasing 'Nobody Named'?"*
-         *
-         * Because the disposition below was built from `brandCandidatesFor`, which reads
-         * caption @mentions and media TAGS — handles Instagram asserts. That post asserts no
-         * handle at all: `taggedAccounts: []`, no `@` in the caption, and one brand STRING,
-         * "Akshay Khanna". So there were no candidates, no note, and the fallback printed
-         * "nobody named" beside a Brands column displaying the name it had just found.
-         *
-         * MEASURED: **166 in-window CAMPAIGN posts carry brand names with no tag and no
-         * @mention** — every one of them was reading "nobody named" while naming somebody.
-         *
-         * A name that credits no live prospect is `discoverOfficialPages`'s queue, not an
-         * absence: it becomes candidate handles and meets the badge bar on the brand timer.
-         * So it gets its own clause, and "nobody named" is now reserved for a post that
-         * genuinely asserts nothing. Own marks are stripped first — a publisher's own
-         * watermark or series code ("fg6") is not a third party, by the same rule the judge
-         * already applies one modality over.
-         */
-        const minted = new Set(prospectRefs.map((t) => t.handle))
-        const rest = (candidatesByPost.get(p.id) ?? []).filter((h) => !minted.has(h))
-        const refused = rest.filter((h) => candidateLookups.get(h)?.isVerified === false).length
-        const pending = rest.length - refused
-        const namesUnresolved = stripOwnMarksFromBrands(readStringArray(p.brands), {
-          handle: p.target.handle,
-          displayName: p.target.displayName,
-        }).filter(
-          (name) =>
-            !prospectRefs.some(
-              (t) => !t.optedOut && brandStringsNameProspect(JSON.stringify([name]), { handle: t.handle, displayName: t.displayName }),
-            ),
-        ).length
-        const parts: string[] = []
-        if (refused > 0) parts.push(`${refused} unverified, refused`)
-        if (pending > 0) parts.push(`${pending} badge check pending`)
-        if (namesUnresolved > 0)
-          parts.push(`${namesUnresolved} name${namesUnresolved === 1 ? '' : 's'} with no verified account yet`)
-        return parts.length === 0 ? null : parts.join(' · ')
-      })(),
       shortcode: p.shortcode,
       url: postUrl(p.shortcode),
       dayLabel: istDateKey(p.postedAt),
@@ -1561,7 +1574,20 @@ export async function buildPaidPostsView(input?: {
       lateness: latenessLabel(p.postedAt, p.detectedAt),
       channelName: operatorName(p.target.displayName),
       channelHandle: p.target.handle,
-      brands: readStringArray(p.brands),
+      /*
+        OWN MARKS ARE NOT BRANDS, AND THE COLUMN WAS SHOWING THEM (2026-08-25, Tabish:
+        *"filmigyan issue of fg2 abbreviations is still an issue, these are internal tags"*).
+
+        MEASURED: 668 @filmygyan rows and 178 @bollywoodsocietyy rows carry a code like `fg2`,
+        `bs2`, `fg14` — 49 of them stored TODAY, so this is live, not history. `ownMarks`
+        stops a code reaching a VERDICT and `harvestBrandNames` stops it spending a lookup
+        (verified: zero `fg*` handles in `BrandLookup`), but nothing stopped it being PRINTED.
+        Stripped here so every stored row is covered, not just the ones judged from now on.
+      */
+      brands: stripOwnMarksFromBrands(readStringArray(p.brands), {
+        handle: p.target.handle,
+        displayName: p.target.displayName,
+      }),
       verdict: p.verdict,
       /**
        * Has a person already crossed this off? Drives the control's two states — the cross,
@@ -1593,6 +1619,7 @@ export async function buildPaidPostsView(input?: {
     },
     channelFilter,
     channelOptions,
+    searchQuery,
     framesRead,
     framesNotSaved,
     framesNoEngine,

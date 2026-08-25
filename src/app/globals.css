@@ -1321,3 +1321,8 @@ label { display: block; }
   border-radius: var(--r); padding: 4px 10px; cursor: pointer;
 }
 .channel-filter button:hover { color: var(--tx-0); border-color: var(--ac); }
+.channel-filter input[type='search'] {
+  font: inherit; color: var(--tx-0); background: var(--bg-1);
+  border: 1px solid var(--ln-1); border-radius: var(--r); padding: 4px 8px;
+  min-width: 0; flex: 1 1 14rem; max-width: 22rem;
+}

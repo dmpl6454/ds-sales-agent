@@ -32,6 +32,7 @@ import { log } from '@/lib/logger'
 import { detectionCutoff } from '@/lib/cutoff'
 import { enrichHandle } from './enrichHandle'
 import { candidateHandlesFor, isOfficialMatch, duplicatesExistingProspect } from './officialHandle'
+import { captionEntities } from './captionEntities'
 import { brandCandidatesFor, excludedHandles } from './brandCandidates'
 import { createFailureMemory } from './lookupCooldown'
 import { isOwnMark } from './ownMarks'
@@ -186,9 +187,28 @@ export function harvestBrandNames(
       /* a malformed brands column is that row's problem, not the pass's */
     }
 
+    /**
+     * ── AND EVERY PERSON AND COMPANY THE CAPTION NAMES (2026-08-25) ──────────
+     *
+     * `brands` is the model's answer to "commercial entities being promoted", and for a film
+     * release that is the film. MEASURED on @taranadarsh's Toxic post: stored brands were
+     * `["Toxic","KGF2"]` while the caption named Yash, Nayanthara, Kiara Advani, Tara Sutaria,
+     * Rukmini Vasanth, Huma Qureshi, Geetu Mohandas, Venkat K Narayana, KVN Productions and
+     * Monster Mind Creations — **the producers and the talent, i.e. the people who actually buy
+     * placement**, none of whom reached discovery. Tabish: *"multiple individuals, brands were
+     * named, none of which have been discovered as targets."*
+     *
+     * Merged rather than used as a fallback: the model's pick is the better lead and keeps its
+     * place at the front, and these follow it. Own marks are filtered on the same rule as
+     * `brands`, so a publisher's `fg2` cannot enter through the new door either.
+     */
+    const fromEntities = captionEntities(p.caption).filter(
+      (b) => !isOwnMark(b, { handle: p.target.handle, displayName: null }),
+    )
+
     const list: Array<{ name: string; source: 'caption' | 'frame' }> =
-      fromCaption.length > 0
-        ? fromCaption.map((name) => ({ name, source: 'caption' as const }))
+      fromCaption.length > 0 || fromEntities.length > 0
+        ? [...fromCaption, ...fromEntities].map((name) => ({ name, source: 'caption' as const }))
         : frameBrandTokens(p.frameText).map((name) => ({ name, source: 'frame' as const }))
 
     for (const { name, source } of list) {

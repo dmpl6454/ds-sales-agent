@@ -31,10 +31,13 @@
 export function ChannelFilter({
   options,
   current,
+  query,
 }: {
   options: { handle: string; name: string }[]
   /** The handle in force, already validated by the view model. Null = every channel. */
   current: string | null
+  /** The search term in force, so the box keeps what was typed across a page turn. */
+  query: string | null
 }) {
   if (options.length === 0) return null
 
@@ -62,9 +65,24 @@ export function ChannelFilter({
         ))}
       </select>{' '}
       {/*
-        Submits when JavaScript has not loaded or has failed. With JS the `onChange` above has
-        already navigated, so this is never the path anyone takes — which is exactly why it
-        must not be styled as the primary control.
+        SEARCH LIVES IN THE SAME FORM AS THE FILTER, so the two compose instead of clobbering
+        each other: submitting sends both `channel` and `q`, and a blank box clears the search
+        rather than preserving a stale one. Still no hidden `page` — any change to what is
+        being asked starts at the newest post.
+      */}
+      <label htmlFor="post-search" className="muted">
+        Search
+      </label>{' '}
+      <input
+        id="post-search"
+        name="q"
+        type="search"
+        defaultValue={query ?? ''}
+        placeholder="caption, brand or shortcode"
+      />{' '}
+      {/*
+        The one control both paths need: it submits the typed search, and it is also what
+        submits the channel when JavaScript has not loaded and the `onChange` above never ran.
       */}
       <button type="submit" className="muted">
         Show

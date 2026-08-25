@@ -144,14 +144,40 @@ describe('the resting tally', () => {
       'replyHaltFloor',
       'fleetRingOrder',
       'nextSender',
-      'usedCampaignIds',
     ]) {
       expect(src, `${fn} must be imported and called, not reimplemented here`).toContain(fn)
     }
-    // And the per-row query is BOUNDED, so this can never become an N+1 over a list whose
-    // size is a product decision — the defect killed twice already in this codebase.
-    expect(src).toMatch(/PAIR_PRECISION_LIMIT/)
-    expect(src).toMatch(/pairChecksDone < PAIR_PRECISION_LIMIT/)
+  })
+
+  /**
+   * ── THERE IS NO PER-ROW QUERY LEFT (2026-08-25) ────────────────────────────
+   *
+   * This used to assert the OPPOSITE shape — that the one per-row query was capped at
+   * `PAIR_PRECISION_LIMIT` so it could not become an N+1. MEASURED by logging the SQL:
+   * `usedCampaignIds(electedPairId)` inside the prospect loop was **50 of this builder's 62
+   * queries**, and because `/` and `/targets` both load it, both sat over the ceilings
+   * `ig:layout` enforces — 182/160 and 148/120.
+   *
+   * A cap is the right answer to a per-row query. Not being per-row is a better one, and it
+   * is the move this file already makes for the allowance (`preloaded`). 62 → 16 queries.
+   *
+   * So the assertion is inverted and STRENGTHENED: the loop must contain no `await prisma`
+   * and no `usedCampaignIds` at all. A cap can be raised; an absence cannot be raised.
+   */
+  it('has no per-row query inside the prospect loop at all', () => {
+    /* The CALL, not the word — the docblock in that file explains why it is gone, and the
+       explanation is worth more than a grep that forbids naming the thing it removed. */
+    expect(src, 'usedCampaignIds is a query per pair — preload it instead').not.toMatch(
+      /await usedCampaignIds\(/,
+    )
+    expect(src, 'it must not be imported either').not.toMatch(/import \{[^}]*usedCampaignIds/)
+    /* The usage is loaded once, in the same Promise.all as everything else. */
+    expect(src).toMatch(/campaignId: \{ not: null \}, status: \{ in: \[\.\.\.IN_FLIGHT_STATUSES\] \}/)
+    expect(src).toMatch(/const usedByPair = new Map/)
+    /* The cap is gone rather than raised, so the tally is exact at any fleet size. The
+       DECLARATION, not the word: the docblock still names it to explain what it replaced. */
+    expect(src).not.toMatch(/const PAIR_PRECISION_LIMIT/)
+    expect(src).not.toMatch(/pairChecksDone < PAIR_PRECISION_LIMIT/)
   })
 
   it('attributes in the GOVERNOR\'s order, because the order changes the answer', () => {

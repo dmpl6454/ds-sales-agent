@@ -41,7 +41,7 @@ export const dynamic = 'force-dynamic'
 export default async function PaidPostsPage({
   searchParams,
 }: {
-  searchParams: Promise<{ channel?: string; page?: string }>
+  searchParams: Promise<{ channel?: string; page?: string; q?: string }>
 }) {
   const user = await currentUser()
   if (!user) redirect('/sign-in')
@@ -56,20 +56,22 @@ export default async function PaidPostsPage({
    * survives every `<` comparison it meets — the shape that once let a missing confidence
    * sail through a floor check as a confident verdict.
    */
-  const { channel, page } = await searchParams
+  const { channel, page, q } = await searchParams
   const wantedPage = Number.parseInt(page ?? '1', 10)
 
   const [v, accuracy] = await Promise.all([
     buildPaidPostsView({
       channel: channel ?? null,
       page: Number.isFinite(wantedPage) ? wantedPage : 1,
+      query: q ?? null,
     }),
     buildAccuracyTrend(),
   ])
 
   /** Both controls must survive each other: paging keeps the channel, the channel resets the page. */
   const hrefForPage = (n: number) =>
-    `/paid-posts?${v.channelFilter ? `channel=${encodeURIComponent(v.channelFilter)}&` : ''}page=${n}#posts`
+    `/paid-posts?${v.channelFilter ? `channel=${encodeURIComponent(v.channelFilter)}&` : ''}` +
+    `${v.searchQuery ? `q=${encodeURIComponent(v.searchQuery)}&` : ''}page=${n}#posts`
   const judged = v.byVerdict.filter((r) => r.verdict !== 'UNCLASSIFIED').reduce((n, r) => n + r.count, 0)
   const unjudged = v.byVerdict.find((r) => r.verdict === 'UNCLASSIFIED')?.count ?? 0
 
@@ -230,7 +232,7 @@ export default async function PaidPostsPage({
             renders even when the current filter finds nothing — otherwise the only way back
             from an empty channel would be editing the URL.
           */}
-          <ChannelFilter options={v.channelOptions} current={v.channelFilter} />
+          <ChannelFilter options={v.channelOptions} current={v.channelFilter} query={v.searchQuery} />
 
           {/*
             THE TOTAL IS THE FILTER'S OWN, and it says which filter it belongs to. "0 paid
@@ -241,16 +243,19 @@ export default async function PaidPostsPage({
           {v.postsPaging.total > 0 ? (
             <p className="group-blurb">
               Showing {v.postsPaging.from}&ndash;{v.postsPaging.to} of {v.postsPaging.total}
-              {v.channelFilter ? <> from @{v.channelFilter}</> : null} &middot; newest first &middot; page{' '}
+              {v.channelFilter ? <> from @{v.channelFilter}</> : null}
+              {v.searchQuery ? <> matching &ldquo;{v.searchQuery}&rdquo;</> : null} &middot; newest first &middot; page{' '}
               {v.postsPaging.page} of {v.postsPaging.pageCount}
             </p>
           ) : null}
 
           {v.posts.length === 0 ? (
             <p className="group-blurb">
-              {v.channelFilter
-                ? `No paid post from @${v.channelFilter} in this window. Pick "Every channel" to see the rest.`
-                : 'Nothing judged paid yet.'}
+              {v.searchQuery
+                ? `Nothing matching "${v.searchQuery}"${v.channelFilter ? ` from @${v.channelFilter}` : ''} in this window. Clear the box to see the rest.`
+                : v.channelFilter
+                  ? `No paid post from @${v.channelFilter} in this window. Pick "Every channel" to see the rest.`
+                  : 'Nothing judged paid yet.'}
             </p>
           ) : (
             <>
@@ -335,26 +340,19 @@ export default async function PaidPostsPage({
                           </span>
                         ))}
                         {/*
-                          The rest of the post's candidates, BY STATE — never collapsed
-                          into "nobody verified" (Tabish, 2026-08-21: that read as false
-                          on posts with visible tags, and he was right — most of those
-                          candidates were "badge check pending" or "unverified, refused",
-                          which are different facts with different remedies).
+                          NO DISPOSITION LINE (2026-08-25, Tabish): *"I don't want '1 name with
+                          no verified account yet', 'nobody named', etc type of nonsensical
+                          stuff to be written here … we need definite targets."* The column is
+                          the recipients and nothing else; an em-dash when there are none, so
+                          the cell is never blank enough to read as a rendering fault.
+
+                          The reason a row can still be empty is a DETECTION gap, not a copy
+                          one, and it is fixed where it lives — `captionEntities.ts` now reads
+                          every person and company a caption names, not just the model's
+                          `brands`. Corpus-wide that took the discovery queue from 987 distinct
+                          names to 2,810.
                         */}
-                        {p.candidateNote ? (
-                          <span className="muted">
-                            {p.recipients.length > 0 ? ' · ' : ''}
-                            {p.candidateNote}
-                          </span>
-                        ) : null}
-                        {p.recipients.length === 0 && !p.candidateNote ? (
-                          /* Genuinely nobody: the post asserts no handle AND names no brand
-                             — a fully anonymous paid post yields NO prospect by design
-                             (existence is not identity). A post that DID name somebody now
-                             says so through `candidateNote`; this used to fire on 166
-                             in-window posts that had a brand name and no tag. */
-                          <span className="muted">nobody named</span>
-                        ) : null}
+                        {p.recipients.length === 0 ? <span className="muted">&mdash;</span> : null}
                       </td>
                       <td>
                         <DismissButton shortcode={p.shortcode} dismissed={p.dismissed} />

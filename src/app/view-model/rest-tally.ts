@@ -1,6 +1,6 @@
 import { prisma } from '@/lib/db'
 import { getSettings } from '@/lib/settings'
-import { DELIVERED_STATUSES } from '@/lib/constants'
+import { DELIVERED_STATUSES, IN_FLIGHT_STATUSES } from '@/lib/constants'
 import { newMaterialFloor } from '@/lib/cutoff'
 import { SKIP_REASONS } from '@/outreach/governor'
 import { BRAND_BLOCKS, checkRecipientIsNotAPerson } from '@/outreach/brandGuards'
@@ -10,7 +10,6 @@ import { replyHaltFloor } from '@/outreach/replyHalt'
 import { eligibleFleetSenderIds, readSenderAvailability } from '@/outreach/availability'
 import { fleetRingOrder, nextSender } from '@/outreach/rotation'
 import { unavailableForTarget } from '@/outreach/categories'
-import { usedCampaignIds } from '@/outreach/compose'
 
 /**
  * HOW MANY COMPANIES ARE RESTING RIGHT NOW, OUT OF HOW MANY — and which rule holds each.
@@ -236,16 +235,23 @@ export interface RestTally {
 }
 
 /**
- * A bound on the ONE remaining per-row query, so this can never become an N+1.
+ * ── THERE IS NO PER-ROW QUERY LEFT, AND THE CAP THAT BOUNDED ONE IS GONE ───
  *
- * `NO_NEW_MATERIAL` is the only hold left that is genuinely per-PAIR: it asks whether the page
- * whose turn it is has already written about every campaign naming this recipient, which needs
- * `usedCampaignIds(pairId)`. It can only fire where the ELECTED pair has already delivered
- * (`touchesSoFar > 0` in the governor), and that set is small by construction because rotation
- * elects the page AFTER whoever wrote last. Bounded regardless: past this many the remainder is
- * counted clear and `pairChecksSkipped` says how many, rather than silently costing a query each.
+ * `NO_NEW_MATERIAL` is the only hold that is genuinely per-PAIR: it asks whether the page whose
+ * turn it is has already written about every campaign naming this recipient. That used to mean
+ * `usedCampaignIds(pairId)` once per prospect, capped at 80 so it could not become an N+1 —
+ * past the cap the remainder was counted clear and `pairChecksSkipped` said how many.
+ *
+ * MEASURED 2026-08-25 by logging the SQL: **50 of this builder's 62 queries were that one
+ * call**, and since `/` and `/targets` both load it, both were over the ceilings `ig:layout`
+ * enforces (182/160 and 148/120). A cap is the right answer to a per-row query; not being
+ * per-row is a better one. The usage is preloaded in the Promise.all below — two columns, one
+ * round trip — and the check is now a map lookup.
+ *
+ * So the cap is deleted rather than raised, `pairChecksSkipped` is structurally 0, and the
+ * breakdown stopped being an approximation above 80 rows. The field survives so the shape of
+ * `RestTally` does not move under its callers; nothing can make it non-zero any more.
  */
-const PAIR_PRECISION_LIMIT = 80
 
 export async function buildRestTally(now: Date = new Date()): Promise<RestTally> {
   const settings = await getSettings()
@@ -254,7 +260,7 @@ export async function buildRestTally(now: Date = new Date()): Promise<RestTally>
   /* Preload from the EARLIER of the two floors: the stub narrows per caller, it cannot widen. */
   const preloadFloor = allowanceFloor < materialFloor ? allowanceFloor : materialFloor
 
-  const [targetRows, posts, deliveries, replies, inFlightAndParked, pairs, eligibleSenderIds, unavailable] =
+  const [targetRows, posts, deliveries, replies, inFlightAndParked, pairs, eligibleSenderIds, unavailable, campaignUsage] =
     await Promise.all([
       /**
        * EVERY target row in ONE query, partitioned in JS.
@@ -314,7 +320,38 @@ export async function buildRestTally(now: Date = new Date()): Promise<RestTally>
       }),
       eligibleFleetSenderIds(),
       readSenderAvailability(),
+      /**
+       * ── WHICH CAMPAIGNS EACH PAIR HAS ALREADY WRITTEN ABOUT, IN ONE QUERY ────
+       *
+       * This was `usedCampaignIds(electedPairId)` INSIDE the prospect loop — one round trip
+       * per row, capped at `PAIR_PRECISION_LIMIT` so it could not run away. MEASURED
+       * 2026-08-25 by logging the SQL: **50 of `buildRestTally`'s 62 queries were this one
+       * call**, and because `/` and `/targets` both load this builder it put them at 182/160
+       * and 148/120 — over the ceilings `pnpm ig:layout` enforces.
+       *
+       * The cap was the right answer while the query was per-row; the better answer is not to
+       * be per-row. Same move `preloaded` already makes for the allowance one screen up: load
+       * the superset ONCE and let the exact test run in JS.
+       *
+       * Two tiny columns over every attempt that carries a campaign — the same rows
+       * `usedCampaignIds` would have read one pair at a time, minus the round trips. The
+       * `status` filter is `IN_FLIGHT_STATUSES` verbatim rather than a hand-written list,
+       * because a discarded draft must not burn a campaign and that rule lives there.
+       */
+      prisma.outreachAttempt.findMany({
+        where: { campaignId: { not: null }, status: { in: [...IN_FLIGHT_STATUSES] } },
+        select: { pairId: true, campaignId: true },
+      }),
     ])
+
+  /** pairId → the campaigns that pair has already used. The map `usedCampaignIds` returned. */
+  const usedByPair = new Map<string, string[]>()
+  for (const row of campaignUsage) {
+    if (row.campaignId === null) continue
+    const list = usedByPair.get(row.pairId)
+    if (list) list.push(row.campaignId)
+    else usedByPair.set(row.pairId, [row.campaignId])
+  }
 
   const prospects = targetRows.filter((t) => t.role === 'PROSPECT' && !t.optedOut)
   const retired = targetRows.filter((t) => t.role === 'PROSPECT' && t.optedOut).length
@@ -475,18 +512,20 @@ export async function buildRestTally(now: Date = new Date()): Promise<RestTally>
     const key = `${p.id}:${electedId}`
     const electedPairId = pairIdByKey.get(key)
     if (electedPairId && deliveredPairKeys.has(key)) {
-      if (pairChecksDone < PAIR_PRECISION_LIMIT) {
-        pairChecksDone += 1
-        const used = await usedCampaignIds(electedPairId)
-        /* `newMaterialFloor`, NOT the allowance window — that is the floor the governor's own
-           query uses, and the two are genuinely different (72h vs 7 days). */
-        const rows = await campaignsNamingHandleRows(preloaded, p, materialFloor)
-        if (rows.filter((r) => !used.includes(r.id)).length === 0) {
-          bump(SKIP_REASONS.NO_NEW_MATERIAL, null)
-          continue
-        }
-      } else {
-        pairChecksSkipped += 1
+      /**
+       * NO LONGER CAPPED, because it no longer costs a query. `PAIR_PRECISION_LIMIT` existed
+       * only to bound the round trips; with the usage preloaded above this is a map lookup,
+       * so every prospect is now checked exactly and `pairChecksSkipped` is structurally 0 —
+       * the breakdown stopped being an approximation above 80 rows as a side effect.
+       */
+      pairChecksDone += 1
+      const used = usedByPair.get(electedPairId) ?? []
+      /* `newMaterialFloor`, NOT the allowance window — that is the floor the governor's own
+         query uses, and the two are genuinely different (72h vs 7 days). */
+      const rows = await campaignsNamingHandleRows(preloaded, p, materialFloor)
+      if (rows.filter((r) => !used.includes(r.id)).length === 0) {
+        bump(SKIP_REASONS.NO_NEW_MATERIAL, null)
+        continue
       }
     }
 
