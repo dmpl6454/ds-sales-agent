@@ -274,6 +274,66 @@ a set intersection rather than a pair of booleans.
 which would let a marketing page write to every bollywood company. Both directions are pinned
 in `tests/sender-categories.test.ts`.
 
+### THE FLEET IS CHOOSABLE IN THE UI, AND A PROSPECT INHERITS ITS CHANNEL'S
+
+**Tabish: *"There is no segregation between adding accounts for the two types of categories I
+mentioned in the UI. There is no distinction in the UI whatsoever."*** He is right, and it is
+this codebase's most repeated shape: the rule shipped, and the only way to put an account in
+the second fleet was a CLI command — *a feature that works only when someone runs a command is
+not running.*
+
+Both add forms take a fleet now. **The membership is written BEFORE the routes are created,
+and that order is the whole correctness of it**: `routeAllowed` READS the memberships, so a
+category applied afterwards would leave the new account already wired to every recipient of
+the other fleet, and the gate would then have to hold every one of those drafts forever.
+
+**AN UNKNOWN SLUG REFUSES rather than falling back to the default.** The default is what a
+bollywood page gets; quietly giving it to an account somebody meant for the marketing fleet is
+precisely the failure this rule exists to prevent. The dropdown renders **only when a second
+fleet exists** — one option is not a choice, and a select with a single entry implies a
+decision nobody has to make.
+
+**A PROSPECT INHERITS THE FLEET OF THE CHANNEL WHOSE PAID POST FOUND IT** (`brandTarget.ts`),
+because his rule is about PROVENANCE: *"Only targets obtained from them are to be messaged
+using a new sender."* Without that, adding a channel to a fleet did nothing at all for the
+companies discovered through it — the tag would have had to be applied by hand, per prospect,
+forever. Written before the routes for the same reason as above.
+
+The fleet chip on `/senders` and `/targets` renders **only for an explicit membership** — the
+default IS the absence of one, so a "bollywood" chip on 500 rows would be furniture. Note
+`AccountRow.categories` **already existed and was already populated**; nothing had ever drawn
+it. Same shape as the 166 cover frames and `fleetUsage().today`.
+
+### AND ONE MORE PER-DRAFT QUERY, FOUND BY THE BUDGET AGAIN
+
+`buildMessagesPage`'s `materialHolds` loop called `campaignsNamingHandle` once per waiting
+draft, defended by its own comment — *"the queue is small by construction"*. **It is not
+bounded by anything**, and as the queue grew `/` hit **163 against a 160 budget**. Preloaded
+the same way `rest-tally` already does it (load the in-window CAMPAIGN posts once, hand the
+enforcer a stub whose `findMany` serves them, let its exact test run in JS): **68 → 61
+queries, `/` back to 132/160.**
+
+**A HARNESS FLAKE WORTH KNOWING:** one run measured `/targets` at **356/120** and the next two
+at **104**. A direct `fetch` of the page issues 104. The page refreshes itself every 30-45s
+(`auto-refresh.tsx`), so a refresh landing inside the harness's check window counts a second
+and third full render against the same delta. **Re-run before believing a query-budget spike**
+— and read a stable number across runs, not one sample.
+
+### HEALTH, VERIFIED BEFORE AND AFTER
+
+| | |
+|---|---|
+| messages delivered to any marketing-fleet target since the rule went live | **0** |
+| attempts on those rows | 178, **all pre-rule history** |
+| cross-fleet drafts waiting | 1, **held by the gate** |
+| live prospects / unverified | **515 / 0** |
+| paid posts detected in the hour | 80, newest 12.8 min old |
+
+Note the pair ROWS to those recipients still exist (6 each). `routes.ts` refuses to create
+new ones and the gate refuses to send on them; deleting them is not an option, because
+`OutreachAttempt.pairId` is `ON DELETE CASCADE` and it would erase the record of messages real
+people received.
+
 ### ENFORCED AT BOTH ENDS, AND NOT OVERRIDABLE
 
 `routes.ts` refuses to CREATE a cross-fleet pair so the queue never fills with them;
