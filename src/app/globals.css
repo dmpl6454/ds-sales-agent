@@ -1326,3 +1326,12 @@ label { display: block; }
   border: 1px solid var(--ln-1); border-radius: var(--r); padding: 4px 8px;
   min-width: 0; flex: 1 1 14rem; max-width: 22rem;
 }
+
+/*
+  The replies disclosure on Autopilot (2026-08-25). `<details>` rather than a client toggle —
+  see replies.tsx for why the whole panel must stay a server component.
+*/
+.replies-fold { border: 1px solid color-mix(in srgb, var(--good) 40%, var(--ln-1)); background: var(--good-sub); border-radius: var(--r); padding: 12px 16px; }
+.replies-fold > summary { cursor: pointer; font-weight: 600; font-size: 14px; }
+.replies-fold > summary::marker { color: var(--tx-1); }
+.replies-fold[open] > summary { margin-bottom: 10px; }

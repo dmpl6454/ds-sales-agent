@@ -68,6 +68,37 @@ bootstrap.exec(`
   );
   CREATE UNIQUE INDEX "SenderAccount_handle_key" ON "SenderAccount"("handle");
 
+  /*
+    THE CATEGORY TABLES (2026-08-25). routes.ts now asks which fleet a sender and a recipient
+    belong to, and readCategoryMemberships reads these two join tables on every creator path —
+    so a temp database without them throws before any assertion runs. This is the
+    hand-transcribed-DDL trap CLAUDE.md records: the suite failed 102 tests the last time a
+    column was added and these blocks were not updated. Left EMPTY on purpose, which is the
+    default category on both sides, so every assertion in this file still means what it meant.
+  */
+  CREATE TABLE "Category" (
+    "id" TEXT PRIMARY KEY,
+    "name" TEXT NOT NULL,
+    "slug" TEXT NOT NULL UNIQUE,
+    "note" TEXT,
+    "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+  );
+  CREATE TABLE "CategorySender" (
+    "id" TEXT PRIMARY KEY,
+    "categoryId" TEXT NOT NULL,
+    "senderId" TEXT NOT NULL,
+    "position" INTEGER NOT NULL DEFAULT 0,
+    "enabled" BOOLEAN NOT NULL DEFAULT true,
+    "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+  );
+  CREATE TABLE "CategoryTarget" (
+    "id" TEXT PRIMARY KEY,
+    "categoryId" TEXT NOT NULL,
+    "targetId" TEXT NOT NULL,
+    "enabled" BOOLEAN NOT NULL DEFAULT true,
+    "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+  );
   CREATE TABLE "TargetAccount" (
     "id" TEXT NOT NULL PRIMARY KEY,
     "handle" TEXT NOT NULL,

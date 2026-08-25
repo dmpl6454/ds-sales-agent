@@ -466,3 +466,57 @@ export async function reorderRing(categoryId: string, senderIdsInOrder: readonly
     })
   }
 }
+
+/**
+ * WHICH CATEGORY DOES EACH SENDER AND EACH RECIPIENT BELONG TO?
+ *
+ * Keyed by HANDLE, because `routes.ts` asks in handles — a sender row and a target row for
+ * the same account are two different ids, and an id-keyed map would silently answer for the
+ * wrong one (the same trap `ourHandles` carries a comment about).
+ *
+ * TWO QUERIES for the whole fleet, loaded once by each caller and passed down, rather than a
+ * lookup per pair: `ensureFleetPairs` walks senders × targets, and a query in there is an N+1
+ * over a list whose size is a product decision — the defect this codebase has killed three
+ * times (`buildBrandsPanel`, `buildChannelCards`, `rest-tally`).
+ *
+ * An EMPTY list for a handle is the correct and common answer, and it does not mean
+ * "unrestricted": `effectiveCategories` reads it as the default category. See
+ * `senderCategories.ts`.
+ */
+export interface CategoryMemberships {
+  bySenderHandle: ReadonlyMap<string, string[]>
+  byTargetHandle: ReadonlyMap<string, string[]>
+}
+
+export async function readCategoryMemberships(): Promise<CategoryMemberships> {
+  const [senderRows, targetRows] = await Promise.all([
+    prisma.categorySender.findMany({
+      where: { enabled: true },
+      select: { category: { select: { slug: true } }, sender: { select: { handle: true } } },
+    }),
+    prisma.categoryTarget.findMany({
+      where: { enabled: true },
+      select: { category: { select: { slug: true } }, target: { select: { handle: true } } },
+    }),
+  ])
+  const bySenderHandle = new Map<string, string[]>()
+  for (const r of senderRows) {
+    const k = r.sender.handle.toLowerCase()
+    const list = bySenderHandle.get(k)
+    if (list) list.push(r.category.slug)
+    else bySenderHandle.set(k, [r.category.slug])
+  }
+  const byTargetHandle = new Map<string, string[]>()
+  for (const r of targetRows) {
+    const k = r.target.handle.toLowerCase()
+    const list = byTargetHandle.get(k)
+    if (list) list.push(r.category.slug)
+    else byTargetHandle.set(k, [r.category.slug])
+  }
+  return { bySenderHandle, byTargetHandle }
+}
+
+/** The categories one handle belongs to, or `[]` — which `effectiveCategories` reads as the default. */
+export function categoriesFor(map: ReadonlyMap<string, string[]>, handle: string): readonly string[] {
+  return map.get(handle.toLowerCase()) ?? []
+}

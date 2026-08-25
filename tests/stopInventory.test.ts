@@ -171,6 +171,12 @@ function gateInput(over: Record<string, unknown> = {}) {
     material: { held: false as const, allowance: 1, delivered: 0 },
     targetOptedOut: false,
     targetIsWatchOnly: false,
+    /* Empty on both sides = the DEFAULT category, i.e. the permitted case. `as` on the object
+       below meant these were simply MISSING at runtime rather than type-checked in, so every
+       case after the new stop threw inside `effectiveCategories` — a fixture that omits a
+       required field is exactly how a guard ships half-wired (CLAUDE.md's `!== null` note). */
+    senderCategories: [],
+    targetCategories: [],
     targetIsVerified: true,
     targetRepliedAt: null,
     pairSentTodayCount: 0,
@@ -186,6 +192,9 @@ const GATE_CASES: Array<[string, Record<string, unknown>]> = [
   [RESEND_BLOCKS.COHORT_NOT_CLEARED, { senderCohortCleared: false, senderCohortDetail: 'group 1 has been sending for 3 of 14 days' }],
   [RESEND_BLOCKS.TARGET_OPTED_OUT, { targetOptedOut: true }],
   [RESEND_BLOCKS.TARGET_IS_WATCH_ONLY, { targetIsWatchOnly: true }],
+  /* Two fleets (2026-08-25). Empty on both sides is the DEFAULT category and permitted, so the
+     trigger is an explicit membership on one side only. */
+  [RESEND_BLOCKS.DIFFERENT_CATEGORY, { senderCategories: ['marketing'] }],
   // Verified only (2026-08-20). NULL is refused too — see the second case.
   [RESEND_BLOCKS.TARGET_NOT_VERIFIED, { targetIsVerified: false }],
   [RESEND_BLOCKS.TARGET_REPLIED, { targetRepliedAt: new Date('2026-08-19T12:00:00Z') }],
@@ -370,6 +379,9 @@ describe('every gate stop is reachable and explains itself', () => {
       RESEND_BLOCKS.NOT_WAITING,
       // WHO the recipient is, not WHEN — a watched competitor is never a prospect.
       RESEND_BLOCKS.TARGET_IS_WATCH_ONLY,
+      /* WHICH FLEET the recipient belongs to. A recipient that genuinely belongs to both is
+         put in both categories; that is the supported answer, not an override. */
+      RESEND_BLOCKS.DIFFERENT_CATEGORY,
     ]
     for (const code of absolute) {
       expect(OVERRIDABLE_BLOCKS, `${code} must never be crossable`).not.toContain(code)

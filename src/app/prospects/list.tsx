@@ -138,6 +138,17 @@ function Row({ p, sendersAble }: { p: ProspectRow; sendersAble: number }) {
           </span>
         </div>
         {p.replied && <span className="chip chip-live">they replied</span>}
+        {/*
+          WHICH FLEET (2026-08-25). Shown only when the row carries an explicit membership —
+          the default category is the ABSENCE of one, and a chip on all 500 bollywood rows
+          saying "bollywood" would be furniture. A marketing chip, on the other hand, is the
+          answer to "why is nothing writing to this company?".
+        */}
+        {p.categories.map((c) => (
+          <span className="chip" key={c}>
+            {c}
+          </span>
+        ))}
       </div>
 
       {/*

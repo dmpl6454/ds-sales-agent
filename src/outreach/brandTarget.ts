@@ -1,6 +1,7 @@
 import { prisma } from '@/lib/db'
 import { env } from '@/lib/env'
 import { routeAllowed, fleetHandles } from '@/outreach/routes'
+import { readCategoryMemberships, categoriesFor } from '@/outreach/categories'
 import type { BrandVerdict } from '@/detection/resolveBrand'
 import { enrichHandle } from '@/detection/enrichHandle'
 
@@ -173,12 +174,17 @@ export async function createBrandTarget(
    */
   const senders = await prisma.senderAccount.findMany()
   const ourHandles = await fleetHandles(prisma)
+  /* Loaded once for the whole loop below — a lookup per pair would be an N+1 over a list
+     whose size is a product decision. See readCategoryMemberships. */
+  const memberships = await readCategoryMemberships()
   await prisma.outreachPair.createMany({
     data: senders
       .filter((s) =>
         routeAllowed({
           senderHandle: s.handle,
           targetHandle: handle,
+          senderCategories: categoriesFor(memberships.bySenderHandle, s.handle),
+          targetCategories: categoriesFor(memberships.byTargetHandle, handle),
           ourHandles,
           senderIsFleetMember: s.fleetMember,
           targetOptedOut: target.optedOut,

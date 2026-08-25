@@ -109,6 +109,17 @@ export const REMEDIES = {
     href: '/targets',
     label: 'Only verified accounts are messaged — find the company’s verified page, or discard this draft',
   },
+  /**
+   * Two fleets, and they never write to each other's companies (2026-08-25, Tabish). A draft
+   * carrying this was written before the categories existed, or the memberships changed under
+   * it. The remedy is /targets, where a recipient can be put in BOTH categories — which is the
+   * supported way to say "this company belongs to both", his own "unless they are present
+   * common elsewhere".
+   */
+  [RESEND_BLOCKS.DIFFERENT_CATEGORY]: {
+    href: '/targets',
+    label: 'This page sends for a different fleet — add this company to that fleet, or discard the draft',
+  },
 
   // Clears by waiting — five a day from one account to one recipient.
   [RESEND_BLOCKS.PAIR_DAILY_CAP]: { href: null, label: 'The allowance resets at midnight IST.' },

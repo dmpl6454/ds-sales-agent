@@ -37,6 +37,10 @@ const gateInput = (over: Record<string, unknown> = {}) =>
     material: { held: false, allowance: 1, delivered: 0 },
     targetOptedOut: false,
     targetIsWatchOnly: false,
+    /* Both empty = the DEFAULT category on either side, which is the permitted case — the
+       VERIFIED ONLY rule this file is about is unaffected by which fleet a recipient is in. */
+    senderCategories: [],
+    targetCategories: [],
     targetIsVerified: true,
     targetRepliedAt: null,
     pairSentTodayCount: 0,

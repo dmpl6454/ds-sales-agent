@@ -45,6 +45,8 @@ const STOP_LABELS: Record<(typeof RESEND_BLOCKS)[keyof typeof RESEND_BLOCKS], st
   [RESEND_BLOCKS.SENDER_NOT_ACTIVE]: 'Instagram flagged the account',
   [RESEND_BLOCKS.TARGET_OPTED_OUT]: 'the recipient is retired — never contacted again',
   [RESEND_BLOCKS.TARGET_IS_WATCH_ONLY]: 'this is a page we watch for paid posts, not a company we message',
+  [RESEND_BLOCKS.DIFFERENT_CATEGORY]:
+    'this page and this company belong to different fleets — the two never write to each other\u2019s companies',
   [RESEND_BLOCKS.TARGET_NOT_VERIFIED]:
     'the recipient has no verified badge on Instagram — only verified accounts are messaged',
   [RESEND_BLOCKS.TARGET_REPLIED]: 'they replied — paused for seven days, then resumes on its own',

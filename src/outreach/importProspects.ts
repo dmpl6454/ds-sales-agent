@@ -5,6 +5,7 @@ import { handleExists } from '@/detection/exists'
 import { sleep } from '@/lib/time'
 import { ensureCategory, addTargetToCategory } from './categories'
 import { routeAllowed, fleetHandles } from './routes'
+import { readCategoryMemberships, categoriesFor } from './categories'
 
 /**
  * Turning a pasted sheet into a list of prospects.
@@ -356,12 +357,16 @@ export async function importProspects(
      * every other page to it. A pasted list is exactly where that happens by accident:
      * `senderHandles` already existed here and was used only to write a NOTE about it.
      */
+    /* One read for the whole sender x prospect walk — never a lookup per pair. */
+    const memberships = await readCategoryMemberships()
     await prisma.outreachPair.createMany({
       data: senders
         .filter((s) =>
           routeAllowed({
             senderHandle: s.handle,
             targetHandle: p.handle,
+            senderCategories: categoriesFor(memberships.bySenderHandle, s.handle),
+            targetCategories: categoriesFor(memberships.byTargetHandle, p.handle),
             ourHandles: fleetSenderHandles,
             senderIsFleetMember: s.fleetMember,
             targetOptedOut: target.optedOut,

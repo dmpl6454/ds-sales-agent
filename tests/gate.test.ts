@@ -11,6 +11,11 @@ function ok(): ResendInput {
     unattended: false,
     senderStatus: 'ACTIVE',
     senderHasSession: true,
+    /* Both empty = the DEFAULT category on both sides, which is the permitted case and the
+       one every other test in this file is about. The cross-category direction is driven in
+       tests/sender-categories.test.ts. */
+    senderCategories: [],
+    targetCategories: [],
   /* No unsettled park on this pair — the UNCERTAIN_DELIVERY tests supply the other side. */
   parkedFailureCode: null,
   material: { held: false as const, allowance: 1, delivered: 0 },

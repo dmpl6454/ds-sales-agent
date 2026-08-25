@@ -10,6 +10,7 @@ import { crossSpacingVerdict } from './crossSpacing'
 import { materialAllowance, campaignsNamingHandle, campaignsNamingHandleRows } from './materialAllowance'
 import { eligibleFleetSenderIds } from './availability'
 import { routeAllowed } from './routes'
+import { readCategoryMemberships, categoriesFor } from './categories'
 import { composeForPair, usedCampaignIds } from './compose'
 import { describeRing, whoseTurn, type WhoseTurnResult } from './categories'
 import { fleetRingOrder } from './rotation'
@@ -124,6 +125,8 @@ export async function ensureFleetPairs(): Promise<{ created: number }> {
    * The helper exists for the four callers that do NOT have that list in hand.
    */
   const ourHandles = new Set(fleet.map((s) => s.handle))
+  /* One read for the whole sender × target walk below. */
+  const memberships = await readCategoryMemberships()
   const already = new Set(existing.map((p) => `${p.senderId} ${p.targetId}`))
 
   const data = fleet.flatMap((s) =>
@@ -132,6 +135,8 @@ export async function ensureFleetPairs(): Promise<{ created: number }> {
         routeAllowed({
           senderHandle: s.handle,
           targetHandle: t.handle,
+          senderCategories: categoriesFor(memberships.bySenderHandle, s.handle),
+          targetCategories: categoriesFor(memberships.byTargetHandle, t.handle),
           ourHandles,
           // Read from the ROW, not written as `true` beside a query that says so. The
           // query and the literal are two statements of one fact and they drift; this
