@@ -7,6 +7,7 @@ import { BrandsPanelView } from '../brands'
 import { CoverageNote } from '../coverage'
 import { DismissButton } from './dismiss'
 import { AccuracyTrendPanel } from './accuracy'
+import { ChannelFilter } from './channel-filter'
 import { buildAccuracyTrend } from '../view-model/accuracy-trend'
 
 export const dynamic = 'force-dynamic'
@@ -37,11 +38,38 @@ export const dynamic = 'force-dynamic'
  * yields UNCLASSIFIED with `verdictSource: 'none'`, never a fabricated ORGANIC — so the two
  * numbers below answer different questions and both need to be visible.
  */
-export default async function PaidPostsPage() {
+export default async function PaidPostsPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ channel?: string; page?: string }>
+}) {
   const user = await currentUser()
   if (!user) redirect('/sign-in')
 
-  const [v, accuracy] = await Promise.all([buildPaidPostsView(), buildAccuracyTrend()])
+  /**
+   * THE WHOLE VIEW STATE IS IN THE URL — `?channel=` and `?page=`.
+   *
+   * Both are strings anyone can type, and neither is trusted: `buildPaidPostsView` validates
+   * the channel against the visible set (an unknown one falls back to no filter rather than
+   * an empty table) and clamps the page into range (`?page=999` shows the LAST page, never
+   * nothing). Parsed defensively here too, because `Number.parseInt('abc')` is NaN and NaN
+   * survives every `<` comparison it meets — the shape that once let a missing confidence
+   * sail through a floor check as a confident verdict.
+   */
+  const { channel, page } = await searchParams
+  const wantedPage = Number.parseInt(page ?? '1', 10)
+
+  const [v, accuracy] = await Promise.all([
+    buildPaidPostsView({
+      channel: channel ?? null,
+      page: Number.isFinite(wantedPage) ? wantedPage : 1,
+    }),
+    buildAccuracyTrend(),
+  ])
+
+  /** Both controls must survive each other: paging keeps the channel, the channel resets the page. */
+  const hrefForPage = (n: number) =>
+    `/paid-posts?${v.channelFilter ? `channel=${encodeURIComponent(v.channelFilter)}&` : ''}page=${n}#posts`
   const judged = v.byVerdict.filter((r) => r.verdict !== 'UNCLASSIFIED').reduce((n, r) => n + r.count, 0)
   const unjudged = v.byVerdict.find((r) => r.verdict === 'UNCLASSIFIED')?.count ?? 0
 
@@ -193,10 +221,37 @@ export default async function PaidPostsPage() {
           One table now. Every post the system calls paid, plus the ones a person has
           crossed off so the cross can be undone, with the control on the row itself.
         */}
-        <section>
+        {/* `id` so the pager lands the reader back on the table, not the top of the page. */}
+        <section id="posts">
           <h2>The posts</h2>
+
+          {/*
+            The filter first, because it decides what the count below it is counting. It
+            renders even when the current filter finds nothing — otherwise the only way back
+            from an empty channel would be editing the URL.
+          */}
+          <ChannelFilter options={v.channelOptions} current={v.channelFilter} />
+
+          {/*
+            THE TOTAL IS THE FILTER'S OWN, and it says which filter it belongs to. "0 paid
+            posts" and "0 paid posts from @pinkvilla" are different facts, and a page that
+            reports the second as the first is the "a metric that covers part of the data must
+            say which part" failure with the scope chosen by the reader instead of by us.
+          */}
+          {v.postsPaging.total > 0 ? (
+            <p className="group-blurb">
+              Showing {v.postsPaging.from}&ndash;{v.postsPaging.to} of {v.postsPaging.total}
+              {v.channelFilter ? <> from @{v.channelFilter}</> : null} &middot; newest first &middot; page{' '}
+              {v.postsPaging.page} of {v.postsPaging.pageCount}
+            </p>
+          ) : null}
+
           {v.posts.length === 0 ? (
-            <p className="group-blurb">Nothing judged paid yet.</p>
+            <p className="group-blurb">
+              {v.channelFilter
+                ? `No paid post from @${v.channelFilter} in this window. Pick "Every channel" to see the rest.`
+                : 'Nothing judged paid yet.'}
+            </p>
           ) : (
             <>
               {/*
@@ -309,10 +364,34 @@ export default async function PaidPostsPage() {
                 </tbody>
               </table>
               </div>
-              {v.postsTotal > v.posts.length ? (
-                <p className="muted">
-                  Showing the newest {v.posts.length} of {v.postsTotal}.
-                </p>
+              {/*
+                "A BACK BUTTON TO GO FURTHER BACK" — plain links, matching the history pager
+                on /analytics rather than inventing a second idea of paging. The page is
+                `force-dynamic`, so a round trip costs what a re-render would have cost, and
+                a position in the record stays linkable.
+
+                Newest and Oldest are offered explicitly: at 50 a page and 564 paid posts,
+                "the first one we ever judged" is a real question and stepping to it one page
+                at a time is not an answer.
+              */}
+              {v.postsPaging.pageCount > 1 ? (
+                <nav className="seg" aria-label="Paid post pages" style={{ marginTop: 10 }}>
+                  {v.postsPaging.page > 1 ? (
+                    <>
+                      <a href={hrefForPage(1)}>&laquo; Newest</a>
+                      <a href={hrefForPage(v.postsPaging.page - 1)}>&lsaquo; Newer</a>
+                    </>
+                  ) : null}
+                  <span className="muted" style={{ padding: '0 8px' }}>
+                    page {v.postsPaging.page} of {v.postsPaging.pageCount}
+                  </span>
+                  {v.postsPaging.page < v.postsPaging.pageCount ? (
+                    <>
+                      <a href={hrefForPage(v.postsPaging.page + 1)}>Older &rsaquo;</a>
+                      <a href={hrefForPage(v.postsPaging.pageCount)}>Oldest &raquo;</a>
+                    </>
+                  ) : null}
+                </nav>
               ) : null}
             </>
           )}

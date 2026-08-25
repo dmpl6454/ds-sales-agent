@@ -1112,8 +1112,28 @@ export interface PaidPostsView {
    * 2026-08-06; `postUrl()` in `lib/urls.ts` is the four-line helper that fixed it.
    */
   posts: PaidPostRow[]
-  /** How many exist beyond the rows shown. Truncation is reported, never silent. */
-  postsTotal: number
+  /**
+   * WHERE THIS PAGE IS IN THE RECORD (2026-08-25, Tabish: *"There must be a filter to show
+   * in a list (with back button to go further back and see data page wise)"*).
+   *
+   * This was a flat `take: 100` with a "Showing the newest 100 of N" line under it — the
+   * fourth face of *a bounded list read as a complete record*, and the one that had been an
+   * open item in CLAUDE.md since 21 August. `total` is its OWN count over the SAME predicate
+   * the rows use; deriving it from `posts.length` would report "100 of 100" and agree with
+   * the truncation, which is a check verifying its own symmetry.
+   *
+   * Same shape as `buildSentHistory`, deliberately: one pagination idea in this product, not
+   * two that drift.
+   */
+  postsPaging: { page: number; pageCount: number; total: number; from: number; to: number }
+  /**
+   * The watched channel this page is filtered to, echoed back so the dropdown can render its
+   * own state — and NULL when the filter is off or the URL named a channel we do not watch.
+   * A `?channel=` anyone can type must not produce an empty table with no explanation.
+   */
+  channelFilter: string | null
+  /** Every channel the dropdown may offer. The visible ones only — see visibleChannels.ts. */
+  channelOptions: { handle: string; name: string }[]
   /**
    * The frame check, counted separately from caption verdicts — a flagged frame ASKED a
    * person to look, it did not decide, and adding it to "paid" would overstate a
@@ -1186,7 +1206,15 @@ export interface PaidPostRow {
   candidateNote: string | null
 }
 
-export async function buildPaidPostsView(): Promise<PaidPostsView> {
+/** Rows per page of the posts table. Bounded so a page render stays a page render. */
+export const PAID_POSTS_PAGE_SIZE = 50
+
+export async function buildPaidPostsView(input?: {
+  /** A watched channel's handle, from `?channel=`. Validated against the visible set. */
+  channel?: string | null
+  /** 1-based, from `?page=`. Clamped into range — `?page=999` shows the last page. */
+  page?: number
+}): Promise<PaidPostsView> {
   const v = await buildCeoView()
 
   /**
@@ -1196,7 +1224,21 @@ export async function buildPaidPostsView(): Promise<PaidPostsView> {
    * separately readable is the point.
    */
   const PAID_VERDICTS = ['CAMPAIGN']
-  const POSTS_SHOWN = 100
+
+  /**
+   * ── THE DROPDOWN'S OPTIONS, AND WHY THE FILTER IS VALIDATED AGAINST THEM ──
+   *
+   * `v.channels` is already loaded and already scoped to the VISIBLE channels, so the
+   * dropdown costs no query — and it cannot offer one of our own pages, which
+   * `visibleChannels.ts` excludes from every figure on this screen.
+   *
+   * A `?channel=` is a string anyone can type. An unrecognised one falls back to NO filter
+   * rather than to an empty table: a screen that silently shows nothing is indistinguishable
+   * from a channel that posted nothing, and this page's whole job is telling those apart.
+   */
+  const channelOptions = v.channels.map((c) => ({ handle: c.handle, name: operatorName(c.name) }))
+  const wanted = input?.channel?.trim().replace(/^@/, '').toLowerCase() || null
+  const channelFilter = wanted && channelOptions.some((c) => c.handle === wanted) ? wanted : null
 
   /**
    * ── THIS PAGE COUNTS THE WINDOW THE SYSTEM ACTUALLY JUDGES ────────────────
@@ -1230,11 +1272,34 @@ export async function buildPaidPostsView(): Promise<PaidPostsView> {
    */
   const inWindow = { postedAt: { gte: since }, ...(await visibleChannelFilter()) }
 
+  /**
+   * THE TABLE'S OWN PREDICATE, named once and used by BOTH the rows and their count.
+   *
+   * The count used to be `verdict: CAMPAIGN` while the rows were `CAMPAIGN OR humanLabel:
+   * false` — so the old "showing the newest 100 of N" line already counted a different set
+   * than it was describing. Harmless as a footnote; fatal as a pager, which computes where
+   * the END is from that number. One predicate, two consumers.
+   */
+  const postsWhere = {
+    OR: [{ verdict: { in: PAID_VERDICTS } }, { humanLabel: false }],
+    ...inWindow,
+    ...(channelFilter ? { target: { handle: channelFilter } } : {}),
+  }
+
+  /**
+   * COUNTED BEFORE THE ROWS, sequentially and on purpose: `skip` cannot be clamped into range
+   * without knowing the range, and an unclamped `?page=999` returns an empty table on a
+   * channel that has plenty of posts. One extra round trip against a page that is already
+   * `force-dynamic`; the alternative is fetching twice when someone edits the URL.
+   */
+  const postsTotal = await prisma.detectedCampaign.count({ where: postsWhere })
+  const postsPageCount = Math.max(1, Math.ceil(postsTotal / PAID_POSTS_PAGE_SIZE))
+  const postsPage = Math.min(Math.max(1, Math.floor(input?.page ?? 1)), postsPageCount)
+
   const [
     byVerdictRaw,
     totalDetected,
     paidRows,
-    postsTotal,
     storedBefore,
     framesRead,
     framesNotSaved,
@@ -1262,12 +1327,16 @@ export async function buildPaidPostsView(): Promise<PaidPostsView> {
      * the whole difference.
      */
     prisma.detectedCampaign.findMany({
-      where: {
-        OR: [{ verdict: { in: PAID_VERDICTS } }, { humanLabel: false }],
-        ...inWindow,
-      },
-      orderBy: { postedAt: 'desc' },
-      take: POSTS_SHOWN,
+      where: postsWhere,
+      /**
+       * `id` IS THE TIEBREAK, and it is not decoration. Detection stores a whole feed page in
+       * one pass, so many rows share a `postedAt` to the second — with an unstable sort a row
+       * silently repeats or vanishes across a page boundary, which is the quiet wrongness a
+       * paginated record must not have. Same reasoning as `buildSentHistory`.
+       */
+      orderBy: [{ postedAt: 'desc' }, { id: 'desc' }],
+      skip: (postsPage - 1) * PAID_POSTS_PAGE_SIZE,
+      take: PAID_POSTS_PAGE_SIZE,
       select: {
         id: true,
         rawPayload: true,
@@ -1287,7 +1356,6 @@ export async function buildPaidPostsView(): Promise<PaidPostsView> {
         target: { select: { handle: true, displayName: true } },
       },
     }),
-    prisma.detectedCampaign.count({ where: { verdict: { in: PAID_VERDICTS }, ...inWindow } }),
     // Reported, never hidden: a corpus we hold but do not judge is a fact worth one line.
     // Beside the in-window figures on the same page, so it carries the same scope.
     prisma.detectedCampaign.count({ where: { postedAt: { lt: since }, ...(await visibleChannelFilter()) } }),
@@ -1516,7 +1584,15 @@ export async function buildPaidPostsView(): Promise<PaidPostsView> {
           : null
       })(),
     })),
-    postsTotal,
+    postsPaging: {
+      page: postsPage,
+      pageCount: postsPageCount,
+      total: postsTotal,
+      from: postsTotal === 0 ? 0 : (postsPage - 1) * PAID_POSTS_PAGE_SIZE + 1,
+      to: Math.min(postsPage * PAID_POSTS_PAGE_SIZE, postsTotal),
+    },
+    channelFilter,
+    channelOptions,
     framesRead,
     framesNotSaved,
     framesNoEngine,

@@ -78,7 +78,16 @@ describe('our own pages are excluded from every dashboard figure', () => {
            * like any `targetId: { in: ... }` would also accept a survey over every channel
            * id, which is the exact query this grep exists to refuse.
            */
-          window.includes('targetId: { in: cardTargetIds }')
+          window.includes('targetId: { in: cardTargetIds }') ||
+          /**
+           * The paid-posts table and its pager (2026-08-25) share ONE named predicate,
+           * `postsWhere`, because a count that scopes differently from the rows it counts is
+           * a pager that lies about where the end is. The VARIABLE NAME is the carve-out for
+           * the same reason as `cardTargetIds` above — and it only launders the scope
+           * because the test directly below PROVES `postsWhere` is built by spreading
+           * `inWindow`. Without that second assertion this line would be a hole.
+           */
+          window.includes('where: postsWhere')
         if (!scoped) unscoped.push(`${file}:${i + 1}  ${line.trim().slice(0, 90)}`)
       })
     }
@@ -86,6 +95,25 @@ describe('our own pages are excluded from every dashboard figure', () => {
     // The grep must actually be looking at something, or it passes vacuously.
     expect(checked, 'no detectedCampaign queries matched — this grep is not testing anything').toBeGreaterThan(8)
     expect(unscoped, 'a dashboard query reads every channel, including pages we own').toEqual([])
+  })
+
+  /**
+   * THE CARVE-OUT ABOVE IS ONLY SAFE IF THE NAME IT TRUSTS IS ITSELF SCOPED.
+   *
+   * `postsWhere` lets two queries pass the grep. If someone later rebuilt it without
+   * `...inWindow` — say to "simplify" the channel filter — both the paid-posts table and its
+   * total would quietly start surveying every channel including our own pages, and the grep
+   * would keep passing because it is matching a variable name. So the definition is pinned
+   * here, and this assertion is the thing standing behind that line.
+   */
+  it('postsWhere — the one name the grep trusts — is itself channel-scoped', () => {
+    const src = read('src/app/view-model.ts')
+    const at = src.indexOf('const postsWhere = {')
+    expect(at, 'postsWhere is gone or renamed — re-check the carve-out above').toBeGreaterThan(-1)
+    /* The declaration only; 400 chars is comfortably past its closing brace and nowhere near
+       the next query, so this cannot pass on some other object's scope. */
+    const def = src.slice(at, at + 400)
+    expect(def, 'postsWhere no longer spreads inWindow').toContain('...inWindow')
   })
 
   /**

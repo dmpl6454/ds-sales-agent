@@ -1151,7 +1151,15 @@ label { display: block; }
 .reply { border: 1px solid color-mix(in srgb, var(--good) 40%, var(--ln-1)); background: var(--good-sub); border-radius: var(--r); padding: 16px 18px; }
 .reply-top { display: flex; justify-content: space-between; gap: 12px; font-size: 14px; }
 .reply .when, .when { color: var(--tx-1); font-size: 12.5px; white-space: nowrap; }
-.reply .preview, .preview { margin: 8px 0 0; color: var(--tx-0); }
+/*
+  `overflow-wrap: anywhere` (2026-08-25). A reply is somebody else's text and can contain an
+  unbroken token longer than the card: MEASURED on the live queue, @miabytanishq sent a
+  132-character Office Forms URL, and a <p> will not break one without being told to. The
+  card grew to 1590px inside a 1440px viewport and took the whole page sideways with it,
+  which `pnpm ig:layout` refuses — a body that scrolls horizontally moves every other element
+  on the page as collateral. Never a fixed width: the content is not ours to bound.
+*/
+.reply .preview, .preview { margin: 8px 0 0; color: var(--tx-0); overflow-wrap: anywhere; }
 .reply .preview.dim { color: var(--tx-1); font-style: italic; }
 .reply-foot { display: flex; justify-content: space-between; gap: 12px; align-items: center; margin-top: 12px; flex-wrap: wrap; }
 .reply-actions { display: flex; gap: 8px; }
@@ -1296,3 +1304,20 @@ label { display: block; }
 .message-reveal > summary::before { content: '▸ '; color: var(--tx-2); }
 .message-reveal[open] > summary::before { content: '▾ '; }
 .message-reveal > summary:hover { color: var(--tx-0); }
+
+/*
+  The paid-posts channel dropdown (2026-08-25). A GET form, so it is a row of ordinary
+  controls rather than a widget — see channel-filter.tsx for why the state lives in the URL.
+  `flex-wrap` because at 800px the label, the select and the button must stack rather than
+  push the page sideways; `pnpm ig:layout` refuses a body that scrolls horizontally.
+*/
+.channel-filter { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin: 0 0 10px; }
+.channel-filter select {
+  font: inherit; color: var(--tx-0); background: var(--bg-1);
+  border: 1px solid var(--ln-1); border-radius: var(--r); padding: 4px 8px; max-width: 100%;
+}
+.channel-filter button {
+  font: inherit; background: none; border: 1px solid var(--ln-1);
+  border-radius: var(--r); padding: 4px 10px; cursor: pointer;
+}
+.channel-filter button:hover { color: var(--tx-0); border-color: var(--ac); }
