@@ -181,6 +181,14 @@ export interface ReplyCard {
    * card, the release date is the only thing worth saying.
    */
   freesLabel: string
+  /** The sending page's handle — "who wrote to them" is half of what makes the row actionable. */
+  senderHandle: string
+  /**
+   * A direct link to THAT conversation, not to the inbox. Every one of the 75 stored replies
+   * carries a `threadUrl` (measured 2026-08-25), which is what makes this worth rendering
+   * rather than a generic "open Instagram".
+   */
+  threadUrl: string | null
   /**
    * What they actually said, from `replyText`.
    *
@@ -921,7 +929,8 @@ export function toReplyCards(
     /** The WRITTEN clock. The halt counts from this, never from `repliedAt`. */
     replyPostedAt: Date | null
     replyText: string | null
-    pair: { target: { displayName: string; handle: string }; sender: { displayName: string } }
+    threadUrl: string | null
+    pair: { target: { displayName: string; handle: string }; sender: { displayName: string; handle: string } }
   }>,
   /** `settings.replyResumeHours` — passed in so this shares the enforcer's number, never a literal. */
   resumeHours: number,
@@ -931,6 +940,8 @@ export function toReplyCards(
     targetName: operatorName(r.pair.target.displayName),
     targetHandle: r.pair.target.handle,
     senderName: operatorName(r.pair.sender.displayName),
+    senderHandle: r.pair.sender.handle,
+    threadUrl: r.threadUrl,
     whenLabel: relative(r.repliedAt),
     /*
       Same arithmetic as `replyHaltActive` and as the Resting list, from the SAME column the

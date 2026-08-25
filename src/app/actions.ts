@@ -25,6 +25,7 @@ import { markSessionInvalid, clearSessionInvalid } from '@/outreach/sessionHealt
 import { withSendLock, DISPATCH_PAUSE_KEY, dispatchTick } from '@/outreach/dispatcher'
 import { importProspects, type ImportOutcome } from '@/outreach/importProspects'
 import { routeAllowed, fleetHandles } from '@/outreach/routes'
+import { readCategoryMemberships, categoriesFor } from '@/outreach/categories'
 import { ensureCategory, addTargetToCategory } from '@/outreach/categories'
 import { discardAttempt } from '@/outreach/discard'
 import { handOffWaitingDrafts } from '@/outreach/handOff'
@@ -1037,10 +1038,15 @@ export async function addSender(handleRaw: string, displayNameRaw: string): Prom
    */
   const targets = await prisma.targetAccount.findMany()
   const ourHandles = await fleetHandles(prisma)
+  /* One read for the whole walk. A new sender belongs to whichever category it was added
+     with, so a MARKETING sender gets routes to marketing recipients and to nobody else. */
+  const memberships = await readCategoryMemberships()
   const allowed = targets.filter((t) =>
     routeAllowed({
       senderHandle: handle,
       targetHandle: t.handle,
+      senderCategories: categoriesFor(memberships.bySenderHandle, handle),
+      targetCategories: categoriesFor(memberships.byTargetHandle, t.handle),
       ourHandles,
       // From the row this action just created, never a literal: `addSender` sets
       // `fleetMember: true`, and a hardcoded `true` here would keep creating routes on the
@@ -1288,10 +1294,14 @@ export async function addTarget(
    */
   const senders = await prisma.senderAccount.findMany()
   const ourHandles = await fleetHandles(prisma)
+  /* One read for the whole walk — see readCategoryMemberships. */
+  const memberships = await readCategoryMemberships()
   const allowed = senders.filter((s) =>
     routeAllowed({
       senderHandle: s.handle,
       targetHandle: handle,
+      senderCategories: categoriesFor(memberships.bySenderHandle, s.handle),
+      targetCategories: categoriesFor(memberships.byTargetHandle, handle),
       ourHandles,
       senderIsFleetMember: s.fleetMember,
       targetOptedOut: target.optedOut,

@@ -117,6 +117,32 @@ export default async function AnalyticsPage({
   ])
   const senderHandles = senderRows.map((s) => s.handle)
 
+  /**
+   * ── WHO EACH PAGE HAS ACTUALLY WRITTEN TO (2026-08-25, Tabish) ───────────
+   *
+   * *"in analytics, there must be a section to clearly depict who was sent a message by which
+   * account."* The table below already had the COUNTS; the names lived only in the CSV export
+   * and in a 50-a-page history table you had to filter by hand.
+   *
+   * ONE query for the whole fleet, two columns, grouped in JS — never a query per account,
+   * which is the N+1 this codebase has killed four times. `distinct` on the pair means a
+   * recipient written to five times by one page appears once: the question is "who", not
+   * "how many times", and the count beside it already answers the second.
+   */
+  const recipientRows = await prisma.outreachAttempt.findMany({
+    where: { status: { in: [...DELIVERED_STATUSES] } },
+    select: { pair: { select: { sender: { select: { handle: true } }, target: { select: { handle: true } } } } },
+    distinct: ['pairId'],
+  })
+  const recipientsBySender = new Map<string, string[]>()
+  for (const r of recipientRows) {
+    const k = r.pair.sender.handle
+    const list = recipientsBySender.get(k)
+    if (list) list.push(r.pair.target.handle)
+    else recipientsBySender.set(k, [r.pair.target.handle])
+  }
+  for (const list of recipientsBySender.values()) list.sort()
+
   const sentById = new Map(sentBySender.map((r) => [r.senderId, r._count._all]))
   const repliedById = new Map(repliedBySender.map((r) => [r.senderId, r._count._all]))
   const perAccount = senderRows
@@ -246,8 +272,9 @@ export default async function AnalyticsPage({
           <section>
             <h2>Messages sent, by account</h2>
             <p className="blurb">
-              Lifetime, per sending page: how many have gone out and how many came back. Per-recipient detail is
-              the recent list below and the CSV export.
+              Lifetime, per sending page: how many have gone out, how many came back, and exactly which
+              companies each page has written to — open a row to read the list. Message-by-message detail is
+              the history table below and the CSV export.
             </p>
             <table className="table">
               <thead>
@@ -255,16 +282,41 @@ export default async function AnalyticsPage({
                   <th>From account</th>
                   <th>Sent</th>
                   <th>Replied</th>
+                  <th>Written to</th>
                 </tr>
               </thead>
               <tbody>
-                {perAccount.map((r) => (
-                  <tr key={r.handle}>
-                    <td>@{r.handle}</td>
-                    <td>{r.sent}</td>
-                    <td>{r.replied > 0 ? <span className="note-good">{r.replied}</span> : 0}</td>
-                  </tr>
-                ))}
+                {perAccount.map((r) => {
+                  const to = recipientsBySender.get(r.handle) ?? []
+                  return (
+                    <tr key={r.handle}>
+                      <td>@{r.handle}</td>
+                      <td>{r.sent}</td>
+                      <td>{r.replied > 0 ? <span className="note-good">{r.replied}</span> : 0}</td>
+                      <td>
+                        {/*
+                          `<details>` keeps this page a SERVER component — a client toggle
+                          would pull the recipient lists into the browser bundle, which is the
+                          `waiting.tsx -> gate.ts -> better-sqlite3` trap that returned HTTP
+                          500 on every route. The COUNT is on the closed summary, because a
+                          collapsible that hides whether it has contents is one nobody opens.
+                        */}
+                        {to.length === 0 ? (
+                          <span className="muted">—</span>
+                        ) : (
+                          <details>
+                            <summary className="muted">
+                              {to.length} {to.length === 1 ? 'company' : 'companies'}
+                            </summary>
+                            <p className="blurb" style={{ margin: '6px 0 0' }}>
+                              {to.map((h) => `@${h}`).join(', ')}
+                            </p>
+                          </details>
+                        )}
+                      </td>
+                    </tr>
+                  )
+                })}
               </tbody>
             </table>
           </section>

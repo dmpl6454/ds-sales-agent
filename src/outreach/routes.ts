@@ -39,14 +39,28 @@
  */
 
 /** Why a route may not exist. One per exclusion, so a refusal can name itself. */
+import { sameCategory } from './senderCategories'
+
 export type RouteRefusal =
   | 'self'
   | 'sender-not-in-fleet'
   | 'target-is-our-own-page'
   | 'target-retired'
   | 'target-is-watch-only'
+  | 'different-category'
 
 export interface RouteQuestion {
+  /**
+   * Category slugs this SENDER belongs to. EMPTY means the default category — see
+   * `senderCategories.ts`; it is not "no restriction", it is `['bollywood']`.
+   *
+   * Required rather than optional so the compiler names every call site the day a third
+   * category appears — the `RenderTarget.kind` pattern, which has caught a silently-defaulting
+   * caller twice in this codebase.
+   */
+  senderCategories: readonly string[]
+  /** Category slugs this RECIPIENT belongs to. Empty means the default category. */
+  targetCategories: readonly string[]
   /** The sending account's handle, lowercase and without the leading `@`. */
   senderHandle: string
   /** The recipient's handle, lowercase and without the leading `@`. */
@@ -160,6 +174,21 @@ export function mayRouteExist(q: RouteQuestion): RouteVerdict {
    * fact an operator can act on.
    */
   if (q.targetIsWatchOnly) return { allowed: false, refusal: 'target-is-watch-only' }
+  /**
+   * ── THE TWO FLEETS NEVER WRITE TO EACH OTHER'S COMPANIES (2026-08-25) ────
+   *
+   * Tabish: *"brand category senders must never send messages to targets … discovered via
+   * bollywood categories' monitoring targets and vice versa."* An absent membership on either
+   * side means the DEFAULT category, so today's fleet and today's recipients keep routing to
+   * each other with no migration — see `senderCategories.ts` for the full table.
+   *
+   * Checked LAST, after every refusal that is a more specific statement about the row: a
+   * retired marketing recipient should still report `target-retired`, which is the fact an
+   * operator can act on.
+   */
+  if (!sameCategory(q.senderCategories, q.targetCategories)) {
+    return { allowed: false, refusal: 'different-category' }
+  }
   return { allowed: true }
 }
 

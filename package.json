@@ -53,6 +53,8 @@
     "ig:second-look": "tsx src/scripts/secondLook.ts",
     "ig:retire-target": "tsx src/scripts/retire-target.ts",
     "ig:unretire-target": "tsx src/scripts/unretire-target.ts",
+    "ig:setup-categories": "tsx src/scripts/setup-categories.ts",
+    "ig:set-category": "tsx src/scripts/set-category.ts",
     "ig:ocr": "tsx src/scripts/ocr.ts",
     "ig:frames": "tsx src/scripts/frames.ts",
     "ig:migrate-data": "tsx src/scripts/migrate-data-dir.ts",

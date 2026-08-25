@@ -125,6 +125,12 @@ export interface ProspectRow {
    * to survive every other feature, and the governor checks it independently of pairs.
    */
   retired: boolean
+  /**
+   * Which fleet this row belongs to (2026-08-25). EMPTY means the default — see
+   * `senderCategories.ts`; it is not "any fleet may write", it is `bollywood`. Rendered so a
+   * reader can tell at a glance why a marketing company is not being written to yet.
+   */
+  categories: string[]
   /** Messages actually delivered to them, ever. Counted the way the enforcer counts. */
   delivered: number
   /** Set once anyone answers. Halts every sender to them until a person takes over. */
@@ -398,6 +404,7 @@ export async function buildProspectsPage(): Promise<ProspectsPageView> {
     unjudgedNote: unjudgedNote(t.kind, t.detectorKey, t.watchEnabled),
     groundTruthNote: groundTruthNote(t.kind, t.handle, t.watchEnabled, ourHandles),
     retired: t.optedOut,
+    categories: t.categories.map((c) => c.category.name),
     delivered: deliveredBy.get(t.id) ?? 0,
     replied: repliedSet.has(t.id),
     importNote: t.importNote,

@@ -3,6 +3,8 @@ import { istDayStart } from '@/lib/time'
 import { getSettings } from '@/lib/settings'
 import { mayArmAccount } from './cohorts'
 import { replyHaltFloor } from './replyHalt'
+import { sameCategory, crossCategoryDetail } from './senderCategories'
+import { readCategoryMemberships, categoriesFor } from './categories'
 import { profileStatus } from './browser/profile'
 import { sessionUsable } from './sessionHealth'
 import { crossSpacingVerdict, crossSpacingDetail, type CrossSpacingVerdict } from './crossSpacing'
@@ -90,6 +92,10 @@ export interface ResendInput {
    * both holes.
    */
   targetIsWatchOnly: boolean
+  /** Category slugs of the SENDING page. Empty = the default category, never "unrestricted". */
+  senderCategories: readonly string[]
+  /** Category slugs of the RECIPIENT. Empty = the default category. */
+  targetCategories: readonly string[]
   /**
    * `TargetAccount.isVerified` — TRUE only where Instagram itself shows the badge.
    *
@@ -177,6 +183,7 @@ export const RESEND_BLOCKS = {
   SENDER_NOT_ACTIVE: 'sender-not-active',
   TARGET_OPTED_OUT: 'target-opted-out',
   TARGET_IS_WATCH_ONLY: 'target-is-watch-only',
+  DIFFERENT_CATEGORY: 'different-category',
   TARGET_NOT_VERIFIED: 'target-not-verified',
   TARGET_REPLIED: 'target-replied',
   NO_SESSION: 'no-session',
@@ -375,6 +382,28 @@ export function evaluateResend(input: ResendInput): ResendResult {
   }
 
   /**
+   * ── THE TWO FLEETS NEVER WRITE TO EACH OTHER'S COMPANIES (2026-08-25) ────
+   *
+   * `routes.ts` refuses to CREATE a cross-category pair; this refuses to SEND one, which is
+   * what catches a draft written before the rule or a pair whose memberships changed after it
+   * was written. Both ends, like every load-bearing rule here.
+   *
+   * NOT OVERRIDABLE, and for the same reason as watch-only directly above: every stop a human
+   * may cross is about TIMING, and this one is about WHICH FLEET the recipient belongs to.
+   * "I know something the agent does not" is not an argument for a marketing page pitching a
+   * company the bollywood watch found — the two use different senders by Tabish's design, and
+   * a recipient that genuinely belongs to both is put in both categories, which is the
+   * supported way to say so.
+   */
+  if (!sameCategory(input.senderCategories, input.targetCategories)) {
+    return {
+      ok: false,
+      reason: RESEND_BLOCKS.DIFFERENT_CATEGORY,
+      detail: crossCategoryDetail(input.senderCategories, input.targetCategories),
+    }
+  }
+
+  /**
    * VERIFIED ONLY. Checked beside watch-only because it is the same KIND of question — who
    * the recipient is, not when we may write — and therefore NOT overridable: "I know
    * something the agent does not" is an argument about timing, never about whether the
@@ -500,7 +529,7 @@ export async function recheckBeforeSend(
   const { sender, target, senderId, targetId } = attempt.pair
 
   const materialWindowFloor = new Date(Date.now() - settings.defaultCooldownDays * 86_400_000)
-  const [replied, pairToday, ringDeliveries, eligibleSenderIds, ladder, senderRow, parked, targetCampaigns, targetDelivered] =
+  const [replied, pairToday, ringDeliveries, eligibleSenderIds, ladder, senderRow, parked, targetCampaigns, targetDelivered, memberships] =
     await Promise.all([
     prisma.outreachAttempt.findFirst({
       /**
@@ -585,6 +614,9 @@ export async function recheckBeforeSend(
         id: { not: attempt.id },
       },
     }),
+    /* Which fleet each end belongs to. Two small reads, inside the existing Promise.all,
+       so this costs the gate no extra wall-clock. See senderCategories.ts. */
+    readCategoryMemberships(),
   ])
 
   return evaluateResend({
@@ -608,6 +640,8 @@ export async function recheckBeforeSend(
     }),
     targetOptedOut: target.optedOut,
     targetIsWatchOnly: target.role === 'WATCH',
+    senderCategories: categoriesFor(memberships.bySenderHandle, sender.handle),
+    targetCategories: categoriesFor(memberships.byTargetHandle, target.handle),
     targetIsVerified: target.isVerified,
     targetRepliedAt: replied?.replyPostedAt ?? null,
     pairSentTodayCount: pairToday,
