@@ -72,3 +72,6 @@ chrome-profiles/
 # scripts/make-postgres-schema.sh — but it IS committed, because
 # tests/schema-parity.test.ts compares them and CI must see both.
 prisma/test-default.db
+
+# Scratch files from measurement scripts — never part of the repo.
+.tmp-*
