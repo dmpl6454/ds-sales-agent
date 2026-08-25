@@ -52,6 +52,17 @@ function AccountRowView({ row }: { row: AccountRow }) {
         <div>
           <h3>
             @{row.handle} <span className="account-name">{row.name}</span>
+            {/*
+              WHICH FLEET this page sends for (2026-08-25). Rendered only for an explicit
+              membership: the default IS the absence of one, so a "bollywood" chip on every
+              row would be furniture. A marketing chip is the answer to "why has this page
+              sent nothing to any of the companies I can see?".
+            */}
+            {row.categories.map((c) => (
+              <span className="chip" key={c}>
+                {c}
+              </span>
+            ))}
           </h3>
         </div>
         <div className="account-figures">

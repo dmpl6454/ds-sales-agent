@@ -172,6 +172,35 @@ export async function createBrandTarget(
    * column defaults to 5 and 7 is the value actually in force, so a hardcoded number here
    * would quietly give auto-discovered brands a different spacing from every other pair.
    */
+  /**
+   * ── A PROSPECT INHERITS THE FLEET OF THE CHANNEL THAT FOUND IT (2026-08-25) ──
+   *
+   * Tabish's rule is about PROVENANCE: *"Only targets obtained from them are to be messaged
+   * using a new sender."* So the membership is not something a person tags on afterwards —
+   * it comes from the paid post, whose channel is already in a fleet.
+   *
+   * Written BEFORE the routes below, and that order is the correctness of it: `routeAllowed`
+   * reads the memberships, so a category applied afterwards would leave the new prospect
+   * already wired to every sender of the OTHER fleet, and the gate would then have to hold
+   * every one of those drafts forever.
+   *
+   * A channel in NO category yields a prospect in no category — the default — which is every
+   * bollywood row today and is why this changes nothing for them.
+   */
+  if (campaign?.id) {
+    const source = await prisma.detectedCampaign.findUnique({
+      where: { id: campaign.id },
+      select: { target: { select: { categories: { where: { enabled: true }, select: { categoryId: true } } } } },
+    })
+    for (const c of source?.target.categories ?? []) {
+      await prisma.categoryTarget.upsert({
+        where: { categoryId_targetId: { categoryId: c.categoryId, targetId: target.id } },
+        create: { categoryId: c.categoryId, targetId: target.id },
+        update: { enabled: true },
+      })
+    }
+  }
+
   const senders = await prisma.senderAccount.findMany()
   const ourHandles = await fleetHandles(prisma)
   /* Loaded once for the whole loop below — a lookup per pair would be an N+1 over a list

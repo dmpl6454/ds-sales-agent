@@ -30,9 +30,20 @@ import { addSender } from '../actions'
  *   the group ladder a new account joins the NEXT onboarding group, which waits 14 days
  *                    behind the one before it. Not overridable, enforced at delivery.
  */
-export function AddSenderForm() {
+export function AddSenderForm({ fleets }: { fleets: { slug: string; name: string }[] }) {
   const router = useRouter()
   const [handle, setHandle] = useState('')
+  /**
+   * WHICH FLEET (2026-08-25, Tabish: *"There is no segregation between adding accounts for
+   * the two types of categories I mentioned in the UI"*).
+   *
+   * The empty value is the DEFAULT category, not "unassigned" — every existing account
+   * carries it, and it is the correct answer for a bollywood page. Naming it explicitly in
+   * the dropdown is the point: an operator adding a marketing sender has to SEE that the
+   * other option exists, because the cost of getting it wrong is one page cold-pitching the
+   * other fleet's companies.
+   */
+  const [fleet, setFleet] = useState('')
   const [busy, setBusy] = useState(false)
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null)
 
@@ -41,10 +52,11 @@ export function AddSenderForm() {
     setBusy(true)
     setMsg(null)
     try {
-      const r = await addSender(handle, '')
+      const r = await addSender(handle, '', fleet)
       setMsg({ ok: r.ok, text: r.message })
       if (r.ok) {
         setHandle('')
+        setFleet('')
         /* The new row, its group and its sign-in state all live on this page. */
         router.refresh()
       }
@@ -79,6 +91,24 @@ export function AddSenderForm() {
               spellCheck={false}
             />
           </label>
+          {/*
+            Rendered only when a second fleet actually exists. With one fleet the choice is
+            not a choice, and a dropdown with a single option is furniture that implies a
+            decision nobody has to make.
+          */}
+          {fleets.length > 0 && (
+            <label>
+              <span>Sends for</span>
+              <select value={fleet} onChange={(e) => setFleet(e.target.value)}>
+                <option value="">Bollywood (the original fleet)</option>
+                {fleets.map((f) => (
+                  <option key={f.slug} value={f.slug}>
+                    {f.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+          )}
           <button type="button" onClick={() => void submit()} disabled={busy || handle.trim() === ''}>
             {busy ? 'Checking…' : 'Add account'}
           </button>
@@ -94,6 +124,13 @@ export function AddSenderForm() {
           The handle is checked against Instagram first — a page that does not exist is refused
           rather than saved. Every message it sends is the one standard template on the
           Autopilot page.
+          {fleets.length > 0 && (
+            <>
+              {' '}
+              A page only ever writes to companies of its OWN fleet, and the choice is made
+              here — it cannot be changed by editing a draft later.
+            </>
+          )}
         </p>
 
         {msg && <p className={msg.ok ? 'note-good' : 'note-warn'}>{msg.text}</p>}

@@ -915,7 +915,26 @@ export interface MutationResult {
  * New pairs start DISABLED. Adding an account should never, by itself, cause a
  * message to be sent — arming is a separate, deliberate act.
  */
-export async function addSender(handleRaw: string, displayNameRaw: string): Promise<MutationResult> {
+/**
+ * ── WHICH FLEET IS THIS ACCOUNT FOR? (2026-08-25, Tabish) ──────────────────
+ *
+ * *"There is no segregation between adding accounts for the two types of categories I
+ * mentioned in the UI."* He is right — the rule shipped and the only way to put an account in
+ * the second fleet was a CLI command, which is the "a feature that works only when someone
+ * runs a command is not running" failure one door along.
+ *
+ * The membership is written BEFORE the routes are created, and that order is the whole
+ * correctness of it: `routeAllowed` reads the memberships, so a category written afterwards
+ * would leave the new account already wired to every recipient of the OTHER fleet.
+ *
+ * An empty slug means the default category, which is what every existing account carries and
+ * what the form's first option says. See `senderCategories.ts`.
+ */
+export async function addSender(
+  handleRaw: string,
+  displayNameRaw: string,
+  categorySlugRaw = '',
+): Promise<MutationResult> {
   const user = await requireOperator()
   const handle = handleRaw.trim().replace(/^@/, '').toLowerCase()
   const displayName = displayNameRaw.trim() || handle
@@ -1020,6 +1039,24 @@ export async function addSender(handleRaw: string, displayNameRaw: string): Prom
       })),
     ],
   })
+
+  /**
+   * THE FLEET, WRITTEN BEFORE THE ROUTES BELOW READ IT.
+   *
+   * An unknown slug is a REFUSAL to guess rather than a silent fall back to the default: the
+   * default is what a bollywood sender gets, and quietly giving it to an account somebody
+   * meant to put in the marketing fleet is how one page ends up cold-pitching the other
+   * fleet's companies — the exact thing this whole category rule exists to stop.
+   */
+  const categorySlug = categorySlugRaw.trim().toLowerCase()
+  if (categorySlug !== '') {
+    const category = await prisma.category.findUnique({ where: { slug: categorySlug } })
+    if (!category) {
+      return { ok: false, message: `There is no "${categorySlug}" fleet. Nothing was added.` }
+    }
+    await prisma.categorySender.create({ data: { categoryId: category.id, senderId: sender.id } })
+    await audit(user.email, 'category.member.added', `Category:${category.id}`, `sender @${handle} added to ${categorySlug}`)
+  }
 
   /**
    * ROUTES FROM THE NEW SENDER, THROUGH THE SHARED RULE.
@@ -1201,6 +1238,8 @@ export async function addTarget(
    * the compiler then named all 24 call sites.
    */
   role: 'WATCH' | 'PROSPECT',
+  /** Which fleet; empty = the default. The reasoning is at the write, below. */
+  categorySlugRaw = '',
 ): Promise<MutationResult> {
   const user = await requireOperator()
   const handle = handleRaw.trim().replace(/^@/, '').toLowerCase()
@@ -1270,6 +1309,25 @@ export async function addTarget(
       watchEnabled: role === 'WATCH',
     },
   })
+
+  /**
+   * THE FLEET, WRITTEN BEFORE THE ROUTES BELOW READ IT — same order and same reason as
+   * `addSender`. An unknown slug refuses rather than falling back to the default.
+   */
+  /*
+    A marketing WATCH page put here means every prospect discovered from its paid posts
+    INHERITS that fleet (`brandTarget.ts`) and is messaged only by marketing senders. So this
+    one field decides who will ever write to companies found through this channel.
+  */
+  const categorySlug = categorySlugRaw.trim().toLowerCase()
+  if (categorySlug !== '') {
+    const category = await prisma.category.findUnique({ where: { slug: categorySlug } })
+    if (!category) {
+      return { ok: false, message: `There is no "${categorySlug}" fleet. Nothing was added.` }
+    }
+    await prisma.categoryTarget.create({ data: { categoryId: category.id, targetId: target.id } })
+    await audit(user.email, 'category.member.added', `Category:${category.id}`, `target @${handle} added to ${categorySlug}`)
+  }
 
   /**
    * ROUTES TO THE NEW CHANNEL, THROUGH THE SHARED RULE.

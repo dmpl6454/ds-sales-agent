@@ -51,6 +51,12 @@ export interface AccountRow {
   sentThisWeek: number
   sentToday: number
   dailyCap: number
+  /**
+   * Which fleet this page sends for. Populated since the rotation-groups feature and
+   * RENDERED for the first time on 2026-08-25 — the data was here the whole time and no
+   * screen drew it, which is this codebase's most repeated shape. EMPTY means the DEFAULT
+   * category (see `senderCategories.ts`), not "sends to anyone".
+   */
   categories: string[]
   /** One sentence naming the single next thing a person must do, or null. */
   todo: string | null

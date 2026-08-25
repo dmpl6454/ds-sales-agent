@@ -9,6 +9,7 @@ import { ImportForm } from '../prospects/import-form'
 import { ProspectList } from '../prospects/list'
 import { RestBand } from '../rest-band'
 import { ChannelsPanel } from '../channels'
+import { listCategories } from '@/outreach/categories'
 import { DETECT_INTERVAL_MINUTES } from '@/detection/cadence'
 
 export const dynamic = 'force-dynamic'
@@ -27,7 +28,14 @@ export default async function TargetsPage() {
   const user = await currentUser()
   if (!user) redirect('/sign-in')
 
-  const [v, ch, rest] = await Promise.all([buildProspectsPage(), buildChannelsView(), buildRestTally()])
+  const [v, ch, rest, fleets] = await Promise.all([
+    buildProspectsPage(),
+    buildChannelsView(),
+    buildRestTally(),
+    /* Read on the SERVER: `ChannelsPanel` is a client component, and a query reachable from
+       the browser bundle is the waiting.tsx -> gate.ts -> better-sqlite3 trap. */
+    listCategories(),
+  ])
 
   return (
     <>
@@ -115,7 +123,7 @@ export default async function TargetsPage() {
           <p className="page-meta">
             {ch.lastCheckLabel} · {ch.nextSlotLabel}
           </p>
-          <ChannelsPanel channels={ch.channels} />
+          <ChannelsPanel channels={ch.channels} fleets={fleets.map((f) => ({ slug: f.slug, name: f.name }))} />
         </section>
       </div>
     </>

@@ -1,6 +1,7 @@
 import { redirect } from 'next/navigation'
 import { currentUser } from '@/lib/session'
 import { buildAccountsPage, buildLoginQueue } from '../view-model/accounts-page'
+import { listCategories } from '@/outreach/categories'
 import { Nav } from '../nav'
 import { PageHead } from '../page-head'
 import { AccountGroupView } from '../accounts/group'
@@ -26,7 +27,17 @@ export default async function SendersPage() {
   const user = await currentUser()
   if (!user) redirect('/sign-in')
 
-  const [v, q] = await Promise.all([buildAccountsPage(), buildLoginQueue()])
+  const [v, q, fleets] = await Promise.all([
+    buildAccountsPage(),
+    buildLoginQueue(),
+    /**
+     * The fleets a new account may be put in, beside the default. Read here rather than
+     * inside the form because the form is a CLIENT component — a query reachable from the
+     * browser bundle is the `waiting.tsx -> gate.ts -> better-sqlite3` trap that returned
+     * HTTP 500 on every route.
+     */
+    listCategories(),
+  ])
   const total = q.done + q.remaining
 
   return (
@@ -139,7 +150,7 @@ export default async function SendersPage() {
           Last on the page deliberately: the question this page answers is "can my accounts
           send", and adding one is the rarer act.
         */}
-        <AddSenderForm />
+        <AddSenderForm fleets={fleets.map((f) => ({ slug: f.slug, name: f.name }))} />
 
         {/*
           Removal, with the queue handed off by rotation — see remove-form.tsx. Only
