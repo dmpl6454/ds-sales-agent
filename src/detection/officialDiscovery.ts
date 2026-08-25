@@ -31,7 +31,7 @@ import { prisma } from '@/lib/db'
 import { log } from '@/lib/logger'
 import { detectionCutoff } from '@/lib/cutoff'
 import { enrichHandle } from './enrichHandle'
-import { candidateHandlesFor, isOfficialMatch } from './officialHandle'
+import { candidateHandlesFor, isOfficialMatch, duplicatesExistingProspect } from './officialHandle'
 import { brandCandidatesFor, excludedHandles } from './brandCandidates'
 import { createFailureMemory } from './lookupCooldown'
 import { isOwnMark } from './ownMarks'
@@ -250,7 +250,7 @@ export async function discoverOfficialPages(
       orderBy: { postedAt: 'desc' },
     }),
     excludedHandles(),
-    prisma.targetAccount.findMany({ select: { handle: true } }),
+    prisma.targetAccount.findMany({ select: { handle: true, displayName: true, role: true, optedOut: true } }),
     prisma.senderAccount.findMany({ select: { handle: true } }),
     prisma.brandLookup.findMany({ select: { handle: true } }),
   ])
@@ -260,6 +260,10 @@ export async function discoverOfficialPages(
    * the endpoint is the scarce thing, and `tests/auto-resolve.test.ts` asserts that shape
    * for the sibling pass.
    */
+  /* Live prospects only: a retired row must not block re-acquiring the brand properly, which
+     is the whole reason retirement never deletes (see the VERIFIED ONLY rule in CLAUDE.md). */
+  const liveProspects = targets.filter((t) => t.role === 'PROSPECT' && !t.optedOut)
+
   const known = new Set<string>([
     ...targets.map((t) => t.handle.toLowerCase()),
     ...senders.map((s) => s.handle.toLowerCase()),
@@ -323,6 +327,22 @@ export async function discoverOfficialPages(
       unreachable.clear(candidate)
 
       if (isOfficialMatch({ brandName: name, fullName: e.fullName, isVerified: e.isVerified })) {
+        /**
+         * ONE MORE QUESTION BEFORE MINTING: do we already own this brand's page?
+         *
+         * A one-token brand name makes `nameMatches` vacuous — see the docblock on
+         * `duplicatesExistingProspect`. @tips_india (a paramedical college) passed both of
+         * this bar's questions while @tips (the real label, 1.1M followers) had been a live
+         * prospect for thirteen days. Reported for a person, never guessed at.
+         */
+        const dup = duplicatesExistingProspect(e.fullName, candidate, liveProspects)
+        if (dup !== null) {
+          rejected.note(candidate)
+          out.needsHuman.push(
+            `"${name}" → @${candidate} (${e.fullName ?? '—'}) — we already have @${dup} under that name; a second account for one brand is a duplicate lead`,
+          )
+          continue outer
+        }
         if (!dryRun) {
           const outcome = await createBrandTarget(
             { kind: 'BRAND', handle: candidate, displayName: e.fullName ?? name, category: null, followers: e.followers, isVerified: e.isVerified },

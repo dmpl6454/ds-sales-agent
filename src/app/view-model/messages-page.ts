@@ -428,7 +428,7 @@ export async function buildMessagesPage(): Promise<MessagesPageView> {
   const holdFor = (draft: { senderId: string; targetId: string; targetHandle?: string }): { why: string; resumesAt: Date } | null => {
     const replyResume = replyResumesAt.get(draft.targetId)
     if (replyResume !== undefined) {
-      return { why: 'they replied — resumes on its own, or the moment "I have replied" is pressed', resumesAt: replyResume }
+      return { why: 'they replied — resumes on its own seven days after they wrote', resumesAt: replyResume }
     }
     const material = draft.targetHandle ? materialHolds.get(draft.targetHandle) : undefined
     if (material !== undefined) {

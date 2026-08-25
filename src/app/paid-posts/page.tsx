@@ -271,13 +271,12 @@ export default async function PaidPostsPage() {
                         {p.frameEvidence ? <span className="muted"> — from the footage: {p.frameEvidence}</span> : null}
                       </td>
                       <td>
+                        {/* Retired prospects are not listed at all (2026-08-25, Tabish) —
+                            filtered in the view model, so nothing here has to decode a
+                            state the reader cannot act on. */}
                         {p.recipients.map((r, i) => (
                           <span key={r.handle}>
                             {i > 0 ? ', ' : ''}@{r.handle}
-                            {/* A retired prospect is named, not hidden: "we found them
-                                and chose not to write" and "we found nobody" are
-                                different facts. */}
-                            {r.retired ? <span className="muted"> (retired)</span> : null}
                           </span>
                         ))}
                         {/*
@@ -294,9 +293,11 @@ export default async function PaidPostsPage() {
                           </span>
                         ) : null}
                         {p.recipients.length === 0 && !p.candidateNote ? (
-                          /* Genuinely nobody: the post asserted no account at all and no
-                             name resolved — a fully anonymous paid post yields NO
-                             prospect by design (existence is not identity). */
+                          /* Genuinely nobody: the post asserts no handle AND names no brand
+                             — a fully anonymous paid post yields NO prospect by design
+                             (existence is not identity). A post that DID name somebody now
+                             says so through `candidateNote`; this used to fire on 166
+                             in-window posts that had a brand name and no tag. */
                           <span className="muted">nobody named</span>
                         ) : null}
                       </td>

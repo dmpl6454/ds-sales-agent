@@ -156,7 +156,7 @@ export default async function RulesPage() {
     {
       group: 'Replies',
       lines: [
-        'A reply halts every account writing to that recipient until a person takes over.',
+        'A reply halts every account writing to that recipient for seven days, counted from when they wrote, then messaging resumes by itself.',
         'Before a follow-up is sent, its own conversation is read; a thread that cannot be read fully holds the send.',
         'A reply is the outcome we want — it is never treated as “do not contact”.',
       ],

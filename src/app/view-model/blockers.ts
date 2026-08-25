@@ -157,7 +157,7 @@ export function rankBlockers(input: BlockerInput): Blocker[] {
           ? 'One recipient replied and is on hold'
           : `${input.repliesWaiting} recipients replied and are on hold`,
       verdict:
-        'A reply pauses every account writing to that recipient. It resumes by itself after a day — pressing “I have replied” releases it sooner, and keeps the reply.',
+        'A reply pauses every account writing to that recipient for seven days, then messaging resumes by itself. Nothing needs pressing — the reply is kept either way.',
       remedy: null,
       tone: 'warn',
     })

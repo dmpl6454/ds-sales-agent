@@ -398,7 +398,7 @@ export function evaluateResend(input: ResendInput): ResendResult {
     return {
       ok: false,
       reason: RESEND_BLOCKS.TARGET_REPLIED,
-      detail: `they replied (written ${input.targetRepliedAt.toISOString()}) — messaging them pauses for seven days from that date, then resumes on its own (or the moment "I have replied" is pressed)`,
+      detail: `they replied (written ${input.targetRepliedAt.toISOString()}) — messaging them pauses for seven days from that date, then resumes on its own`,
     }
   }
 

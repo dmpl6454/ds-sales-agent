@@ -5,7 +5,7 @@
  * identity; only a verified badge + covering name, or size + exact name, may pass.
  */
 import { describe, expect, it } from 'vitest'
-import { candidateHandlesFor, nameMatches, isOfficialMatch } from '@/detection/officialHandle'
+import { candidateHandlesFor, nameMatches, isOfficialMatch, duplicatesExistingProspect } from '@/detection/officialHandle'
 
 describe('candidateHandlesFor', () => {
   it('generates the normalisations an Indian advertiser actually uses', () => {
@@ -63,5 +63,66 @@ describe('isOfficialMatch — VERIFIED ONLY since 2026-08-20', () => {
 
   it('THE PHILIPS TRAP, end to end: verified @philips never passes for "Philips India"', () => {
     expect(isOfficialMatch({ brandName: 'Philips India', fullName: 'Philips', isVerified: true })).toBe(false)
+  })
+})
+
+/**
+ * ── @tips_india: A ONE-TOKEN BRAND NAME MAKES THE NAME TEST VACUOUS ─────────
+ *
+ * The live case, 2026-08-25. `@tips` — "TIPS", 1,147,014 followers, category Publishers —
+ * had been a live prospect since 12 August and is the account the post's own caption linked.
+ * `@tips_india` is the Tripura Institute of Paramedical Sciences: 2,863 followers, verified,
+ * display name "TIPS". It cleared BOTH of `isOfficialMatch`'s questions and received four
+ * media-buying pitches before anyone noticed.
+ *
+ * The first two cases below pin that `isOfficialMatch` still passes it — the vacuous match
+ * is a property of one-token names and is NOT what was changed — and the rest pin the guard
+ * that now stops it. Mutation-tested: making `duplicatesExistingProspect` return null always
+ * fails exactly the two refusal cases and leaves every admit case green.
+ */
+describe('duplicatesExistingProspect — we already own this brand', () => {
+  const live = [
+    { handle: 'tips', displayName: 'TIPS' },
+    { handle: 'primevideoin', displayName: 'Prime Video' },
+    { handle: 'philipsindia', displayName: 'Philips India' },
+  ]
+
+  it('the badge bar still passes the college — the guard is what refuses it, not the bar', () => {
+    expect(isOfficialMatch({ brandName: 'Tips', fullName: 'TIPS', isVerified: true })).toBe(true)
+  })
+
+  it('candidateHandlesFor("Tips") really does generate tips_india', () => {
+    expect(candidateHandlesFor('Tips')).toContain('tips_india')
+  })
+
+  it('refuses a second account wearing a name we already hold', () => {
+    expect(duplicatesExistingProspect('TIPS', 'tips_india', live)).toBe('tips')
+  })
+
+  it('is case- and separator-insensitive, because a display name is free text', () => {
+    expect(duplicatesExistingProspect('prime video', 'primevideo', live)).toBe('primevideoin')
+  })
+
+  it('never refuses the row it IS — re-resolving our own prospect is not a duplicate', () => {
+    expect(duplicatesExistingProspect('TIPS', 'tips', live)).toBeNull()
+  })
+
+  it('admits a brand we do not already hold', () => {
+    expect(duplicatesExistingProspect('Lufthansa', 'lufthansa', live)).toBeNull()
+  })
+
+  it('the @philips direction still resolves by NAME, so the trap fixture is untouched', () => {
+    // "Philips" is not the same name as "Philips India" — a global page is not a duplicate
+    // of the Indian subsidiary, and must still be judged on its own by isOfficialMatch.
+    expect(duplicatesExistingProspect('Philips', 'philips', live)).toBeNull()
+  })
+
+  it('a two-character "name" is OCR wreckage and never matches', () => {
+    expect(duplicatesExistingProspect('TI', 'ti', [{ handle: 'x', displayName: 'TI' }])).toBeNull()
+  })
+
+  it('a null display name on either side cannot match', () => {
+    expect(duplicatesExistingProspect(null, 'anything', live)).toBeNull()
+    expect(duplicatesExistingProspect('TIPS', 'tips_india', [{ handle: 'q', displayName: null }])).toBeNull()
   })
 })
