@@ -47,6 +47,12 @@ export interface Blocker {
   verdict: string
   /** Where to go. `null` when the answer is "read this and decide", with nowhere to click. */
   remedy: { label: string; href: string } | null
+  /**
+   * True only for the `not-in-thread` RATE halt, which is the one a person can release by
+   * saying they have looked — which is literally what its own sentence asks for. A flagged
+   * account and a manual pause are deliberately NOT acknowledgeable from here.
+   */
+  acknowledgeable?: boolean
   tone: BlockerTone
 }
 
@@ -143,6 +149,13 @@ export function rankBlockers(input: BlockerInput): Blocker[] {
       // The breaker's own sentence. It explains which of its two signals tripped.
       verdict: input.breaker.reason,
       remedy: { label: 'See the accounts', href: '/senders' },
+      /**
+       * ONLY the rate arm is acknowledgeable. A flagged account and a manual pause are not
+       * things a person can wave through from here — the first has its own button on the
+       * account's row after somebody has looked at it, the second is undone by whoever set
+       * it. See `acknowledgeBreaker`.
+       */
+      acknowledgeable: input.breaker.reason.includes('never appeared in the thread'),
       tone: 'bad',
     })
   }

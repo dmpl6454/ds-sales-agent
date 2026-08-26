@@ -35,6 +35,7 @@ function ok(): ResendInput {
     targetOptedOut: false,
     targetIsWatchOnly: false,
   fleetTemplate: DEFAULT_FLEET_TEMPLATE,
+  repeatsADeliveredBody: false,
     targetIsVerified: true,
     targetRepliedAt: null,
     pairSentTodayCount: 0,

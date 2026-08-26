@@ -107,6 +107,12 @@ export interface ResendInput {
    */
   fleetTemplate: FleetTemplate
   /**
+   * Is this draft's stored body byte-identical to one already DELIVERED on this pair? Read
+   * from the stored bytes rather than recomposed, because an operator may have edited the
+   * draft and what matters is what would actually be sent.
+   */
+  repeatsADeliveredBody: boolean
+  /**
    * `TargetAccount.isVerified` — TRUE only where Instagram itself shows the badge.
    *
    * ── VERIFIED ONLY (Tabish, 2026-08-20) ────────────────────────────────────
@@ -207,6 +213,19 @@ export const RESEND_BLOCKS = {
    * The remedy is a textarea, not a judgement call.
    */
   FLEET_TEMPLATE_NOT_SET: 'no-standard-message-for-this-fleet',
+  /**
+   * ── THE SAME BYTES THEY ALREADY HAVE (2026-08-26) ─────────────────────────
+   *
+   * The governor refuses to WRITE one; this catches the ones written before the rule — 62 of
+   * them were waiting the day it shipped. Measured: touch 2 fails 83% of the time and six of
+   * six read threads showed the second message simply absent.
+   *
+   * ABSOLUTE, and deliberately outside `OVERRIDABLE_BLOCKS`. Every stop a human may cross is
+   * about TIMING; this is about the message being one the recipient already holds, and
+   * "I know something the agent does not" is not an argument that Instagram will deliver it
+   * this time.
+   */
+  IDENTICAL_TO_A_SENT_MESSAGE: 'identical-to-a-message-they-already-have',
   TARGET_NOT_VERIFIED: 'target-not-verified',
   TARGET_REPLIED: 'target-replied',
   NO_SESSION: 'no-session',
@@ -505,6 +524,24 @@ export function evaluateResend(input: ResendInput): ResendResult {
   }
 
   /**
+   * ── AFTER the facts about WHO and WHETHER, before the volume rules ────────
+   *
+   * Ordered here on purpose. A reply, a dead session, a missing badge and the fleet rule are
+   * all MORE FUNDAMENTAL than what the bytes say — a person reading one refusal should be
+   * told the deepest true thing, which is this file's stated ordering principle. It sits
+   * above the volume rules because those are about timing and this is not: waiting does not
+   * make Instagram deliver a repeat.
+   */
+  if (input.repeatsADeliveredBody) {
+    return {
+      ok: false,
+      reason: RESEND_BLOCKS.IDENTICAL_TO_A_SENT_MESSAGE,
+      detail:
+        'this is word for word the message this page already sent them — Instagram accepts it and never delivers it, so it is held until there is something different to say',
+    }
+  }
+
+  /**
    * Checked BEFORE the per-pair cap, because it is the more fundamental refusal: "someone
    * else already wrote to this person" is a fact about the recipient, while the pair cap
    * is a fact about this one conversation. A refusal should name the deeper reason.
@@ -565,7 +602,7 @@ export async function recheckBeforeSend(
   const { sender, target, senderId, targetId } = attempt.pair
 
   const materialWindowFloor = new Date(Date.now() - settings.defaultCooldownDays * 86_400_000)
-  const [replied, pairToday, ringDeliveries, eligibleSenderIds, ladder, senderRow, parked, targetCampaigns, targetDelivered, memberships] =
+  const [replied, pairToday, ringDeliveries, eligibleSenderIds, ladder, senderRow, parked, targetCampaigns, targetDelivered, memberships, thisDraft, deliveredRows] =
     await Promise.all([
     prisma.outreachAttempt.findFirst({
       /**
@@ -653,7 +690,27 @@ export async function recheckBeforeSend(
     /* Which fleet each end belongs to. Two small reads, inside the existing Promise.all,
        so this costs the gate no extra wall-clock. See senderCategories.ts. */
     readCategoryMemberships(),
+    /**
+     * THIS DRAFT'S OWN BYTES, and the bytes this pair has already delivered.
+     *
+     * Read here rather than added to `ResendAttempt`, deliberately: that interface is
+     * constructed at several call sites and in the tests, and a new REQUIRED field on it is
+     * a large edit for a fact only this rule needs. Both are inside the existing
+     * `Promise.all`, so the gate costs no extra wall-clock — the same argument the
+     * memberships read above makes.
+     *
+     * Scoped by (senderId, targetId) rather than `pairId`, which `ResendAttempt` does not
+     * carry; it is the same pair by definition.
+     */
+    prisma.outreachAttempt.findUnique({ where: { id: attempt.id }, select: { renderedBody: true } }),
+    prisma.outreachAttempt.findMany({
+      where: { senderId, targetId, status: { in: [...DELIVERED_STATUSES] }, id: { not: attempt.id } },
+      select: { renderedBody: true },
+    }),
   ])
+
+  const deliveredBodies = deliveredRows.map((r) => r.renderedBody.trim())
+  const thisBody = thisDraft?.renderedBody.trim() ?? null
 
   return evaluateResend({
     attemptStatus: attempt.status,
@@ -683,6 +740,11 @@ export async function recheckBeforeSend(
       categoriesFor(memberships.bySenderHandle, sender.handle),
       categoriesFor(memberships.byTargetHandle, target.handle),
     ),
+    /* The STORED bytes, not a recomposition — an operator may have edited the draft, and
+       what matters is what would actually go out. See RESEND_BLOCKS.IDENTICAL_TO_A_SENT_MESSAGE. */
+    /* Null body (the row vanished under us) is NOT a repeat — absence of data must not
+       become a refusal any more than it may become a permission. */
+    repeatsADeliveredBody: thisBody !== null && deliveredBodies.includes(thisBody),
     targetIsVerified: target.isVerified,
     targetRepliedAt: replied?.replyPostedAt ?? null,
     pairSentTodayCount: pairToday,

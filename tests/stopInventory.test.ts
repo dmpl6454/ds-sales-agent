@@ -104,6 +104,7 @@ function governorInput(over: Record<string, unknown> = {}) {
     totalSentEver: 0,
     maxTotalSends: null,
     fleetTemplate: DEFAULT_FLEET_TEMPLATE,
+    repeatsADeliveredBody: false,
     ...over,
   } as Parameters<typeof evaluatePair>[0]
 }
@@ -116,6 +117,7 @@ const GOVERNOR_CASES: Array<[string, Record<string, unknown>]> = [
   // `target.optedOut`, which is the next case and is checked independently of any pair row.
   [SKIP_REASONS.TARGET_OPTED_OUT, { target: { optedOut: true, isVerified: true } }],
   [SKIP_REASONS.TARGET_NOT_VERIFIED, { target: { optedOut: false, isVerified: false } }],
+  [SKIP_REASONS.IDENTICAL_TO_A_SENT_MESSAGE, { repeatsADeliveredBody: true }],
   /* And the same refusal one door earlier, so no draft is written that can never be sent. */
   [
     SKIP_REASONS.NO_FLEET_TEMPLATE,
@@ -197,6 +199,7 @@ function gateInput(over: Record<string, unknown> = {}) {
     targetOptedOut: false,
     targetIsWatchOnly: false,
     fleetTemplate: DEFAULT_FLEET_TEMPLATE,
+    repeatsADeliveredBody: false,
     /* Empty on both sides = the DEFAULT category, i.e. the permitted case. `as` on the object
        below meant these were simply MISSING at runtime rather than type-checked in, so every
        case after the new stop threw inside `effectiveCategories` — a fixture that omits a
@@ -221,6 +224,13 @@ const GATE_CASES: Array<[string, Record<string, unknown>]> = [
   /* Two fleets (2026-08-25). Empty on both sides is the DEFAULT category and permitted, so the
      trigger is an explicit membership on one side only. */
   [RESEND_BLOCKS.DIFFERENT_CATEGORY, { senderCategories: ['marketing'] }],
+  /**
+   * INSTAGRAM SILENTLY DROPS A BYTE-IDENTICAL REPEAT (2026-08-26). Measured: touch 1 fails
+   * 5% of the time, touch 2 fails 83%, and six of six parked threads read back showed the
+   * second message simply absent. The composer clears, Instagram raises no error, nothing
+   * arrives — and the park is PERMANENT on the pair, so each one burns a route.
+   */
+  [RESEND_BLOCKS.IDENTICAL_TO_A_SENT_MESSAGE, { repeatsADeliveredBody: true }],
   /* A separate standard message per fleet (2026-08-26). Reachable when BOTH ends are in a
      second fleet — so the category rule permits the route — and that fleet's copy is unwritten,
      which is the state Tabish asked for ("keep it empty for now"). Built by the REAL rule. */
@@ -300,6 +310,18 @@ describe('every gate stop is reachable and explains itself', () => {
    * behaviour, and it is what a future "let me send it anyway" button would actually hit.
    * The copy a company receives is not a timing question, so no acknowledgement crosses it.
    */
+  /**
+   * AND NOT OVERRIDABLE. A repeat is not a timing question — Instagram drops it whoever
+   * pressed the button — so no acknowledgement crosses it.
+   */
+  it('refuses to let anyone override a repeat of a message they already have', () => {
+    const r = evaluateResend(
+      gateInput({ repeatsADeliveredBody: true, unattended: false, overrides: [RESEND_BLOCKS.IDENTICAL_TO_A_SENT_MESSAGE] }),
+    )
+    expect(r.ok, 'an override sent a message Instagram will silently drop').toBe(false)
+    if (!r.ok) expect(r.reason).toBe(RESEND_BLOCKS.IDENTICAL_TO_A_SENT_MESSAGE)
+  })
+
   it('refuses to let anyone override a fleet with no standard message', () => {
     const held = {
       senderCategories: ['marketing'],

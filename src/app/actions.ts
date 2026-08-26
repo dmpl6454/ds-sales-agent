@@ -25,7 +25,7 @@ import { recordDelivered } from '@/outreach/recordSend'
 import { claimForAttempt, settleClaims, releaseReservation } from '@/outreach/reservations'
 import { markChallenged, clearChallenged } from '@/outreach/challenge'
 import { markSessionInvalid, clearSessionInvalid } from '@/outreach/sessionHealth'
-import { withSendLock, DISPATCH_PAUSE_KEY, dispatchTick } from '@/outreach/dispatcher'
+import { withSendLock, DISPATCH_PAUSE_KEY, dispatchTick, acknowledgeBreaker } from '@/outreach/dispatcher'
 import { importProspects, type ImportOutcome } from '@/outreach/importProspects'
 import { routeAllowed, fleetHandles } from '@/outreach/routes'
 import { readCategoryMemberships, categoriesFor } from '@/outreach/categories'
@@ -856,6 +856,39 @@ export async function setSingleTemplateBody(body: string | null): Promise<{ ok: 
  * the device agent polls every 30 seconds. `SEND_ENABLED=false` refuses it on the server for
  * free, which is correct: the server has no profiles to check.
  */
+/**
+ * ── "I HAVE LOOKED" — THE RATE BREAKER'S MISSING RELEASE (2026-08-26) ─────
+ *
+ * The `not-in-thread` breaker's own sentence ends *"nothing else is sent until someone has
+ * looked"*, and there was no way to say that you had. Meanwhile it could not self-heal: its
+ * denominator is DELIVERIES in the window, which only grow by sending — which it forbids —
+ * so the rate rises as deliveries age out. Projected on the real data: 39% now, 47% at +12h,
+ * **79% at +18h**, releasing only at +19h when the numerator expired.
+ *
+ * This acknowledges the failures that ALREADY happened. A failure recorded afterwards trips
+ * the breaker again, so it is a release rather than a mute — if the cause was not really
+ * fixed, the fleet stops on the first proof. It cannot touch a flagged account or a manual
+ * pause: Instagram flagging an account is not something a person can acknowledge away.
+ */
+export async function acknowledgeFleetBreaker(reason: string): Promise<MutationResult> {
+  const user = await requireOperator()
+  const text = reason.trim()
+  if (text.length < 10) {
+    return {
+      ok: false,
+      message: 'Say what you found, in a sentence — this is the only record of why a halted fleet was resumed.',
+    }
+  }
+  await acknowledgeBreaker(user.email, text)
+  revalidatePath('/')
+  return {
+    ok: true,
+    message:
+      'Recorded. The fleet resumes on the next tick. If another message clears the composer and never ' +
+      'arrives, the halt comes straight back — this covers only what had already happened.',
+  }
+}
+
 export async function checkSignIn(handleRaw: string): Promise<MutationResult> {
   const user = await requireOperator()
   const handle = handleRaw.trim().replace(/^@/, '').toLowerCase()

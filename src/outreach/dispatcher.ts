@@ -283,6 +283,39 @@ let heldInThisProcess = false
  * the browser moves. The reply sweep and the pruner never reach it, so a read can never
  * cost a send's worth of spacing, which is the property the deleted flag existed to protect.
  */
+/**
+ * Where the "I have looked" acknowledgement lives. A `Setting` row rather than a column,
+ * for the reason `accuracyHistory` is one: this machine cannot ship a migration to the
+ * server, and a schema change applied to a live database from a host that cannot deploy the
+ * code using it is a split-brain window for no gain.
+ */
+export const BREAKER_ACK_KEY = 'breakerAcknowledgedAt'
+
+/**
+ * Record that a person has looked at the `not-in-thread` rate and the fleet may resume.
+ *
+ * ONE WRITER, like `markChallenged` and `markSessionInvalid`, so the audit trail cannot be
+ * bypassed — months later this row is the only record of who resumed a halted fleet and why.
+ * It acknowledges only failures that already exist: a newer one re-trips the breaker, which
+ * is what makes this a release rather than a mute.
+ */
+export async function acknowledgeBreaker(actor: string, reason: string): Promise<void> {
+  const at = new Date().toISOString()
+  await prisma.setting.upsert({
+    where: { key: BREAKER_ACK_KEY },
+    update: { value: at },
+    create: { key: BREAKER_ACK_KEY, value: at },
+  })
+  await prisma.auditLog.create({
+    data: {
+      actor,
+      action: 'breaker.acknowledged',
+      entity: 'Fleet',
+      detail: `not-in-thread rate acknowledged — ${reason}. A failure after ${at} trips it again.`,
+    },
+  })
+}
+
 export async function withSendLock<T>(what: string, fn: () => Promise<T>): Promise<T | null> {
   /**
    * MAY THIS MACHINE SEND AT ALL? Checked here because this function is the ONE place
@@ -350,7 +383,7 @@ export async function assessFleetBreaker(now: Date = new Date()): Promise<Breake
   const challengeFloor = hoursAgo(CHALLENGE_WINDOW_HOURS, now)
   const failureFloor = hoursAgo(FAILURE_WINDOW_HOURS, now)
 
-  const [challenged, notInThread, delivered, manualPause] = await Promise.all([
+  const [challenged, notInThread, delivered, manualPause, ack, newestFailure] = await Promise.all([
     /**
      * Accounts flagged recently.
      *
@@ -373,6 +406,14 @@ export async function assessFleetBreaker(now: Date = new Date()): Promise<Breake
       where: { status: { in: [...DELIVERED_STATUSES] }, sentAt: { gte: failureFloor } },
     }),
     readPause(),
+    /* When a person last said "I have looked", and when the newest counted failure was —
+       see BreakerInput.acknowledgedAt. Two tiny reads inside the existing Promise.all. */
+    prisma.setting.findUnique({ where: { key: BREAKER_ACK_KEY }, select: { value: true } }),
+    prisma.outreachAttempt.findFirst({
+      where: { failureCode: 'not-in-thread', queuedAt: { gte: failureFloor } },
+      orderBy: { queuedAt: 'desc' },
+      select: { queuedAt: true },
+    }),
   ])
 
   return assessBreaker({
@@ -380,6 +421,8 @@ export async function assessFleetBreaker(now: Date = new Date()): Promise<Breake
     notInThreadInWindow: notInThread,
     deliveredInWindow: delivered,
     manualPause,
+    acknowledgedAt: ack?.value ?? null,
+    newestFailureAt: newestFailure?.queuedAt.toISOString() ?? null,
   })
 }
 

@@ -224,6 +224,38 @@ export interface BreakerInput {
    * and when — an unexplained halt is indistinguishable from a broken one.
    */
   manualPause?: { at: string; by: string; reason?: string } | null
+
+  /**
+   * ── "UNTIL SOMEONE HAS LOOKED" — AND NOW THEY CAN SAY SO (2026-08-26) ─────
+   *
+   * THE RATE BREAKER COULD NOT SELF-HEAL, and that was measured rather than argued. Its
+   * denominator is DELIVERIES in the window, which only grow by sending — which it forbids.
+   * So once tripped the rate gets WORSE, because deliveries age out of the window while the
+   * failures are still inside it. Projected hour by hour with the real function on the real
+   * data the day this shipped:
+   *
+   *     now   39%      +6h   45%      +12h  47%      +18h  79%      +19h  RELEASES
+   *
+   * Nineteen hours of a fleet that was healthy after the first two, and the ONLY release was
+   * the numerator expiring completely. CLAUDE.md's own rule: *a hard stop with no release is
+   * a bug wearing a safety feature's clothes.* The `challenged` arm has `clearChallenge`;
+   * this arm had nothing, while its own message invited the very thing it did not offer —
+   * *"nothing else is sent until someone has looked."*
+   *
+   * ── IT ACKNOWLEDGES WHAT WAS LOOKED AT, AND NOTHING ELSE ─────────────────
+   *
+   * Not a mute and not a timer. The acknowledgement covers failures that had ALREADY
+   * happened when the person looked: a failure recorded AFTER it re-trips the breaker
+   * immediately, which is the whole point — if the cause was not really fixed, the fleet
+   * stops again on the first proof.
+   *
+   * It does NOT touch the `challenged` arm or a manual pause. Instagram flagging an account
+   * is not something a person can acknowledge away, and a human's explicit Pause outranks
+   * everything the system inferred.
+   */
+  acknowledgedAt?: string | null
+  /** When the newest counted `not-in-thread` failure happened. Null when there are none. */
+  newestFailureAt?: string | null
 }
 
 export function assessBreaker(input: BreakerInput): BreakerVerdict {
@@ -253,7 +285,18 @@ export function assessBreaker(input: BreakerInput): BreakerVerdict {
 
   const total = input.notInThreadInWindow + input.deliveredInWindow
   const rate = total === 0 ? 0 : input.notInThreadInWindow / total
-  if (input.notInThreadInWindow >= NOT_IN_THREAD_MIN_COUNT && rate >= NOT_IN_THREAD_MIN_RATE) {
+  /**
+   * A person looked AFTER every failure being counted, so the fleet resumes. A failure newer
+   * than the acknowledgement is not covered by it and trips this again — see the docblock on
+   * `acknowledgedAt`. Unparseable dates acknowledge NOTHING: a bad value must not be able to
+   * silence a safety stop.
+   */
+  const ackAt = input.acknowledgedAt ? Date.parse(input.acknowledgedAt) : NaN
+  const newestFail = input.newestFailureAt ? Date.parse(input.newestFailureAt) : NaN
+  const acknowledged =
+    Number.isFinite(ackAt) && (!Number.isFinite(newestFail) || ackAt >= newestFail)
+
+  if (!acknowledged && input.notInThreadInWindow >= NOT_IN_THREAD_MIN_COUNT && rate >= NOT_IN_THREAD_MIN_RATE) {
     return {
       tripped: true,
       reason: 'not-in-thread-rate',

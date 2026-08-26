@@ -171,6 +171,13 @@ export interface GovernorInput {
    * site rather than one of them silently permitting.
    */
   fleetTemplate: FleetTemplate
+
+  /**
+   * Would the body about to be written be BYTE-IDENTICAL to one this pair has already
+   * delivered? Computed by the caller against the same template this decision is made with,
+   * so the two cannot disagree. REQUIRED, so the compiler names every call site.
+   */
+  repeatsADeliveredBody: boolean
 }
 
 export type GovernorDecision =
@@ -202,6 +209,38 @@ export const SKIP_REASONS = {
    * textarea, so this clears the moment the copy is written — no draft, no discard.
    */
   NO_FLEET_TEMPLATE: 'no-standard-message-for-this-fleet',
+  /**
+   * ── INSTAGRAM SILENTLY DROPS A REPEAT OF THE SAME BYTES (2026-08-26) ─────
+   *
+   * MEASURED, and this is the sharpest measurement in the file. Since `singleTemplate` went
+   * on, every message is byte-identical — so a SECOND message from one page to one recipient
+   * is a verbatim repeat of what is already in that thread.
+   *
+   *   touch 1  394 delivered, 22 not-in-thread   ->   5% failure
+   *   touch 2   11 delivered, 53 not-in-thread   ->  83% failure
+   *
+   * SIX of six parked threads were then READ, with the parked body deliberately excluded
+   * from the completeness bar so the read could be trusted: every one showed **exactly one**
+   * copy of our template — the first touch — and `complete: true`. The second message is
+   * genuinely not there. The composer cleared, Instagram raised no error, and nothing
+   * arrived.
+   *
+   * So `bodyAppearedSince` was RIGHT every time and is not the bug: it correctly refused to
+   * record a delivery that did not happen. What is wrong is sending the message at all.
+   *
+   * CLAUDE.md predicted this in as many words when the single template shipped — *"Meta's
+   * written spam policy penalises REPETITION and merge-field templates do not count as
+   * variation… that risk is real and is stated rather than smoothed over"*. This is that
+   * risk, measured.
+   *
+   * IT IS NOT ONLY WASTE. A `not-in-thread` park is PERMANENT on the pair, so every one of
+   * these burns a route for a message nobody received — 77 pairs so far — and keeps
+   * signalling repetition to the one party whose opinion ends this project.
+   *
+   * The rule lifts by itself the moment a follow-up says something different: turn
+   * `singleTemplate` off and the variant pools return, or give the fleet a second template.
+   */
+  IDENTICAL_TO_A_SENT_MESSAGE: 'identical-to-a-message-they-already-have',
 } as const
 
 export function evaluatePair(input: GovernorInput): GovernorDecision {
@@ -285,6 +324,24 @@ export function evaluatePair(input: GovernorInput): GovernorDecision {
   // un-tapped attempt from yesterday must not become a queue of five.
   if (input.hasPendingAttempt) {
     return { eligible: false, reason: SKIP_REASONS.PENDING_ATTEMPT }
+  }
+
+  /**
+   * ── AFTER the facts about WHO, before the material and volume rules ───────
+   *
+   * A reply, a retired recipient, a missing badge and a flagged account are all more
+   * fundamental than what the bytes would say, and this file reports the most fundamental
+   * true reason. It sits ABOVE the material rules because those are about timing — another
+   * paid post releases them — and this one is not: no amount of waiting makes Instagram
+   * deliver a verbatim repeat. See SKIP_REASONS.IDENTICAL_TO_A_SENT_MESSAGE.
+   */
+  if (input.repeatsADeliveredBody) {
+    return {
+      eligible: false,
+      reason: SKIP_REASONS.IDENTICAL_TO_A_SENT_MESSAGE,
+      detail:
+        'the next message would be word for word the one this page already sent them — Instagram accepts it and never delivers it, so nothing is written until there is something different to say',
+    }
   }
 
   /**

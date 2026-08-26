@@ -51,6 +51,7 @@ function base(overrides: Partial<GovernorInput> = {}): GovernorInput {
     totalSentEver: 0,
     maxTotalSends: null,
     fleetTemplate: DEFAULT_FLEET_TEMPLATE,
+    repeatsADeliveredBody: false,
     ...overrides,
   }
 }

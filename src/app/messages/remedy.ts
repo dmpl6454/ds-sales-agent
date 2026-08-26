@@ -126,6 +126,17 @@ export const REMEDIES = {
    * rules deliberately do not. Nothing about the recipient is wrong; nobody has written that
    * fleet's copy yet, and the moment they do every held draft for it clears by itself.
    */
+  /**
+   * NO CONTROL, and that is the honest answer: nothing about this recipient is wrong and
+   * waiting does not help. What releases it is having something DIFFERENT to say — turning
+   * the single template off so the variant pools return, or writing a follow-up template.
+   * Offering a "send anyway" here would be offering to do the thing Instagram silently drops.
+   */
+  [RESEND_BLOCKS.IDENTICAL_TO_A_SENT_MESSAGE]: {
+    href: null,
+    label: 'It clears when a follow-up says something different from the first message.',
+  },
+
   [RESEND_BLOCKS.FLEET_TEMPLATE_NOT_SET]: {
     href: '/',
     label: 'Write this fleet\u2019s standard message on the Autopilot page and these go out.',
