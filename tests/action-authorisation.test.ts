@@ -60,16 +60,41 @@ describe('every server action requires an operator', () => {
      * Placement is load-bearing, not stylistic. Several actions mutate and then audit, so
      * a check deferred into `audit()` would let the write land and fail afterwards.
      */
+    /**
+     * ── COMMENTS ARE STRIPPED FIRST, AND THAT IS STRICTER, NOT LOOSER ────────
+     *
+     * This scanned a fixed 900-character window from the function keyword. That window is a
+     * proxy for "near the top" measured in BYTES, and in a codebase that documents a
+     * parameter with twenty lines of reasoning it measures the docblock, not the code:
+     * `rejoinFleet` failed here the day its `confirmed` argument was explained, with the
+     * guard correctly first in EXECUTION order.
+     *
+     * Removing comments and asserting the guard is the first STATEMENT says what the test
+     * has always meant, and it cannot be defeated by prose. Same correction as
+     * `tests/every-send-path-asks-the-gate.test.ts`, which passed its own mutation twice
+     * because it was matching a name inside a docblock rather than a call in the code.
+     */
+    const stripComments = (t: string) => t.replace(/\/\*[\s\S]*?\*\//g, ' ').replace(/(^|[^:])\/\/[^\n]*/g, '$1 ')
+
     for (const name of exportedActions(ACTIONS)) {
       const start = ACTIONS.indexOf(`export async function ${name}`)
-      const body = ACTIONS.slice(start, start + 900)
+      const body = stripComments(ACTIONS.slice(start, start + 4000))
       const guardAt = body.indexOf('requireOperator()')
       expect(guardAt, `${name} has no requireOperator() near its top`).toBeGreaterThan(-1)
 
-      // Nothing but the signature and whitespace/comments may precede it: no awaits,
-      // no prisma calls, no argument parsing.
-      const before = body.slice(0, guardAt)
+      /**
+       * Nothing but the signature may precede it — no awaits, no prisma calls, no argument
+       * parsing. With comments gone this is a statement about CODE, so the byte distance is
+       * now a real bound rather than a budget for documentation.
+       */
+      /* The guard's OWN `const user = await ` is not something running before it. */
+      const before = body.slice(0, guardAt).replace(/(const\s+\w+\s*=\s*)?await\s*$/, '')
       expect(before.includes('prisma.'), `${name} touches the database before checking the role`).toBe(false)
+      expect(before.includes('await '), `${name} awaits something before checking the role`).toBe(false)
+      expect(
+        before.length,
+        `${name}: too much code runs before the role check — it must be the first statement`,
+      ).toBeLessThan(400)
     }
   })
 })

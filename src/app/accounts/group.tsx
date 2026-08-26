@@ -201,11 +201,25 @@ function RejoinControl({
   const [fleet, setFleet] = useState('')
   const [busy, setBusy] = useState(false)
   const [outcome, setOutcome] = useState<{ ok: boolean; message: string } | null>(null)
+  /**
+   * The server's PREVIEW has been shown and this click is the confirmation. Reset whenever
+   * the fleet changes, because the route count is a function of the fleet — confirming a
+   * number computed for a different one is the thing this exists to prevent.
+   */
+  const [armed, setArmed] = useState(false)
 
   return (
     <>
       {fleets.length > 0 && (
-        <select value={fleet} onChange={(e) => setFleet(e.target.value)} aria-label={`Which fleet @${handle} sends for`}>
+        <select
+          value={fleet}
+          onChange={(e) => {
+            setFleet(e.target.value)
+            setArmed(false)
+            setOutcome(null)
+          }}
+          aria-label={`Which fleet @${handle} sends for`}
+        >
           <option value="">Bollywood (the original fleet)</option>
           {fleets.map((f) => (
             <option key={f.slug} value={f.slug}>
@@ -218,12 +232,18 @@ function RejoinControl({
         disabled={busy}
         onClick={async () => {
           setBusy(true)
-          setOutcome(await rejoinFleet(handle, fleet))
+          const r = await rejoinFleet(handle, fleet, armed)
+          setOutcome(r)
           setBusy(false)
-          onDone()
+          /* A refused PREVIEW arms the second press; a real refusal must not. */
+          if (!armed && !r.ok) setArmed(true)
+          else {
+            setArmed(false)
+            onDone()
+          }
         }}
       >
-        {busy ? 'Adding…' : 'Put back in the rotation'}
+        {busy ? 'Adding…' : armed ? 'Confirm — put it back in the rotation' : 'Put back in the rotation'}
       </button>
       {outcome ? <p className={outcome.ok ? 'account-todo' : 'settingrow-argument'}>{outcome.message}</p> : null}
     </>
