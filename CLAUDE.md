@@ -71,6 +71,159 @@ properly rather than kept on a handle we could never confirm.
 
 ---
 
+## 26 AUGUST, AFTERNOON — @afaqs WAS THE WRONG HANDLE, AND FIVE NUMBERS COUNTED FIVE DIFFERENT THINGS
+
+**Tabish read the dashboard and asked why numbers that name the same thing disagree, why
+@afaqs shows no paid posts when it plainly has several, and why searching "arshad warsi"
+finds two posts when three are on screen.** Every claim was measurable; every one was true.
+
+### A WATCH PAGE WAS ADMITTED ON EXISTENCE, AND IT HAD PRODUCED NOTHING IN ITS LIFE
+
+MEASURED, probing the anonymous feed directly:
+
+| handle | verified | posts | newest | in 7d |
+|---|---|---|---|---|
+| **`@afaqs`** — what we watched | null | **0** | — | **0** |
+| **`@afaqsdotcom`** — the real one | ✓ | 24 | today | **22** |
+| **`@socialsamosa`** | null | **0** | — | **0** |
+| **`@officialsocialsamosa`** — the real one (his screenshot) | ✓ | 24 | today | **21** |
+| `@marketingmentalist` | ✗ | 9 | **2020-01-21** | 0 |
+
+`@afaqs` had **0 `DetectedCampaign` rows, ever.** `addTarget` calls `probeHandle`, which asks
+*does this handle exist* — and it does. **A dormant page and a busy one are identical in a
+profile lookup**, so the existence check passed a handle that can never yield anything, and
+nothing afterwards said so. That is *"existence is not identity"* arriving at the WATCH door,
+which CLAUDE.md already warns is not harmless: a wrong watch page mints real prospects that
+get real DMs.
+
+**`addTarget` now VETS A WATCH PAGE FOR POSTS.** Zero posts refuses by name; nothing in 30
+days is admitted with a warning ("stopped posting" is a judgement, "returns nothing" is a
+wrong handle); an unreachable feed is admitted and says so, because a blip must not refuse a
+real page — the same direction `createBrandTarget` takes on a NULL badge. PROSPECT rows are
+exempt: their feed is never read.
+
+**THE RECOVERY, WITHIN THE HOUR:** both real channels added to the marketing fleet, the dead
+row deleted (0 campaigns, 0 pairs, 0 attempts — nothing to lose). First pass:
+**@afaqsdotcom 13 posts / 6 PAID, @officialsocialsamosa 24 posts / 15 PAID.** Twenty-one paid
+posts that did not exist to us an hour earlier. `@marketingmentalist` is real, unverified and
+has not posted since 2020 — reported, not touched.
+
+### FIVE NUMBERS FOR "PAID POSTS" AND THREE FOR "REPLIES", ALL DIFFERENT, NONE LABELLED
+
+| on screen | what it actually counted |
+|---|---|
+| sidebar badge **650** | `verdict: CAMPAIGN, detectedAt >= 7d` — **no channel scope**, so our own three pages included, and on the WE-STORED-IT clock |
+| `/paid-posts` "**N ever**" | `postedAt >= 1 Aug` + visible channels — neither ever nor unfiltered |
+| analytics chart | `postedAt >= since`, **no channel scope at all**, sitting under a tile that has one |
+| "**78** channels replied" | reply ROWS, across **63** recipients — and "channel" is the one role (`WATCH`) that structurally cannot appear |
+| "**78** recipients have replied" | the same rows, with the right noun on the wrong number |
+
+**THE STRUCTURAL CAUSE IS THE GUARD, NOT THE QUERIES.**
+`tests/visible-channels.test.ts` exists precisely to refuse an unscoped dashboard query, and
+its file list was **one file** — `src/app/view-model.ts` — while dashboard figures had spread
+into `src/app/view-model/` and `nav.tsx`. Its own docblock says the failure mode is *"a query
+nobody has written yet"*; these were queries **nobody GREPPED**. It DISCOVERS the files now
+rather than naming them, because a hand-maintained list is what failed and re-hand-maintaining
+it is the same bet twice. Mutation-tested: re-unscoping either query fails it.
+
+**Two enforcer preloads are carved out, and the carve-out has a proof.** `messages-page.ts`
+and `rest-tally.ts` preload the in-window CAMPAIGN posts to feed `campaignsNamingHandleRows`.
+Scoping those would be a BUG: `plan.ts` and `gate.ts` read every channel, so a narrowed input
+would report a hold the planner does not apply. The carve-out is the allowance's exact
+projection, and a second test asserts the enforcer really is unscoped — so it cannot quietly
+become wrong.
+
+### THE REST TALLY COMPUTED THE RULE DIFFERENTLY FROM THE ENFORCER
+
+`deliveredInWindow` was fed `lastBySenderPerTarget` — **one entry per SENDER** — while
+`plan.ts` and `gate.ts` count **DELIVERED MESSAGES**. A recipient with eight messages from
+five pages read as five. The panel whose entire job is explaining why nothing is sending was
+reporting the rule by a different rule than the one enforcing it. Fixed with a second shape
+over the same already-loaded array; no new query.
+
+**AND TWO LABELS WERE ANSWERING A DIFFERENT QUESTION THAN THE ONE THEY ASKED.** Tabish:
+*"if 203 channels have no paid posts how did we even discover them in the first place?"* —
+a fair question, because the label said *"we have not found a paid post of theirs **yet**"*
+and **"yet" reads as NEVER when it means NOT IN THE LAST SEVEN DAYS.** Every one of them was
+discovered from a paid post; the window simply moved past it. And `empty-ring` is now its own
+bucket: **25 companies were reported as "every account in their rotation is signed out or
+flagged" when their FLEET has no page yet** — a sentence that sends a person hunting a broken
+sign-in that does not exist and hides the one action that releases them.
+
+### SEARCH FOUND TWO OF THE THREE POSTS NAMING @arshad_warsi, FOR TWO INDEPENDENT REASONS
+
+1. **It never searched `taggedAccounts`** — the column the "We message" cell is BUILT from
+   (`mentionsHandleExactly`). The page could DISPLAY a recipient on a row the search could not
+   FIND: the column was in the `SELECT` and not in the `WHERE`.
+2. **A SPACE is not an UNDERSCORE.** `contains` is a literal `LIKE` and nothing normalised
+   separators, so `arshad warsi` could never match `arshad_warsi` — which is how every handle
+   in this corpus is spelled.
+
+A third, found while fixing: the casing fan-out generated lower and Title case but never ALL
+CAPS, and `captionEntities`' own work records that trade captions routinely open in caps.
+VERIFIED live: the same query returns **5** where it returned 2.
+
+### `fleetMember` WAS A ONE-WAY DOOR
+
+`removeSender` writes `false`; **nothing in the tree ever wrote `true`** — a grep outside
+`src/generated` returns only `select:` projections and comments. So an account could only be
+in the rotation by never having left it.
+
+MEASURED, and it is why Tabish could not set up his marketing sender:
+**@madaboutmarketingg was signed in by hand on 17 August, delivered a message on the 18th, and
+was taken out of the rotation on the 19th.** It still holds a live session on disk. It renders
+under "Not in the rotation — writes to nobody" with **no control of any kind**, is absent from
+the Remove form (which lists fleet members), and Add correctly refuses it as already present.
+There was no way, anywhere in the product, to use an account we own and have already signed in.
+*(He does not recall adding it — the audit log shows he did, three weeks ago. The handle in
+CLAUDE.md, `@madaboutmarketing`, is a DIFFERENT and non-existent account.)*
+
+`rejoinFleet` is the way back, and it **writes the fleet BEFORE the routes** for the third time
+in this codebase. The group now opens when a row could actually rejoin, and the fourth summary
+tile is rendered — the page's own comment calls those tiles a partition that "sum to the total"
+and with three of four they did not.
+
+### ALSO, AND THE MEASUREMENTS THAT ANSWERED THE REST
+
+- **`ig:find-official --accept` passed `campaign: null`** — the ONLY `createBrandTarget` caller
+  that dropped provenance, so a hand-accepted page inherited the DEFAULT fleet whatever post
+  surfaced it. `--for <shortcode>` carries it, and the fleet it landed in is printed either way.
+- **`visibleChannelIds`' docblock claimed a per-request cache and there was none** — every call
+  site ran its own query. `/` reached **158 against a 160 budget** the day two call sites were
+  added. Memoised with React's `cache`, which is exactly the scope the comment promised. **A
+  false invariant in a comment, for the third time in this file.**
+- **`/` is 154/160. STATED, NOT RAISED:** `buildTodayView` 55 queries, `buildMessagesPage` 61 —
+  bounded builders that grew with the fleet (532 → 581 prospects). Decomposing `buildCeoView`
+  is the next change and carries its own regression risk.
+- **@arshad_warsi got 3 messages because 3 paid posts name him** — @varindertchawla,
+  @taranadarsh and @viralbhayani, all carrying the SAME campaign, all within 13 minutes. The
+  ring rule and `materialAllowance` are working exactly as specified. **Syndication multiplies
+  messages**, which this file already records for @sanyamalhotra; the lever is deduping a
+  campaign by identity rather than by post row, and it is not built.
+- **The "—" in the We-message column, measured over 978 in-window paid posts:** 418 assert no
+  handle at all, and **332 of those DO carry brand names** ("Ohh My Dog" ×25, "Prime Video"
+  ×12, "JioHotstar" ×12). Only **37 distinct asserted handles** are not already live prospects,
+  so the TAG funnel is nearly complete — the gap is the untagged posts, which is
+  `officialDiscovery`'s queue and it created 0 on its last pass.
+- **Four verified prospects tagged on paid campaigns** (@rahuldevofficial, @shalini.passi,
+  @faisal_miya__photuwale, @ksubbaraj) were held only because they predate the talent door.
+  Admitted under Tabish's own rule; the material allowance still decides whether anything goes.
+- **The "37 companies" on the template editor is NOT hardcoded** — it is a `groupBy` over live
+  prospects in that fleet, computed on every render.
+
+### HEALTH, AFTER DEPLOY AND AGENT RESTART
+
+| | |
+|---|---|
+| live prospects / unverified | **581 / 0** |
+| delivered in 24h | 120, newest minutes old |
+| detection in 24h | 877 stored, 134 paid, **0 unjudged** |
+| messages to a marketing-fleet target since the tag | **0** |
+| new paid posts recovered by fixing two handles | **21, within the hour** |
+| tests / typecheck / layout | **2,020 / 117 files**, clean, all layout checks green |
+
+---
+
 ## 26 AUGUST — EACH FLEET SENDS ITS OWN MESSAGE, AND TWO PROSPECTS HAD ALREADY LEAKED
 
 **Tabish: *"a separate template message would be sent for the marketing and brand category.
