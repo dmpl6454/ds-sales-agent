@@ -337,3 +337,88 @@ describe('describeTickOutcome', () => {
     }
   })
 })
+
+/**
+ * ── THE RATE BREAKER COULD NOT SELF-HEAL, MEASURED (2026-08-26) ───────────
+ *
+ * Its denominator is DELIVERIES in the window, which only grow by sending — which it
+ * forbids. So once tripped the rate gets WORSE, because deliveries age out of the window
+ * while the failures are still inside it. Projected with this very function over the real
+ * data the day it shipped: 39% now, 45% at +6h, 47% at +12h, **79% at +18h**, releasing only
+ * at +19h when the numerator expired completely. Nineteen hours for a fleet that was healthy
+ * after the first two.
+ *
+ * *A hard stop with no release is a bug wearing a safety feature's clothes.* The `challenged`
+ * arm has `clearChallenge`; this arm had nothing while its own message invited exactly what
+ * it did not offer — "nothing else is sent until someone has looked".
+ */
+describe('a person can say they have looked, and only for what they looked at', () => {
+  const tripped = { challengedInWindow: 0, notInThreadInWindow: 47, deliveredInWindow: 74 }
+
+  it('trips without an acknowledgement — so the cases below are not vacuous', () => {
+    expect(assessBreaker(tripped).tripped).toBe(true)
+  })
+
+  it('releases when the look came AFTER every counted failure', () => {
+    const v = assessBreaker({
+      ...tripped,
+      newestFailureAt: '2026-08-26T12:56:00.000Z',
+      acknowledgedAt: '2026-08-26T16:40:00.000Z',
+    })
+    expect(v.tripped).toBe(false)
+  })
+
+  /** THE LOAD-BEARING CASE: a failure after the look is not covered by it. */
+  it('trips again on a failure NEWER than the acknowledgement', () => {
+    const v = assessBreaker({
+      ...tripped,
+      acknowledgedAt: '2026-08-26T16:40:00.000Z',
+      newestFailureAt: '2026-08-26T17:05:00.000Z',
+    })
+    expect(v.tripped).toBe(true)
+    if (v.tripped) expect(v.reason).toBe('not-in-thread-rate')
+  })
+
+  it('an unparseable acknowledgement silences nothing', () => {
+    for (const bad of ['', 'yes', 'later', 'null']) {
+      expect(assessBreaker({ ...tripped, acknowledgedAt: bad, newestFailureAt: '2026-08-26T12:00:00.000Z' }).tripped).toBe(true)
+    }
+  })
+
+  /**
+   * The finite-date guard, pinned on its OWN. With a `newestFailureAt` present the date
+   * comparison alone already refuses a garbage value, so the case above passes even when
+   * `Number.isFinite` is broken — found by mutating it. This drives the branch where the
+   * comparison cannot help, which is the only place that guard is load-bearing.
+   */
+  it('a garbage acknowledgement releases nothing even when the failure date is missing', () => {
+    for (const bad of ['', 'yes', 'later', 'null', 'NaN']) {
+      expect(
+        assessBreaker({ ...tripped, acknowledgedAt: bad, newestFailureAt: null }).tripped,
+        `"${bad}" was treated as somebody having looked`,
+      ).toBe(true)
+    }
+  })
+
+  /**
+   * It acknowledges the RATE and nothing else. Instagram flagging an account is not
+   * something a person can acknowledge away, and an explicit Pause outranks everything the
+   * system inferred.
+   */
+  it('never releases a flagged account or a manual pause', () => {
+    const ack = { acknowledgedAt: '2026-08-27T00:00:00.000Z', newestFailureAt: '2026-08-26T12:00:00.000Z' }
+    const flagged = assessBreaker({ ...tripped, ...ack, challengedInWindow: 1 })
+    expect(flagged.tripped).toBe(true)
+    if (flagged.tripped) expect(flagged.reason).toBe('challenged')
+
+    const paused = assessBreaker({ ...tripped, ...ack, manualPause: { at: 'x', by: 'tabish' } })
+    expect(paused.tripped).toBe(true)
+    if (paused.tripped) expect(paused.reason).toBe('manual')
+  })
+
+  it('an acknowledgement with no failures at all is harmless', () => {
+    expect(
+      assessBreaker({ challengedInWindow: 0, notInThreadInWindow: 0, deliveredInWindow: 10, acknowledgedAt: '2026-08-26T16:40:00.000Z', newestFailureAt: null }).tripped,
+    ).toBe(false)
+  })
+})

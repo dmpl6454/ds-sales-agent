@@ -328,6 +328,21 @@ export async function runOutreach(): Promise<PlanSummary> {
    * senders x targets, the defect this codebase has killed four times.
    */
   const memberships = await readCategoryMemberships()
+  /**
+   * Bodies each pair has already DELIVERED — one query for the whole run, not one per pair.
+   * The planner walks every pair, and a read in there is the N+1 this file has killed four
+   * times. Only the bodies are selected; nothing else is needed.
+   */
+  const deliveredBodiesByPair = new Map<string, string[]>()
+  for (const row of await prisma.outreachAttempt.findMany({
+    where: { status: { in: [...DELIVERED_STATUSES] } },
+    select: { pairId: true, renderedBody: true },
+  })) {
+    const list = deliveredBodiesByPair.get(row.pairId)
+    if (list) list.push(row.renderedBody.trim())
+    else deliveredBodiesByPair.set(row.pairId, [row.renderedBody.trim()])
+  }
+
   const fleetTemplateFor = (p: { sender: { handle: string }; target: { handle: string } }) =>
     templateForSettings(
       settings,
@@ -508,6 +523,22 @@ export async function runOutreach(): Promise<PlanSummary> {
        * actually write and the gate will not hold.
        */
       fleetTemplate: fleetTemplateFor(pair),
+      /**
+       * ── WOULD THIS BE THE SAME BYTES THEY ALREADY HAVE? (2026-08-26) ────────
+       *
+       * With `singleTemplate` on, the body IS the fleet's template, so this is knowable
+       * before composing. Measured: a byte-identical second message from one page to one
+       * recipient is accepted by the composer and never delivered — 83% of touch-2 sends,
+       * and six of six read threads showed the second message simply absent.
+       *
+       * Asked against the SAME template object the decision above is made with, so the
+       * governor and the composer cannot disagree about what would be written.
+       */
+      repeatsADeliveredBody: (() => {
+        const t = fleetTemplateFor(pair)
+        if (!settings.singleTemplate || !t.ok) return false
+        return (deliveredBodiesByPair.get(pair.id) ?? []).includes(t.body.trim())
+      })(),
     })
 
     if (!decision.eligible) {

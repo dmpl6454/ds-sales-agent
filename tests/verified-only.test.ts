@@ -50,6 +50,7 @@ const gateInput = (over: Record<string, unknown> = {}) =>
     material: { held: false, allowance: 1, delivered: 0 },
     targetOptedOut: false,
     targetIsWatchOnly: false,
+    repeatsADeliveredBody: false,
   fleetTemplate: DEFAULT_FLEET_TEMPLATE,
     /* Both empty = the DEFAULT category on either side, which is the permitted case — the
        VERIFIED ONLY rule this file is about is unaffected by which fleet a recipient is in. */
@@ -80,6 +81,7 @@ const governorInput = (over: Record<string, unknown> = {}) =>
     totalSentEver: 0,
     maxTotalSends: null,
     fleetTemplate: DEFAULT_FLEET_TEMPLATE,
+    repeatsADeliveredBody: false,
     ...over,
   }) as Parameters<typeof evaluatePair>[0]
 

@@ -124,6 +124,7 @@ describe('the rule is enforced at BOTH ends', () => {
       targetCategories,
       /* The fleets' own copy is a SEPARATE rule (fleetTemplate.ts) — this file is about the
          category rule alone, so the template is always resolvable here and cannot mask it. */
+      repeatsADeliveredBody: false,
       fleetTemplate: templateForSettings(
         { singleTemplateBody: 'a body long enough to satisfy the send guards comfortably.', fleetTemplateBodies: new Map([[MARKETING_CATEGORY_SLUG, 'the marketing fleet body, also long enough to be sendable.']]) },
         senderCategories,
