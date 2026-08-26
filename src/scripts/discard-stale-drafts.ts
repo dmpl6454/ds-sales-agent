@@ -5,6 +5,8 @@ import { buildGreeting } from '@/outreach/render'
 import { classifyOpener, classifyTemplate, type OpenerShape } from '@/outreach/staleTemplate'
 import { discardAttempt } from '@/outreach/discard'
 import { getSettings } from '@/lib/settings'
+import { readCategoryMemberships, categoriesFor } from '@/outreach/categories'
+import { effectiveCategories, DEFAULT_CATEGORY_SLUG } from '@/outreach/senderCategories'
 import { SINGLE_TEMPLATE_MIDDLE } from '@/outreach/compose'
 
 /**
@@ -78,6 +80,25 @@ async function main(): Promise<void> {
   // an operator saved an edit, which is this broom pointed at exactly the wrong rows.
   const effectiveTemplate = settings.singleTemplateBody ?? SINGLE_TEMPLATE_MIDDLE
   const requiredPhrase = settings.singleTemplate ? (effectiveTemplate.split('\n')[0] ?? null) : null
+
+  /**
+   * ── ONE FLEET'S PHRASE CANNOT JUDGE ANOTHER FLEET'S DRAFT (2026-08-26) ────
+   *
+   * `requiredPhrase` above is the DEFAULT fleet's copy. Since a second fleet has its own
+   * standard message (`fleetTemplate.ts`), measuring a marketing draft against it would
+   * classify every one of them stale and offer to discard real, correct drafts — this
+   * broom pointed at exactly the wrong rows, which is the bug the comment above records
+   * being fixed once already.
+   *
+   * Rather than teach this command every fleet's copy, it REPORTS them and leaves them
+   * alone: a broom that cannot judge a row must not sweep it, and the count says so rather
+   * than the rows vanishing from the tally.
+   */
+  const memberships = await readCategoryMemberships()
+  const otherFleet = (handle: string) =>
+    effectiveCategories(categoriesFor(memberships.byTargetHandle, handle)).some(
+      (c) => c !== DEFAULT_CATEGORY_SLUG,
+    )
   console.log(
     settings.singleTemplate
       ? 'One standard message is in force, so a body from the old variant pools is out of date.\n'
@@ -86,7 +107,12 @@ async function main(): Promise<void> {
 
   const buckets: Record<OpenerShape, { line: string; id: string }[]> = { stale: [], current: [], unknown: [] }
 
+  let skippedOtherFleet = 0
   for (const d of waiting) {
+    if (settings.singleTemplate && otherFleet(d.target.handle)) {
+      skippedOtherFleet += 1
+      continue
+    }
     /**
      * The greeting comes from `buildGreeting` itself rather than being reconstructed here.
      * A probe that builds its own copy of what the writer emits is how `readThread.ts` drifted
@@ -132,6 +158,14 @@ async function main(): Promise<void> {
   }
 
   console.log(`${waiting.length} draft(s) waiting.\n`)
+  if (skippedOtherFleet > 0) {
+    /* REPORTED, never silent — a bounded sweep that does not say what it left out reads as
+       "covered everything", which is the truncation lesson this repo has recorded four times. */
+    console.log(
+      `${skippedOtherFleet} draft(s) belong to another fleet and were NOT judged — this command ` +
+        `only knows the default fleet's copy.\n`,
+    )
+  }
 
   if (buckets.current.length > 0) {
     console.log(`CURRENT TEMPLATE — left alone (${buckets.current.length}):`)

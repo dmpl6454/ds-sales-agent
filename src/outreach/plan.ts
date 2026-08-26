@@ -1,4 +1,5 @@
 import { prisma } from '@/lib/db'
+import { templateForSettings, type FleetTemplate } from './fleetTemplate'
 import { env } from '@/lib/env'
 import { log } from '@/lib/logger'
 import { getSettings } from '@/lib/settings'
@@ -321,6 +322,19 @@ export async function runOutreach(): Promise<PlanSummary> {
    */
   const eligibleSenderIds = await eligibleFleetSenderIds()
 
+  /**
+   * Which fleet each end belongs to — TWO queries for the whole run, not one per pair.
+   * `templateForSettings` below reads it, and a lookup inside the loop would be an N+1 over
+   * senders x targets, the defect this codebase has killed four times.
+   */
+  const memberships = await readCategoryMemberships()
+  const fleetTemplateFor = (p: { sender: { handle: string }; target: { handle: string } }) =>
+    templateForSettings(
+      settings,
+      categoriesFor(memberships.bySenderHandle, p.sender.handle),
+      categoriesFor(memberships.byTargetHandle, p.target.handle),
+    )
+
   for (const pair of pairs) {
     const pairKey = `${pair.sender.handle}→${pair.target.handle}`
 
@@ -488,6 +502,12 @@ export async function runOutreach(): Promise<PlanSummary> {
       unusedCampaignCount,
       totalSentEver,
       maxTotalSends: env.MAX_TOTAL_SENDS,
+      /**
+       * NOTHING IS DRAFTED FOR A FLEET WITH NO COPY (2026-08-26). The same pure rule the
+       * gate and the composer ask, so a draft that passes here is a draft the composer can
+       * actually write and the gate will not hold.
+       */
+      fleetTemplate: fleetTemplateFor(pair),
     })
 
     if (!decision.eligible) {
@@ -644,6 +664,9 @@ export async function runOutreach(): Promise<PlanSummary> {
         pair,
         touchNumber: decision.touchNumber,
         autopilotEnabled: settings.autopilotEnabled,
+        /* Resolved by the same call the governor just passed, so the body written is the
+           body the decision was made about. */
+        fleetTemplate: fleetTemplateFor(pair),
       })
       outcomes.push({ pairKey, eligible: true, ...result })
 
@@ -718,8 +741,10 @@ async function createAndDispatch(args: {
   }
   touchNumber: number
   autopilotEnabled: boolean
+  /** The route's own standard message, already resolved by the caller. See fleetTemplate.ts. */
+  fleetTemplate: FleetTemplate
 }): Promise<Omit<PlanOutcome, 'pairKey' | 'eligible'>> {
-  const { pair, touchNumber, autopilotEnabled } = args
+  const { pair, touchNumber, autopilotEnabled, fleetTemplate } = args
 
   /**
    * WHAT to say — hook, variant pool, bespoke-or-follow-up — is decided in `compose.ts`,
@@ -730,6 +755,7 @@ async function createAndDispatch(args: {
     pair,
     senderHandle: pair.sender.handle,
     touchNumber,
+    fleetTemplate,
   })
 
   const attempt = await prisma.outreachAttempt.create({

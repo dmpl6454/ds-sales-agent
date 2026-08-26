@@ -1,6 +1,7 @@
 import { prisma } from './db'
 import { REPLY_RESUME_HOURS_DEFAULT } from '@/outreach/replyHalt'
 import { env } from './env'
+import { fleetTemplateKey } from '@/outreach/fleetTemplate'
 import {
   FLEET_MAX_PER_DAY,
   FLEET_MAX_PER_HOUR,
@@ -15,6 +16,14 @@ import {
  * Cooldown lives here rather than only in env because it is the knob most likely
  * to be tuned after watching real replies — and tuning it should not require SSH.
  */
+
+/**
+ * The prefix every per-fleet template row carries. Derived from `fleetTemplateKey` itself
+ * rather than spelled out, so the writer and the reader cannot drift apart — a second
+ * spelling of this string would make saved copy invisible and every send to that fleet
+ * refuse, which is the failure the whole module is about.
+ */
+const FLEET_TEMPLATE_PREFIX = fleetTemplateKey('')
 
 export const SETTING_KEYS = {
   maxPerPairPerDay: 'maxPerPairPerDay',
@@ -221,6 +230,26 @@ export interface RuntimeSettings {
   singleTemplateBody: string | null
 
   /**
+   * ── A SEPARATE STANDARD MESSAGE PER FLEET (2026-08-26, Tabish) ─────────
+   *
+   * *"a separate template message would be sent for the marketing and brand category …
+   * keep it empty for now"*, with autopilot staying ON and a marketing sender about to be
+   * connected.
+   *
+   * Keyed by category SLUG, holding only NON-default fleets. The default fleet's copy is
+   * `singleTemplateBody` above and is never empty (it falls back to the shipped text), so
+   * the two are deliberately not merged — see `fleetTemplate.ts` for why that asymmetry is
+   * the whole safety content.
+   *
+   * AN ABSENT ENTRY MEANS NOBODY HAS WRITTEN THAT FLEET'S COPY, and `templateForRoute` then
+   * REFUSES rather than falling back: a marketing-trade company must not receive the
+   * entertainment network's pitch, and an empty body would refuse every send with no
+   * sentence naming the cause. Blank rows are dropped here so a saved-then-cleared textarea
+   * reads as "not written" rather than as an empty message.
+   */
+  fleetTemplateBodies: ReadonlyMap<string, string>
+
+  /**
    * ── TAGS AND CO-AUTHORS AS CLASSIFIER EVIDENCE — BUILT, MEASURED, OFF ──
    *
    * Defaults FALSE, and it is off because the harness said so, not because it is
@@ -293,6 +322,9 @@ function defaults(): RuntimeSettings {
     singleTemplate: true,
     // Null = the shipped copy. A row exists only after somebody saves an edit.
     singleTemplateBody: null,
+    // Empty until somebody writes a second fleet's copy — which REFUSES sends to that
+    // fleet rather than falling back. See fleetTemplate.ts.
+    fleetTemplateBodies: new Map<string, string>(),
     // OFF, because the harness measured precision falling 90% -> 83% with it on while
     // recall held. See the interface comment for all three runs and why it is kept.
     tagsAsEvidence: false,
@@ -415,6 +447,24 @@ export async function getSettings(): Promise<RuntimeSettings> {
       // Whitespace-only is treated as unset: an accidental save of nothing must fall back
       // to the shipped copy, never become an empty message body.
       return raw !== undefined && raw.trim().length > 0 ? raw : d.singleTemplateBody
+    })(),
+    /**
+     * Every `templateBody:<slug>` row, blank ones dropped.
+     *
+     * Derived from the rows already in hand rather than read per fleet, so a THIRD fleet
+     * costs one row and no code here — the same futureproofing `sameCategory`'s set
+     * intersection buys. A blank row is dropped rather than kept as `''`, because "saved
+     * nothing" and "never written" are the same fact and both must refuse.
+     */
+    fleetTemplateBodies: (() => {
+      const out = new Map<string, string>()
+      for (const [key, value] of map) {
+        if (!key.startsWith(FLEET_TEMPLATE_PREFIX)) continue
+        const slug = key.slice(FLEET_TEMPLATE_PREFIX.length).trim().toLowerCase()
+        const body = value?.trim() ?? ''
+        if (slug.length > 0 && body.length > 0) out.set(slug, body)
+      }
+      return out
     })(),
     tagsAsEvidence: bool(SETTING_KEYS.tagsAsEvidence, d.tagsAsEvidence),
     publisherAsContext: bool(SETTING_KEYS.publisherAsContext, d.publisherAsContext),

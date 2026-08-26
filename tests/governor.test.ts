@@ -1,6 +1,19 @@
 import { describe, it, expect } from 'vitest'
 import { evaluatePair, SKIP_REASONS, type GovernorInput } from '@/outreach/governor'
 import { crossSpacingVerdict } from '@/outreach/crossSpacing'
+import { templateForSettings } from '@/outreach/fleetTemplate'
+
+/**
+ * The DEFAULT fleet's template, built by the REAL rule rather than written as a literal —
+ * a hand-written verdict object goes stale GREEN the day the rule changes shape, which is
+ * this suite's own recorded lesson from the `too-soon` fixture.
+ */
+const DEFAULT_FLEET_TEMPLATE = templateForSettings(
+  { singleTemplateBody: null, fleetTemplateBodies: new Map() },
+  [],
+  [],
+)
+
 
 /**
  * The governor is what stands between "12–18 campaigns detected today" and
@@ -37,6 +50,7 @@ function base(overrides: Partial<GovernorInput> = {}): GovernorInput {
     hasPendingAttempt: false,
     totalSentEver: 0,
     maxTotalSends: null,
+    fleetTemplate: DEFAULT_FLEET_TEMPLATE,
     ...overrides,
   }
 }

@@ -4,6 +4,7 @@ import { getSettings } from '@/lib/settings'
 import { mayArmAccount } from './cohorts'
 import { replyHaltFloor } from './replyHalt'
 import { sameCategory, crossCategoryDetail } from './senderCategories'
+import { templateForSettings, type FleetTemplate } from './fleetTemplate'
 import { readCategoryMemberships, categoriesFor } from './categories'
 import { profileStatus } from './browser/profile'
 import { sessionUsable } from './sessionHealth'
@@ -97,6 +98,15 @@ export interface ResendInput {
   /** Category slugs of the RECIPIENT. Empty = the default category. */
   targetCategories: readonly string[]
   /**
+   * WHICH STANDARD MESSAGE THIS ROUTE SENDS, or why there is none.
+   *
+   * Computed by the caller with `templateForSettings` — the same pure rule the governor and
+   * the composer ask. REQUIRED with no default, so the compiler names every call site (the
+   * `RenderTarget.kind` pattern); a default of "fine" here would make the stop unreachable
+   * from the one caller that forgot it, which is this codebase's signature failure.
+   */
+  fleetTemplate: FleetTemplate
+  /**
    * `TargetAccount.isVerified` — TRUE only where Instagram itself shows the badge.
    *
    * ── VERIFIED ONLY (Tabish, 2026-08-20) ────────────────────────────────────
@@ -184,6 +194,19 @@ export const RESEND_BLOCKS = {
   TARGET_OPTED_OUT: 'target-opted-out',
   TARGET_IS_WATCH_ONLY: 'target-is-watch-only',
   DIFFERENT_CATEGORY: 'different-category',
+  /**
+   * ── THE FLEET HAS NO STANDARD MESSAGE YET (2026-08-26, Tabish) ────────────
+   *
+   * *"a separate template message would be sent for the marketing and brand category …
+   * keep it empty for now."* The governor refuses to WRITE such a draft; this catches any
+   * written before the rule, and any whose fleet's copy was cleared after drafting.
+   *
+   * ABSOLUTE, and deliberately absent from `OVERRIDABLE_BLOCKS`. Every stop a human may
+   * cross is about TIMING; this one is about WHAT THE MESSAGE SAYS, and "I know something
+   * the agent does not" is not an argument for sending a company the other fleet's pitch.
+   * The remedy is a textarea, not a judgement call.
+   */
+  FLEET_TEMPLATE_NOT_SET: 'no-standard-message-for-this-fleet',
   TARGET_NOT_VERIFIED: 'target-not-verified',
   TARGET_REPLIED: 'target-replied',
   NO_SESSION: 'no-session',
@@ -400,6 +423,19 @@ export function evaluateResend(input: ResendInput): ResendResult {
       ok: false,
       reason: RESEND_BLOCKS.DIFFERENT_CATEGORY,
       detail: crossCategoryDetail(input.senderCategories, input.targetCategories),
+    }
+  }
+
+  /**
+   * Checked immediately after the fleet rule, because it is the same question one step on:
+   * that one asks whether these two belong together, this asks what a message between them
+   * would say. Neither is overridable and neither is about timing.
+   */
+  if (!input.fleetTemplate.ok) {
+    return {
+      ok: false,
+      reason: RESEND_BLOCKS.FLEET_TEMPLATE_NOT_SET,
+      detail: input.fleetTemplate.detail,
     }
   }
 
@@ -642,6 +678,11 @@ export async function recheckBeforeSend(
     targetIsWatchOnly: target.role === 'WATCH',
     senderCategories: categoriesFor(memberships.bySenderHandle, sender.handle),
     targetCategories: categoriesFor(memberships.byTargetHandle, target.handle),
+    fleetTemplate: templateForSettings(
+      settings,
+      categoriesFor(memberships.bySenderHandle, sender.handle),
+      categoriesFor(memberships.byTargetHandle, target.handle),
+    ),
     targetIsVerified: target.isVerified,
     targetRepliedAt: replied?.replyPostedAt ?? null,
     pairSentTodayCount: pairToday,

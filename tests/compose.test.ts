@@ -62,6 +62,18 @@ vi.mock('@/lib/db', () => ({
 const { composeForPair, unusedCampaignCount, NoVariantsError, VariantsExhaustedError, SINGLE_TEMPLATE_MIDDLE } =
   await import('@/outreach/compose')
 const { newMaterialFloor } = await import('@/lib/cutoff')
+import { templateForSettings } from '@/outreach/fleetTemplate'
+
+/**
+ * The DEFAULT fleet's template, built by the REAL rule rather than written as a literal —
+ * a hand-written verdict object goes stale GREEN the day the rule changes shape.
+ */
+const DEFAULT_FLEET_TEMPLATE = templateForSettings(
+  { singleTemplateBody: null, fleetTemplateBodies: new Map() },
+  [],
+  [],
+)
+
 
 /** A variant body long enough that `distinctiveSlice` can find a needle in the render. */
 const variantBody = (n: number) => `Variant number ${n}: a long enough distinct body to be a usable needle.`
@@ -129,7 +141,7 @@ describe('the standard template is what composing returns by default', () => {
    */
   it('returns the template VERBATIM, with no hook line and no bespoke body', async () => {
     settingRows.mockReturnValue([])
-    const r = await composeForPair({
+    const r = await composeForPair({ fleetTemplate: DEFAULT_FLEET_TEMPLATE,
       pair: pair({ bespokeBody: 'A hand-written first touch that must NOT be used.' }),
       senderHandle: 'bollywoodsocietyy',
       touchNumber: 1,
@@ -150,7 +162,7 @@ describe('the standard template is what composing returns by default', () => {
 
 describe('the variant pool is scoped to the target kind', () => {
   it('asks only for CHANNEL variants when the target is a channel', async () => {
-    await composeForPair({ pair: pair(), senderHandle: 'bollywoodsocietyy', touchNumber: 2 })
+    await composeForPair({ fleetTemplate: DEFAULT_FLEET_TEMPLATE, pair: pair(), senderHandle: 'bollywoodsocietyy', touchNumber: 2 })
     const where = (variantFindMany.mock.calls[0]![0] as { where: Record<string, unknown> }).where
     expect(where.targetKind).toBe('CHANNEL')
     expect(where.senderId).toBe('send_1')
@@ -158,7 +170,7 @@ describe('the variant pool is scoped to the target kind', () => {
   })
 
   it('asks only for BRAND variants when the target is a brand', async () => {
-    await composeForPair({
+    await composeForPair({ fleetTemplate: DEFAULT_FLEET_TEMPLATE,
       pair: pair({ target: { ...pair().target, kind: 'BRAND', displayName: 'Royal Canin India' } }),
       senderHandle: 'bollywoodsocietyy',
       touchNumber: 2,
@@ -170,7 +182,7 @@ describe('the variant pool is scoped to the target kind', () => {
   it('refuses rather than reaching into the other pool when its own is empty', async () => {
     variantFindMany.mockResolvedValue([])
     await expect(
-      composeForPair({ pair: pair(), senderHandle: 'tabishmukaddam1', touchNumber: 1 }),
+      composeForPair({ fleetTemplate: DEFAULT_FLEET_TEMPLATE, pair: pair(), senderHandle: 'tabishmukaddam1', touchNumber: 1 }),
     ).rejects.toBeInstanceOf(NoVariantsError)
   })
 })
@@ -196,7 +208,7 @@ describe('the variant pool is scoped to the target kind', () => {
 describe('a variant is never reused on the same pair', () => {
   it('skips the LRU-first variant when this pair has already been sent it', async () => {
     usedVariantRows.mockReturnValue([{ variantId: 'var_1' }])
-    const out = await composeForPair({ pair: pair(), senderHandle: 'x', touchNumber: 2 })
+    const out = await composeForPair({ fleetTemplate: DEFAULT_FLEET_TEMPLATE, pair: pair(), senderHandle: 'x', touchNumber: 2 })
     expect(out.variantId).toBe('var_2')
     expect(out.body).toContain('Variant number 2')
     expect(out.body).not.toContain('Variant number 1')
@@ -205,13 +217,13 @@ describe('a variant is never reused on the same pair', () => {
   /** The permitting direction: with nothing used, the LRU order is honoured unchanged. */
   it('still takes the LRU-first variant when this pair has been sent none of them', async () => {
     usedVariantRows.mockReturnValue([])
-    const out = await composeForPair({ pair: pair(), senderHandle: 'x', touchNumber: 2 })
+    const out = await composeForPair({ fleetTemplate: DEFAULT_FLEET_TEMPLATE, pair: pair(), senderHandle: 'x', touchNumber: 2 })
     expect(out.variantId).toBe('var_1')
   })
 
   it('walks past every used variant, not just the first', async () => {
     usedVariantRows.mockReturnValue([{ variantId: 'var_1' }, { variantId: 'var_2' }])
-    const out = await composeForPair({ pair: pair(), senderHandle: 'x', touchNumber: 2 })
+    const out = await composeForPair({ fleetTemplate: DEFAULT_FLEET_TEMPLATE, pair: pair(), senderHandle: 'x', touchNumber: 2 })
     expect(out.variantId).toBe('var_3')
   })
 
@@ -227,7 +239,7 @@ describe('a variant is never reused on the same pair', () => {
 
     const ids: string[] = []
     for (let touch = 2; touch <= 6; touch++) {
-      const out = await composeForPair({ pair: pair(), senderHandle: 'x', touchNumber: touch })
+      const out = await composeForPair({ fleetTemplate: DEFAULT_FLEET_TEMPLATE, pair: pair(), senderHandle: 'x', touchNumber: touch })
       ids.push(out.variantId)
       used.push({ variantId: out.variantId })
     }
@@ -240,7 +252,7 @@ describe('a variant is never reused on the same pair', () => {
     variantFindMany.mockResolvedValue(poolOf(2))
     usedVariantRows.mockReturnValue([{ variantId: 'var_1' }, { variantId: 'var_2' }])
     await expect(
-      composeForPair({ pair: pair(), senderHandle: 'bollywoodsocietyy', touchNumber: 3 }),
+      composeForPair({ fleetTemplate: DEFAULT_FLEET_TEMPLATE, pair: pair(), senderHandle: 'bollywoodsocietyy', touchNumber: 3 }),
     ).rejects.toBeInstanceOf(VariantsExhaustedError)
   })
 
@@ -252,7 +264,7 @@ describe('a variant is never reused on the same pair', () => {
     variantFindMany.mockResolvedValue(poolOf(1))
     usedVariantRows.mockReturnValue([{ variantId: 'var_1' }])
     await expect(
-      composeForPair({ pair: pair(), senderHandle: 'x', touchNumber: 2 }),
+      composeForPair({ fleetTemplate: DEFAULT_FLEET_TEMPLATE, pair: pair(), senderHandle: 'x', touchNumber: 2 }),
     ).rejects.not.toBeInstanceOf(NoVariantsError)
   })
 
@@ -262,7 +274,7 @@ describe('a variant is never reused on the same pair', () => {
    * pool, which is the bug already recorded for campaigns.
    */
   it('counts only in-flight attempts as having used a variant', async () => {
-    await composeForPair({ pair: pair(), senderHandle: 'x', touchNumber: 2 })
+    await composeForPair({ fleetTemplate: DEFAULT_FLEET_TEMPLATE, pair: pair(), senderHandle: 'x', touchNumber: 2 })
     const variantCall = attemptFindMany.mock.calls.find(
       (c) => (c[0] as { select?: Record<string, boolean> })?.select?.variantId,
     )
@@ -276,7 +288,7 @@ describe('a variant is never reused on the same pair', () => {
 
   /** Scoped to the PAIR. Another pair's history must not shrink this pair's pool. */
   it('asks about this pair only', async () => {
-    await composeForPair({ pair: pair(), senderHandle: 'x', touchNumber: 2 })
+    await composeForPair({ fleetTemplate: DEFAULT_FLEET_TEMPLATE, pair: pair(), senderHandle: 'x', touchNumber: 2 })
     const variantCall = attemptFindMany.mock.calls.find(
       (c) => (c[0] as { select?: Record<string, boolean> })?.select?.variantId,
     )
@@ -291,7 +303,7 @@ describe('a variant is never reused on the same pair', () => {
    * already spoken for.
    */
   it('still reserves a variant on a bespoke first touch', async () => {
-    const out = await composeForPair({
+    const out = await composeForPair({ fleetTemplate: DEFAULT_FLEET_TEMPLATE,
       pair: pair({ bespokeBody: 'A hand-written first message for this specific publisher.' }),
       senderHandle: 'x',
       touchNumber: 1,
@@ -329,7 +341,7 @@ describe('the campaign floor is newMaterialFloor, not the hook window alone', ()
 
   it('uses newMaterialFloor for the hook lookup', async () => {
     campaignFindMany.mockReturnValue([namingRow('camp_a', '2026-08-20T00:00:00Z', 'madovermarketing_mom')])
-    await composeForPair({ pair: pair(), senderHandle: 'x', touchNumber: 2, now: NOW })
+    await composeForPair({ fleetTemplate: DEFAULT_FLEET_TEMPLATE, pair: pair(), senderHandle: 'x', touchNumber: 2, now: NOW })
     const where = (campaignFindMany.mock.calls[0]![0] as { where: { postedAt: { gte: Date } } }).where
     expect(where.postedAt.gte.getTime()).toBe(newMaterialFloor(NOW).getTime())
   })
@@ -353,7 +365,7 @@ describe('the campaign floor is newMaterialFloor, not the hook window alone', ()
       namingRow('camp_free', '2026-08-20T00:00:00Z', 'madovermarketing_mom'),
     ])
 
-    await composeForPair({ pair: pair(), senderHandle: 'x', touchNumber: 2, now: NOW })
+    await composeForPair({ fleetTemplate: DEFAULT_FLEET_TEMPLATE, pair: pair(), senderHandle: 'x', touchNumber: 2, now: NOW })
     const lookupWhere = (campaignFindMany.mock.calls[0]![0] as { where: Record<string, unknown> }).where
     /* The USED campaign is excluded in JS, so the hook must be the free one — this is the
        assertion that would have caught the old shape returning nothing at all. */
@@ -418,7 +430,7 @@ describe('the brand first touch names the real placement', () => {
       postedAt: new Date('2026-08-01T00:00:00Z'),
       target: { handle: 'madovermarketing_mom' },
     })
-    const out = await composeForPair({ pair: brandPair, senderHandle: 'x', touchNumber: 1 })
+    const out = await composeForPair({ fleetTemplate: DEFAULT_FLEET_TEMPLATE, pair: brandPair, senderHandle: 'x', touchNumber: 1 })
     expect(out.usedBespoke).toBe(true)
     expect(out.body).toContain('Mad Over Marketing')
     expect(out.body).toContain('Royal Canin India')
@@ -428,14 +440,14 @@ describe('the brand first touch names the real placement', () => {
 
   /** The other direction: a FOLLOW-UP must not reuse the first-touch body. */
   it('does NOT use it on touch 2', async () => {
-    const out = await composeForPair({ pair: brandPair, senderHandle: 'x', touchNumber: 2 })
+    const out = await composeForPair({ fleetTemplate: DEFAULT_FLEET_TEMPLATE, pair: brandPair, senderHandle: 'x', touchNumber: 2 })
     expect(out.usedBespoke).toBe(false)
     expect(out.body).toContain('Variant number 1')
   })
 
   /** Degrades honestly: no known publisher means no invented placement. */
   it('invents nothing when the campaign is unknown', async () => {
-    const out = await composeForPair({
+    const out = await composeForPair({ fleetTemplate: DEFAULT_FLEET_TEMPLATE,
       pair: pair({
         target: { ...brandPair.target, discoveredFromCampaignId: null },
       }),
@@ -452,7 +464,7 @@ describe('bespoke is the FIRST touch only', () => {
 
   it('uses the bespoke body on touch 1, with no hook line stapled on top', async () => {
     campaignFindFirst.mockResolvedValue({ id: 'c1', brands: '["RoyalCanin"]', postedAt: new Date(), verdict: 'CAMPAIGN' })
-    const out = await composeForPair({ pair: withBespoke, senderHandle: 'x', touchNumber: 1 })
+    const out = await composeForPair({ fleetTemplate: DEFAULT_FLEET_TEMPLATE, pair: withBespoke, senderHandle: 'x', touchNumber: 1 })
     expect(out.usedBespoke).toBe(true)
     expect(out.body).toContain('A hand-written first message')
     expect(out.hookLine).toBeNull()
@@ -465,7 +477,7 @@ describe('bespoke is the FIRST touch only', () => {
       { id: 'c1', postedAt: new Date(), caption: 'a promo naming @madovermarketing_mom', taggedAccounts: '[]', brands: '["RoyalCanin"]' },
     ])
     campaignFindUnique.mockResolvedValue({ id: 'c1', brands: '["RoyalCanin"]', postedAt: new Date(), verdict: 'CAMPAIGN' })
-    const out = await composeForPair({ pair: withBespoke, senderHandle: 'x', touchNumber: 2 })
+    const out = await composeForPair({ fleetTemplate: DEFAULT_FLEET_TEMPLATE, pair: withBespoke, senderHandle: 'x', touchNumber: 2 })
     expect(out.usedBespoke).toBe(false)
     expect(out.body).not.toContain('A hand-written first message')
     expect(out.campaignId).toBe('c1')

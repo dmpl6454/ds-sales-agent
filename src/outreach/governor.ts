@@ -35,6 +35,7 @@
  */
 
 import { crossSpacingDetail, type CrossSpacingVerdict } from './crossSpacing'
+import type { FleetTemplate } from './fleetTemplate'
 import { materialAllowanceDetail, type MaterialVerdict } from './materialAllowance'
 
 export interface GovernorInput {
@@ -160,6 +161,16 @@ export interface GovernorInput {
    * a second message. Raising it is a deliberate, visible act.
    */
   maxTotalSends: number | null
+
+  /**
+   * WHICH STANDARD MESSAGE THIS ROUTE WOULD SEND, or why there is none.
+   *
+   * Computed by the caller with `templateForSettings` — the same pure rule the gate and the
+   * composer ask — so the three can never disagree about which fleet a route belongs to or
+   * what that fleet's copy is. REQUIRED with no default, so the compiler names every call
+   * site rather than one of them silently permitting.
+   */
+  fleetTemplate: FleetTemplate
 }
 
 export type GovernorDecision =
@@ -183,6 +194,14 @@ export const SKIP_REASONS = {
   PAIR_DAILY_CAP: 'pair-daily-cap',
   TARGET_RECENTLY_CONTACTED: 'target-recently-contacted',
   TARGET_NOT_VERIFIED: 'target-not-verified',
+  /**
+   * The fleet this route belongs to has no standard message written yet (2026-08-26).
+   *
+   * Refused HERE as well as at the gate, for the reason `TARGET_NOT_VERIFIED` is: a rule
+   * enforced only at delivery fills the queue with permanent holds. The remedy is a
+   * textarea, so this clears the moment the copy is written — no draft, no discard.
+   */
+  NO_FLEET_TEMPLATE: 'no-standard-message-for-this-fleet',
 } as const
 
 export function evaluatePair(input: GovernorInput): GovernorDecision {
@@ -218,6 +237,28 @@ export function evaluatePair(input: GovernorInput): GovernorDecision {
       reason: SKIP_REASONS.TARGET_NOT_VERIFIED,
       detail:
         'only accounts carrying Instagram’s verified badge are messaged, and this one does not — nothing is written to them',
+    }
+  }
+
+  /**
+   * ── NOTHING IS DRAFTED FOR A FLEET WITH NO COPY (2026-08-26, Tabish) ──────
+   *
+   * *"a separate template message would be sent for the marketing and brand category …
+   * keep it empty for now."* Checked here, beside the other questions about WHO this
+   * message would be, because it is the same kind: not *when* we may write, but *what a
+   * message to this recipient would even say*.
+   *
+   * The two alternatives to refusing are both silent. Falling back to the default fleet's
+   * copy sends a marketing-trade company the entertainment network's pitch — well-formed,
+   * plausible, and wrong in the one way nothing on a screen would show. An empty body makes
+   * `distinctiveSlice` return null, which refuses every send in the SYSTEM with no sentence
+   * naming the cause.
+   */
+  if (!input.fleetTemplate.ok) {
+    return {
+      eligible: false,
+      reason: SKIP_REASONS.NO_FLEET_TEMPLATE,
+      detail: input.fleetTemplate.detail,
     }
   }
 

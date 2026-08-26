@@ -49,6 +49,18 @@ vi.mock('@/lib/db', () => ({
 
 const { composeForPair, SINGLE_TEMPLATE_MIDDLE } = await import('@/outreach/compose')
 const { distinctiveSlice, proseLines, bodyAppearedSince, MIN_NEEDLE_CHARS } = await import('@/outreach/matching')
+import { templateForSettings } from '@/outreach/fleetTemplate'
+
+/**
+ * The DEFAULT fleet's template, built by the REAL rule rather than written as a literal —
+ * a hand-written verdict object goes stale GREEN the day the rule changes shape.
+ */
+const DEFAULT_FLEET_TEMPLATE = templateForSettings(
+  { singleTemplateBody: null, fleetTemplateBodies: new Map() },
+  [],
+  [],
+)
+
 
 const PERSONA = {
   personaName: 'Kapil Jain',
@@ -71,7 +83,7 @@ function pairFor(args: { senderId?: string; persona?: typeof PERSONA; handle?: s
 }
 
 const compose = (p: ReturnType<typeof pairFor>, senderHandle = 'bollywoodchronicle') =>
-  composeForPair({ pair: p, senderHandle, touchNumber: 1 })
+  composeForPair({ fleetTemplate: DEFAULT_FLEET_TEMPLATE, pair: p, senderHandle, touchNumber: 1 })
 
 beforeEach(() => {
   campaignFindFirst.mockReset().mockResolvedValue(null)

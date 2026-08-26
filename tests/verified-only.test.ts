@@ -25,6 +25,19 @@ import { join } from 'node:path'
 vi.mock('@/lib/db', () => ({ prisma: {} }))
 import { evaluateResend, RESEND_BLOCKS, OVERRIDABLE_BLOCKS } from '@/outreach/gate'
 import { evaluatePair, SKIP_REASONS } from '@/outreach/governor'
+import { templateForSettings } from '@/outreach/fleetTemplate'
+
+/**
+ * The DEFAULT fleet's template, built by the REAL rule rather than written as a literal —
+ * a hand-written verdict object goes stale GREEN the day the rule changes shape, which is
+ * this suite's own recorded lesson from the `too-soon` fixture.
+ */
+const DEFAULT_FLEET_TEMPLATE = templateForSettings(
+  { singleTemplateBody: null, fleetTemplateBodies: new Map() },
+  [],
+  [],
+)
+
 
 const gateInput = (over: Record<string, unknown> = {}) =>
   ({
@@ -37,6 +50,7 @@ const gateInput = (over: Record<string, unknown> = {}) =>
     material: { held: false, allowance: 1, delivered: 0 },
     targetOptedOut: false,
     targetIsWatchOnly: false,
+  fleetTemplate: DEFAULT_FLEET_TEMPLATE,
     /* Both empty = the DEFAULT category on either side, which is the permitted case — the
        VERIFIED ONLY rule this file is about is unaffected by which fleet a recipient is in. */
     senderCategories: [],
@@ -65,6 +79,7 @@ const governorInput = (over: Record<string, unknown> = {}) =>
     crossSpacing: { held: false },
     totalSentEver: 0,
     maxTotalSends: null,
+    fleetTemplate: DEFAULT_FLEET_TEMPLATE,
     ...over,
   }) as Parameters<typeof evaluatePair>[0]
 

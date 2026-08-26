@@ -4,7 +4,15 @@ import { getSettings } from '@/lib/settings'
 import { istDayStart } from '@/lib/time'
 import { DELIVERED_STATUSES, IN_FLIGHT_STATUSES } from '@/lib/constants'
 import { validatePersona } from './render'
-import { composeForPair, unusedCampaignCount, NoVariantsError, VariantsExhaustedError } from './compose'
+import {
+  composeForPair,
+  unusedCampaignCount,
+  NoVariantsError,
+  VariantsExhaustedError,
+  FleetTemplateNotSetError,
+} from './compose'
+import { templateForSettings } from './fleetTemplate'
+import { readCategoryMemberships, categoriesFor } from './categories'
 import { profileStatus } from './browser/profile'
 import { sessionUsable } from './sessionHealth'
 import { replyHaltFloor } from './replyHalt'
@@ -333,12 +341,31 @@ export async function prepareOnDemand(senderHandle: string, targetHandle: string
    */
   let composed
   try {
+    const memberships = await readCategoryMemberships()
+    /**
+     * The on-demand dialog crosses TIMING rules a person acknowledges; it does not choose
+     * the copy. So the route's own fleet decides the body here exactly as it does in the
+     * planner, and a fleet with nothing written refuses rather than borrowing the other
+     * fleet's pitch — `FleetTemplateNotSetError` is caught below and rendered as a block.
+     */
     composed = await composeForPair({
       pair: { ...pair, sender, target },
       senderHandle: sender.handle,
       touchNumber: touches + 1,
+      fleetTemplate: templateForSettings(
+        settings,
+        categoriesFor(memberships.bySenderHandle, sender.handle),
+        categoriesFor(memberships.byTargetHandle, target.handle),
+      ),
     })
   } catch (e) {
+    if (e instanceof FleetTemplateNotSetError) {
+      return {
+        ok: false,
+        blocks: [{ reason: RESEND_BLOCKS.FLEET_TEMPLATE_NOT_SET, text: e.detail }],
+        warnings: [],
+      }
+    }
     if (e instanceof NoVariantsError) {
       return {
         ok: false,
