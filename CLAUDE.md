@@ -71,6 +71,111 @@ properly rather than kept on a handle we could never confirm.
 
 ---
 
+## 26 AUGUST, EVENING — MY OWN ONE-CLICK BUTTON PUT THE BURNER IN THE FLEET WITH 514 ROUTES
+
+**The rejoin control shipped at 16:00 and had produced a live exposure by 16:03.** Recorded
+first and in full, because it is a defect I introduced while fixing a different one.
+
+### WHAT THE AUDIT LOG SAYS, IN ORDER
+
+```
+16:02:38  tabish@dashmani.com  sender.rejoined-rotation  madaboutmarketingg   marketing fleet;  51 routes
+16:02:46  tabish@dashmani.com  sender.rejoined-rotation  tabishmukaddam1      (default fleet); 514 routes
+16:03:27  tabish@dashmani.com  sender.retired            madaboutmarketingg   1 sent message kept
+```
+
+**`@tabishmukaddam1` IS THE REHEARSAL BURNER.** `fleetMember: false` is documented in this
+file as the only thing keeping it out of automatic outreach. Eight seconds after the account
+he meant, a bare button put it in the rotation with **514 routes to real companies**, ACTIVE,
+with a live session. MEASURED when caught: **0 delivered, 0 drafts** — the next planner pass
+would have started writing. Restored to `fleetMember: false` with an audit row explaining it,
+its 514 pair rows left alone (deleting them cascades `OutreachAttempt` and erases real
+history), and the reversal is one click if it was deliberate.
+
+**THIS IS NOT MISUSE, IT IS THE CONTROL BEING WRONG.** *"Adding is never the same act as
+sending"* is this file's own rule, and I shipped a bare one-click button on the single control
+that turns an account we own into an account that cold-DMs strangers. The dropdown beside it
+made it look like a preference.
+
+### PREVIEW THEN CONFIRM, WITH THE COUNT COMING FROM THE COMPUTATION THAT WILL RUN
+
+`rejoinFleet`'s first call now writes **no flag and no routes**. It returns the fleet and the
+EXACT number of routes it would create — server-authoritative rather than a number the client
+invented, because the client cannot know what `routeAllowed` will permit. Changing the fleet
+DISARMS the confirmation, since the count is a function of the fleet and confirming a number
+computed for a different one is precisely the failure being prevented.
+
+The membership write stays before the routes (third time in this codebase), and the preview
+stops after it deliberately: a membership alone changes nothing while `fleetMember` is still
+false, because rotation cannot elect the account at all.
+
+### A RETIRED ACCOUNT NOW COMES BACK **ACTIVE** — AND A FLAGGED ONE NEVER DOES
+
+`removeSender` retires with `status: 'PAUSED'`, and `gate.ts` refuses a non-ACTIVE sender
+(`SENDER_NOT_ACTIVE`). So rejoining without clearing that produced an account with routes, a
+session, a fleet flag and **no ability to send a single message** — *a control that appears to
+work and does not*, which is this codebase's signature failure, inside the control written to
+remove a dead end.
+
+`PAUSED → ACTIVE` on rejoin. **`CHALLENGED` is never cleared as a side effect**: that is
+Instagram having flagged the account, it trips the fleet-wide breaker, and it has its own
+button after a person has looked. The same rule `checkConnect` had to learn.
+
+### THE REMOVE FORM LISTED ONLY FLEET MEMBERS, SO AN OUT-OF-FLEET ACCOUNT COULD NOT BE REMOVED
+
+`handles={... .filter((r) => r.fleetMember) ...}`. Tabish hit exactly this: to take
+`@madaboutmarketingg` OUT he first had to put it BACK IN. Removal is a question about the
+ACCOUNT, not about whether it is currently rotating. Every account is listed now.
+
+**AND "PERMANENTLY DELETE IT AND RE-ADD IT" IS NOT AVAILABLE, WHICH IS THE CORRECT ANSWER
+RATHER THAN A GAP.** `removeSender` deletes only an account that never delivered anything and
+RETIRES one that did, because `OutreachAttempt.pairId` is `ON DELETE CASCADE` — deleting
+`@madaboutmarketingg` would erase the record that **@absolutejk received a real message on 18
+August**, and that record is what stops them being contacted twice. `addSender`'s refusal now
+NAMES the way back ("Put back in the rotation", which also un-retires) instead of being a dead
+end that explains nothing.
+
+### AND A ROW SAID IT SENDS AUTOMATICALLY UNDER A HEADING SAYING IT WRITES TO NOBODY
+
+`AccountRow.state` is computed from the session and the status and **never looks at
+`fleetMember`** — so an out-of-rotation account with a live session is `'ready'` and rendered
+*"Sends automatically while Autopilot is on."* directly beneath **"Not in the rotation —
+writes to nobody"**. Both cannot be true and the heading is the correct one. Same defect this
+file already records about this page (*a group title stating a capability its members do not
+have*), reintroduced by a row that never asked the second question.
+
+### THE AUTHORISATION GUARD WAS MEASURED IN BYTES, SO A DOCBLOCK BROKE IT
+
+`tests/action-authorisation.test.ts` scanned a fixed **900-character** window from the
+function keyword for `requireOperator()`. That is "near the top" measured in BYTES, and in a
+codebase that documents an argument with twenty lines of reasoning it measures the DOCBLOCK:
+`rejoinFleet` failed it the day its `confirmed` parameter was explained, with the guard
+correctly first in execution order.
+
+It strips comments and asserts the guard is the first **statement** now — plus no `await` and
+no `prisma.` call before it. **Stricter, not looser**, and immune to prose. The same
+correction as `every-send-path-asks-the-gate`, which passed its own mutation twice for
+matching a name inside a comment. Mutation-tested: moving the guard after a database read
+fails it.
+
+### THE THREE THINGS HE ASKED, MEASURED
+
+| | |
+|---|---|
+| messages delivered by `@madaboutmarketingg` to any marketing-fleet target | **0** |
+| messages delivered by anyone to a marketing-fleet target since the tag | **0** (the 2 on 25 Aug pre-date the inheritance rule and are recorded above) |
+| delivered from `@tabishmukaddam1`, ever | **0** |
+| the marketing ring | `@madaboutmarketingg` alone, and it holds the `marketing` membership already |
+| live marketing prospects | **70**, up from 37 — the two corrected channels are minting them, which is also the answer to "is the 37 hardcoded" (it is a `groupBy`, recomputed every render) |
+
+**NOTE THE RING MECHANICS, because they are not obvious.** A prospect carrying a
+`CategoryTarget` row uses that CATEGORY's ring (`whoseTurn` → `ringFor`), not the fleet ring.
+So the marketing prospects rotate through `CategorySender` for `marketing` — one account —
+and every bollywood page is refused by `different-category` besides. Two independent stops,
+and with the marketing template unwritten there is a third.
+
+---
+
 ## 26 AUGUST, AFTERNOON — @afaqs WAS THE WRONG HANDLE, AND FIVE NUMBERS COUNTED FIVE DIFFERENT THINGS
 
 **Tabish read the dashboard and asked why numbers that name the same thing disagree, why
