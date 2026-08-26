@@ -357,6 +357,26 @@ export async function importProspects(
      * every other page to it. A pasted list is exactly where that happens by accident:
      * `senderHandles` already existed here and was used only to write a NOTE about it.
      */
+    /**
+     * ── THE FLEET IS WRITTEN BEFORE THE ROUTES (moved 2026-08-26) ────────────
+     *
+     * It used to be written AFTER `createMany` below, and that order is a defect rather
+     * than a detail: `routeAllowed` READS the memberships, so a sheet whose category column
+     * says "marketing" created a pair to every BOLLYWOOD sender first and only then tagged
+     * the row — leaving the new prospect wired to the wrong fleet, with the gate obliged to
+     * hold each of those drafts forever.
+     *
+     * MEASURED the same day in the discovery half: @irctc.official and @sprite_india were
+     * minted from an @exchange4media post with no membership and received a bollywood pitch
+     * fourteen minutes later. `createBrandTarget` was fixed by writing the membership first;
+     * this is the same fix on the import path, which nothing had compared it against.
+     */
+    if (p.category) {
+      const cat = await ensureCategory(p.category)
+      await addTargetToCategory(cat.id, target.id)
+      categories.add(p.category)
+    }
+
     /* One read for the whole sender x prospect walk — never a lookup per pair. */
     const memberships = await readCategoryMemberships()
     await prisma.outreachPair.createMany({
@@ -384,12 +404,6 @@ export async function importProspects(
           enabled: true,
         })),
     })
-
-    if (p.category) {
-      const cat = await ensureCategory(p.category)
-      await addTargetToCategory(cat.id, target.id)
-      categories.add(p.category)
-    }
 
     created += 1
     rows.push({ handle: p.handle, status: exists === 'unknown' ? 'unconfirmed' : 'created', detail })
