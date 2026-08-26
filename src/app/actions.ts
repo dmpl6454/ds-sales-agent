@@ -14,6 +14,8 @@ import { recheckBeforeSend, isOverridable } from '@/outreach/gate'
 import { prepareOnDemand, type OnDemandPreview } from '@/outreach/onDemand'
 import { getSettings, setSetting, SETTING_KEYS } from '@/lib/settings'
 import { startConnect, pollConnect, cancelConnect, type ConnectState } from '@/outreach/browser/connect'
+import { launchProfile, identify } from '@/outreach/browser/session'
+import { profileUrl } from '@/lib/urls'
 import { handleExists, probeHandle } from '@/detection/exists'
 import { fetchFeed } from '@/detection/feed'
 import { addTargetMessage } from './add-target-message'
@@ -823,6 +825,106 @@ export async function setSingleTemplateBody(body: string | null): Promise<{ ok: 
  * legible on `/targets`; `ensureFleetPairs` would create the same set on its next pass, and
  * `createMany` + the pair unique key make running both harmless.
  */
+/**
+ * ── "IS THIS ACCOUNT ACTUALLY SIGNED IN?" — ASKED OF INSTAGRAM (2026-08-26) ──
+ *
+ * Tabish: *"How can we ever click a link via UI and confirm for other senders and reconnect
+ * when it doesn't work or gets expired?"* He could not, and the reason is a gap this page
+ * has had since Connect was built.
+ *
+ * `AccountRow.connected` is `sessionUsable(hasSessionOnDisk, sessionInvalidAt)` — a COOKIE
+ * ON DISK plus the absence of a mark. The Connect button renders only when that is FALSE.
+ * So an account whose session Instagram has revoked SERVER-SIDE reads as connected, offers
+ * no control at all, and stays that way until a real send fails and writes
+ * `sessionInvalidAt`. *"Freshness is not liveness"* — this file's fourth recording of it —
+ * with no way for a person to ask the only party that knows.
+ *
+ * This asks. It opens the profile, runs `identify()` — Instagram's own endpoints — and
+ * records what came back:
+ *
+ *   logged-in, matching   PROOF. Clears any `sessionInvalidAt` (the only thing that may:
+ *                         `clearSessionInvalid` takes proof, never a page load).
+ *   logged-in, WRONG      the profile holds somebody else's session. Marked invalid, because
+ *     account            sending from it would put an unrelated page into a conversation.
+ *   logged-out            positive evidence. Marked invalid so the row shows "needs signing
+ *                         in again" and the Connect button appears.
+ *   unknown               NOTHING IS WRITTEN. "We could not ask" must never become a verdict
+ *                         about the account — the exact mistake that once marked a live
+ *                         session dead and sent an operator to re-login for a dead endpoint.
+ *
+ * Under `withSendLock`, because two contexts on one profile is how device identity dies and
+ * the device agent polls every 30 seconds. `SEND_ENABLED=false` refuses it on the server for
+ * free, which is correct: the server has no profiles to check.
+ */
+export async function checkSignIn(handleRaw: string): Promise<MutationResult> {
+  const user = await requireOperator()
+  const handle = handleRaw.trim().replace(/^@/, '').toLowerCase()
+
+  const sender = await prisma.senderAccount.findUnique({ where: { handle } })
+  if (!sender) return { ok: false, message: `@${handle} is not one of your accounts.` }
+  if (!profileStatus(handle).hasSession) {
+    return { ok: false, message: `@${handle} has no browser profile on this machine yet — press Connect to sign in.` }
+  }
+
+  const outcome = await withSendLock(`identity check @${handle}`, async () => {
+    const context = await launchProfile(handle)
+    try {
+      const page = context.pages()[0] ?? (await context.newPage())
+      await page.goto(profileUrl(handle), { waitUntil: 'domcontentloaded', timeout: 60_000 })
+      return await identify(page)
+    } finally {
+      /* Closing is what flushes cookies to disk. Never leave a context open on a profile. */
+      await context.close().catch(() => {})
+    }
+  })
+
+  if (outcome === null) {
+    return { ok: false, message: 'Another send or check is running right now — try again in a moment.' }
+  }
+
+  if (outcome.kind === 'logged-in' && outcome.username.toLowerCase() === handle) {
+    await clearSessionInvalid(sender.id, `identity check by ${user.email}: Instagram says @${outcome.username}`)
+    await audit(user.email, 'sender.signin.checked', `SenderAccount:${handle}`, `signed in as @${outcome.username}`)
+    revalidatePath('/senders')
+    return { ok: true, message: `Signed in, and it is the right account — Instagram says @${outcome.username}.` }
+  }
+
+  if (outcome.kind === 'logged-in') {
+    await markSessionInvalid({
+      senderId: sender.id,
+      handle,
+      detail: `the browser profile is signed in as @${outcome.username}, not @${handle}`,
+      actor: user.email,
+    })
+    revalidatePath('/senders')
+    return {
+      ok: false,
+      message:
+        `This profile is signed in as @${outcome.username}, NOT @${handle}. Nothing will send from it until ` +
+        `that is fixed — sign in again as @${handle}.`,
+    }
+  }
+
+  if (outcome.kind === 'logged-out') {
+    await markSessionInvalid({
+      senderId: sender.id,
+      handle,
+      detail: `identity check by ${user.email}: Instagram treated the session as signed out`,
+      actor: user.email,
+    })
+    revalidatePath('/senders')
+    return { ok: false, message: `@${handle} is signed out — its Connect button is back, sign in again.` }
+  }
+
+  /* UNKNOWN writes nothing. See the docblock. */
+  return {
+    ok: false,
+    message:
+      `Could not tell — nothing answered. The sign-in is left exactly as it was, because "we could not ask" ` +
+      `is not evidence about the account. Try again shortly. (${outcome.detail?.slice(0, 120) ?? 'no detail'})`,
+  }
+}
+
 export async function rejoinFleet(
   handleRaw: string,
   categorySlugRaw = '',

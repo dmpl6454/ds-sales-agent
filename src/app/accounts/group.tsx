@@ -2,7 +2,7 @@
 
 import { useState } from 'react'
 import { useRouter } from 'next/navigation'
-import { clearChallenge, rejoinFleet } from '../actions'
+import { clearChallenge, rejoinFleet, checkSignIn } from '../actions'
 import { useConnect } from './use-connect'
 import type { AccountGroup, AccountRow } from '../view-model/accounts-page'
 
@@ -103,6 +103,29 @@ function AccountRowView({ row, fleets = [] }: { row: AccountRow; fleets?: readon
           this page sits on its own row.
         */}
         {!row.fleetMember && <RejoinControl handle={row.handle} fleets={fleets} onDone={() => router.refresh()} />}
+
+        {/*
+          ── VERIFY, AND SIGN IN AGAIN, ON AN ACCOUNT THAT LOOKS FINE (2026-08-26) ──
+          `connected` is a cookie on disk plus the absence of a mark, so a session Instagram
+          revoked server-side reads as connected and offered NO control — the row simply said
+          it sends automatically until a real send failed. Both are here now: "Check sign-in"
+          asks Instagram who the profile is, and "Sign in again" is the ordinary Connect flow
+          made reachable deliberately rather than only after something breaks.
+        */}
+        {row.connected && connect.phase !== 'done' && <CheckSignIn handle={row.handle} onDone={() => router.refresh()} />}
+        {row.connected && connect.phase !== 'done' && (
+          <button
+            className="btn-quiet"
+            disabled={connect.phase === 'opening' || connect.phase === 'waiting' || row.connecting}
+            onClick={connect.start}
+          >
+            {connect.phase === 'opening'
+              ? 'Opening Chrome…'
+              : connect.phase === 'waiting' || row.connecting
+                ? 'Waiting for you to sign in…'
+                : 'Sign in again'}
+          </button>
+        )}
 
         {!row.connected && connect.phase !== 'done' && (
           <>
@@ -258,6 +281,42 @@ function RejoinControl({
         {busy ? 'Adding…' : armed ? 'Confirm — put it back in the rotation' : 'Put back in the rotation'}
       </button>
       {outcome ? <p className={outcome.ok ? 'account-todo' : 'settingrow-argument'}>{outcome.message}</p> : null}
+    </>
+  )
+}
+
+/**
+ * "Is this account actually signed in?" — asked of Instagram, not of the filesystem.
+ *
+ * The answer is deliberately rendered in full rather than reduced to a tick: the four
+ * outcomes have four different remedies, and the one that matters most — the profile holding
+ * SOMEBODY ELSE'S session — is invisible in any boolean. `unknown` writes nothing and says
+ * so, because "we could not ask" is not evidence about the account.
+ */
+function CheckSignIn({ handle, onDone }: { handle: string; onDone: () => void }) {
+  const [busy, setBusy] = useState(false)
+  const [outcome, setOutcome] = useState<{ ok: boolean; message: string } | null>(null)
+
+  return (
+    <>
+      <button
+        className="btn-quiet"
+        disabled={busy}
+        onClick={async () => {
+          setBusy(true)
+          setOutcome(await checkSignIn(handle))
+          setBusy(false)
+          onDone()
+        }}
+        title="Opens this account's browser profile and asks Instagram who it is"
+      >
+        {busy ? 'Asking Instagram…' : 'Check sign-in'}
+      </button>
+      {outcome ? (
+        <p className={outcome.ok ? 'account-todo' : 'settingrow-argument'} style={{ flexBasis: '100%' }}>
+          {outcome.message}
+        </p>
+      ) : null}
     </>
   )
 }

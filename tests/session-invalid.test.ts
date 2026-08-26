@@ -1,4 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { readFileSync } from 'node:fs'
+import { join, resolve } from 'node:path'
 
 /**
  * ── §3.5: THE LOGGED-OUT ACCOUNT ────────────────────────────────────────────
@@ -182,5 +184,58 @@ describe('the pure liveness question', () => {
     expect(real.sessionUsable({ hasSessionOnDisk: false, sessionInvalidAt: null })).toBe(false)
     // both: no cookie AND marked — still dead
     expect(real.sessionUsable({ hasSessionOnDisk: false, sessionInvalidAt: new Date() })).toBe(false)
+  })
+})
+
+/**
+ * ── "COULD NOT ASK" MUST NOT BECOME A VERDICT, IN THE NEW DOOR TOO ────────
+ *
+ * `checkSignIn` (2026-08-26) is the control that answers *"is this account actually signed
+ * in?"* — the gap Tabish found: `connected` is a cookie on disk plus the absence of a mark,
+ * so a session Instagram had revoked read as fine and offered no control at all.
+ *
+ * It has four outcomes and only three of them may write. `unknown` — a session exists and
+ * nothing answered — must leave the row exactly as it was. Writing there is the mistake that
+ * once marked a LIVE revenue session dead on a dead endpoint's evidence and sent an operator
+ * to perform the riskiest act in this design for nothing.
+ *
+ * A SOURCE GREP over the branch, because the failure is an edit somebody makes later and no
+ * behavioural test can fail for a line nobody has written yet. Comments are stripped first —
+ * `every-send-path-asks-the-gate` passed its own mutation twice for matching a name inside a
+ * docblock.
+ */
+describe('checkSignIn never writes a verdict it did not establish', () => {
+  const raw = readFileSync(join(resolve(__dirname, '..'), 'src/app/actions.ts'), 'utf8')
+  const code = raw.replace(/\/\*[\s\S]*?\*\//g, ' ').replace(/(^|[^:])\/\/[^\n]*/g, '$1 ')
+  const body = code.slice(code.indexOf('export async function checkSignIn'), code.indexOf('export async function rejoinFleet'))
+
+  it('is there at all — this test is worthless against a renamed function', () => {
+    expect(body.length, 'checkSignIn is gone or renamed').toBeGreaterThan(300)
+  })
+
+  it('marks a session invalid ONLY from positive evidence', () => {
+    /**
+     * COUNTED, not sliced. The first version anchored on the last `'logged-out'` and the
+     * slice therefore contained that branch's own write — a test that failed against correct
+     * code, which is the same class of error as one that passes against broken code.
+     *
+     * Exactly three writes exist and each belongs to a branch that ESTABLISHED something:
+     * one `clearSessionInvalid` (identity confirmed) and two `markSessionInvalid` (the wrong
+     * account, and positively signed out). A fourth is the unknown branch writing a verdict.
+     */
+    const calls = (needle: string) => [...body.matchAll(new RegExp(needle.replace('(', '\\('), 'g'))].length
+    expect(calls('clearSessionInvalid('), 'the identity-confirmed branch is gone').toBe(1)
+    expect(
+      calls('markSessionInvalid('),
+      'a third markSessionInvalid — the only branch left to write from is `unknown`, and "we could not ask" is not evidence',
+    ).toBe(2)
+  })
+
+  it('takes the fleet send lock, because two contexts on one profile kills device identity', () => {
+    expect(body).toMatch(/withSendLock\s*\(/)
+  })
+
+  it('closes the browser context in a finally — closing is what flushes cookies to disk', () => {
+    expect(body).toMatch(/finally\s*\{[\s\S]{0,160}context\.close\(\)/)
   })
 })
