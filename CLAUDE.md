@@ -71,6 +71,103 @@ properly rather than kept on a handle we could never confirm.
 
 ---
 
+## 26 AUGUST, LATE — EVERY PROFILE IS WHO IT CLAIMS, AND "CONNECTED" COULD NOT BE QUESTIONED
+
+**Tabish: *"check the endpoint I am confident I have never connected madabout, just verify, I
+need to be sure it doesn't open somewhere undesired. How can we ever click a link via UI and
+confirm for other senders and reconnect when it doesn't work or gets expired?"*** Two
+questions. The first was answered with evidence; the second was a real gap.
+
+### ASKED OF INSTAGRAM, NOT OF THE DATABASE — ALL SEVEN PROFILES
+
+`identify()` opened each profile under the fleet send lock and asked Instagram's own identity
+endpoints. **Nothing was written.**
+
+| profile | Instagram says | matches |
+|---|---|---|
+| @bachelorssociety, @bollywoodchronicle, @bollywoodpaparazzii, @bollywoodsocietyy, @totalfilmii | the same handle | ✓ |
+| **@madaboutmarketingg** | **@madaboutmarketingg** | ✓ |
+| @tabishmukaddam1 | @tabishmukaddam1 | ✓ |
+
+**Zero mismatches, zero logged-out, zero unknown.** So nothing opens anywhere undesired, and
+@madaboutmarketingg IS ours: the audit log carries `sender.login` on **17 August 17:43** (actor
+`operator`), and its cookie store holds a `sessionid` written **19 August 11:36** with
+`ds_user_id`, `mid`, `datr` and `ig_did` beside it. He did connect it; three weeks is a long
+time.
+
+**A LOCAL DECRYPT WAS TRIED FIRST AND ABANDONED, which is worth recording.** Chrome's cookie
+values are encrypted with what CLAUDE.md calls a public constant, so reading `ds_user_id` off
+disk looked like a zero-risk answer — no browser, no network. It produced garbage under both
+`peanuts`/`saltysalt` derivations. **The supported path already existed and is better
+evidence**: `identify()` asks the party that actually knows, which a cookie cannot. Reaching
+for the clever local answer over the owned one cost twenty minutes and would have proved less.
+
+### `connected` IS A COOKIE ON DISK, AND THE ONLY CONTROL WAS HIDDEN BEHIND ITS ABSENCE
+
+`AccountRow.connected` is `sessionUsable(hasSessionOnDisk, sessionInvalidAt)`, and the Connect
+button renders **only when that is false**:
+
+```tsx
+{!row.connected && connect.phase !== 'done' && ( … 'Connect' )}
+```
+
+So an account whose session Instagram revoked SERVER-SIDE reads as connected, offers **no
+control at all**, and stays that way until a real send fails and writes `sessionInvalidAt`.
+*"Freshness is not liveness"* — the fourth recording of it in this file — with no way for a
+person to ask.
+
+**`checkSignIn` asks, and the four outcomes write differently:**
+
+| outcome | what happens |
+|---|---|
+| logged in, MATCHING | PROOF — clears `sessionInvalidAt` (`clearSessionInvalid` takes proof, never a page load) |
+| logged in, **WRONG ACCOUNT** | marked invalid — sending would put an unrelated page into a conversation it has no context for |
+| logged out (positive evidence) | marked invalid, so the row says "needs signing in again" and Connect returns |
+| **unknown** | **NOTHING IS WRITTEN, and it says so** |
+
+That last row is the load-bearing one. *"We could not ask"* must never become a verdict about
+an account — it is the mistake that once marked a LIVE revenue session dead on a dead
+endpoint's evidence and sent an operator to perform the riskiest act in this design for
+nothing. `tests/session-invalid.test.ts` pins it by **COUNTING** the writers (one
+`clearSessionInvalid`, two `markSessionInvalid`) rather than slicing the source — the first
+version anchored on the last `'logged-out'` and its slice contained that branch's own write,
+so it failed against correct code, which is the same class of error as passing against broken
+code. Mutation-tested.
+
+**"Sign in again" is now on a connected row too** — the ordinary Connect flow made reachable
+deliberately rather than only after something breaks.
+
+Both run under `withSendLock`: two contexts on one profile is how device identity dies, and
+the device agent polls every 30 seconds. `SEND_ENABLED=false` refuses them on the server for
+free, which is right — the server has no profiles to check.
+
+### THE STATE @madaboutmarketingg IS ACTUALLY IN
+
+`fleetMember: false`, `status: PAUSED`, session live and verified, `marketing` membership
+already held, 152 pair rows, **1 delivered message ever** (@absolutejk, 18 August).
+
+- **It cannot be permanently deleted, and that is correct.** `removeSender` deletes only an
+  account that never delivered; `OutreachAttempt.pairId` is `ON DELETE CASCADE`, so deleting
+  this one erases the record that a real person received a real message — which is what stops
+  them being contacted twice.
+- **"Put back in the rotation" is the re-add**, and since the same day it also restores
+  `PAUSED → ACTIVE`. Pick *Marketing & advertising trade* in the dropdown beside it; the
+  preview states the route count before anything is written.
+- **Nothing has been delivered to a marketing-fleet target since the tag: 0**, and
+  @madaboutmarketingg has delivered to one: **0, ever**.
+
+### AUTOPILOT, VERIFIED END TO END AFTER THE RESTART
+
+| | |
+|---|---|
+| delivered in 24h | **130**, newest 16:34 IST on the new code |
+| the agent's own log | `delivering a waiting message pair=bollywoodpaparazzii→iyashpalsharma`, with every held draft naming its rule |
+| live prospects / unverified | **587 / 0** |
+| detection in 24h | 877 stored, 132 paid, **0 unjudged** |
+| tests / typecheck / layout | **2,024 / 117 files**, clean, all green, `/` 157/160 |
+
+---
+
 ## 26 AUGUST, EVENING — MY OWN ONE-CLICK BUTTON PUT THE BURNER IN THE FLEET WITH 514 ROUTES
 
 **The rejoin control shipped at 16:00 and had produced a live exposure by 16:03.** Recorded
