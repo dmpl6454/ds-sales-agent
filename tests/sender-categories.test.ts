@@ -11,6 +11,19 @@ import {
 } from '@/outreach/senderCategories'
 import { mayRouteExist } from '@/outreach/routes'
 import { evaluateResend, RESEND_BLOCKS, OVERRIDABLE_BLOCKS } from '@/outreach/gate'
+import { templateForSettings } from '@/outreach/fleetTemplate'
+
+/**
+ * The DEFAULT fleet's template, built by the REAL rule rather than written as a literal —
+ * a hand-written verdict object goes stale GREEN the day the rule changes shape, which is
+ * this suite's own recorded lesson from the `too-soon` fixture.
+ */
+const DEFAULT_FLEET_TEMPLATE = templateForSettings(
+  { singleTemplateBody: null, fleetTemplateBodies: new Map() },
+  [],
+  [],
+)
+
 
 /**
  * TWO FLEETS, AND THEY NEVER WRITE TO EACH OTHER'S COMPANIES — 2026-08-25.
@@ -108,6 +121,13 @@ describe('the rule is enforced at BOTH ends', () => {
       targetIsWatchOnly: false,
       senderCategories,
       targetCategories,
+      /* The fleets' own copy is a SEPARATE rule (fleetTemplate.ts) — this file is about the
+         category rule alone, so the template is always resolvable here and cannot mask it. */
+      fleetTemplate: templateForSettings(
+        { singleTemplateBody: 'a body long enough to satisfy the send guards comfortably.', fleetTemplateBodies: new Map([[MARKETING_CATEGORY_SLUG, 'the marketing fleet body, also long enough to be sendable.']]) },
+        senderCategories,
+        targetCategories,
+      ),
       targetIsVerified: true,
       targetRepliedAt: null,
       pairSentTodayCount: 0,
@@ -174,5 +194,70 @@ describe('every route creator passes the categories', () => {
     const src = read('src/outreach/gate.ts')
     expect(src).toContain('readCategoryMemberships')
     expect(src).toMatch(/senderCategories: categoriesFor\(/)
+  })
+})
+
+/**
+ * ── A PROSPECT INHERITS ITS CHANNEL'S FLEET, AND IT DOES SO BEFORE THE ROUTES ──
+ *
+ * MEASURED 2026-08-26, and this is what the test is for. Two prospects — @irctc.official
+ * and @sprite_india — were minted from an @exchange4media (marketing) paid post at 17:05
+ * IST on 25 August, received NO membership, and were messaged by bollywood pages at 17:19
+ * and 17:20. The inheritance rule was committed at 17:56, fifty-one minutes later.
+ *
+ * THE MEASUREMENT THAT MISSED IT IS THE OTHER HALF OF THE LESSON. That evening's health
+ * check read "0 messages to any marketing-fleet target" — over the rows CARRYING the tag.
+ * The leak was precisely the rows that failed to be tagged, so the check agreed with
+ * itself. A rule measured by the set it maintains cannot see the set it failed to build;
+ * the honest question is about PROVENANCE, which is what this rule implements.
+ *
+ * A SOURCE GREP, because the failure mode is a creator that stops asking — and no
+ * behavioural test can fail for a line somebody deletes from one of five discovery paths.
+ * The ORDER assertion is the load-bearing one: `routeAllowed` READS the memberships, so a
+ * category applied after the pairs are created leaves the new prospect already wired to
+ * every sender of the other fleet, and the gate then holds every one of those drafts
+ * forever.
+ */
+describe('a prospect inherits the fleet of the channel whose paid post found it', () => {
+  const src = readFileSync(join(import.meta.dirname, '..', 'src/outreach/brandTarget.ts'), 'utf8')
+
+  it('reads the source channel’s categories', () => {
+    expect(src, 'the one creator no longer copies the channel’s fleet onto the prospect').toMatch(
+      /categories:\s*\{\s*where:\s*\{\s*enabled:\s*true\s*\}/,
+    )
+    expect(src).toContain('categoryTarget.upsert')
+  })
+
+  it('writes the membership BEFORE it creates the routes', () => {
+    const membership = src.indexOf('categoryTarget.upsert')
+    const routes = src.indexOf('outreachPair.createMany')
+    expect(membership, 'the membership write is gone').toBeGreaterThan(-1)
+    expect(routes, 'the route creation is gone').toBeGreaterThan(-1)
+    expect(
+      membership,
+      'the fleet is applied AFTER the routes — the new prospect is wired to the other fleet first',
+    ).toBeLessThan(routes)
+  })
+
+  /**
+   * And it is the ONE door. Every discovery path — autoResolve, officialDiscovery,
+   * badgeDoor, ig:find-official, ig:brands — goes through `createBrandTarget`, so the rule
+   * above covers all of them. A sixth path creating a row itself would bypass it silently.
+   */
+  it('no discovery path creates a TargetAccount of its own', () => {
+    const root = join(import.meta.dirname, '..')
+    for (const f of [
+      'src/detection/autoResolve.ts',
+      'src/detection/officialDiscovery.ts',
+      'src/detection/badgeDoor.ts',
+      'src/scripts/find-official.ts',
+      'src/scripts/brands.ts',
+    ]) {
+      const s = readFileSync(join(root, f), 'utf8')
+      expect(s, `${f} creates a target row directly instead of going through createBrandTarget`).not.toMatch(
+        /prisma\.targetAccount\.(create|upsert)\(/,
+      )
+      expect(s, `${f} no longer uses the one creator`).toContain('createBrandTarget')
+    }
   })
 })

@@ -8,6 +8,7 @@ import { getSettings } from '@/lib/settings'
 import { generateMessageBody } from './generate'
 import { brandFirstTouch, publisherDisplayName, describeRecency } from './brandPitch'
 import { greetableName, renderMessage } from './render'
+import type { FleetTemplate } from './fleetTemplate'
 
 /**
  * Choosing WHAT to say to one pair — the single implementation.
@@ -245,13 +246,38 @@ async function usedVariantIds(pairId: string): Promise<string[]> {
   return rows.map((r) => r.variantId)
 }
 
+/**
+ * Thrown when the fleet this route belongs to has no standard message written yet.
+ *
+ * DEFENCE IN DEPTH, not the primary stop. `evaluatePair` refuses to draft and
+ * `evaluateResend` refuses to send for exactly this reason, both by name and both with a
+ * remedy on screen — so reaching here means a caller composed a body without asking either.
+ * Throwing beats returning the other fleet's copy: a crash is loud and a wrong pitch to a
+ * real company is silent.
+ */
+export class FleetTemplateNotSetError extends Error {
+  constructor(readonly targetHandle: string, readonly detail: string) {
+    super(`no standard message for @${targetHandle}'s fleet — ${detail}`)
+    this.name = 'FleetTemplateNotSetError'
+  }
+}
+
 export async function composeForPair(args: {
   pair: ComposablePair
   senderHandle: string
   touchNumber: number
+  /**
+   * WHICH STANDARD MESSAGE THIS ROUTE SENDS — resolved by the caller from the same pure
+   * rule the governor and the gate ask, and REQUIRED so the compiler names every call site.
+   *
+   * Not derived here, for the reason `crossSpacing` and `material` are not either: it needs
+   * the category memberships, and a lookup per pair would be an N+1 over senders x targets
+   * inside the planner's own loop.
+   */
+  fleetTemplate: FleetTemplate
   now?: Date
 }): Promise<Composed> {
-  const { pair, senderHandle, touchNumber, now = new Date() } = args
+  const { pair, senderHandle, touchNumber, fleetTemplate, now = new Date() } = args
   const settings = await getSettings()
 
   const hook = await pickHook({ target: pair.target, pairId: pair.id, now })
@@ -320,8 +346,8 @@ export async function composeForPair(args: {
      * No greeting is prepended ("no space after hi, it is all continuous" — the "Hi," is
      * part of the template's own first characters), no persona/signature block is appended
      * ("no signature name whatsoever"), no hook or observation line is added. Every
-     * recipient receives exactly the bytes stored here or in the `singleTemplateBody`
-     * Setting row — `renderMessage` is deliberately NOT called, because everything it adds
+     * recipient receives exactly the bytes of THEIR FLEET's standard message, resolved by
+     * the caller — `renderMessage` is deliberately NOT called, because everything it adds
      * (greeting, intro, closing, signature) is exactly what was removed.
      *
      * Consequences held elsewhere in the same change: the gate's persona-staleness probe
@@ -329,7 +355,13 @@ export async function composeForPair(args: {
      * `checkTemplateBody` validates the verbatim text — a single line over 40 characters
      * satisfies `distinctiveSlice` via its single-line branch, which does not drop line 1.
      */
-    const body = (settings.singleTemplateBody ?? SINGLE_TEMPLATE_MIDDLE).trim()
+    /**
+     * THE ROUTE'S OWN FLEET DECIDES THE COPY (2026-08-26). Never the default fleet's body
+     * as a fallback: a second fleet with nothing written REFUSES, so its recipients wait
+     * for their own copy rather than receiving somebody else's pitch. See fleetTemplate.ts.
+     */
+    if (!fleetTemplate.ok) throw new FleetTemplateNotSetError(pair.target.handle, fleetTemplate.detail)
+    const body = fleetTemplate.body.trim()
     return {
       body,
       hookLine: null,
@@ -463,28 +495,11 @@ export async function observationFor(
  * inventing one.
  */
 /**
- * THE STANDARD MESSAGE (2026-08-18, Tabish's copy, verbatim).
- *
- * *"we need only a single template message to be sent, no signature name whatsoever …
- * and no there must be no space after hi, it is all continuous."*
- *
- * This IS the whole message. Nothing is prepended or appended — no greeting (the "Hi," is
- * the template's own first characters, deliberately with no space after the comma), no
- * closing line, no signature block. Every recipient of every account receives these exact
- * bytes; the editable override lives in the `singleTemplateBody` Setting row, edited from
- * the Autopilot page.
- *
- * ── THE CONSTRAINT THAT SHAPES THIS COPY, AND IT IS NOT EDITORIAL ─────────
- *
- * `distinctiveSlice` needs a line of at least 40 characters (`MIN_NEEDLE_CHARS`) to build
- * the needle both send guards search for — the composer read-back and the thread delta. A
- * single-line body takes `proseLines`' single-line branch (nothing is dropped by position),
- * so the rule when editing this copy is simply: **keep it over 40 characters.** Below that,
- * `distinctiveSlice` returns null and null refuses every send in the system.
- * `checkTemplateBody` applies the same floor at save time so an unsendable template cannot
- * be stored.
+ * The shipped DEFAULT-fleet copy, re-exported so every existing importer is unchanged.
+ * It LIVES in `fleetTemplate.ts` since 2026-08-26 — see the docblock there for why a
+ * second fleet's copy makes this a rule's input rather than the composer's own constant.
  */
-export const SINGLE_TEMPLATE_MIDDLE = `Hi,We’re an Entertainment & Pop Culture Media Network generating over 300M views every day. We work with films, songs, celebrities, and brands to amplify campaigns and deliver extended reach at scale. Let’s connect - +916000189766 - Kapil`
+export { SINGLE_TEMPLATE_MIDDLE } from './fleetTemplate'
 
 /**
  * The single template's variable line for a BRAND: the placement we discovered them in,

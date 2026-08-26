@@ -1,5 +1,18 @@
 import { describe, expect, it } from 'vitest'
 import { evaluateResend, RESEND_BLOCKS, type ResendInput } from '@/outreach/gate'
+import { templateForSettings } from '@/outreach/fleetTemplate'
+
+/**
+ * The DEFAULT fleet's template, built by the REAL rule rather than written as a literal —
+ * a hand-written verdict object goes stale GREEN the day the rule changes shape, which is
+ * this suite's own recorded lesson from the `too-soon` fixture.
+ */
+const DEFAULT_FLEET_TEMPLATE = templateForSettings(
+  { singleTemplateBody: null, fleetTemplateBodies: new Map() },
+  [],
+  [],
+)
+
 
 /**
  * A state where sending is permitted. Each test breaks exactly one thing, so a
@@ -21,6 +34,7 @@ function ok(): ResendInput {
   material: { held: false as const, allowance: 1, delivered: 0 },
     targetOptedOut: false,
     targetIsWatchOnly: false,
+  fleetTemplate: DEFAULT_FLEET_TEMPLATE,
     targetIsVerified: true,
     targetRepliedAt: null,
     pairSentTodayCount: 0,

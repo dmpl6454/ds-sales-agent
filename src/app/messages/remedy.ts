@@ -121,6 +121,16 @@ export const REMEDIES = {
     label: 'This page sends for a different fleet — add this company to that fleet, or discard the draft',
   },
 
+  /**
+   * A TEXTAREA, not a judgement call — which is why this one HAS an href where the spacing
+   * rules deliberately do not. Nothing about the recipient is wrong; nobody has written that
+   * fleet's copy yet, and the moment they do every held draft for it clears by itself.
+   */
+  [RESEND_BLOCKS.FLEET_TEMPLATE_NOT_SET]: {
+    href: '/',
+    label: 'Write this fleet\u2019s standard message on the Autopilot page and these go out.',
+  },
+
   // Clears by waiting — five a day from one account to one recipient.
   [RESEND_BLOCKS.PAIR_DAILY_CAP]: { href: null, label: 'The allowance resets at midnight IST.' },
 

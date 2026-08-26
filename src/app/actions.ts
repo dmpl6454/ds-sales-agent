@@ -32,6 +32,8 @@ import { handOffWaitingDrafts } from '@/outreach/handOff'
 import { log } from '@/lib/logger'
 import { validatePersona } from '@/outreach/render'
 import { checkTemplateBody } from '@/outreach/templateGuard'
+import { fleetTemplateKey } from '@/outreach/fleetTemplate'
+import { DEFAULT_CATEGORY_SLUG } from '@/outreach/senderCategories'
 import { requireOperator } from '@/lib/session'
 import { MESSAGE_VARIANTS } from '../../prisma/variants'
 import { BRAND_MESSAGE_VARIANTS } from '../../prisma/brandVariants'
@@ -767,6 +769,75 @@ export async function setSingleTemplateBody(body: string | null): Promise<{ ok: 
     message:
       'Saved. New drafts use this text. Messages already waiting keep the copy they were ' +
       'written with — discard them if the old wording should not go out.',
+  }
+}
+
+/**
+ * ── A SEPARATE STANDARD MESSAGE PER FLEET (2026-08-26, Tabish) ─────────────
+ *
+ * *"a separate template message would be sent for the marketing and brand category …
+ * keep it empty for now."*
+ *
+ * Deliberately a SECOND action rather than a `slug` parameter on `setSingleTemplateBody`,
+ * because the two do different things with an empty box and merging them would make that
+ * difference a runtime branch nobody reads:
+ *
+ *   default fleet  — clearing RESTORES the shipped copy. Sending continues.
+ *   a second fleet — clearing means NOBODY HAS WRITTEN IT, and every send to that fleet
+ *                    is refused by name until somebody does.
+ *
+ * The non-empty path shares `checkTemplateBody`, so the 40-character floor that keeps
+ * `distinctiveSlice` able to build a needle applies to EVERY fleet's copy — a marketing
+ * template too short to quote would refuse every send to that fleet with the same
+ * unexplained silence the default one is guarded against.
+ */
+export async function setFleetTemplateBody(
+  slug: string,
+  body: string | null,
+): Promise<{ ok: boolean; message: string }> {
+  const user = await requireOperator()
+
+  const clean = slug.trim().toLowerCase()
+  /**
+   * AN UNKNOWN SLUG REFUSES rather than creating a row nothing reads — the same call the
+   * add-account form makes. A `templateBody:` row for a fleet that does not exist would
+   * look saved and be invisible to `templateForRoute`, which is the worst of both.
+   */
+  const category = clean ? await prisma.category.findUnique({ where: { slug: clean } }) : null
+  if (!category) return { ok: false, message: `There is no fleet called "${slug}".` }
+  if (clean === DEFAULT_CATEGORY_SLUG) {
+    return {
+      ok: false,
+      message: 'The default fleet’s message is the one above — edit it there.',
+    }
+  }
+
+  const key = fleetTemplateKey(clean)
+
+  if (body === null || body.trim().length === 0) {
+    await prisma.setting.deleteMany({ where: { key } })
+    await audit(user.email, 'setting.changed', `Setting:${key}`, `${category.name} standard message cleared`)
+    revalidatePath('/')
+    return {
+      ok: true,
+      message: `Cleared. Nothing is sent to ${category.name} companies until a message is written here.`,
+    }
+  }
+
+  const verdict = checkTemplateBody(body)
+  if (!verdict.ok) return { ok: false, message: verdict.reason }
+
+  await setSetting(key, body.trim())
+  await audit(
+    user.email,
+    'setting.changed',
+    `Setting:${key}`,
+    `${category.name} standard message set (${body.trim().length} chars)`,
+  )
+  revalidatePath('/')
+  return {
+    ok: true,
+    message: `Saved. New drafts for ${category.name} companies use this text, and any that were held for want of a message can now go out.`,
   }
 }
 

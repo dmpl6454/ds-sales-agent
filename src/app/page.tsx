@@ -16,6 +16,8 @@ import { ParkedList } from './messages/parked'
 import { RepliesPanel } from './replies'
 import { OnDemandPanel } from './on-demand'
 import { TemplateForm } from './template-form'
+import { FleetTemplateForm } from './fleet-template-form'
+import { buildFleetTemplates } from './view-model/fleet-templates'
 import { getSettings } from '@/lib/settings'
 import { SINGLE_TEMPLATE_MIDDLE } from '@/outreach/compose'
 import { currentUser } from '@/lib/session'
@@ -73,6 +75,14 @@ export default async function AutopilotPage() {
     */
     buildRestTally(),
   ])
+
+  /**
+   * Sequential rather than in the block above only because it READS `settings` — the saved
+   * copy per fleet lives there and re-reading the Setting table to avoid one await would
+   * cost more than it saves. Two grouped queries; see fleet-templates.ts for why it is not
+   * one per fleet.
+   */
+  const fleetTemplates = await buildFleetTemplates(settings)
 
   /**
    * Per-draft refusal summaries went with the per-draft cards (2026-08-18): every draft
@@ -280,11 +290,29 @@ export default async function AutopilotPage() {
 
         {/* THE standard message, editable here since /settings went (2026-08-18). */}
         <section>
-          <h2>The message every recipient gets</h2>
+          <h2>{fleetTemplates.length > 0 ? 'The message each fleet sends' : 'The message every recipient gets'}</h2>
           <TemplateForm
             initialBody={settings.singleTemplateBody ?? SINGLE_TEMPLATE_MIDDLE}
             edited={settings.singleTemplateBody !== null}
           />
+          {/**
+            * One box per SECOND fleet, rendered only when one exists — a single fleet needs no
+            * heading distinguishing it from the others, the same reason the add-account
+            * dropdown appears only when there is a choice to make.
+            *
+            * An empty box here is a live refusal rather than a blank waiting to be filled, and
+            * it says so with the number of companies it is holding. See fleet-template-form.tsx.
+            */}
+          {fleetTemplates.map((f) => (
+            <FleetTemplateForm
+              key={f.slug}
+              slug={f.slug}
+              name={f.name}
+              initialBody={f.body}
+              waitingCompanies={f.waitingCompanies}
+              senderCount={f.senderCount}
+            />
+          ))}
         </section>
 
         {/* Manual send: the same queue, one draft earlier. It writes a draft that appears above. */}

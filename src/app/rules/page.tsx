@@ -49,6 +49,8 @@ const STOP_LABELS: Record<(typeof RESEND_BLOCKS)[keyof typeof RESEND_BLOCKS], st
     'this page and this company belong to different fleets — the two never write to each other\u2019s companies',
   [RESEND_BLOCKS.TARGET_NOT_VERIFIED]:
     'the recipient has no verified badge on Instagram — only verified accounts are messaged',
+  [RESEND_BLOCKS.FLEET_TEMPLATE_NOT_SET]:
+    'this company\u2019s fleet has no standard message written yet — its recipients are never sent the other fleet\u2019s copy',
   [RESEND_BLOCKS.TARGET_REPLIED]: 'they replied — paused for seven days, then resumes on its own',
   [RESEND_BLOCKS.MATERIAL_EXHAUSTED]:
     'every paid post we have seen from them has already been written about — one message per detected paid post, from one of our pages, not five',
