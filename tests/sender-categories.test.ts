@@ -10,6 +10,7 @@ import {
   crossCategoryDetail,
 } from '@/outreach/senderCategories'
 import { mayRouteExist } from '@/outreach/routes'
+import { ringMembersFor } from '@/outreach/categories'
 import { evaluateResend, RESEND_BLOCKS, OVERRIDABLE_BLOCKS } from '@/outreach/gate'
 import { templateForSettings } from '@/outreach/fleetTemplate'
 
@@ -259,5 +260,81 @@ describe('a prospect inherits the fleet of the channel whose paid post found it'
       )
       expect(s, `${f} no longer uses the one creator`).toContain('createBrandTarget')
     }
+  })
+})
+
+/**
+ * ── ROTATION MUST NOT ELECT A SENDER THE GATE WILL REFUSE ─────────────────
+ *
+ * MEASURED 2026-08-26, the hour @madaboutmarketingg joined the marketing fleet. It still held
+ * **60 pair rows to bollywood companies** from its old life. `routes.ts` refuses to CREATE
+ * such a route and `gate.ts` refuses to SEND on one — but the ring is built from the pair rows
+ * that EXIST, so it was a ring member for all 60 and rotation had **elected it for 15**
+ * (@dharmaticent, @amazonmgmstudios, @universalmusicgroup, …).
+ *
+ * Rotation elects ONE sender per recipient. So each of those bollywood companies had its turn
+ * assigned to a page the gate refuses with `different-category`, every other page was skipped
+ * as `not-this-senders-turn`, and the turn only advances on a DELIVERY that can never happen.
+ * A self-locking stall — the same one the parked-route fix records, arriving through the fleet
+ * rule instead. After the fix: **15 elected → 0**.
+ *
+ * NOTHING IS WEAKENED. The pair stays refused at both ends; this only stops rotation electing
+ * a page that is already forbidden, so the recipient's own fleet takes its turn.
+ */
+describe('the ring never names a sender that may not write to this recipient', () => {
+  const memberships = {
+    bySenderHandle: new Map([
+      ['madaboutmarketingg', [MARKETING_CATEGORY_SLUG]],
+      // bollywood pages carry NO membership — the default, which is the whole scheme.
+    ]),
+    byTargetHandle: new Map([['amazondotin', [MARKETING_CATEGORY_SLUG]]]),
+  }
+  const fleet = [
+    { id: 's1', handle: 'bollywoodsocietyy', cohort: 1 },
+    { id: 's2', handle: 'madaboutmarketingg', cohort: 1 },
+  ]
+
+  it('drops the marketing page from a BOLLYWOOD recipient’s ring', () => {
+    const ring = ringMembersFor(fleet, 'shashi.official', memberships)
+    expect(ring.map((r) => r.handle)).toEqual(['bollywoodsocietyy'])
+  })
+
+  it('drops the bollywood pages from a MARKETING recipient’s ring', () => {
+    const ring = ringMembersFor(fleet, 'amazondotin', memberships)
+    expect(ring.map((r) => r.handle)).toEqual(['madaboutmarketingg'])
+  })
+
+  /** And the permitting direction, so neither case above is vacuous. */
+  it('keeps every page whose fleet the recipient shares', () => {
+    const bollywoodOnly = { bySenderHandle: new Map<string, string[]>(), byTargetHandle: new Map<string, string[]>() }
+    expect(ringMembersFor(fleet, 'shashi.official', bollywoodOnly).map((r) => r.handle)).toEqual([
+      'bollywoodsocietyy',
+      'madaboutmarketingg',
+    ])
+  })
+
+  /**
+   * A recipient BOTH fleets found — Tabish's own "unless they are present common elsewhere".
+   * Every page keeps its turn, because each one's fleet intersects the recipient's.
+   */
+  it('keeps both fleets for a company that belongs to both', () => {
+    const both = {
+      bySenderHandle: memberships.bySenderHandle,
+      byTargetHandle: new Map([['shared.co', [DEFAULT_CATEGORY_SLUG, MARKETING_CATEGORY_SLUG]]]),
+    }
+    expect(ringMembersFor(fleet, 'shared.co', both).map((r) => r.handle)).toEqual([
+      'bollywoodsocietyy',
+      'madaboutmarketingg',
+    ])
+  })
+
+  /**
+   * An empty ring is the CORRECT answer when no page may write — `nextSender` refuses with
+   * `empty-ring`, which the rest tally renders as "no page sends for their fleet yet".
+   * Silently falling back to every sender would be the failure this whole file is about.
+   */
+  it('returns an empty ring rather than falling back to everybody', () => {
+    const noBollywoodPage = { bySenderHandle: memberships.bySenderHandle, byTargetHandle: memberships.byTargetHandle }
+    expect(ringMembersFor([fleet[0]!], 'amazondotin', noBollywoodPage)).toEqual([])
   })
 })

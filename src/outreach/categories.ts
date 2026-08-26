@@ -1,6 +1,8 @@
+import { cache } from 'react'
 import { prisma } from '@/lib/db'
 import { DELIVERED_STATUSES } from '@/lib/constants'
 import { fleetRingOrder, nextSender, type RingMember, type RotationChoice } from './rotation'
+import { sameCategory } from './senderCategories'
 
 /**
  * The database half of rotation: read the ring and the history, then ask the pure
@@ -133,11 +135,45 @@ export function describeRing(r: Pick<WhoseTurnResult, 'ring' | 'categoryName'>):
  * exist makes that unreachable instead of merely unlikely.
  */
 export async function fleetRingFor(targetId: string): Promise<RingMember[]> {
-  const rows = await prisma.outreachPair.findMany({
-    where: { targetId, sender: { fleetMember: true } },
-    select: { sender: { select: { id: true, handle: true, cohort: true } } },
-  })
-  return fleetRingOrder(rows.map((r) => r.sender))
+  const [rows, target, memberships] = await Promise.all([
+    prisma.outreachPair.findMany({
+      where: { targetId, sender: { fleetMember: true } },
+      select: { sender: { select: { id: true, handle: true, cohort: true } } },
+    }),
+    prisma.targetAccount.findUnique({ where: { id: targetId }, select: { handle: true } }),
+    readCategoryMemberships(),
+  ])
+  return fleetRingOrder(ringMembersFor(rows.map((r) => r.sender), target?.handle ?? '', memberships))
+}
+
+/**
+ * ── A RING MUST NOT NAME A SENDER THE GATE WILL REFUSE (2026-08-26) ────────
+ *
+ * MEASURED the hour @madaboutmarketingg joined the marketing fleet: it still held **60 pair
+ * rows to bollywood companies** from its old life, `routes.ts` refuses to CREATE such a route
+ * and `gate.ts` refuses to SEND on one — but the RING was built from the pair rows that exist,
+ * so it was in the ring for all 60, and rotation had **elected it for 15 of them**
+ * (@dharmaticent, @amazonmgmstudios, @universalmusicgroup, …).
+ *
+ * Rotation elects ONE sender per recipient. So each of those 15 bollywood companies had its
+ * turn assigned to a page the gate refuses with `different-category`, every other page was
+ * skipped as `not-this-senders-turn`, and the turn only advances on a DELIVERY that can never
+ * happen. **A self-locking stall** — the same one the parked-route fix records, arriving
+ * through the fleet rule instead.
+ *
+ * This is the exact argument `fleetRingFor`'s own docblock already makes about building the
+ * ring from `SenderAccount` directly: a ring that can name a sender with no usable route
+ * writes nothing while the log claims a turn was taken. Nothing is weakened — the pair stays
+ * refused at both ends — this only stops rotation ELECTING a page that is already forbidden,
+ * so the recipient's own fleet takes its turn.
+ */
+export function ringMembersFor<T extends { id: string; handle: string; cohort: number }>(
+  senders: readonly T[],
+  targetHandle: string,
+  memberships: CategoryMemberships,
+): T[] {
+  const targetCats = categoriesFor(memberships.byTargetHandle, targetHandle)
+  return senders.filter((s) => sameCategory(categoriesFor(memberships.bySenderHandle, s.handle), targetCats))
 }
 
 /**
@@ -332,7 +368,7 @@ export async function whoseTurnForMany(
   if (targetIds.length === 0) return out
   const ids = [...new Set(targetIds)]
 
-  const [pairRows, groupRows, ringRows, delivered, blocked] = await Promise.all([
+  const [pairRows, groupRows, ringRows, delivered, blocked, memberships, targetRows] = await Promise.all([
     prisma.outreachPair.findMany({
       where: { targetId: { in: ids }, sender: { fleetMember: true } },
       select: { targetId: true, sender: { select: { id: true, handle: true, cohort: true } } },
@@ -357,7 +393,12 @@ export async function whoseTurnForMany(
     }),
     /* ONE batched query for the whole page, not one per target. */
     readBlockedRoutes(ids),
+    /* Cached per request; see readCategoryMemberships. Needed so the ring cannot name a
+       sender the gate refuses — see ringMembersFor. */
+    readCategoryMemberships(),
+    prisma.targetAccount.findMany({ where: { id: { in: ids } }, select: { id: true, handle: true } }),
   ])
+  const handleById = new Map(targetRows.map((t) => [t.id, t.handle]))
 
   const fleetByTarget = new Map<string, { id: string; handle: string; cohort: number }[]>()
   for (const p of pairRows) {
@@ -385,7 +426,9 @@ export async function whoseTurnForMany(
     const ring =
       category !== null
         ? (ringByCategory.get(category.id) ?? [])
-        : fleetRingOrder(fleetByTarget.get(targetId) ?? [])
+        : fleetRingOrder(
+            ringMembersFor(fleetByTarget.get(targetId) ?? [], handleById.get(targetId) ?? '', memberships),
+          )
     out.set(
       targetId,
       decideTurn({
@@ -488,7 +531,7 @@ export interface CategoryMemberships {
   byTargetHandle: ReadonlyMap<string, string[]>
 }
 
-export async function readCategoryMemberships(): Promise<CategoryMemberships> {
+export const readCategoryMemberships = cache(async (): Promise<CategoryMemberships> => {
   const [senderRows, targetRows] = await Promise.all([
     prisma.categorySender.findMany({
       where: { enabled: true },
@@ -514,7 +557,7 @@ export async function readCategoryMemberships(): Promise<CategoryMemberships> {
     else byTargetHandle.set(k, [r.category.slug])
   }
   return { bySenderHandle, byTargetHandle }
-}
+})
 
 /** The categories one handle belongs to, or `[]` — which `effectiveCategories` reads as the default. */
 export function categoriesFor(map: ReadonlyMap<string, string[]>, handle: string): readonly string[] {
