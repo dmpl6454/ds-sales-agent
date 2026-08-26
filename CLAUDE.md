@@ -71,6 +71,100 @@ properly rather than kept on a handle we could never confirm.
 
 ---
 
+## 26 AUGUST, NIGHT — "IS AUTOPILOT HEALTHY?" — NO, AND THE CAUSE WAS THE SINGLE TEMPLATE
+
+**Tabish asked one question and the answer was no.** Autopilot ON, scheduler heartbeat 0.2
+minutes old, detection succeeding, drafts being written *that second* — and **nothing
+delivered for 225 minutes**. The signature this file already names: *liveness, success and
+output are three different facts.* Only the agent's own log knew.
+
+```
+dispatcher held  reason=breaker-not-in-thread-rate
+detail=47 of the last 124 sends cleared the composer but never appeared in the thread (38%)
+```
+
+### THE BREAKER WAS RIGHT, AND SO WAS THE GUARD BENEATH IT
+
+| | delivered | not-in-thread | failure rate |
+|---|---|---|---|
+| **touch 1** (this page's first message) | 394 | 22 | **5%** |
+| **touch 2** (its second, same recipient) | 11 | 53 | **83%** |
+
+Two hypotheses died on the way. **It is not the recipients**: companies fail MORE than
+people (73% vs 38%), and 255 messages have landed on that same set at other times. **It is
+not volume into the inbox**: prior deliveries to the recipient predict nothing at all
+(5-6 prior → 61 failures against 59 successes).
+
+**THEN SIX PARKED THREADS WERE READ** — with the parked body deliberately EXCLUDED from the
+completeness bar, so `complete: true` meant the read could be trusted. Every one showed
+**exactly one** copy of our template, the first touch. The second message is genuinely not
+there. The composer cleared, Instagram raised no error, and nothing arrived.
+
+**So `bodyAppearedSince` was right every time and is not the bug** — it correctly refused to
+record a delivery that had not happened. Sending the message at all is the bug. Since
+`singleTemplate` went on **every message is byte-identical**, so a second message from one
+page is a verbatim repeat of what is already in that thread.
+
+**CLAUDE.md PREDICTED THIS IN AS MANY WORDS** when the flag shipped: *"Meta's written spam
+policy penalises REPETITION and merge-field templates do not count as variation. That risk is
+real and is stated rather than smoothed over."* This is that risk, measured, four days later.
+
+`IDENTICAL_TO_A_SENT_MESSAGE` refuses at BOTH ends and is **not overridable** — Instagram
+drops it whoever pressed the button. Ordered after the facts about WHO (replied, verified,
+session, fleet) and ABOVE the volume rules, because those are about timing and this is not:
+no amount of waiting makes a verbatim repeat arrive.
+
+**IT IS NOT ONLY WASTE.** A `not-in-thread` park is PERMANENT on the pair, so every one burns
+a route for a message nobody received. **77 pairs already gone.** On the live queue the new
+rule holds **57 of 115** — fifty-seven routes saved — and leaves 48 clear to send.
+
+### AND THE BREAKER COULD NOT SELF-HEAL, WHICH IS ITS OWN DEFECT
+
+Its denominator is DELIVERIES in the window, which only grow by sending — **which it
+forbids**. Projected hour by hour with the real function over the real data:
+
+```
+now 39%    +6h 45%    +12h 47%    +18h 79%    +19h RELEASES
+```
+
+**It gets WORSE for eighteen hours**, because deliveries age out of the window while the
+failures are still inside it, and the only release is the numerator expiring completely.
+Nineteen hours of halt for a fleet that was healthy after the first two.
+
+*A hard stop with no release is a bug wearing a safety feature's clothes.* The `challenged`
+arm has `clearChallenge`; this arm had **nothing** — while its own sentence invited exactly
+what it did not offer: ***"nothing else is sent until someone has looked."***
+
+`acknowledgeBreaker` is that release and it is **a release, not a mute**: it acknowledges
+failures that ALREADY happened, and one recorded afterwards trips the breaker again — so if
+the cause was not really fixed, the fleet stops on the first proof. It cannot touch a flagged
+account or a manual pause. A reason is REQUIRED: that audit row is the only lasting record of
+why a halted fleet was resumed.
+
+**Mutation-tested five ways**, and the fifth is the lesson: making the acknowledgement
+date-blind (a mute) was caught, but a GARBAGE acknowledgement was not — because with a
+failure date present the date comparison already refuses it, so the first test passed for the
+wrong reason. It needed its own case driving the branch where the comparison cannot help.
+
+### RESUMED, AND THE FIX PROVEN BY THE ABSENCE OF WHAT CAUSED IT
+
+| | |
+|---|---|
+| acknowledged | 22:36 IST, audited, with the finding as the reason |
+| first delivery after | **22:43:09** @bollywoodpaparazzii → @victorinox_india, real thread URL |
+| then | `too-soon` — the 1-minute pace, exactly as designed |
+| **new `not-in-thread` since the fix** | **0** |
+| newest delivery at the final reading | 0.5 min old |
+| the waiting queue through the real gate | 48 clear · 57 held as identical · 6 replied · 3 material · 1 cross-fleet |
+
+**THE REAL REMEDY IS STILL TABISH'S TO CHOOSE.** The rule stops the damage; it does not give
+a page anything new to say. A follow-up needs to DIFFER — turn `singleTemplate` off and the
+variant pools return (decision 3's original design: a fresh variant plus a campaign not
+referenced before), or write a second template for follow-ups. Until then every pair is
+effectively one message, and 57 drafts are waiting on that decision rather than on a clock.
+
+---
+
 ## 26 AUGUST, LATE — THE MARKETING SENDER IS LIVE, AND ITS OLD ROUTES STALLED FIFTEEN COMPANIES
 
 **Tabish connected `@madaboutmarketingg` as the marketing sender and asked for the health
