@@ -159,9 +159,21 @@ function AccountRowView({ row, fleets = [] }: { row: AccountRow; fleets?: readon
         */}
         {row.state !== 'broken' && (
           <span className="muted">
-            {row.state === 'ready'
-              ? 'Sends automatically while Autopilot is on.'
-              : 'Needs a one-time sign-in before it can send.'}
+            {/*
+              ── `state` DOES NOT LOOK AT `fleetMember`, SO THIS SENTENCE DID NOT EITHER ──
+              An out-of-rotation account with a live session is `state: 'ready'`, and this
+              read "Sends automatically while Autopilot is on." underneath a heading that
+              says it writes to nobody. Both cannot be true, and the heading is the correct
+              one: `ensureFleetPairs` and `runOutreach` are scoped to `fleetMember: true`.
+              A row asserting a capability its group denies is the same defect as a heading
+              counting rows the claim is false of — already recorded here about this page,
+              and reintroduced by a row that never asked the second question.
+            */}
+            {!row.fleetMember
+              ? 'Writes to nobody — it is not in the rotation.'
+              : row.state === 'ready'
+                ? 'Sends automatically while Autopilot is on.'
+                : 'Needs a one-time sign-in before it can send.'}
           </span>
         )}
       </div>
