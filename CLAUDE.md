@@ -71,6 +71,185 @@ properly rather than kept on a handle we could never confirm.
 
 ---
 
+## 26 AUGUST — EACH FLEET SENDS ITS OWN MESSAGE, AND TWO PROSPECTS HAD ALREADY LEAKED
+
+**Tabish: *"a separate template message would be sent for the marketing and brand category.
+Autopilot is going to remain on which I will provide keep it empty for now … make sure no
+message has gone to anyone who is of a brand/marketing category."*** The template was built.
+The verification found that two messages already had.
+
+### THE LEAK: TWO PROSPECTS MINTED FIFTY-ONE MINUTES BEFORE THE RULE THAT WOULD HAVE TAGGED THEM
+
+MEASURED, and the timeline is the whole finding:
+
+| | |
+|---|---|
+| 17:03:38 | `2d66008` — the two-fleet rule (routes.ts + gate.ts) is committed |
+| **17:05:24 / 17:05:30** | **@irctc.official and @sprite_india are minted from ONE @exchange4media paid post (`DcVOCUuGIcT`), with NO fleet membership** |
+| **17:19:35 / 17:20:39** | **@bollywoodsocietyy and @bollywoodpaparazzii deliver the bollywood pitch to both** |
+| 17:56:22 | `e14db55` — a prospect inherits its channel's fleet |
+
+The cross-fleet rule was in the repo when those rows were created and could not have stopped
+them, because it compares MEMBERSHIPS and neither row had one. `effectiveCategories([])`
+returns `bollywood`, which is correct and is exactly what made them reachable. The rule that
+would have tagged them landed fifty-one minutes later.
+
+**THE MEASUREMENT THAT MISSED IT IS THE HALF WORTH KEEPING.** That evening's health check
+read *"messages to any marketing-fleet target since the rule went live: 0"* — and it was
+true. It counted the rows CARRYING the tag, and the leak was precisely the rows that failed
+to be tagged. **A rule measured by the set it maintains cannot see the set it failed to
+build.** The honest question is about PROVENANCE — *which channel's paid post found this
+company* — because that is what Tabish's rule is about: *"Only targets obtained from them."*
+Asking it that way found 43 prospects discovered from marketing channels, 41 tagged, **2
+not**, and 2 messages delivered to those 2.
+
+Neither is named on any other CAMPAIGN post, so *"unless they are present common elsewhere"*
+does not apply — they are pure marketing-fleet companies. Both are now tagged
+(`ig:set-category`, audited), which **removes** reachability rather than adding it: verified
+by executing the real gate, every bollywood page is now refused `different-category`, and
+rotation returns `empty-ring` because the marketing fleet has no sender. **Since the tag:
+0.** The two messages cannot be unsent.
+
+`tests/sender-categories.test.ts` now pins the inheritance and, more importantly, that the
+membership is written BEFORE the routes — mutation-tested in both directions, and the first
+attempt at the ordering mutation PASSED because the mutation itself had not landed
+(`.index()` found the first of two `auditLog.create` calls). **A mutation test that passes is
+evidence only once you have verified the mutation applied.**
+
+### AN UNSET FLEET TEMPLATE REFUSES. IT NEVER FALLS BACK
+
+`src/outreach/fleetTemplate.ts` is PURE and is the one rule, with three callers — the
+governor (refuses to WRITE), the gate (refuses to SEND) and the composer (writes the bytes).
+Both fallbacks are silent and both are shapes this file has paid for:
+
+- **the DEFAULT copy** → a marketing-trade company receives the entertainment network's
+  pitch from the marketing page. Well-formed, plausible, and wrong in the one way no screen
+  would show. *Absence of data hardening into a verdict.*
+- **an empty body** → `distinctiveSlice` returns null, which refuses **every send in the
+  system** naming no cause. That is the `MAX_TOTAL_SENDS` shape: an outage pointing at
+  nothing.
+
+**THE TWO FLEETS ARE DELIBERATELY NOT SYMMETRICAL, and this is the thing most likely to be
+"simplified":**
+
+| fleet | no Setting row means |
+|---|---|
+| `bollywood` | the SHIPPED copy — never empty, so sending continues |
+| anything else | **NO COPY EXISTS — refuse** |
+
+The default fleet has shipped copy in the source (`SINGLE_TEMPLATE_MIDDLE`, moved here from
+`compose.ts` and re-exported, so every importer is unchanged); a second fleet has none by
+construction. Collapsing them reinstates the silent fallback.
+
+**THE ROUTE'S FLEET IS THE INTERSECTION** of the two ends' effective categories — the same
+set `sameCategory` computes, so the two can never disagree. A company BOTH fleets found hears
+the pitch of whichever page is writing, because the copy is that page's proposition. Two
+refusals that are not "not set", both failing closed rather than choosing: `different-fleet`
+(the sets do not meet — `gate.ts` refuses it first, but answering it here means a caller that
+forgot the category check gets a refusal instead of a template) and **`ambiguous`** (a SENDER
+in two fleets; two bodies are both candidates and picking one silently is the same failure in
+a tidier hat).
+
+Enforced at both ends like every load-bearing rule here — `SKIP_REASONS.NO_FLEET_TEMPLATE`
+and `RESEND_BLOCKS.FLEET_TEMPLATE_NOT_SET` — and **absent from `OVERRIDABLE_BLOCKS`**: every
+stop a human may cross is about TIMING, this one is about WHAT THE MESSAGE SAYS, and the
+remedy is a textarea rather than a judgement call. `fleetTemplate` is a REQUIRED field on
+`GovernorInput` and `ResendInput` (the `RenderTarget.kind` pattern), which named all twenty-six
+call sites instead of one defaulting silently.
+
+**AND THE EDITOR RENDERS THE ABSENCE, which is the half that would otherwise not have
+shipped.** With no copy written the planner drafts nothing, so the queue shows nothing and
+the only trace is a skip reason in a log — *nothing renders an absence*, this project's most
+expensive recurring failure. The box on the Autopilot page reads, verbatim on the live page:
+
+> **The Marketing & advertising trade message** — *not written yet*
+> Nothing is sent to the 37 Marketing & advertising trade companies until this is written.
+> They are never sent the other fleet's message instead. No page sends for this fleet yet
+> either, so writing this alone will not start anything.
+
+Both halves are facts rather than warnings: *no copy* and *no page* are different problems
+and writing the copy fixes only one. It is a SEPARATE component from `TemplateForm`, because
+two boxes that look alike and mean opposite things by being empty is exactly why they are
+two. Mutation-tested four ways: the fallback, the governor stop, the gate stop, and the stop
+being made overridable.
+
+### `pnpm send` CALLED NO GATE AT ALL, AND THE ORDERING MADE IT SELECT FOR THE WORST DRAFT
+
+Found by auditing the fleet separation adversarially. `src/scripts/send.ts` — the manual
+fallback this file offers on every card — took `attempts[0]` from a `queuedAt asc` query with
+no predicate, copied the body, opened the profile and recorded SENT. **No opt-out check, no
+verified check, no watch-only check, no reply halt, no fleet rule.** *"One gate, two callers,
+never re-inline it"* was written after `deliverWaiting` and `sendNow` drifted; this was a
+THIRD caller that never had it.
+
+**AND IT WAS WORSE THAN MERELY INCOMPLETE.** A permanently-held draft never has its
+`queuedAt` bumped (only a retryable failure does, in `deliver.ts`) and the planner will not
+replace it while `hasPendingAttempt` is true — so it drifts to the FRONT of an ascending
+queue and stays there. **The one ungated path preferentially offered the exact draft every
+other path refuses.** VERIFIED on the live queue: before the fix its first offer was
+`@bollywoodpaparazzii → @fastrackworld`, the cross-fleet draft, with nothing said about it.
+It now asks `recheckBeforeSend`, walks past held drafts printing the gate's own sentence, and
+offered a legitimate bollywood prospect instead.
+
+**`tests/every-send-path-asks-the-gate.test.ts` TOOK THREE ROUNDS TO MAKE HONEST, EACH TIME
+WRONG IN THE PERMISSIVE DIRECTION** — which is the entry's real lesson:
+
+1. the raw grep matched **the docblock** above the deleted call;
+2. after stripping comments, `includes('recheckBeforeSend')` matched **the surviving import**;
+3. anchored on `recheckBeforeSend\s*\(` — a CALL — both mutations finally fail it.
+
+*A grep proves a name is MENTIONED; only the call shape proves it GATES.*
+
+Two more from the same audit, both the leak's defect class: **`importProspects.ts` wrote the
+membership AFTER creating the routes**, so a sheet with a `marketing` category column wired
+the row to every bollywood sender first — moved before; and **the fleet chip on `/targets`
+ignored `enabled`**, so a suspended membership still rendered a fleet the enforcer does not
+read. Nineteen other candidate findings were refuted against the code and are not listed.
+
+### STILL OPEN, HONESTLY — TWO THINGS FOR TABISH, NEITHER GUESSED AT
+
+1. **`pnpm ig:find-official --accept <handle>` passes `campaign: null`**, so the inheritance
+   block (`if (campaign?.id)`) is skipped and a hand-accepted official page lands in the
+   DEFAULT fleet whatever post surfaced it. It is the only `createBrandTarget` caller that
+   drops provenance. Human-driven and dry-run by default, so it is named rather than papered
+   over; the fix is a `--fleet` argument or carrying the campaign.
+2. **`Category` has no column separating a FLEET from a rotation GROUP.** `whoseTurn` uses a
+   group's own ring when a target has one, so tagging a target into a fleet also changes
+   which ring rotates it. Today that is exactly right — the marketing rows return
+   `empty-ring` and are unreachable — but a company in BOTH fleets takes `categories[0]` and
+   would be written to by only one of them. No company is in both today.
+
+### HEALTH, MEASURED AFTER DEPLOY AND AFTER THE AGENT RESTART
+
+| | |
+|---|---|
+| prospects discovered from marketing channels and NOT tagged | **0** (was 2) |
+| messages to a marketing-fleet target since the tag | **0** |
+| the two that did go out | 25 Aug 17:19 and 17:20 IST, both pre-inheritance |
+| cross-fleet drafts waiting | 1, held by the gate — verified by executing it |
+| live prospects / unverified | **532 / 0** |
+| delivered in 24h | 166, newest a real thread URL at **11:13:55 IST on the new code** |
+| detection | 767 rows in 24h, 135 CAMPAIGN, **0 UNCLASSIFIED**, newest row 7 min old, all 15 channels producing |
+| autopilot | ON; heartbeat, `detectLastOkAt` and `planLastOkAt` all fresh |
+| queue | 7 waiting, every one held by one of Tabish's own rules (fleet, material, reply) |
+| tests / typecheck / layout | **2,019 / 117 files**, clean, 189 layout checks green, `/` 134/160 queries |
+
+**THE SEND PACE READS SLOW AND IS NOT A FAULT.** 8 deliveries in six hours against a p50
+interval of 62s, because 70% of pairs are `material-exhausted` — waiting for the next paid
+post naming that recipient, which is Tabish's own rule releasing itself as detection finds
+more. The multi-minute gaps around a send are the reply sweep holding the fleet lock, bounded
+at 6 minutes per conversation.
+
+**@madaboutmarketingg (double g) ALREADY EXISTS** as an ACTIVE, `fleetMember: false` account
+with a session — the burner-shaped row left when it was taken out of rotation on 19 August.
+CLAUDE.md's instruction names **`@madaboutmarketing`** (single g). **These are different
+handles and it matters:** whichever is connected must be put in the marketing fleet
+(`pnpm ig:set-category marketing sender <handle> --run`) BEFORE it can send, or it inherits
+the default fleet and writes to bollywood companies. With the marketing template unwritten it
+would be refused by name either way — which is the point of shipping the refusal first.
+
+---
+
 ## 25 AUGUST — THE REPLY CARD LOST ITS BUTTONS, AND A PARAMEDICAL COLLEGE GOT FOUR PITCHES
 
 **Tabish: *"There is no need for clicking 'I have replied' or 'Open Inbox'. Remove this
