@@ -5,6 +5,7 @@ import { profileUrl } from '@/lib/urls'
 import { copyToClipboard } from '@/lib/clipboard'
 import { openUrlCommand, run } from '@/lib/platform'
 import { recordDelivered } from '@/outreach/recordSend'
+import { recheckBeforeSend } from '@/outreach/gate'
 
 /**
  * No shell is involved anywhere in the URL open, so nothing in the URL can be
@@ -71,7 +72,45 @@ async function main() {
     return
   }
 
-  const a = attempts[0]!
+  /**
+   * ── THE GATE IS ASKED HERE TOO (2026-08-26) ───────────────────────────────
+   *
+   * This script used to take `attempts[0]` outright. `recheckBeforeSend` was never called —
+   * so the ONE path a person drives by hand was the one path with no opt-out check, no
+   * verified check, no watch-only check, no reply halt and no fleet rule. "One gate, two
+   * callers, never re-inline it" is CLAUDE.md's own rule, recorded after `deliverWaiting`
+   * and `sendNow` drifted; this was a THIRD caller that never had it.
+   *
+   * AND THE ORDERING MADE IT WORSE RATHER THAN MERELY INCOMPLETE. A permanently-held draft
+   * — a cross-fleet one, say — never has its `queuedAt` bumped (only a retryable failure
+   * does that, in deliver.ts) and the planner will not replace it while `hasPendingAttempt`
+   * is true. So it drifts to the FRONT of this `queuedAt asc` queue and stays there: the
+   * ungated path preferentially offered the exact draft every other path refuses. Measured
+   * on the live queue the day this was fixed, the oldest waiting draft was precisely that.
+   *
+   * Held drafts are REPORTED and skipped rather than silently passed over — the reason is
+   * the gate's own sentence, so this command can never describe a hold by a different rule
+   * than the one enforcing it.
+   */
+  let a: (typeof attempts)[number] | null = null
+  for (const candidate of attempts) {
+    const verdict = await recheckBeforeSend(candidate, { unattended: false })
+    if (verdict.ok) {
+      a = candidate
+      break
+    }
+    console.log(
+      `  held  @${candidate.pair.sender.handle} → @${candidate.pair.target.handle}  ${verdict.reason}` +
+        (verdict.detail ? `\n        ${verdict.detail}` : ''),
+    )
+  }
+
+  if (a === null) {
+    console.log(`\n  Every one of the ${attempts.length} waiting message(s) is held by a rule. Nothing to send.\n`)
+    await prisma.$disconnect()
+    return
+  }
+
   const { sender, target } = a.pair
   const url = profileUrl(target.handle)
 

@@ -404,7 +404,11 @@ export async function buildProspectsPage(): Promise<ProspectsPageView> {
     unjudgedNote: unjudgedNote(t.kind, t.detectorKey, t.watchEnabled),
     groundTruthNote: groundTruthNote(t.kind, t.handle, t.watchEnabled, ourHandles),
     retired: t.optedOut,
-    categories: t.categories.map((c) => c.category.name),
+    /* ENABLED ONLY, like the `category` field four lines up and like accounts-page.ts. A
+       suspended membership is not a fleet this row belongs to, and a chip that says it does
+       is a screen reporting a rule by a different rule than the one enforcing it —
+       `routeAllowed` reads `readCategoryMemberships`, which filters `enabled: true`. */
+    categories: t.categories.filter((c) => c.enabled).map((c) => c.category.name),
     delivered: deliveredBy.get(t.id) ?? 0,
     replied: repliedSet.has(t.id),
     importNote: t.importNote,
