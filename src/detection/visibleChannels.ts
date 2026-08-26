@@ -1,3 +1,4 @@
+import { cache } from 'react'
 import { prisma } from '@/lib/db'
 
 /**
@@ -63,13 +64,27 @@ const OUR_OWN_PAGES: readonly string[] = ['bollywoodsocietyy', 'bollywoodchronic
  * for one account are two different rows with two different ids — the same trap `routes.ts`
  * documents, and the reason it compares on handle.
  */
-export async function visibleChannelIds(): Promise<string[]> {
+/**
+ * ── "CACHED PER REQUEST" WAS A COMMENT, NOT A FACT (fixed 2026-08-26) ─────
+ *
+ * The docblock above has claimed this since the function was written and nothing
+ * implemented it: every call site ran its own `findMany`. Harmless while there were three
+ * call sites; `/` renders this from a dozen and the page reached 158 against a 160 budget
+ * the day two more were added. A false invariant in a comment is this codebase's most
+ * repeated way of being wrong — twice in two days, by its own record — and the fix is to
+ * make the comment true rather than to delete it.
+ *
+ * `cache` from React dedupes for the lifetime of ONE server render, which is exactly the
+ * scope the comment promises. Outside a request — every CLI script that imports this — each
+ * call simply gets its own cache, so behaviour there is unchanged.
+ */
+export const visibleChannelIds = cache(async (): Promise<string[]> => {
   const rows = await prisma.targetAccount.findMany({
     where: { handle: { notIn: [...OUR_OWN_PAGES] } },
     select: { id: true },
   })
   return rows.map((r) => r.id)
-}
+})
 
 /**
  * The `where` fragment to spread into any dashboard query over `DetectedCampaign`.
