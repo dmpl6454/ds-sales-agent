@@ -71,6 +71,92 @@ properly rather than kept on a handle we could never confirm.
 
 ---
 
+## 26 AUGUST, LATE — THE MARKETING SENDER IS LIVE, AND ITS OLD ROUTES STALLED FIFTEEN COMPANIES
+
+**Tabish connected `@madaboutmarketingg` as the marketing sender and asked for the health
+check before writing its copy: *"our marketing senders must never send the template message
+being used by bollywood category senders and vice versa."*** Proven by execution in both
+directions — and checking it found a stall his own change had just created.
+
+### THE SEPARATION, EXECUTED RATHER THAN ASSERTED
+
+The real `evaluateResend`, on real memberships, all four combinations, **before and after** the
+marketing copy exists:
+
+| route | now (copy unwritten) | the moment it is written |
+|---|---|---|
+| marketing → MARKETING | REFUSED `no-standard-message-for-this-fleet` | **ALLOWED** |
+| marketing → bollywood | REFUSED `different-category` | REFUSED `different-category` |
+| bollywood → MARKETING | REFUSED `different-category` | REFUSED `different-category` |
+| bollywood → bollywood | **ALLOWED** | **ALLOWED** |
+
+And the real `composeForPair` on real pairs, which is the half that answers his actual
+question — not *may it send*, but *which bytes would it send*:
+
+```
+@madaboutmarketingg -> @amazondotin      MARKETING copy: true   BOLLYWOOD copy: false
+@bollywoodsocietyy  -> @shashi.official  MARKETING copy: false  BOLLYWOOD copy: true
+```
+
+**THE LIVE QUEUE AGREES:** 76 waiting drafts, all five bollywood pages, **ONE distinct message
+body** (the bollywood template), **0 drafts from the marketing sender**, and the single
+cross-fleet draft is the pre-rule @fastrackworld one the gate holds. The governor is refusing
+to write for the marketing fleet because its copy is unwritten, which is exactly the design.
+
+### AND ITS SIXTY OLD ROUTES HAD TAKEN FIFTEEN BOLLYWOOD COMPANIES HOSTAGE
+
+MEASURED the same hour. `@madaboutmarketingg` still held **60 pair rows to BOLLYWOOD
+companies** from its life before 19 August. `routes.ts` refuses to CREATE such a route and
+`gate.ts` refuses to SEND on one — **but the ring is built from the pair rows that EXIST**, so
+it was a ring member for all 60, and rotation had **ELECTED it for 15**: @dharmaticent,
+@amazonmgmstudios, @universalmusicgroup, @sonysportsnetwork, @zeestudiossouth and ten more.
+
+Rotation elects ONE sender per recipient. So each of those companies had its turn assigned to
+a page the gate refuses with `different-category`, every other page was skipped as
+`not-this-senders-turn`, and **the turn only advances on a DELIVERY that can never happen.**
+A self-locking stall — the same one the parked-route fix records, arriving through the fleet
+rule instead, and invisible until somebody counted.
+
+**This is the argument `fleetRingFor`'s own docblock already makes** about building the ring
+from `SenderAccount` directly: *a ring that can name a sender with no usable route writes
+nothing while the log claims a turn was taken.* It was true of a route `routes.ts` would
+refuse; it became true of a route the FLEET rule refuses, and the ring never learned.
+
+`ringMembersFor` filters by `sameCategory` — the same predicate `routes.ts` and `gate.ts` ask,
+so the three cannot disagree. **MEASURED after: 15 elected → 0.** Nothing is weakened; the
+pair stays refused at both ends. An empty ring stays empty (`nextSender` → `empty-ring`, which
+the rest tally renders as *"no page sends for their fleet yet"*) rather than falling back to
+everybody, which would be this file's oldest failure.
+
+`readCategoryMemberships` is React-cached per request now, for the same reason
+`visibleChannelIds` is: a dozen call sites in one render.
+
+### WHAT THE PANEL SAYS NOW, AND WHY THE NUMBERS MOVED
+
+| | before | after |
+|---|---|---|
+| "no page sends for their fleet yet" | 25 | **0** — madabout is that page |
+| "not one of our pages can write to them" | 3 | **1** |
+| prospects holding a draft | 4 | **72** |
+| clear to write | 9 | **40** |
+
+### AUTOPILOT IS **OFF**, AND THAT IS THE ONLY THING LEFT
+
+`autopilotEnabled = false`, flipped by **tabish@dashmani.com at 16:39 IST** — during the
+madabout setup. Everything else is ready: 76 drafts waiting, the ladder cleared, the session
+verified against Instagram, rotation electing correctly. **Nothing sends until the switch goes
+back on**, which is the switch doing its job rather than a fault, and it is recorded here
+because a queue that fills while a switch is off reads exactly like a queue that is stuck.
+
+| | |
+|---|---|
+| @madaboutmarketingg | `fleetMember: true`, ACTIVE, cohort 1, ladder CLEARED, session verified, fleet `[marketing]` |
+| its routes | 155 total — **76 to marketing prospects**, 60 cross-fleet leftovers now excluded from every ring |
+| live prospects / unverified | **588 / 0** |
+| tests / typecheck / layout | **2,029 / 117 files**, clean, all green, `/` 157/160 |
+
+---
+
 ## 26 AUGUST, LATE — EVERY PROFILE IS WHO IT CLAIMS, AND "CONNECTED" COULD NOT BE QUESTIONED
 
 **Tabish: *"check the endpoint I am confident I have never connected madabout, just verify, I
