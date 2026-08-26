@@ -15,6 +15,7 @@ import { prepareOnDemand, type OnDemandPreview } from '@/outreach/onDemand'
 import { getSettings, setSetting, SETTING_KEYS } from '@/lib/settings'
 import { startConnect, pollConnect, cancelConnect, type ConnectState } from '@/outreach/browser/connect'
 import { handleExists, probeHandle } from '@/detection/exists'
+import { fetchFeed } from '@/detection/feed'
 import { addTargetMessage } from './add-target-message'
 import { assertSafeHandle } from '@/lib/urls'
 import { distinctiveSlice } from '@/outreach/matching'
@@ -791,6 +792,109 @@ export async function setSingleTemplateBody(body: string | null): Promise<{ ok: 
  * template too short to quote would refuse every send to that fleet with the same
  * unexplained silence the default one is guarded against.
  */
+/**
+ * ── PUT AN ACCOUNT BACK IN THE ROTATION (2026-08-26) ───────────────────────
+ *
+ * `fleetMember` WAS A ONE-WAY DOOR, and that is the defect this closes. `removeSender`
+ * writes `fleetMember: false` (actions.ts, the only mutation of that column in the tree);
+ * a grep for a write of `true` outside `src/generated` returns nothing but `select:`
+ * projections and comments. The schema default is `true`, so an account could only ever be
+ * in the rotation by never having left it.
+ *
+ * MEASURED 2026-08-26, which is how it surfaced: @madaboutmarketingg was signed in by hand
+ * on 17 August, delivered a message on the 18th, and was taken out of the rotation on the
+ * 19th. It still holds a live session on disk. It renders under "Not in the rotation —
+ * writes to nobody" with no control of any kind, is absent from the Remove form (which
+ * lists fleet members), and the Add form correctly refuses it as already present. There was
+ * no way, anywhere in the product, to use an account we own and have already signed in.
+ *
+ * ── THE FLEET IS WRITTEN BEFORE THE ROUTES, for the third time ────────────
+ *
+ * `routeAllowed` READS the memberships, so applying the category afterwards would wire this
+ * account to every recipient of the OTHER fleet and leave the gate holding those drafts
+ * forever. Same ordering rule as `createBrandTarget` and `importProspects`; the two rows
+ * that leaked on 25 August are what it costs to get it wrong.
+ *
+ * AN UNKNOWN SLUG REFUSES rather than falling back to the default — the default is what a
+ * bollywood page gets, and quietly giving it to an account meant for the marketing fleet is
+ * exactly what the fleet rule exists to prevent.
+ *
+ * Routes are created here rather than left to the planner only so the account is immediately
+ * legible on `/targets`; `ensureFleetPairs` would create the same set on its next pass, and
+ * `createMany` + the pair unique key make running both harmless.
+ */
+export async function rejoinFleet(handleRaw: string, categorySlugRaw = ''): Promise<MutationResult> {
+  const user = await requireOperator()
+  const handle = handleRaw.trim().replace(/^@/, '').toLowerCase()
+
+  const sender = await prisma.senderAccount.findUnique({ where: { handle } })
+  if (!sender) return { ok: false, message: `@${handle} is not one of your accounts.` }
+  if (sender.fleetMember) return { ok: false, message: `@${handle} is already in the rotation.` }
+
+  const slug = categorySlugRaw.trim().toLowerCase()
+  if (slug) {
+    const category = await prisma.category.findUnique({ where: { slug } })
+    if (!category) return { ok: false, message: `There is no fleet called "${categorySlugRaw}".` }
+    await prisma.categorySender.upsert({
+      where: { categoryId_senderId: { categoryId: category.id, senderId: sender.id } },
+      create: { categoryId: category.id, senderId: sender.id, enabled: true },
+      update: { enabled: true },
+    })
+  }
+
+  await prisma.senderAccount.update({ where: { handle }, data: { fleetMember: true } })
+
+  /* Now the routes, with the membership already in place. */
+  const memberships = await readCategoryMemberships()
+  const ourHandles = await fleetHandles(prisma)
+  const targets = await prisma.targetAccount.findMany({
+    select: { id: true, handle: true, optedOut: true, role: true },
+  })
+  const existing = new Set(
+    (await prisma.outreachPair.findMany({ where: { senderId: sender.id }, select: { targetId: true } })).map(
+      (p) => p.targetId,
+    ),
+  )
+  const data = targets
+    .filter(
+      (t) =>
+        !existing.has(t.id) &&
+        routeAllowed({
+          senderHandle: sender.handle,
+          targetHandle: t.handle,
+          senderCategories: categoriesFor(memberships.bySenderHandle, sender.handle),
+          targetCategories: categoriesFor(memberships.byTargetHandle, t.handle),
+          ourHandles,
+          senderIsFleetMember: true,
+          targetOptedOut: t.optedOut,
+          targetIsWatchOnly: t.role === 'WATCH',
+        }),
+    )
+    .map((t) => ({
+      senderId: sender.id,
+      targetId: t.id,
+      cooldownDays: env.DEFAULT_COOLDOWN_DAYS,
+      enabled: true,
+    }))
+  if (data.length > 0) await prisma.outreachPair.createMany({ data })
+
+  await audit(
+    user.email,
+    'sender.rejoined-rotation',
+    `SenderAccount:${handle}`,
+    `back in the rotation${slug ? ` for the ${slug} fleet` : ''}; ${data.length} route(s) created`,
+  )
+  revalidatePath('/senders')
+  revalidatePath('/targets')
+  revalidatePath('/')
+  return {
+    ok: true,
+    message:
+      `@${handle} is back in the rotation${slug ? ` and sends for the ${slug} fleet` : ''}. ` +
+      `${data.length} route(s) created. It still needs Autopilot on and a usable sign-in to send.`,
+  }
+}
+
 export async function setFleetTemplateBody(
   slug: string,
   body: string | null,
@@ -1337,6 +1441,50 @@ export async function addTarget(
   if (exists === 'missing') return { ok: false, message: `@${handle} does not exist on Instagram.` }
 
   /**
+   * ── A WATCH PAGE EARNS ITS PLACE BY POSTING, NOT BY EXISTING (2026-08-26) ──
+   *
+   * MEASURED, and it is why this check exists: `@afaqs` was added as a watched channel on
+   * 25 August from a list of names. The handle EXISTS, so `probeHandle` passed it — and its
+   * feed returns **zero posts**. It sat watched for a day and produced nothing, while the
+   * real account, `@afaqsdotcom`, published 22 posts in the same week. Tabish found it by
+   * noticing the dashboard claimed afaqs had no paid posts when it plainly had several.
+   *
+   * This is *"existence is not identity"* arriving at the WATCH door, where CLAUDE.md
+   * already warns it is not harmless: a wrong watch page mints real prospects that get real
+   * DMs. The existing identity line (below) shows WHO Instagram says the handle is; it
+   * cannot show that the account is silent, because a dormant page and a busy one look
+   * identical in a profile lookup.
+   *
+   * ONLY FOR WATCH, and only on ZERO. A PROSPECT is never read, so its feed is irrelevant.
+   * An unreachable feed is reported and admitted — a network blip must not refuse a real
+   * page, the same direction `createBrandTarget` takes on a NULL badge — and a page with a
+   * handful of old posts is admitted with a warning, because "stopped posting" is a
+   * judgement for a person while "returns nothing at all" is a wrong handle.
+   */
+  let watchNote = ''
+  if (role === 'WATCH') {
+    try {
+      const feed = await fetchFeed(handle, { maxPosts: 12, maxPages: 1 })
+      const recent = feed.posts.filter((p) => new Date(p.postedAt).getTime() > Date.now() - 30 * 86_400_000).length
+      if (feed.posts.length === 0) {
+        return {
+          ok: false,
+          message:
+            `@${handle} exists but its feed returns no posts at all, so watching it would find nothing. ` +
+            `That usually means the handle is not the account you meant — check the spelling on Instagram.`,
+        }
+      }
+      if (recent === 0) {
+        watchNote =
+          ` Note: nothing posted in the last 30 days, so it may be dormant — it is watched, but expect no paid posts from it.`
+      }
+    } catch {
+      /* Unreachable is not a verdict. Admitted, and said so. */
+      watchNote = ` Note: its feed could not be read just now, so how much it posts is unconfirmed.`
+    }
+  }
+
+  /**
    * A NEW CHANNEL IS JUDGED BY `semantic`, NOT `passthrough` — changed 2026-08-13.
    *
    * `passthrough` stores posts and judges NONE of them, and says so honestly
@@ -1474,7 +1622,7 @@ export async function addTarget(
      * and it carries Instagram's own identity facts — see its docblock for the filmigyan
      * measurement that forced this.
      */
-    message: addTargetMessage(role, handle, exists, facts),
+    message: addTargetMessage(role, handle, exists, facts) + watchNote,
   }
 }
 

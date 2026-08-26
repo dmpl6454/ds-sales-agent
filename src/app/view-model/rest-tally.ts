@@ -107,6 +107,22 @@ import { unavailableForTarget } from '@/outreach/categories'
 const ROTATION_STUCK = 'no-account-can-write'
 
 /**
+ * ── A FLEET WITH NO SENDER IS NOT A FLEET WITH SIGNED-OUT SENDERS (2026-08-26) ──
+ *
+ * `nextSender` refuses two ways and they were collapsed into one sentence: `all-unavailable`
+ * means every page in their ring is signed out or flagged — a fault, someone should sign in.
+ * `empty-ring` means their ring has NO PAGE IN IT AT ALL, which for a second fleet is not a
+ * fault but the state it was deliberately shipped in: Tabish's own instruction was that the
+ * marketing companies get *"no messages… currently"* until `@madaboutmarketing` is connected.
+ *
+ * MEASURED the day the two were split: 28 companies were being reported as "every account in
+ * their rotation is signed out or flagged" when every one of them was a marketing-fleet
+ * prospect whose fleet has no page yet. That sentence sends a person to look for a broken
+ * sign-in that does not exist, and hides the one action that would actually release them.
+ */
+const NO_PAGE_FOR_FLEET = 'no-page-sends-for-their-fleet'
+
+/**
  * THE HALF OF THE MATERIAL RULE THAT IS WAITING FOR A FIRST PAID POST, NOT A NEXT ONE.
  *
  * Both are `MATERIAL_EXHAUSTED` at the governor and both are correct, but they are opposite
@@ -145,7 +161,7 @@ const REST_RULES: Record<string, { label: string; needsAPerson: boolean }> = {
   },
   [AWAITING_FIRST_POST]: {
     label:
-      'we have not found a paid post of theirs yet — they have already been written to, so the next message waits until a channel we watch posts about them',
+      'no paid post of theirs in the last 7 days — they have already been written to, so the next message waits until a channel we watch posts about them again',
     needsAPerson: false,
   },
   [SKIP_REASONS.TARGET_REPLIED]: {
@@ -170,6 +186,10 @@ const REST_RULES: Record<string, { label: string; needsAPerson: boolean }> = {
   },
   [ROTATION_STUCK]: {
     label: 'not one of our pages can write to them — every account in their rotation is signed out or flagged',
+    needsAPerson: true,
+  },
+  [NO_PAGE_FOR_FLEET]: {
+    label: 'no page sends for their fleet yet — they wait for an account to be put in it, not for a paid post',
     needsAPerson: true,
   },
 }
@@ -371,10 +391,29 @@ export async function buildRestTally(now: Date = new Date()): Promise<RestTally>
   }
 
   const lastBySenderPerTarget = new Map<string, Map<string, { sentAt: Date; handle: string }>>()
+  /**
+   * ── EVERY DELIVERY PER RECIPIENT, NOT THE LAST ONE PER SENDER (2026-08-26) ──
+   *
+   * The allowance was being fed `lastBySenderPerTarget`, which holds ONE entry per sender —
+   * so `deliveredInWindow` was a count of DISTINCT PAGES (at most five) where the enforcer
+   * counts DELIVERED MESSAGES (`plan.ts`, `gate.ts`: `outreachAttempt.count` over
+   * DELIVERED_STATUSES). For a recipient who received eight messages from five pages the
+   * planner sees 8 and this panel saw 5, so the panel could call a recipient CLEAR that the
+   * planner refuses — a screen reporting a rule by a different rule than the one enforcing
+   * it, in the panel whose entire job is explaining why nothing is sending.
+   *
+   * The per-sender map is still needed and still built: `crossSpacingVerdict` is a
+   * per-SENDER question (the ring rule) and the release clock reads the allowance-th newest
+   * delivery. Two shapes over one already-loaded array; no extra query.
+   */
+  const allDeliveriesPerTarget = new Map<string, Date[]>()
   const lastSenderPerTarget = new Map<string, string>()
   const deliveredPairKeys = new Set<string>()
   for (const d of deliveries) {
     if (!d.sentAt) continue
+    const list = allDeliveriesPerTarget.get(d.pair.targetId)
+    if (list) list.push(d.sentAt)
+    else allDeliveriesPerTarget.set(d.pair.targetId, [d.sentAt])
     const m = lastBySenderPerTarget.get(d.pair.targetId) ?? new Map<string, { sentAt: Date; handle: string }>()
     m.set(d.pair.senderId, { sentAt: d.sentAt, handle: d.pair.sender.handle })
     lastBySenderPerTarget.set(d.pair.targetId, m)
@@ -468,14 +507,16 @@ export async function buildRestTally(now: Date = new Date()): Promise<RestTally>
        recipient no account can reach as spare capacity. `nextSender` refuses with `empty-ring`
        or `all-unavailable`; either way the answer is that this company is going nowhere. */
     if (!turn.ok) {
-      bump(ROTATION_STUCK, null)
+      /* Two refusals, two facts — see NO_PAGE_FOR_FLEET. */
+      bump(turn.reason === 'empty-ring' ? NO_PAGE_FOR_FLEET : ROTATION_STUCK, null)
       continue
     }
     const electedId = turn.senderId
 
-    const inWindow = [...(lastBySenderPerTarget.get(p.id)?.values() ?? [])]
-      .filter((d) => d.sentAt >= allowanceFloor)
-      .sort((a, b) => b.sentAt.getTime() - a.sentAt.getTime())
+    /* MESSAGES, not pages — the enforcer's own unit. See allDeliveriesPerTarget. */
+    const inWindow = (allDeliveriesPerTarget.get(p.id) ?? [])
+      .filter((sentAt) => sentAt >= allowanceFloor)
+      .sort((a, b) => b.getTime() - a.getTime())
     const camps = await campaignsNamingHandleRows(preloaded, p, allowanceFloor)
     const material = materialAllowance({ campaignsInWindow: camps.length, deliveredInWindow: inWindow.length })
     if (material.held) {
@@ -484,10 +525,11 @@ export async function buildRestTally(now: Date = new Date()): Promise<RestTally>
          the row is NOT called self-releasing, because the paid post is the release Tabish's
          rule intends and it is the one that usually comes first. */
       const nth = inWindow[material.allowance - 1]
+      /* `nth` is a Date now rather than a {sentAt} row — see allDeliveriesPerTarget. */
       /* Split on whether a paid post of theirs has been FOUND at all — see AWAITING_FIRST_POST. */
       bump(
         camps.length === 0 ? AWAITING_FIRST_POST : SKIP_REASONS.MATERIAL_EXHAUSTED,
-        nth ? new Date(nth.sentAt.getTime() + settings.defaultCooldownDays * 86_400_000) : null,
+        nth ? new Date(nth.getTime() + settings.defaultCooldownDays * 86_400_000) : null,
       )
       continue
     }

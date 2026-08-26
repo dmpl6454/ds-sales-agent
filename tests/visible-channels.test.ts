@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { readFileSync } from 'node:fs'
+import { readFileSync, readdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { ourOwnPageHandles } from '@/detection/visibleChannels'
 
@@ -35,7 +35,35 @@ const read = (p: string) => readFileSync(join(root, p), 'utf8')
  * every channel, and narrowing them would degrade the novelty filter and the accuracy
  * harness. This rule is about a screen, not about the corpus.
  */
-const DASHBOARD_FILES = ['src/app/view-model.ts']
+/**
+ * ── THE LIST WAS ONE FILE, AND TWO UNSCOPED QUERIES LIVED OUTSIDE IT ──────
+ *
+ * MEASURED 2026-08-26, from Tabish reading two numbers for "paid posts" side by side and
+ * asking what the difference was:
+ *
+ *   `src/app/nav.tsx`               the sidebar badge — no channel scope at all, so it
+ *                                   counted our own three pages on a rail linking to a page
+ *                                   that excludes them, and on a different clock as well.
+ *   `src/app/view-model/charts.ts`  the verdict chart — no channel scope, sitting directly
+ *                                   under an Analytics tile computed WITH one.
+ *
+ * Neither was a rule anybody had removed. Both were simply not read: this constant named a
+ * single file while dashboard figures had spread into `src/app/view-model/` and `nav.tsx`.
+ * The docblock above says the failure mode is *"a query nobody has written yet"*; these were
+ * queries nobody GREPPED, which is the same hole one level up.
+ *
+ * DISCOVERED rather than listed, so the next view model is covered on the day it is written
+ * — a hand-maintained list is what failed here, and re-hand-maintaining it would be the same
+ * bet twice.
+ */
+function dashboardFiles(): string[] {
+  const out = ['src/app/nav.tsx', 'src/app/view-model.ts']
+  const dir = join(root, 'src/app/view-model')
+  for (const name of readdirSync(dir)) if (name.endsWith('.ts')) out.push(`src/app/view-model/${name}`)
+  return out
+}
+
+const DASHBOARD_FILES = dashboardFiles()
 
 describe('our own pages are excluded from every dashboard figure', () => {
   it('the exclusion list names the pages we own', () => {
@@ -87,7 +115,29 @@ describe('our own pages are excluded from every dashboard figure', () => {
            * because the test directly below PROVES `postsWhere` is built by spreading
            * `inWindow`. Without that second assertion this line would be a hole.
            */
-          window.includes('where: postsWhere')
+          window.includes('where: postsWhere') ||
+          /**
+           * ── THE ENFORCER PRELOADS, AND THEY MUST NOT BE SCOPED (2026-08-26) ──
+           *
+           * `messages-page.ts` and `rest-tally.ts` each load the in-window CAMPAIGN posts
+           * ONCE and hand `campaignsNamingHandleRows` a stub whose `findMany` serves them —
+           * the fix for a per-draft and a per-prospect N+1 that put `/` at 163 against a 160
+           * budget. What comes back is the MATERIAL ALLOWANCE's input, not a figure anybody
+           * reads.
+           *
+           * Scoping it would be a bug, not a tightening. `plan.ts` and `gate.ts` — the rule
+           * itself — query every channel, so a view model that narrowed the same input would
+           * report a hold the planner does not apply and clear one it does. That is exactly
+           * the defect found in this same file's delivery count on the same day, and it is
+           * the reason this file's own docblock says the rule is *about a screen, not about
+           * the corpus*.
+           *
+           * The carve-out is the enforcer's exact PROJECTION rather than a variable name,
+           * because that shape is what makes it an allowance input; and the test directly
+           * below proves the enforcer really is unscoped, so this cannot quietly become
+           * wrong the day that changes.
+           */
+          window.includes('select: { id: true, postedAt: true, caption: true, taggedAccounts: true, brands: true }')
         if (!scoped) unscoped.push(`${file}:${i + 1}  ${line.trim().slice(0, 90)}`)
       })
     }
@@ -95,6 +145,19 @@ describe('our own pages are excluded from every dashboard figure', () => {
     // The grep must actually be looking at something, or it passes vacuously.
     expect(checked, 'no detectedCampaign queries matched — this grep is not testing anything').toBeGreaterThan(8)
     expect(unscoped, 'a dashboard query reads every channel, including pages we own').toEqual([])
+  })
+
+  /**
+   * THE CARVE-OUT ABOVE IS ONLY SAFE WHILE THIS IS TRUE. The preloads are exempt because
+   * they mirror the enforcer; if the enforcer ever gained a channel scope they would have to
+   * gain one too, and the exemption would silently hide the mismatch. Asserted rather than
+   * described, for the same reason `postsWhere`'s carve-out is backed by a proof.
+   */
+  it('the material allowance itself reads every channel, which is why its preloads may too', () => {
+    const src = read('src/outreach/materialAllowance.ts')
+    expect(src, 'the allowance has gained a channel scope — the preload carve-out is now a hole').not.toContain(
+      'visibleChannelFilter',
+    )
   })
 
   /**

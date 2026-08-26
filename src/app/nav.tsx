@@ -5,6 +5,8 @@ import { sessionUsable } from '@/outreach/sessionHealth'
 import { getSettings } from '@/lib/settings'
 import { replyHaltFloor } from '@/outreach/replyHalt'
 import { daysAgo } from '@/lib/time'
+import { detectionCutoff } from '@/lib/cutoff'
+import { visibleChannelFilter } from '@/detection/visibleChannels'
 import { readHeartbeat } from '@/worker/scheduler'
 import { SignOutButton } from './sign-out-button'
 import { RailToggle } from './chrome'
@@ -95,7 +97,28 @@ async function navCounts(): Promise<NavCounts> {
       },
     }),
     prisma.targetAccount.count({ where: { kind: 'CHANNEL', optedOut: false } }),
-    prisma.detectedCampaign.count({ where: { verdict: 'CAMPAIGN', detectedAt: { gte: daysAgo(7) } } }),
+    /**
+     * ── THE BADGE COUNTED A DIFFERENT SET THAN THE PAGE IT LINKS TO (2026-08-26) ──
+     *
+     * It was `{ verdict: 'CAMPAIGN', detectedAt: { gte: daysAgo(7) } }` — two gaps against
+     * every other paid figure in the product, and Tabish read the pair side by side and
+     * asked what the difference was:
+     *
+     *  1. NO CHANNEL SCOPE. Our own three pages were counted here and excluded everywhere
+     *     else. `tests/visible-channels.test.ts` exists to catch precisely this and its file
+     *     list did not include `nav.tsx` — *"the failure mode is a query nobody has written
+     *     yet"*, and here it was a query nobody GREPPED. The list now covers this file.
+     *  2. THE WRONG CLOCK. `detectedAt` is when WE STORED the row; the destination page
+     *     headlines `postedAt` since the 1 August cutoff. A bare integer beside a link whose
+     *     page shows a different integer for the same thing is the "a page reporting a rule
+     *     by a different rule" family.
+     *
+     * It is `inWindow` now — the same predicate `totalDetected` uses — so the badge and the
+     * number at the top of `/paid-posts` are the same set by construction.
+     */
+    prisma.detectedCampaign.count({
+      where: { verdict: 'CAMPAIGN', postedAt: { gte: detectionCutoff() }, ...(await visibleChannelFilter()) },
+    }),
   ])
 
   // §3.5: a session PROVED dead counts as needing a sign-in — the badge said 3 while a
