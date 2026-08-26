@@ -167,7 +167,14 @@ export default async function SendersPage() {
           is a no-op wearing a control's clothes.
         */}
         <RemoveSenderForm
-          handles={v.groups.flatMap((g) => g.rows.filter((r) => r.fleetMember).map((r) => r.handle))}
+          /**
+            EVERY account, not only fleet members (2026-08-26). The filter was
+            `r.fleetMember`, so an account already out of the rotation could not be removed
+            at all — Tabish hit exactly that on @madaboutmarketingg and had to put it BACK
+            in the rotation first in order to take it out. Removal is about the account, not
+            about whether it is currently rotating.
+          */
+          handles={v.groups.flatMap((g) => g.rows.map((r) => r.handle))}
         />
       </div>
     </>

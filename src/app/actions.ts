@@ -823,7 +823,27 @@ export async function setSingleTemplateBody(body: string | null): Promise<{ ok: 
  * legible on `/targets`; `ensureFleetPairs` would create the same set on its next pass, and
  * `createMany` + the pair unique key make running both harmless.
  */
-export async function rejoinFleet(handleRaw: string, categorySlugRaw = ''): Promise<MutationResult> {
+export async function rejoinFleet(
+  handleRaw: string,
+  categorySlugRaw = '',
+  /**
+   * ── A ONE-CLICK BUTTON MUST NOT SILENTLY CREATE 514 ROUTES (2026-08-26) ──
+   *
+   * The first version of this action applied immediately. MEASURED the hour it shipped:
+   * @tabishmukaddam1 — the rehearsal burner, whose whole purpose is being OUT of the fleet —
+   * was put in with **514 routes to real companies**, eight seconds after the intended
+   * account, by someone trying the new control. Nothing had been delivered when it was
+   * caught, and it was restored; the next planner pass would have started drafting.
+   *
+   * So the first call is a PREVIEW and writes nothing: it returns the fleet and the exact
+   * number of routes that would be created, from the same computation that will run. The
+   * count is server-authoritative rather than an estimate the client made up — this is the
+   * one control that turns an account we own into an account that cold-DMs strangers, and
+   * "adding is never the same act as sending" has to mean something at the door that does
+   * the adding.
+   */
+  confirmed = false,
+): Promise<MutationResult> {
   const user = await requireOperator()
   const handle = handleRaw.trim().replace(/^@/, '').toLowerCase()
 
@@ -841,8 +861,6 @@ export async function rejoinFleet(handleRaw: string, categorySlugRaw = ''): Prom
       update: { enabled: true },
     })
   }
-
-  await prisma.senderAccount.update({ where: { handle }, data: { fleetMember: true } })
 
   /* Now the routes, with the membership already in place. */
   const memberships = await readCategoryMemberships()
@@ -876,13 +894,50 @@ export async function rejoinFleet(handleRaw: string, categorySlugRaw = ''): Prom
       cooldownDays: env.DEFAULT_COOLDOWN_DAYS,
       enabled: true,
     }))
+  /**
+   * THE PREVIEW STOPS HERE, having written the membership but NOT the flag and NOT the
+   * routes. The membership alone changes nothing — `routeAllowed` only matters when a route
+   * is created, and `fleetMember` is still false so rotation cannot elect this account.
+   */
+  if (!confirmed) {
+    const where = slug ? `the ${slug} fleet` : 'the default (bollywood) fleet'
+    return {
+      ok: false,
+      message:
+        `This puts @${handle} in ${where} and creates ${data.length} route${data.length === 1 ? '' : 's'} ` +
+        `to real companies it will then cold-message while Autopilot is on. ` +
+        (sender.status === 'PAUSED' ? `It is retired, so this also makes it ACTIVE again. ` : '') +
+        `Press again to confirm.`,
+    }
+  }
+
+  /**
+   * ── A RETIRED ACCOUNT COMES BACK ACTIVE, BUT A FLAGGED ONE NEVER DOES ────
+   *
+   * `removeSender` retires with `status: 'PAUSED'`, and the gate refuses a non-ACTIVE sender
+   * (`SENDER_NOT_ACTIVE`). Rejoining without clearing that gives an account with routes,
+   * a session and a fleet flag that still cannot send a single message — a control that
+   * appears to work and does not, which is this codebase's signature failure.
+   *
+   * CHALLENGED IS NEVER CLEARED AS A SIDE EFFECT. That is Instagram having flagged the
+   * account; it trips the fleet-wide breaker and is cleared deliberately, by its own button,
+   * after a person has looked. Same rule `checkConnect` had to learn.
+   */
+  const restoreActive = sender.status === 'PAUSED'
+  await prisma.senderAccount.update({
+    where: { handle },
+    data: restoreActive ? { fleetMember: true, status: 'ACTIVE' } : { fleetMember: true },
+  })
+
   if (data.length > 0) await prisma.outreachPair.createMany({ data })
 
   await audit(
     user.email,
     'sender.rejoined-rotation',
     `SenderAccount:${handle}`,
-    `back in the rotation${slug ? ` for the ${slug} fleet` : ''}; ${data.length} route(s) created`,
+    `back in the rotation${slug ? ` for the ${slug} fleet` : ''}; ${data.length} route(s) created` +
+      (restoreActive ? '; status PAUSED -> ACTIVE' : '') +
+      (sender.status === 'CHALLENGED' ? '; still CHALLENGED and cannot send until that is cleared' : ''),
   )
   revalidatePath('/senders')
   revalidatePath('/targets')
@@ -891,7 +946,11 @@ export async function rejoinFleet(handleRaw: string, categorySlugRaw = ''): Prom
     ok: true,
     message:
       `@${handle} is back in the rotation${slug ? ` and sends for the ${slug} fleet` : ''}. ` +
-      `${data.length} route(s) created. It still needs Autopilot on and a usable sign-in to send.`,
+      `${data.length} route(s) created.` +
+      (restoreActive ? ' It was retired, so it is ACTIVE again.' : '') +
+      (sender.status === 'CHALLENGED'
+        ? ' It is still flagged by Instagram, so it cannot send until you clear that on its row.'
+        : ' It still needs Autopilot on and a usable sign-in to send.'),
   }
 }
 
@@ -1144,11 +1203,28 @@ export async function addSender(
       : existing.status === 'CHALLENGED'
         ? 'under “Needs you now”'
         : 'on this page — open the groups below to see it'
+    /**
+     * ── AND IT NAMES THE WAY BACK, WHICH IS NOT "ADD IT AGAIN" (2026-08-26) ──
+     *
+     * Tabish asked how to delete a retired account and re-add it. He cannot, and the honest
+     * answer is worth more than a workaround: `removeSender` DELETES only an account that
+     * never delivered anything, and RETIRES one that did — because `OutreachAttempt.pairId`
+     * is `ON DELETE CASCADE`, so deleting the account erases the record that a real person
+     * received a real message, which is what stops them being contacted twice. That is the
+     * standing removal rule and it is not negotiable for one account's tidiness.
+     *
+     * So "re-add" is "Put back in the rotation", on its own row, which since the same day
+     * also restores a retired account to ACTIVE. Saying that here is the difference between
+     * a refusal and a dead end.
+     */
     return {
       ok: false,
       message:
         `@${handle} is already one of your accounts, ${where}. ` +
-        `Nothing was changed. Removing its routes does not remove the account — the account is the identity, a route is permission to write to one recipient.`,
+        `Nothing was changed. To use it again, open that group and press "Put back in the rotation" on its row — ` +
+        `that is the way back, and it restores a retired account to active. ` +
+        `An account that has delivered a message is never deleted outright, because that record is what stops ` +
+        `the same person being contacted twice.`,
     }
   }
   /**
