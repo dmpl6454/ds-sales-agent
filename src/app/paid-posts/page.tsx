@@ -81,7 +81,10 @@ export default async function PaidPostsPage({
       <div className="page">
         <PageHead
           title="Paid posts"
-          sub={`${v.weekDetected} spotted in the last 7 days · ${v.totalDetected} ever`}
+          /* NOT "ever": `totalDetected` is scoped to `inWindow` — posted since the 1 August
+             cutoff, and excluding our own pages. Saying "ever" about a windowed, filtered
+             figure is the same defect as a bounded list read as a complete record. */
+          sub={`${v.weekDetected} spotted in the last 7 days · ${v.totalDetected} since 1 August`}
         />
 
         {/*

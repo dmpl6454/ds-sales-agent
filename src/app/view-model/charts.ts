@@ -1,6 +1,7 @@
 import { prisma } from '@/lib/db'
 import { daysAgo, istDateKey } from '@/lib/time'
 import { detectionCutoff } from '@/lib/cutoff'
+import { visibleChannelFilter } from '@/detection/visibleChannels'
 import { DELIVERED_STATUSES, IN_FLIGHT_STATUSES } from '@/lib/constants'
 import { readHeartbeat } from '@/worker/scheduler'
 import {
@@ -63,8 +64,15 @@ export interface VerdictChart {
 export async function buildVerdictChart(days = 30): Promise<VerdictChart> {
   const since = new Date(Math.max(daysAgo(days).getTime(), detectionCutoff().getTime()))
 
+  /**
+   * OUR OWN PAGES ARE EXCLUDED (2026-08-26). This chart sits directly under a tile that
+   * computes its figure WITH `visibleChannelFilter()`, so the bars were counting ~37
+   * own-page CAMPAIGN rows the number above them left out — two channel scopes on one page.
+   * Same missing-grep cause as the sidebar badge; `tests/visible-channels.test.ts` now walks
+   * this directory.
+   */
   const rows = await prisma.detectedCampaign.findMany({
-    where: { postedAt: { gte: since } },
+    where: { postedAt: { gte: since }, ...(await visibleChannelFilter()) },
     select: { postedAt: true, verdict: true },
   })
 

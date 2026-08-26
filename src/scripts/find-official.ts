@@ -64,9 +64,35 @@ async function main(): Promise<void> {
     if (!handle) throw new Error('--accept needs a handle')
     const e = await enrichHandle(handle)
     if (!e.reachable) throw new Error(`@${handle} is not reachable: ${e.reason ?? 'unknown'}`)
+
+    /**
+     * ── THE PROVENANCE POST, SO THE FLEET IS INHERITED (2026-08-26) ──────────
+     *
+     * This passed `null` for the campaign — the ONLY `createBrandTarget` caller that did —
+     * and `brandTarget.ts` guards the fleet-inheritance block with `if (campaign?.id)`. So a
+     * page accepted here got NO membership, `effectiveCategories([])` read that as the
+     * default fleet, and a lead surfaced from an @exchange4media or @afaqsdotcom paid post
+     * was created as a bollywood prospect and wired to every bollywood sender — while being
+     * unreachable by its own fleet. Exactly the shape that put a bollywood pitch in front of
+     * @irctc.official and @sprite_india on 25 August.
+     *
+     * `--for <shortcode>` names the post the near-miss came from, which is what the operator
+     * is reading when they decide. Without it the accept still works and still says which
+     * fleet it landed in, so the silent case is gone either way.
+     */
+    const forArg = process.argv.indexOf('--for')
+    const shortcode = forArg > -1 ? (process.argv[forArg + 1] ?? '').trim() : ''
+    const campaign = shortcode
+      ? await prisma.detectedCampaign.findFirst({
+          where: { shortcode },
+          select: { id: true, shortcode: true, target: { select: { handle: true } } },
+        })
+      : null
+    if (shortcode && !campaign) throw new Error(`no stored post with shortcode ${shortcode}`)
+
     const outcome = await createBrandTarget(
       { kind: 'BRAND', handle, displayName: e.fullName ?? handle, category: null, followers: e.followers },
-      null,
+      campaign ? { id: campaign.id, shortcode: campaign.shortcode, channelHandle: campaign.target.handle } : null,
       'brand.discovered',
       'cli:find-official-accept',
     )
@@ -76,7 +102,18 @@ async function main(): Promise<void> {
         data: { isVerified: e.isVerified, followerCount: e.followers },
       })
     }
-    console.log(`@${handle}: ${outcome} (verified=${e.isVerified ?? '?'} followers=${e.followers ?? '?'})`)
+    /* WHICH FLEET it landed in, always — the accept is the one path where that is a
+       decision and it used to be invisible. */
+    const fleets = await prisma.categoryTarget.findMany({
+      where: { target: { handle }, enabled: true },
+      select: { category: { select: { slug: true } } },
+    })
+    const fleetNote = fleets.length > 0 ? fleets.map((f) => f.category.slug).join(', ') : 'bollywood (the default)'
+    console.log(`@${handle}: ${outcome} (verified=${e.isVerified ?? '?'} followers=${e.followers ?? '?'}) fleet=${fleetNote}`)
+    if (!campaign && outcome === 'created') {
+      console.log(`  NOTE: no --for <shortcode> was given, so it inherited the DEFAULT fleet.`)
+      console.log(`  If it came from a marketing-trade post: pnpm ig:set-category marketing target ${handle} --run`)
+    }
     await prisma.$disconnect()
     return
   }

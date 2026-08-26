@@ -73,7 +73,7 @@ export interface AccountsPageView {
   total: number
   groups: AccountGroup[]
   /** Headline counts, so the shape of the fleet is legible before any row is read. */
-  summary: { ready: number; needsLogin: number; broken: number }
+  summary: { ready: number; needsLogin: number; broken: number; outOfFleet: number }
 }
 
 export async function buildAccountsPage(connectingHandles: readonly string[] = []): Promise<AccountsPageView> {
@@ -238,6 +238,14 @@ export async function buildAccountsPage(connectingHandles: readonly string[] = [
       ready: ready.length,
       needsLogin: needsLogin.length,
       broken: broken.length,
+      /**
+       * THE FOURTH BUCKET, ADDED 2026-08-26. The page's own comment calls these tiles a
+       * PARTITION that "sum to the total", and with three of four rendered they did not:
+       * @madaboutmarketingg and @tabishmukaddam1 were invisible in the summary while being
+       * counted in `total`. A partition missing a part is worse than four loose numbers,
+       * because the reader checks the arithmetic and it fails silently.
+       */
+      outOfFleet: outOfFleet.length,
     },
   }
 }

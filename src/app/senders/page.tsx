@@ -64,6 +64,15 @@ export default async function SendersPage() {
             <strong>{v.summary.broken}</strong>
             <span>need you now</span>
           </li>
+          {/* The fourth part of the partition. Rendered only when it is non-empty, because a
+              permanent "0 out of the rotation" is furniture — but when it is non-zero the
+              tiles must sum to the total printed above, or the reader's arithmetic fails. */}
+          {v.summary.outOfFleet > 0 && (
+            <li>
+              <strong>{v.summary.outOfFleet}</strong>
+              <span>write to nobody</span>
+            </li>
+          )}
         </ul>
 
         {q.remaining > 0 && (
@@ -138,7 +147,7 @@ export default async function SendersPage() {
         )}
 
         {v.groups.map((g) => (
-          <AccountGroupView key={g.key} group={g} />
+          <AccountGroupView key={g.key} group={g} fleets={fleets.map((f) => ({ slug: f.slug, name: f.name }))} />
         ))}
 
         {/*

@@ -2,7 +2,7 @@
 
 import { useState } from 'react'
 import { useRouter } from 'next/navigation'
-import { clearChallenge } from '../actions'
+import { clearChallenge, rejoinFleet } from '../actions'
 import { useConnect } from './use-connect'
 import type { AccountGroup, AccountRow } from '../view-model/accounts-page'
 
@@ -13,8 +13,25 @@ import type { AccountGroup, AccountRow } from '../view-model/accounts-page'
  * At 65 accounts the page has to open on what is wrong; a list where everything is
  * equally visible is a list where nothing is.
  */
-export function AccountGroupView({ group }: { group: AccountGroup }) {
-  const needsAttention = group.key === 'broken' || group.key === 'needs-login'
+export function AccountGroupView({
+  group,
+  fleets = [],
+}: {
+  group: AccountGroup
+  /** Fleets an out-of-rotation account may rejoin for. Empty = only the default exists. */
+  fleets?: readonly { slug: string; name: string }[]
+}) {
+  /**
+   * OUT-OF-FLEET OPENS TOO, WHEN THERE IS SOMETHING TO DECIDE (2026-08-26).
+   *
+   * The group's only control is "put it back in the rotation", and a collapsed group renders
+   * none of its rows — so an account we own, have already signed in, and want to use was
+   * behind a click nothing invited. It opens when at least one row COULD rejoin (signed in,
+   * not flagged); a burner with no session stays folded away, which is the state this group
+   * was designed for.
+   */
+  const canRejoin = group.key === 'out-of-fleet' && group.rows.some((r) => r.connected && r.status !== 'CHALLENGED')
+  const needsAttention = group.key === 'broken' || group.key === 'needs-login' || canRejoin
   const [open, setOpen] = useState(needsAttention)
 
   return (
@@ -27,7 +44,7 @@ export function AccountGroupView({ group }: { group: AccountGroup }) {
       {open && (
         <div className="sendergrid">
           {group.rows.map((r) => (
-            <AccountRowView key={r.id} row={r} />
+            <AccountRowView key={r.id} row={r} fleets={fleets} />
           ))}
         </div>
       )}
@@ -35,7 +52,7 @@ export function AccountGroupView({ group }: { group: AccountGroup }) {
   )
 }
 
-function AccountRowView({ row }: { row: AccountRow }) {
+function AccountRowView({ row, fleets = [] }: { row: AccountRow; fleets?: readonly { slug: string; name: string }[] }) {
   const router = useRouter()
   const [busyClear, setBusyClear] = useState(false)
   const [message, setMessage] = useState<string | null>(null)
@@ -77,6 +94,16 @@ function AccountRowView({ row }: { row: AccountRow }) {
       {row.todo && <p className="account-todo">{row.todo}</p>}
 
       <div className="account-actions">
+        {/*
+          ── THE WAY BACK INTO THE ROTATION (2026-08-26) ──────────────────────
+          `fleetMember` was a one-way door: `removeSender` writes false and nothing in the
+          tree ever wrote true, so an account we own and have already signed in could not be
+          used again from anywhere in the product. It is rendered HERE, on the row it
+          concerns, rather than as a separate form — the same reason every other remedy on
+          this page sits on its own row.
+        */}
+        {!row.fleetMember && <RejoinControl handle={row.handle} fleets={fleets} onDone={() => router.refresh()} />}
+
         {!row.connected && connect.phase !== 'done' && (
           <>
             <button
@@ -149,3 +176,56 @@ function AccountRowView({ row }: { row: AccountRow }) {
   )
 }
 
+
+/**
+ * "Put it back in the rotation", with the fleet chosen at the same moment.
+ *
+ * THE FLEET IS PART OF THE SAME ACT, deliberately. `rejoinFleet` writes the membership
+ * BEFORE creating the routes, because `routeAllowed` reads it — a fleet applied afterwards
+ * leaves the account wired to every recipient of the other fleet and the gate holding those
+ * drafts forever. Splitting this into "rejoin" then "set the fleet" would put that ordering
+ * in the operator's hands, which is exactly where it must not be.
+ *
+ * The dropdown renders only when a second fleet exists, matching the add form: one option is
+ * not a choice.
+ */
+function RejoinControl({
+  handle,
+  fleets,
+  onDone,
+}: {
+  handle: string
+  fleets: readonly { slug: string; name: string }[]
+  onDone: () => void
+}) {
+  const [fleet, setFleet] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [outcome, setOutcome] = useState<{ ok: boolean; message: string } | null>(null)
+
+  return (
+    <>
+      {fleets.length > 0 && (
+        <select value={fleet} onChange={(e) => setFleet(e.target.value)} aria-label={`Which fleet @${handle} sends for`}>
+          <option value="">Bollywood (the original fleet)</option>
+          {fleets.map((f) => (
+            <option key={f.slug} value={f.slug}>
+              {f.name}
+            </option>
+          ))}
+        </select>
+      )}
+      <button
+        disabled={busy}
+        onClick={async () => {
+          setBusy(true)
+          setOutcome(await rejoinFleet(handle, fleet))
+          setBusy(false)
+          onDone()
+        }}
+      >
+        {busy ? 'Adding…' : 'Put back in the rotation'}
+      </button>
+      {outcome ? <p className={outcome.ok ? 'account-todo' : 'settingrow-argument'}>{outcome.message}</p> : null}
+    </>
+  )
+}

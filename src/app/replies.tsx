@@ -39,7 +39,19 @@ export function RepliesPanel({ replies }: { replies: ReplyCard[] }) {
   return (
     <details className="replies-fold">
       <summary>
-        {replies.length === 1 ? '1 recipient has replied' : `${replies.length} recipients have replied`}
+        {/*
+          ONE ROW PER REPLY, and some recipients wrote to more than one of our pages — so the
+          row count is not a recipient count and must not borrow its noun. Both numbers are
+          useful here precisely because this fold lists one row per reply: the summary tells
+          you how many rows are inside and how many parties they represent.
+        */}
+        {(() => {
+          const people = new Set(replies.map((r) => r.targetHandle)).size
+          if (replies.length === 1) return '1 reply'
+          return people === replies.length
+            ? `${replies.length} recipients have replied`
+            : `${replies.length} replies from ${people} recipients`
+        })()}
         <span className="muted"> — every account writing to them is paused</span>
       </summary>
 

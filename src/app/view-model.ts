@@ -651,7 +651,16 @@ export async function buildCeoView(): Promise<CeoView> {
     headline =
       unreadReplies.length === 1
         ? `${operatorName(unreadReplies[0]!.pair.target.displayName)} replied. Outreach to them is on hold until you have answered.`
-        : `${unreadReplies.length} channels replied. Outreach to them is on hold.`
+        : /**
+             ── ROWS ARE NOT RECIPIENTS, AND THESE ARE NEVER CHANNELS (2026-08-26) ──
+             This read `${unreadReplies.length} channels replied` and was wrong twice.
+             `unreadReplies` is one row per REPLY, and 78 rows spanned 63 distinct
+             recipients — a 24% overstatement of how many parties are held. And "channel"
+             names the one role that structurally cannot appear here: a channel is a
+             `role: 'WATCH'` publisher we read and never message (`TARGET_IS_WATCH_ONLY`).
+             Every row in this set is a PROSPECT. The panel 40px below already said 63.
+           */
+          `${new Set(unreadReplies.map((r) => r.pair.targetId)).size} recipients replied. Outreach to them is on hold.`
   } else if (awaitingRaw.length > 0) {
     health = 'attention'
     headline = `${awaitingRaw.length} message${awaitingRaw.length === 1 ? '' : 's'} written and ready to send.`
@@ -1320,21 +1329,54 @@ export async function buildPaidPostsView(input?: {
    * matched in the three casings a person actually types. Portable by construction; the cost
    * is a longer `OR`, evaluated once, inside a window that is already bounded.
    */
+  /**
+   * ── WHAT THIS MISSED, MEASURED 2026-08-26 ─────────────────────────────────
+   *
+   * Tabish searched `arshad warsi` and got 2 rows while 3 paid posts name him. Two
+   * independent failures, and neither fix alone finds the third post:
+   *
+   *  1. **`taggedAccounts` was not searched at all.** It is in the same query's `select`
+   *     (the "We message" column runs `mentionsHandleExactly` over it), so the page could
+   *     DISPLAY a recipient on a row the search could not FIND. The column was in the
+   *     SELECT and not in the WHERE.
+   *  2. **A SPACE is not an UNDERSCORE.** `contains` is a literal `LIKE`, and nothing here
+   *     normalised separators — so `arshad warsi` could never match `arshad_warsi` or
+   *     `@arshad_warsi`, which is how every handle in this corpus is spelled.
+   *
+   * A third, found while fixing: the casing fan-out generated lower and Title case but never
+   * ALL CAPS, and `captionEntities`' own work records that trade captions routinely open in
+   * caps.
+   *
+   * SEPARATOR VARIANTS RATHER THAN A STORED SEARCH COLUMN. The honest long-term answer is a
+   * lower-cased, separator-squashed column written at detection time and matched once. That
+   * is a schema change plus a backfill of 2,700 rows, and this is a search box: the variants
+   * below are a handful more `contains` terms over a window that is already bounded, and
+   * they are portable across both providers, which `mode: 'insensitive'` is not.
+   */
   const rawQuery = input?.query?.trim() ?? ''
   const searchQuery = rawQuery.length >= 2 ? rawQuery : null
-  const casings = searchQuery
-    ? [...new Set([
-        searchQuery,
-        searchQuery.toLowerCase(),
-        searchQuery.replace(/\b[a-z]/g, (c) => c.toUpperCase()),
-      ])]
+  /** The same words with the separators a handle uses: "arshad warsi" -> "arshad_warsi", "arshadwarsi". */
+  const separatorVariants = (t: string): string[] =>
+    /\s/.test(t) ? [t.replace(/\s+/g, '_'), t.replace(/\s+/g, '.'), t.replace(/\s+/g, '')] : [t]
+  const terms = searchQuery
+    ? [...new Set(
+        [
+          searchQuery,
+          searchQuery.toLowerCase(),
+          searchQuery.toUpperCase(),
+          searchQuery.replace(/\b[a-z]/g, (c) => c.toUpperCase()),
+        ].flatMap(separatorVariants),
+      )]
     : []
   const searchWhere = searchQuery
     ? {
         OR: [
-          ...casings.flatMap((t) => [
+          ...terms.flatMap((t) => [
             { caption: { contains: t } },
             { brands: { contains: t } },
+            /* The column the "We message" cell is built from. Searching what the page
+               displays is the floor, not a feature. */
+            { taggedAccounts: { contains: t } },
           ]),
           /* A shortcode is an exact identifier, so it is matched as one — pasting a post's
              own code is the fastest way to find the row somebody is asking about. */
