@@ -1,3 +1,4 @@
+import { cache } from 'react'
 import { prisma } from './db'
 import { REPLY_RESUME_HOURS_DEFAULT } from '@/outreach/replyHalt'
 import { env } from './env'
@@ -403,7 +404,24 @@ export function describeCap(n: number): string {
   return Number.isFinite(n) ? String(n) : 'unlimited'
 }
 
-export async function getSettings(): Promise<RuntimeSettings> {
+/**
+ * Request-cached, exactly like `visibleChannelIds` and `readCategoryMemberships` and for
+ * the same measured reason: one render of `/` reaches this from half a dozen call sites
+ * (the dispatcher status, the gate, spacing, the queue partition, the template box), each
+ * paying a full `Setting` table read — and `/` crossed its query budget (161/160) the day
+ * the queue's shape shifted. `cache` dedupes for the lifetime of ONE server render, which
+ * is also the correct consistency: a page must not read the switch as ON in one panel and
+ * OFF in another because a flip landed mid-render.
+ *
+ * OUTSIDE a request — the device agent, the scheduler, every CLI — each call gets its own
+ * cache, i.e. a FRESH read every time, so the just-in-time `getSettings()` before the
+ * SENDING claim (the 2026-08-19 autopilot-off fix) is untouched. And no action writes a
+ * Setting and then re-reads it through this in the same request — checked at all four
+ * `setSetting` call sites the day this was added.
+ */
+export const getSettings = cache(readSettings)
+
+async function readSettings(): Promise<RuntimeSettings> {
   const rows = await prisma.setting.findMany()
   const map = new Map(rows.map((r) => [r.key, r.value]))
   const d = defaults()

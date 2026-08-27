@@ -30,10 +30,11 @@
 #                              the layout harness FAILS rather than skips when counting is
 #                              off, and a server you cannot measure is a server nobody
 #                              measures
-#   prisma-client-for-env.sh   runs before every start: a failed `pnpm test` leaves the
-#                              generated client on SQLite, and a dashboard restarting onto
-#                              it is the device agent's documented crash-loop one process
-#                              over
+#   client-mismatch REFUSES    a failed `pnpm test` leaves the generated client on SQLite,
+#                              and a dashboard restarting onto it is the device agent's
+#                              documented crash-loop one process over. The runner CHECKS
+#                              and waits rather than regenerating: `prisma generate` spawns
+#                              engine binaries that are their own TCC clients under launchd
 #
 # ── THE PORT IS WAITED FOR, NEVER FOUGHT OVER ────────────────────────────────
 #
@@ -77,10 +78,20 @@ case "${1:-install}" in
   <key>Label</key>
   <string>${LABEL}</string>
 
+  <!-- The exact binary chain the WATCH job has exercised for weeks — caffeinate, pnpm,
+       node — because macOS TCC treats every binary a launchd job spawns as its own
+       privacy client, and on this Mac only that chain holds a Desktop-folder grant.
+       A job that reached the repo through /bin/bash was refused outright ("Operation
+       not permitted", exit 126), MEASURED on install day in both the bash-first and
+       caffeinate-first arrangements — which is why the runner is scripts/runDashboard.ts
+       (node) and not a shell script. The caffeinate assertion itself is redundant
+       beside the watch job's; the chain, not the assertion, is what is being copied. -->
   <key>ProgramArguments</key>
   <array>
-    <string>/bin/bash</string>
-    <string>${REPO}/scripts/run-dashboard.sh</string>
+    <string>/usr/bin/caffeinate</string>
+    <string>-i</string>
+    <string>${PNPM}</string>
+    <string>dashboard:serve</string>
   </array>
 
   <key>WorkingDirectory</key>

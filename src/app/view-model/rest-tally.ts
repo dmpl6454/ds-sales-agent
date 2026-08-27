@@ -185,7 +185,16 @@ const REST_RULES: Record<string, { label: string; needsAPerson: boolean }> = {
     needsAPerson: true,
   },
   [ROTATION_STUCK]: {
-    label: 'not one of our pages can write to them — every account in their rotation is signed out or flagged',
+    /**
+     * Three inputs land here, not two: signed out, flagged, AND a parked route ("an earlier
+     * message from this page may already have reached them"). The old sentence named only
+     * the first two — so @wowmomos, whose one-page marketing ring is parked on an uncertain
+     * send, read as "signed out or flagged" on a day every account was healthy, sending a
+     * person hunting a broken sign-in that does not exist. The same defect this file already
+     * records for `empty-ring`, one bucket over.
+     */
+    label:
+      'not one of our pages can write to them — each page in their rotation is signed out, flagged, or holding an earlier send that may already have reached them',
     needsAPerson: true,
   },
   [NO_PAGE_FOR_FLEET]: {

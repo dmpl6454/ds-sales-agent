@@ -13,6 +13,7 @@
     "worker": "tsx src/worker/index.ts",
     "worker:heartbeat": "tsx src/scripts/heartbeat.ts",
     "agent:device": "tsx src/agent/main.ts",
+    "dashboard:serve": "tsx scripts/runDashboard.ts",
     "worker:dev": "tsx watch src/worker/index.ts",
     "run:slot": "tsx src/worker/runOnce.ts",
     "db:generate": "prisma generate",
