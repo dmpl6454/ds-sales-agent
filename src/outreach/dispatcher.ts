@@ -239,6 +239,109 @@ async function releaseSendLock(): Promise<void> {
 }
 
 /**
+ * ── ORPHANED `SENDING` ROWS ARE PARKED AUTOMATICALLY (2026-08-27) ───────────
+ *
+ * A row in SENDING means "a browser drive owns this message right now" — and a drive only
+ * ever runs while HOLDING the fleet send lock. So while THIS process holds the lock, a row
+ * still sitting in SENDING belongs to no live drive: it is the corpse of a process that was
+ * killed mid-send and never wrote an outcome.
+ *
+ * MEASURED before this existed: three rows sat in SENDING for ~19 HOURS (26 Aug — the
+ * agent restarts around the madabout setup killed three drives mid-flight), each blocking
+ * its pair through `hasPendingAttempt` and keeping `status='SENDING'` from ever reaching
+ * zero — the state the 23 Aug entry warns wedges any wait-for-a-quiet-moment loop. Fourth
+ * occurrence of the class (22 Aug ×2, 23 Aug ×1, 26 Aug ×3); by this repo's own standard
+ * three is where the mechanism gets built instead of a fifth hand-fix.
+ *
+ * THE ONE RACE, AND THE DWELL THAT CLOSES IT. `sendNow` claims READY→SENDING BEFORE it
+ * asks for the lock (actions.ts) and reverts on every non-drive path — so a just-claimed
+ * row can be visible here for the seconds until its lock attempt returns busy and its
+ * revert flips it back to READY. Candidates are therefore re-read after a dwell WHILE THE
+ * LOCK IS STILL HELD: a live `sendNow` cannot proceed (we hold the lock) and reverts inside
+ * the dwell, so only a claimant that died before reverting is still SENDING afterwards.
+ * The park itself is `updateMany` conditioned on `status: 'SENDING'`, so a slow revert
+ * landing after the re-read costs a no-op, never a clobbered row.
+ *
+ * PARKED AS `not-in-thread`, the 23 Aug precedent, because it is the honest code: the
+ * drive may have died before OR after Enter, so the recipient MAY have the message, and
+ * re-sending is wrong under both readings. The pair stays held until a person reads the
+ * thread (`pnpm ig:thread <sender> <target>`), exactly like every other uncertain send.
+ *
+ * THE GUARD IS A DATABASE FACT, NOT MODULE STATE: the lock row must name THIS pid. In
+ * production the one call site sits inside `withSendLock`, so it always holds; anything
+ * else calling this parks NOTHING rather than parking a message some live process owns.
+ */
+export const ORPHAN_SENDING_DWELL_MS = 12_000
+
+export async function parkOrphanedSending(dwellMs: number = ORPHAN_SENDING_DWELL_MS): Promise<number> {
+  const row = await prisma.setting.findUnique({ where: { key: SEND_LOCK_KEY } })
+  let holder: SendLockHolder | null = null
+  try {
+    holder = row ? (JSON.parse(row.value) as SendLockHolder) : null
+  } catch {
+    holder = null
+  }
+  if (!holder || holder.pid !== process.pid) return 0
+
+  const first = await prisma.outreachAttempt.findMany({
+    where: { status: 'SENDING' },
+    select: { id: true },
+  })
+  if (first.length === 0) return 0
+
+  await new Promise((resolve) => setTimeout(resolve, dwellMs))
+
+  const still = await prisma.outreachAttempt.findMany({
+    where: { id: { in: first.map((a) => a.id) }, status: 'SENDING' },
+    select: { id: true, senderId: true, targetId: true },
+  })
+  if (still.length === 0) return 0
+
+  const [senders, targets] = await Promise.all([
+    prisma.senderAccount.findMany({
+      where: { id: { in: still.map((a) => a.senderId) } },
+      select: { id: true, handle: true },
+    }),
+    prisma.targetAccount.findMany({
+      where: { id: { in: still.map((a) => a.targetId) } },
+      select: { id: true, handle: true },
+    }),
+  ])
+  const senderHandle = new Map(senders.map((s) => [s.id, s.handle]))
+  const targetHandle = new Map(targets.map((t) => [t.id, t.handle]))
+
+  let parked = 0
+  for (const attempt of still) {
+    const res = await prisma.outreachAttempt.updateMany({
+      where: { id: attempt.id, status: 'SENDING' },
+      data: {
+        status: 'FAILED',
+        failureCode: 'not-in-thread',
+        error:
+          'the sending process stopped mid-send and never recorded an outcome — the recipient may have this message, so read the thread before anything is re-sent',
+        attempts: { increment: 1 },
+      },
+    })
+    if (res.count === 0) continue
+    parked += 1
+    const pair = `${senderHandle.get(attempt.senderId) ?? attempt.senderId}→${targetHandle.get(attempt.targetId) ?? attempt.targetId}`
+    log.alarm('a send was interrupted mid-drive and never recorded an outcome — parked for a person to read the thread', {
+      pair,
+      attemptId: attempt.id,
+    })
+    await prisma.auditLog.create({
+      data: {
+        actor: 'dispatcher',
+        action: 'attempt.parked-orphaned-sending',
+        entity: `OutreachAttempt:${attempt.id}`,
+        detail: `${pair} was still SENDING while this process held the send lock — no live drive can exist then, so the claiming process died mid-send; parked as not-in-thread for a person to read the thread`,
+      },
+    })
+  }
+  return parked
+}
+
+/**
  * True while THIS process holds the lock through `withSendLock`.
  *
  * ── THE BUG THIS PREVENTS, FOUND BY RUNNING IT ────────────────────────────
@@ -523,6 +626,10 @@ export async function dispatchTick(reason: string): Promise<DispatchTickResult> 
    * of its own queries.
    */
   const result = await withSendLock(`dispatch:${reason}`, async () => {
+    /* Any row still in SENDING while we hold the fleet lock belongs to no live drive —
+       park it for a person BEFORE selecting new work, or it wedges its pair forever
+       (see parkOrphanedSending). */
+    await parkOrphanedSending()
     /* The pace clock is stamped by `browserSender.send` when a drive actually begins —
        a tick that holds every draft must not reset it (see recordSendStarted). */
     return deliverWaiting({ maxSends: settings.maxSendsPerTick })
