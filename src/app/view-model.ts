@@ -1,5 +1,6 @@
 import { prisma } from '@/lib/db'
 import { env } from '@/lib/env'
+import { ACTIVE_FROM_HOUR, ACTIVE_TO_HOUR } from '@/outreach/pacing'
 import { readStringArray } from '@/lib/json'
 import {
   istDayStart,
@@ -142,6 +143,15 @@ export interface SchedulerState {
 export interface AutopilotState {
   /** The dashboard toggle. Sending happens by itself when this and an armed account line up. */
   on: boolean
+  /**
+   * The pacing clause of the ON sentence, derived from the SAME constants the dispatcher
+   * enforces. The client component hardcoded "only between 10:00 and 21:00 IST" for a
+   * window Tabish removed on 19 Aug — a screen asserting a rule the enforcer does not
+   * hold, this file's most-recorded failure — and a client component may not import
+   * pacing.ts itself (the waiting.tsx → gate.ts → better-sqlite3 trap), so the truth
+   * travels as data.
+   */
+  paceClause: string
   /**
    * AUTOPILOT_ENABLED in .env. A hard floor — with this false the toggle cannot be
    * switched on at all, so a compromised or misclicked dashboard cannot start
@@ -851,6 +861,11 @@ export async function buildCeoView(): Promise<CeoView> {
   const hb = heartbeat
   const autopilot: AutopilotState = {
     on: settings.autopilotEnabled,
+    // `from === to` is the zero-width window `withinActiveHours` reads as "always on".
+    paceClause:
+      ACTIVE_FROM_HOUR === ACTIVE_TO_HOUR
+        ? 'paced, around the clock'
+        : `paced, and only between ${ACTIVE_FROM_HOUR}:00 and ${ACTIVE_TO_HOUR}:00 IST`,
     allowedByEnv: env.AUTOPILOT_ENABLED,
     scheduler: {
       running: hb?.fresh ?? false,

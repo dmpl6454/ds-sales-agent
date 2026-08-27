@@ -71,6 +71,125 @@ properly rather than kept on a handle we could never confirm.
 
 ---
 
+## 27 AUGUST — "LOCALHOST STOPPED WORKING" WAS THE ONE UNSUPERVISED PROCESS, AND THE MARKETING FLEET WAS ALREADY DELIVERING
+
+**Tabish: *"The localhost has stopped working. Additionally, autopilot must work e2e now that
+I have added the other template for marketing messages … Madabout would be part of its own
+sending group separate from bollywood which must work e2e. Fix issues taking place. No error
+message or fleet halting should take place and even represented in UI."*** Measured before
+anything was changed, and the second half of the ask was already true.
+
+### THE MARKETING FLEET WAS HEALTHY END TO END BEFORE A LINE CHANGED — MEASURED, NOT ASSUMED
+
+| | |
+|---|---|
+| `templateBody:marketing` | written (281 chars), the governor started drafting the moment it existed |
+| @madaboutmarketingg delivered, last 24h | **43** (44 lifetime), every one `autopilot:`, real thread URLs |
+| the delivered BYTES | **the marketing template** — *"…with pages including Mad About Marketing, delivering 300M+ daily views…"*, never the bollywood copy |
+| cross-fleet deliveries, last 24h | **0 in both directions** (bollywood→marketing-target 0, madabout→non-marketing 0) |
+| the marketing ring | @madaboutmarketingg alone, 91 enabled marketing targets, its queue DRAINED to 1 waiting draft |
+| replies already arriving | @fastrackworld and @underneat.in wrote back into madabout's inbox this morning — recorded, halting correctly |
+| new `not-in-thread` since the verbatim-repeat fix | **0** (newest is 22:03 IST on 26 Aug, BEFORE the acknowledgement) |
+| fleet total, last 24h | **118 delivered** across all six pages; detection 7 min fresh; plan/detect stamps fresh |
+
+The 68 waiting drafts were **all held by Tabish's own rules** (identical-message, reply
+halts, the one pre-rule cross-fleet draft) — `all-held` is the documented steady state after
+a drained queue, not a fault, and the dispatcher's own sentence named every hold.
+
+### LOCALHOST WAS DOWN BECAUSE NOTHING SUPERVISED IT — NOW `install-dashboard.sh`
+
+The tunnel and the device agent both have launchd jobs that survive reboots and crashes; the
+dashboard only ever ran in whichever terminal somebody started `pnpm local` in. The Mac's
+launchd jobs restarted ~22:34 IST on 26 Aug (tunnel + watch pids from that minute); the
+hand-run dashboard did not come back, and nothing anywhere said so. **The fix is
+`bash scripts/install-dashboard.sh install|restart|status|uninstall`** — a KeepAlive
+LaunchAgent serving the PRODUCTION build on :3100 (`next start`, never dev: a dev server is
+what once starved the server's Postgres slots), with `EMBEDDED_SCHEDULER=false` (a viewer
+must never become a second detector) and `DS_QUERY_COUNT=1` (so `ig:layout` can always
+measure it). It **waits for the port instead of fighting a hand-run `pnpm local` for it**.
+After a rebuild: `pnpm build && bash scripts/install-dashboard.sh restart`.
+
+**THE LESSON THAT COST AN HOUR: macOS TCC treats EVERY binary a launchd job spawns as its
+own privacy client, and this repo lives on the Desktop — a protected folder.** A job that
+reached the repo through `/bin/bash` was refused outright ("Operation not permitted",
+`getcwd` denied, exit 126), in BOTH the bash-first and caffeinate-first arrangements, while
+the watch job's `caffeinate → pnpm → node` chain works daily. So the runner is
+`scripts/runDashboard.ts` — **node performs every repo file access**, spawns next via
+`process.execPath` (never the `.bin` shim, whose shebang puts a shell back in the chain),
+and **REFUSES on a Prisma-client/DATABASE_URL mismatch rather than regenerating** — the
+engines `prisma generate` spawns are their own TCC clients, and a mismatched client means a
+`pnpm test` is mid-run anyway; its own final step restores the client.
+
+### THREE ROWS SAT IN `SENDING` FOR 19 HOURS, SO THE SWEEP THE CLASS ALWAYS NEEDED EXISTS NOW
+
+The 26 Aug restarts around the madabout setup (agent starts logged at 15:56, 16:14, 16:35,
+17:08 IST) killed three drives mid-flight — `bollywoodpaparazzii→iamjayakishori`,
+`totalfilmii→zeestudiosofficial`, `bollywoodpaparazzii→iyashpalsharma` — each left claiming
+SENDING, each wedging its pair through `hasPendingAttempt`, and keeping `status='SENDING'`
+from ever reaching zero (the state the 23 Aug entry warns wedges any wait-for-quiet loop).
+**Fourth occurrence of the class (22 Aug ×2, 23 Aug ×1, 26 Aug ×3); three is where this repo
+builds the mechanism instead of hand-fixing a fifth.**
+
+`parkOrphanedSending` (dispatcher.ts) runs FIRST inside the dispatch tick's `withSendLock`:
+a drive only ever runs while holding that lock, so a row still SENDING while THIS process
+holds it belongs to no live drive. The one exception — `sendNow` claims READY→SENDING
+*before* asking for the lock — is closed by re-reading candidates after a 12s dwell while
+the lock is still held (a live sendNow reverts inside the dwell; a dead one cannot), and the
+park itself is `updateMany` conditioned on `status: 'SENDING'`, so a slow revert wins a
+no-op. The guard is a DATABASE FACT (the lock row must name our pid), never module state.
+Parked as `not-in-thread` (the 23 Aug precedent — the recipient MAY have it), with an
+`attempt.parked-orphaned-sending` audit row each. Mutation-tested in both directions in
+`tests/stale-sending.test.ts` — deleting the pid guard fails the two fail-closed cases,
+deleting BOTH status conditions fails the dwell-race case.
+
+**VERIFIED LIVE: the first tick to win the lock after the agent restart parked all three at
+11:32 IST, with the alarm naming each pair. `SENDING` reads 0 for the first time in a day.**
+
+### `/` CROSSED ITS QUERY BUDGET (161/160) AND THE FIX WAS A CACHE, NOT A CEILING
+
+`ig:layout` failed exactly one check: `/` at 161 against 160 — up from 157 the night before
+with no code change, because the head-draft gate run and the queue's shape move the count a
+few queries day to day. Logging the SQL per builder found `getSettings` issuing a full
+`Setting` table read **five times inside `buildMessagesPage` alone** — the same
+one-render/many-call-sites shape `visibleChannelIds` and `readCategoryMemberships` already
+fixed. It is React `cache()`-wrapped now (per-render dedupe, which is also the CONSISTENCY a
+page wants: one panel must not read the switch ON while another reads it OFF), and outside a
+request every caller still gets a fresh read, so the just-in-time `getSettings()` before the
+SENDING claim is untouched; all four `setSetting` sites were checked for write-then-re-read
+in one request (none). **`/` reads 154/160 and ALL LAYOUT CHECKS PASS.**
+
+### AND TWO SENTENCES ON THE AUTOPILOT PAGE WERE FALSE, THE DOCUMENTED WAY
+
+- **"…and only between 10:00 and 21:00 IST"** — hardcoded in `autopilot.tsx` since before
+  the window was removed (19 Aug). The clause now travels as DATA (`paceClause` on
+  `AutopilotState`), derived from the same `ACTIVE_FROM_HOUR/TO_HOUR` the dispatcher
+  enforces — a client component may not import pacing.ts itself (the
+  `waiting.tsx → gate.ts → better-sqlite3` trap). Renders *"paced, around the clock."*
+- **"every account in their rotation is signed out or flagged"** — the `all-unavailable`
+  bucket ALSO receives recipients whose every route is PARKED on an uncertain send
+  (@wowmomos: a one-page marketing ring whose only route not-in-thread'd), on a day every
+  account was healthy — sending a person hunting a broken sign-in that does not exist, the
+  same defect this file records for `empty-ring`. The label names all three causes now.
+
+### NAMED, NOT FIXED
+
+`src/agent/claim.ts`'s `claimOneForDevice` has **no callers** and queries a `senderHandle`
+column `OutreachAttempt` does not have — a built-but-dead multi-device claim path that would
+throw at runtime if ever wired up. Left alone; recorded so its first caller reads this first.
+
+### HEALTH, AT HAND-OVER
+
+| | |
+|---|---|
+| localhost | **serving on :3100 under launchd**, production build, survives reboots; unauth `/` → 307 `/sign-in` |
+| autopilot | ON; 118 delivered in 24h; all-held steady state on a drained queue; breaker quiet |
+| marketing fleet | separate ring, own template, 43 delivered, 0 cross-fleet in 24h, replies flowing |
+| zombies | 0 in SENDING; the sweep is permanent and tested |
+| UI | `pnpm ig:layout` **ALL CHECKS PASSED**, `/` 154/160; no false halt or error sentence found on the rendered pages |
+| tests / typecheck | **2,044 / 118 files**, clean, mutation-tested where load-bearing |
+
+---
+
 ## 26 AUGUST, NIGHT — "IS AUTOPILOT HEALTHY?" — NO, AND THE CAUSE WAS THE SINGLE TEMPLATE
 
 **Tabish asked one question and the answer was no.** Autopilot ON, scheduler heartbeat 0.2

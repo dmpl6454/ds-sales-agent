@@ -92,7 +92,7 @@ export function AutopilotPanel({ state }: { state: AutopilotState }) {
             <div className="autopilot-sub">
               {state.on
                 ? covered > 0
-                  ? 'It finds paid posts, decides which brands are worth writing to, writes the messages, and sends them — paced, and only between 10:00 and 21:00 IST.'
+                  ? `It finds paid posts, decides which brands are worth writing to, writes the messages, and sends them — ${state.paceClause}.`
                   : 'It finds paid posts, decides brands and writes messages — but no account can send yet, so everything waits. Sign one in and it starts on its own.'
                 : 'Nothing sends. Paid posts are still found and messages are still written — drafts keep their Send buttons.'}
             </div>
