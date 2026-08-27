@@ -71,6 +71,94 @@ properly rather than kept on a handle we could never confirm.
 
 ---
 
+## 27 AUGUST, AFTERNOON — THE FULL-PIPELINE AUDIT, AND INSTAGRAM NOW HIDES SOME ACCOUNTS FROM EVERYONE
+
+**Tabish: *"audit paid post detection, the 'We message' column, our detection of official
+verified targets must be top notch. e2e. Thorough. Also, verify the ring and queue work for
+all categories and system is healthy."*** Every leg was MEASURED against the live system —
+executing the real rotation, the real predicates, control probes against Instagram itself —
+and the pipeline is healthy. One platform change was discovered, one dead-code block
+removed, and the rest is numbers.
+
+### DETECTION: 17 OF 19 CHANNELS MINUTES-FRESH, ZERO UNJUDGED ANYWHERE
+
+674 CAMPAIGN posts in 7d across the fleet (@viralbhayani 117, @manav.manglani 64,
+@adultsociety 61, @instantbollywood 58…). **0 in-window UNCLASSIFIED on every channel.**
+The accuracy cron ran this morning (03:50Z, --repeat 3): M.O.M recall 95 over 144 labels,
+@viralbhayani 100 over 9. The two `watch=OFF` rows are our own pages (deliberate, 13 Aug).
+**@marketingmentalist: zero posts in 30 days** — the known dormant-since-2020 page, burning
+4 feed requests/pass for nothing; removing it is Tabish's call, restated rather than made.
+@taranadarsh's newest stored post is ~15h old with 40 in 7d — a posting gap, not a watch gap.
+
+### OFFICIAL VERIFIED TARGETS: THE 25 AUG LEAK OF 112 IS DOWN TO 19
+
+The asserted-handles funnel over 7d of CAMPAIGN posts (343 distinct handles Instagram
+itself asserted): **233 live prospects · 72 refused at the badge bar · 13 retired · 19
+NULL-badge (in the badge door's queue) · 0 genuinely never-looked · 0 verified-but-no-target.**
+VERIFIED ONLY holds everywhere: **602 of 602 live prospects verified**, 551 prospects minted
+in 7d all carrying campaign provenance, and the 26 in-window deliveries to unverified
+recipients are ALL pre-rule history (last one 23 Aug 04:54Z, every row long retired) — zero
+since.
+
+### AND THE BADGE DOOR'S 9-OF-10 "UNREACHABLE" IS INSTAGRAM, NOT US — PROVEN WITH CONTROL PROBES
+
+Badge-door passes read `unreachable=9..10 of 10` since last night, on handles as real as
+**@colorstv and @bookmyshow**. Probed live, same minute, same headers: `@viralbhayani`'s
+feed answers with 748KB and 12 items from this Mac, `@royalcanin.india`'s profile answers in
+full — while **@colorstv returns an empty-but-200 payload (`{"items":[],"status":"ok"}`, 165
+bytes) from BOTH the Mac and the Linode, on BOTH the feed and profile endpoints.** Not a
+throttle, not a header change: **Instagram now gates some accounts (often large
+brands/networks) from anonymous callers entirely.** The corollary to "existence is not
+identity": *an empty anonymous payload no longer distinguishes a dead guessed handle from a
+real gated account.* The code already handles this correctly — unreachable is never a
+verdict, the 24h cooldown keeps the queue fair, fresh candidates get slots first, and admits
+still trickle through (3 today). Leads in the gated class are reachable only through a
+person (`ig:find-official --accept`), because reading them anonymously is impossible and
+decision 4 forbids the alternative.
+
+### THE "WE MESSAGE" COLUMN: 102 RECIPIENTS CHECKED, 0 DEFECTS — AND ITS DEAD FEEDER DELETED
+
+Independent recompute over the newest 50 paid posts (my own tag/caption/provenance logic,
+not the column's): **0 retired recipients shown, 0 unexplained recipients, 0 false
+em-dashes** (no post hiding a plainly-tagged live prospect), 21 recipients correctly
+credited through the brand-strings arm. The column and the material-allowance enforcer
+share their two arms by construction (`materialAllowance.ts`), so they cannot drift.
+
+**FOUND AND DELETED: the disposition machinery outlived its only reader.** When the
+"N unverified, refused · badge check pending" line was removed on 25 Aug, the computation
+feeding it stayed — `excludedHandles()` + a `brandCandidatesFor` pass over every rendered
+row + a `BrandLookup` read, on every render of `/paid-posts`, feeding nothing.
+Removed; `/paid-posts` reads **90/120** (was 93). NOTE: the column's rendering itself
+(em-dash, retired-filtered) has no pinning test — recorded as a gap, not built today.
+
+### THE RING, EXECUTED FOR ALL 602 RECIPIENTS ACROSS BOTH FLEETS: ZERO VIOLATIONS
+
+`whoseTurnForMany` over every live prospect with the real availability map, every election
+independently re-checked against the fleet rule: **598 elections, 0 violations** — never a
+cross-fleet election, never the burner, never a non-fleet or non-ACTIVE account. **All 82
+marketing-only recipients elect @madaboutmarketingg.** The 4 refusals are all
+`all-unavailable` with the same honest cause — every page in that recipient's ring holds a
+parked uncertain send (@amazonmgmstudios, @danubeproperties, @ohhmydogindia, @wowmomos) —
+which is exactly the case the rotation-stuck label was corrected to name this morning.
+
+**The queue agrees byte for byte:** 68 waiting drafts — 67 carrying the bollywood template,
+1 carrying the marketing template, **0 carrying anything else**, no marketing sender holding
+bollywood bytes or vice versa, and exactly the one documented pre-rule cross-fleet draft
+(@bollywoodpaparazzii→@fastrackworld), held by the gate.
+
+### SYSTEM HEALTH AT AUDIT CLOSE
+
+| | |
+|---|---|
+| Postgres | 17 connections total (6 ours) — nowhere near the 100-slot ceiling |
+| breaker | quiet; not-in-thread rows in 24h are yesterday's incident + the 3 swept zombies, **0 new today** |
+| Linode | pm2 online; error log carries only the documented server-side 429 backoff working as designed |
+| disk (Mac) | **6.9 GB free** — workable, but this machine has hit literal zero twice; `pnpm ig:prune` before it matters |
+| reply sweep | running (inbox records this morning); deep-read stamp 8h old because little needed reading |
+| tests / layout | **2,044 / 118 files** green; `pnpm ig:layout` ALL PASSED; `/` 154/160, `/paid-posts` 90/120 |
+
+---
+
 ## 27 AUGUST — "LOCALHOST STOPPED WORKING" WAS THE ONE UNSUPERVISED PROCESS, AND THE MARKETING FLEET WAS ALREADY DELIVERING
 
 **Tabish: *"The localhost has stopped working. Additionally, autopilot must work e2e now that

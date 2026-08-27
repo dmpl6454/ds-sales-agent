@@ -27,7 +27,6 @@ import { postUrl } from '@/lib/urls'
 import { isConnecting } from '@/outreach/browser/connect'
 import { getSettings } from '@/lib/settings'
 import { visibleChannelFilter, ourOwnPageHandles } from '@/detection/visibleChannels'
-import { brandCandidatesFor, excludedHandles } from '@/detection/brandCandidates'
 import { detectionCutoff } from '@/lib/cutoff'
 import { readLabelledSet } from '@/detection/labels'
 import { replyHaltFloor } from '@/outreach/replyHalt'
@@ -1548,32 +1547,14 @@ export async function buildPaidPostsView(input?: {
     select: { handle: true, displayName: true, optedOut: true, discoveredFromCampaignId: true },
   })
 
-  /**
-   * The DISPOSITION of every asserted-but-unminted candidate, so the column never
-   * collapses "unverified, refused" / "badge check pending" into a false "nobody
-   * verified" — Tabish read exactly that on 2026-08-21 and was right to call it false.
-   * One query for the whole table; the same extractor the pipeline itself uses.
+  /*
+   * The candidate DISPOSITION machinery that used to live here (excludedHandles →
+   * brandCandidatesFor per row → a BrandLookup read) fed the "N unverified, refused ·
+   * M badge check pending" line that Tabish removed on 2026-08-25 ("the column is the
+   * recipients and an em-dash"). The computation outlived its only reader — two queries
+   * and a per-row extractor pass on every render of /paid-posts, feeding nothing —
+   * found by the 2026-08-27 audit and deleted rather than left as furniture.
    */
-  const excludedForColumn = await excludedHandles()
-  const candidatesByPost = new Map<string, string[]>()
-  for (const p of paidRows) {
-    candidatesByPost.set(
-      p.id,
-      brandCandidatesFor(
-        { caption: p.caption, taggedAccounts: p.taggedAccounts, rawPayload: p.rawPayload },
-        excludedForColumn,
-      ).map((c) => c.handle),
-    )
-  }
-  const allCandidates = [...new Set([...candidatesByPost.values()].flat())]
-  const candidateLookups = new Map(
-    (
-      await prisma.brandLookup.findMany({
-        where: { handle: { in: allCandidates } },
-        select: { handle: true, isVerified: true },
-      })
-    ).map((l) => [l.handle, l]),
-  )
 
   return {
     weekDetected: v.week.detected,
