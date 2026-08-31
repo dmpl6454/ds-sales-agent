@@ -98,6 +98,25 @@ describe('our own pages are excluded from every dashboard figure', () => {
           // A lookup BY ID is not a survey of the corpus — it resolves rows already chosen.
           window.includes('id: { in: campaignIds }') ||
           /**
+           * ── THE PROVENANCE LOOKUPS (2026-08-31) ────────────────────────────
+           *
+           * "Why was this message sent, and for which paid post?" is answered from two
+           * stored columns. `attempt.campaignId` is a real relation and needs no query;
+           * `target.discoveredFromCampaignId` is a bare scalar, so the posts it points at
+           * are resolved in ONE batched read keyed on ids the rows already carry.
+           *
+           * Not a survey, and scoping it would be a BUG rather than a tightening: the id
+           * comes from the recipient's own provenance, so a channel filter could only
+           * blank the answer for a company discovered from a page that later became ours —
+           * silently turning "here is why we wrote to them" into an em-dash. Same shape as
+           * the enforcer preloads below: the question is not a figure anybody totals.
+           *
+           * The VARIABLE NAMES are the carve-out, as with `cardTargetIds` — a looser
+           * pattern like any `id: { in: … }` would also accept a survey over every campaign
+           * id somebody had gathered first.
+           */
+          window.includes('id: { in: provenanceIds }') ||
+          /**
            * The batched channel cards (2026-08-20): `buildChannelCards` went from five
            * queries PER channel to five `groupBy`s over `cardTargetIds` — the exact rows
            * the caller already chose — when 11 new watch pages made the per-row loop blow

@@ -1,6 +1,9 @@
 import { prisma } from '@/lib/db'
 import { DELIVERED_STATUSES, MAX_DELIVERY_ATTEMPTS } from '@/lib/constants'
-import { daysAgo } from '@/lib/time'
+import { daysAgo, istDateKey } from '@/lib/time'
+import { postUrl } from '@/lib/urls'
+import { provenanceFor, provenanceLabel } from '@/outreach/messageProvenance'
+import { loadProvenancePosts } from './provenance-posts'
 import { dispatchStatus, readPause } from '@/outreach/dispatcher'
 import { replyCoverage } from '@/outreach/replyCheck'
 // Never a raw `displayName` — see the note on the import in `view-model.ts`.
@@ -86,6 +89,15 @@ export interface SentMessage {
   replied: boolean
   replyHandled: boolean
   replyText: string | null
+  /**
+   * WHY THIS MESSAGE WENT OUT — the paid post behind it (Tabish, 2026-08-31).
+   *
+   * `null` when neither stored column answers, and the screen renders an em-dash rather
+   * than reconstructing one: see `messageProvenance.ts` for why searching the corpus for a
+   * plausible post is refused. `label` is what a person recognises ("@viralbhayani ·
+   * 29 Aug"); `why` is the sentence naming which of the two facts this is.
+   */
+  provenance: { label: string; url: string; why: string } | null
 }
 
 /** A waiting draft that is resting, with the enforcer's sentence and when it frees up. */
@@ -281,7 +293,12 @@ export async function buildMessagesPage(): Promise<MessagesPageView> {
     }),
     prisma.outreachAttempt.findMany({
       where: { status: { in: [...DELIVERED_STATUSES] } },
-      include: { sender: { select: { handle: true } }, target: { select: { handle: true } } },
+      include: {
+        sender: { select: { handle: true } },
+        /* WHY each of these went out (2026-08-31) — see sent-history.ts for why
+           `discoveredFromCampaignId` is resolved separately rather than as a relation. */
+        target: { select: { handle: true, discoveredFromCampaignId: true } },
+      },
       orderBy: { sentAt: 'desc' },
       take: 50,
     }),
@@ -551,6 +568,9 @@ export async function buildMessagesPage(): Promise<MessagesPageView> {
     ).map((x) => [x.id, x.handle]),
   )
 
+  /* Why each of these went out — one batched read for both columns. */
+  const provPosts = await loadProvenancePosts(recentRaw)
+
   return {
     waitingTotal,
     upNext,
@@ -571,17 +591,34 @@ export async function buildMessagesPage(): Promise<MessagesPageView> {
     dispatch,
     pause,
     replyCoverage: coverage,
-    recent: recentRaw.map((a) => ({
-      id: a.id,
-      senderHandle: a.sender.handle,
-      targetHandle: a.target.handle,
-      sentAt: a.sentAt,
-      sentBy: a.sentBy,
-      threadUrl: a.threadUrl,
-      replied: a.repliedAt !== null,
-      replyHandled: a.replyHandledAt !== null,
-      replyText: a.replyText,
-    })),
+    recent: recentRaw.map((a) => {
+      /* Claim first, discovery second — the two are different facts about different
+         moments; see messageProvenance.ts. Nothing is reconstructed when neither answers. */
+      const prov = provenanceFor({
+        claimed: a.campaignId ? (provPosts.get(a.campaignId) ?? null) : null,
+        discovered: a.target.discoveredFromCampaignId
+          ? (provPosts.get(a.target.discoveredFromCampaignId) ?? null)
+          : null,
+      })
+      return {
+        id: a.id,
+        senderHandle: a.sender.handle,
+        targetHandle: a.target.handle,
+        sentAt: a.sentAt,
+        sentBy: a.sentBy,
+        threadUrl: a.threadUrl,
+        replied: a.repliedAt !== null,
+        replyHandled: a.replyHandledAt !== null,
+        replyText: a.replyText,
+        provenance: prov.post
+          ? {
+              label: provenanceLabel(prov.post, istDateKey(prov.post.postedAt)),
+              url: postUrl(prov.post.shortcode),
+              why: prov.sentence,
+            }
+          : null,
+      }
+    }),
     sentToday: dispatch.usage.today,
     sentThisWeek,
     deliveredTotal,

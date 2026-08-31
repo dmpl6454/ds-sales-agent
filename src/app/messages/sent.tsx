@@ -89,6 +89,17 @@ export function SentList({ recent, paging }: { recent: SentMessage[]; paging?: S
               <th>From</th>
               <th>To</th>
               <th>How</th>
+              {/*
+                WHY THIS MESSAGE EXISTS (Tabish, 2026-08-31: *"nowhere does a person …
+                know why that particular message was sent to that person, for which paid
+                post specifically"*).
+
+                "How" says who pressed send; this says what earned it. They sit next to
+                each other because together they are the whole account of one message —
+                and the link goes to the post itself, so the claim can be checked against
+                Instagram rather than believed.
+              */}
+              <th>Why</th>
               <th>Thread</th>
             </tr>
           </thead>
@@ -109,6 +120,18 @@ export function SentList({ recent, paging }: { recent: SentMessage[]; paging?: S
                   {r.replied && <span className="chip chip-soft">replied</span>}
                 </td>
                 <td className="how">{describeSentBy(r.sentBy)}</td>
+                <td className="how">
+                  {r.provenance ? (
+                    /* `title` carries which of the two facts this is — a claim against the
+                       post, or the post that found them. Never guessed: an em-dash when no
+                       stored column answers (messageProvenance.ts). */
+                    <a href={r.provenance.url} target="_blank" rel="noreferrer" title={r.provenance.why}>
+                      {r.provenance.label}
+                    </a>
+                  ) : (
+                    <span className="muted">&mdash;</span>
+                  )}
+                </td>
                 <td>
                   {r.threadUrl ? (
                     <a href={r.threadUrl} target="_blank" rel="noreferrer">

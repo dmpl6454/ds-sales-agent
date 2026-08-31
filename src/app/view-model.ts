@@ -1236,6 +1236,18 @@ export interface PaidPostRow {
    */
   recipients: { handle: string }[]
   /**
+   * THE MESSAGES THIS POST ACTUALLY CAUSED (Tabish, 2026-08-31: *"nowhere does a person
+   * know why that particular message was sent to that person, for which paid post"*).
+   *
+   * `recipients` is who this post EARNS a message to; this is who was actually written to
+   * BECAUSE of it. Attribution is a stored fact in both arms and every delivered message
+   * belongs to at most one post, so a reader can add these up without double counting:
+   * `attempt.campaignId === this post` (what the planner claimed for that message), or —
+   * only when the message claimed nothing — the recipient was DISCOVERED from this post.
+   * See `messageProvenance.ts` for why nothing is reconstructed when neither answers.
+   */
+  messagesSent: { targetHandle: string; senderHandle: string; whenLabel: string; basis: 'claimed' | 'discovered' }[]
+  /**
    * ── THERE IS NO "candidateNote" ANY MORE (2026-08-25, Tabish) ──────────────
    *
    * *"I don't want '1 name with no verified account yet', 'nobody named', etc type of
@@ -1556,6 +1568,50 @@ export async function buildPaidPostsView(input?: {
    * found by the 2026-08-27 audit and deleted rather than left as furniture.
    */
 
+  /**
+   * WHICH MESSAGES EACH POST ON THIS PAGE CAUSED — ONE query for the whole table.
+   *
+   * The `OR` is the attribution partition, not a widening: a message is attributed to the
+   * post it CLAIMED (`campaignId`), and only a message that claimed nothing falls through
+   * to the post its recipient was discovered from. So no message is counted against two
+   * posts, and a reader can add the column up.
+   *
+   * A query per rendered row is what `buildChannelCards` was killed for; the page has a
+   * budget of 120 and this must stay a constant, not 50.
+   */
+  const pageIds = paidRows.map((p) => p.id)
+  const causedRaw = await prisma.outreachAttempt.findMany({
+    where: {
+      status: { in: [...DELIVERED_STATUSES] },
+      sentAt: { not: null },
+      OR: [
+        { campaignId: { in: pageIds } },
+        { campaignId: null, target: { discoveredFromCampaignId: { in: pageIds } } },
+      ],
+    },
+    orderBy: { sentAt: 'desc' },
+    select: {
+      sentAt: true,
+      campaignId: true,
+      sender: { select: { handle: true } },
+      target: { select: { handle: true, discoveredFromCampaignId: true } },
+    },
+  })
+  const causedByPost = new Map<string, PaidPostRow['messagesSent']>()
+  for (const a of causedRaw) {
+    const claimed = a.campaignId !== null
+    const postId = claimed ? a.campaignId! : a.target.discoveredFromCampaignId
+    if (!postId) continue
+    const list = causedByPost.get(postId) ?? []
+    list.push({
+      targetHandle: a.target.handle,
+      senderHandle: a.sender.handle,
+      whenLabel: relative(a.sentAt),
+      basis: claimed ? 'claimed' : 'discovered',
+    })
+    causedByPost.set(postId, list)
+  }
+
   return {
     weekDetected: v.week.detected,
     totalDetected,
@@ -1615,6 +1671,7 @@ export async function buildPaidPostsView(input?: {
               brandStringsNameProspect(p.brands, { handle: t.handle, displayName: t.displayName })),
         )
         .map((t) => ({ handle: t.handle })),
+      messagesSent: causedByPost.get(p.id) ?? [],
       shortcode: p.shortcode,
       url: postUrl(p.shortcode),
       dayLabel: istDateKey(p.postedAt),
