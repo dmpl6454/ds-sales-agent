@@ -1,5 +1,9 @@
 import { prisma } from '@/lib/db'
 import { DELIVERED_STATUSES } from '@/lib/constants'
+import { istDateKey } from '@/lib/time'
+import { postUrl } from '@/lib/urls'
+import { provenanceFor, provenanceLabel } from '@/outreach/messageProvenance'
+import { loadProvenancePosts } from './provenance-posts'
 import type { SentMessage } from './messages-page'
 
 /**
@@ -61,24 +65,54 @@ export async function buildSentHistory(input: {
 
   const rows = await prisma.outreachAttempt.findMany({
     where,
-    include: { sender: { select: { handle: true } }, target: { select: { handle: true } } },
+    include: {
+      sender: { select: { handle: true } },
+      /**
+       * WHY EACH MESSAGE WENT OUT (2026-08-31).
+       *
+       * `campaign` is a real relation, so the post this message CLAIMED comes back in this
+       * same query. `discoveredFromCampaignId` is a bare scalar with no relation declared —
+       * and it stays that way: adding one would put a foreign key on a live Postgres that
+       * has no `_prisma_migrations` table, which this repo refuses. It is resolved in ONE
+       * batched read below instead, never a lookup per row (`buildBrandsPanel`'s lesson;
+       * `/analytics` has a budget of 125).
+       */
+      target: { select: { handle: true, discoveredFromCampaignId: true } },
+    },
     orderBy: [{ sentAt: 'desc' }, { id: 'desc' }],
     skip: (page - 1) * SENT_PAGE_SIZE,
     take: SENT_PAGE_SIZE,
   })
 
+  const provPosts = await loadProvenancePosts(rows)
+
   return {
-    rows: rows.map((a) => ({
-      id: a.id,
-      senderHandle: a.sender.handle,
-      targetHandle: a.target.handle,
-      sentAt: a.sentAt,
-      sentBy: a.sentBy,
-      threadUrl: a.threadUrl,
-      replied: a.repliedAt !== null,
-      replyHandled: a.replyHandledAt !== null,
-      replyText: a.replyText,
-    })),
+    rows: rows.map((a) => {
+      const prov = provenanceFor({
+        claimed: a.campaignId ? (provPosts.get(a.campaignId) ?? null) : null,
+        discovered: a.target.discoveredFromCampaignId
+          ? (provPosts.get(a.target.discoveredFromCampaignId) ?? null)
+          : null,
+      })
+      return {
+        id: a.id,
+        senderHandle: a.sender.handle,
+        targetHandle: a.target.handle,
+        sentAt: a.sentAt,
+        sentBy: a.sentBy,
+        threadUrl: a.threadUrl,
+        replied: a.repliedAt !== null,
+        replyHandled: a.replyHandledAt !== null,
+        replyText: a.replyText,
+        provenance: prov.post
+          ? {
+              label: provenanceLabel(prov.post, istDateKey(prov.post.postedAt)),
+              url: postUrl(prov.post.shortcode),
+              why: prov.sentence,
+            }
+          : null,
+      }
+    }),
     page,
     pageCount,
     total,

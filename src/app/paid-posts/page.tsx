@@ -288,6 +288,17 @@ export default async function PaidPostsPage({
                       enforcer about who a paid post unlocks.
                     */}
                     <th>We message</th>
+                    {/*
+                      AND WHETHER A MESSAGE ACTUALLY WENT OUT FOR IT (Tabish, 2026-08-31:
+                      *"nowhere does a person know why that particular message was sent to
+                      that person, for which paid post specifically"*).
+
+                      "We message" is who this post EARNS a message to; this is who was
+                      written to BECAUSE of it, which is the other half of the same
+                      question read from the post's side. Both arms are stored facts and
+                      the attribution is a partition, so the column can be added up.
+                    */}
+                    <th>Message sent</th>
                     {/* The only labelling control in the system. See dismiss.tsx. */}
                     <th></th>
                   </tr>
@@ -356,6 +367,35 @@ export default async function PaidPostsPage({
                           names to 2,810.
                         */}
                         {p.recipients.length === 0 ? <span className="muted">&mdash;</span> : null}
+                      </td>
+                      <td>
+                        {/*
+                          Each line is one real delivered message: the page that sent it, the
+                          company, and when. A post that earned a message to somebody the
+                          rotation has not reached yet correctly shows an em-dash here while
+                          still naming them in "We message" — those are different facts and
+                          the two columns side by side are what make the difference legible.
+
+                          The `title` carries the BASIS in words, because "claimed against
+                          this post" and "this post is where we found them" are not the same
+                          statement and a reader should be able to tell which one they are
+                          looking at without the table growing a fourth column.
+                        */}
+                        {p.messagesSent.map((m, i) => (
+                          <div
+                            key={`${m.senderHandle}-${m.targetHandle}-${i}`}
+                            className="mono"
+                            title={
+                              m.basis === 'claimed'
+                                ? 'This message was claimed against this paid post — it named the company and nothing had gone out about it yet.'
+                                : 'This company was discovered from this paid post, and this was the first message to them.'
+                            }
+                          >
+                            @{m.senderHandle} → @{m.targetHandle}{' '}
+                            <span className="muted">{m.whenLabel}</span>
+                          </div>
+                        ))}
+                        {p.messagesSent.length === 0 ? <span className="muted">&mdash;</span> : null}
                       </td>
                       <td>
                         <DismissButton shortcode={p.shortcode} dismissed={p.dismissed} />

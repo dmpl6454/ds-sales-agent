@@ -210,6 +210,31 @@ export const SKIP_REASONS = {
    */
   NO_FLEET_TEMPLATE: 'no-standard-message-for-this-fleet',
   /**
+   * ── THE CROSS-FLEET REFUSAL, TOLD APART FROM A MISSING TEMPLATE (2026-08-31) ──
+   *
+   * This governor has no category check of its own: a cross-fleet pair reaches it through
+   * `templateForSettings`, which answers `different-fleet` because no ONE standard message
+   * covers a bollywood page writing to a marketing company. Both answers used to be
+   * reported as `NO_FLEET_TEMPLATE`.
+   *
+   * MEASURED 2026-08-31, and the number is why this matters: the planner's tally read
+   * `no-standard-message-for-this-fleet=245` on a day when the only second fleet
+   * (marketing) HAD its copy written — 280 characters of it. Executing the real resolver
+   * over all 3,356 fleet pairs returned 3,000 bollywood, 111 marketing and **exactly 245
+   * `different-fleet`**. So every one of those 245 was a correct refusal wearing a label
+   * that says *go and write a template*, on the one line a person reads to find out why
+   * the fleet is quiet.
+   *
+   * The per-pair `detail` was always honest; only the aggregate name was wrong. It carries
+   * the SAME string as the gate's `RESEND_BLOCKS.DIFFERENT_CATEGORY`, deliberately: one
+   * fact, one name, wherever a person meets it.
+   *
+   * `ambiguous` (a SENDER in two fleets) stays under NO_FLEET_TEMPLATE, and that is not
+   * laziness: there genuinely is no single standard message for such a route, which is
+   * what that label says. No sender is in two fleets today.
+   */
+  DIFFERENT_CATEGORY: 'different-category',
+  /**
    * ── INSTAGRAM SILENTLY DROPS A REPEAT OF THE SAME BYTES (2026-08-26) ─────
    *
    * MEASURED, and this is the sharpest measurement in the file. Since `singleTemplate` went
@@ -296,7 +321,12 @@ export function evaluatePair(input: GovernorInput): GovernorDecision {
   if (!input.fleetTemplate.ok) {
     return {
       eligible: false,
-      reason: SKIP_REASONS.NO_FLEET_TEMPLATE,
+      /* "these two are in different fleets" and "nobody has written this fleet's copy" are
+         different problems with different remedies — see DIFFERENT_CATEGORY. */
+      reason:
+        input.fleetTemplate.reason === 'different-fleet'
+          ? SKIP_REASONS.DIFFERENT_CATEGORY
+          : SKIP_REASONS.NO_FLEET_TEMPLATE,
       detail: input.fleetTemplate.detail,
     }
   }

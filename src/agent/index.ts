@@ -1,6 +1,6 @@
 import { prisma } from '@/lib/db'
 import { env } from '@/lib/env'
-import { log } from '@/lib/logger'
+import { log, describeError } from '@/lib/logger'
 import { dispatchTick, withSendLock } from '@/outreach/dispatcher'
 import { deviceId } from './claim'
 import { profileStatus } from '@/outreach/browser/profile'
@@ -338,7 +338,7 @@ async function brandPass(): Promise<void> {
      * prospects is upstream of sending, and a failure here must not stop messages that are
      * already written from going out.
      */
-    log.error('brand discovery pass failed', { error: err instanceof Error ? err.message : String(err) })
+    log.error('brand discovery pass failed', { error: describeError(err) })
   } finally {
     brandPassRunning = false
   }
@@ -565,7 +565,7 @@ export async function runDeviceAgent(): Promise<void> {
     } catch (err) {
       // One bad tick must never end the loop: the device going quiet is the failure this
       // whole process exists to prevent.
-      log.error('device tick failed', { error: err instanceof Error ? err.message : String(err) })
+      log.error('device tick failed', { error: describeError(err) })
     }
     const remaining = POLL_INTERVAL_MS - (Date.now() - startedAt)
     /* The dispatcher's own boundary wins when it is sooner than the grid — never later:

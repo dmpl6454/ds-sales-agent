@@ -129,6 +129,22 @@ const GOVERNOR_CASES: Array<[string, Record<string, unknown>]> = [
       ),
     },
   ],
+  /**
+   * The CROSS-FLEET refusal, which reaches the governor through the same field and is a
+   * different problem: the copy exists, these two just belong to different fleets. Told
+   * apart on 2026-08-31 after the planner reported 245 of these as a missing template.
+   * The sets are deliberately disjoint here — sender marketing, recipient default.
+   */
+  [
+    SKIP_REASONS.DIFFERENT_CATEGORY,
+    {
+      fleetTemplate: templateForSettings(
+        { singleTemplateBody: null, fleetTemplateBodies: new Map([['marketing', 'x'.repeat(60)]]) },
+        ['marketing'],
+        [],
+      ),
+    },
+  ],
   [SKIP_REASONS.SENDER_NOT_ACTIVE, { sender: { status: 'CHALLENGED' } }],
   [SKIP_REASONS.TARGET_REPLIED, { targetRepliedAt: new Date('2026-08-19T12:00:00Z') }],
   [SKIP_REASONS.PENDING_ATTEMPT, { hasPendingAttempt: true }],

@@ -21,6 +21,39 @@ function fmt(level: string, msg: string, fields?: Fields): string {
   return `${base}  ${kv}`
 }
 
+/**
+ * A thrown value in words, and NEVER an empty string.
+ *
+ * ── MEASURED 2026-08-31 ─────────────────────────────────────────────────────
+ *
+ * The device agent's own log carried **272 lines reading `device tick failed error=`** —
+ * an error report naming nothing, which is worse than no line at all because it looks
+ * handled. The cause is that `err.message` is legitimately empty on some of what the
+ * database driver throws (the informative part sits on `name`, `code` or `cause`), and
+ * every one of this codebase's ~50 catch blocks reaches for `.message` alone.
+ *
+ * So the fallbacks are tried in order and the LAST of them is the constructor name, which
+ * always exists. "Something threw and we cannot say what" is itself a fact worth printing;
+ * silence is not. Same principle as `framesRead`'s five states and `identify`'s
+ * `no-answer` — an absence must be reported as an absence, not rendered as nothing.
+ */
+export function describeError(err: unknown): string {
+  if (!(err instanceof Error)) {
+    const s = String(err)
+    return s.trim().length > 0 ? s : `a non-Error value was thrown (${typeof err})`
+  }
+  const parts = [
+    err.message,
+    // Prisma and undici put the useful half here when `message` is blank.
+    typeof (err as unknown as { code?: unknown }).code === 'string'
+      ? `code ${(err as unknown as { code: string }).code}`
+      : '',
+    err.cause instanceof Error ? `caused by ${err.cause.name}: ${err.cause.message}` : '',
+  ].filter((p) => p.trim().length > 0)
+  if (parts.length > 0) return parts.join(' — ')
+  return `${err.name || err.constructor.name} was thrown with no message`
+}
+
 export const log = {
   info(msg: string, fields?: Fields) {
     console.log(fmt('INFO', msg, fields))

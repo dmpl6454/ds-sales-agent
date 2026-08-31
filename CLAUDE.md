@@ -71,6 +71,134 @@ properly rather than kept on a handle we could never confirm.
 
 ---
 
+## 31 AUGUST — EVERY MESSAGE NOW NAMES THE PAID POST THAT CAUSED IT
+
+**Tabish: *"nowhere does a person when looking at the dashboard know why that particular
+message was sent to that person, for which paid post specifically."*** He is right, and it
+was the last unexplained thing on the screen: every REFUSAL states its own rule in the
+enforcer's words, and a message that actually went out named nothing at all.
+
+### IT IS A LOOKUP OVER TWO COLUMNS THAT WERE ALREADY THERE AND NEVER DRAWN
+
+| | |
+|---|---|
+| `OutreachAttempt.campaignId` | what `pickHook` CLAIMED — the newest paid post naming this recipient that this pair had not been written about. Under `singleTemplate` the body never mentions it and compose.ts records it anyway, precisely because the new-material rule is derived from it. **It is the post that made the message permissible.** |
+| `TargetAccount.discoveredFromCampaignId` | the paid post that minted the company as a prospect |
+
+MEASURED before building anything: over the newest 60 deliveries, **60 of 60 attributable**
+— 24 by the claim, 36 by discovery, **0 needing a guess.** Fleet-wide the columns are
+populated on 771 of 2,199 delivered messages and **770 of 773 prospects**. The 166th entry
+in this file's "the data existed and nothing rendered it" series.
+
+**NOTHING IS RECONSTRUCTED, and that is the load-bearing decision.** The tempting third
+source is *search the corpus for paid posts naming this recipient before the send* — refused
+in `messageProvenance.ts`. That set is what the ALLOWANCE counts, not what any one message
+was sent for, so naming a member of it would put a specific claim on screen that no stored
+fact supports, in the one place a plausible-looking guess would never be questioned. When
+neither column answers the screen shows an em-dash. Mutation-tested in both directions:
+making it invent prose when nothing is known fails, and letting discovery outrank the claim
+fails (that one would make every follow-up read as a first touch).
+
+### WHERE IT SHOWS, AND THE TWO DIRECTIONS ARE NOT THE SAME QUESTION
+
+- **`/paid-posts` → a "Message sent" column beside "We message".** "We message" is who a
+  post EARNS a message to; this is who was actually written to BECAUSE of it. VERIFIED on
+  the live page: *"@madaboutmarketingg → @titanwatchesindia 1h ago"* sitting on the post
+  that caused it. A post that earned a message the rotation has not reached yet correctly
+  shows a name on the left and an em-dash on the right, and the two side by side are what
+  make that difference legible.
+- **`/analytics` (and the landing page) → a "Why" column in the sent list, beside "How".**
+  "How" says who pressed send; "Why" says what earned it, linking to the post itself so the
+  claim can be checked against Instagram rather than believed. VERIFIED: **50 of 50 rows**
+  carry a real link and sentence.
+
+**The attribution is a PARTITION, so the column can be added up**: a message belongs to the
+post it claimed, and only a message that claimed nothing falls through to the post its
+recipient was discovered from. No message is counted against two posts.
+
+### AND THE FIRST VERSION COST FOUR QUERIES, WHICH IS HOW `/` GOT TO 158/160
+
+Resolving the claim through a Prisma `include` (with its own nested `target` select) and the
+discovery through a second query cost four queries a page. `ig:layout` passed — and left `/`
+with **two** queries of headroom on a page this file records drifting by more than that
+between days, which is a budget failure that has not happened yet rather than one that has.
+`loadProvenancePosts` collects BOTH id sets and asks once: `/` back to **156/160**,
+`/analytics` 98/125, `/paid-posts` 93/120. *A budget is a ceiling over a bounded design.*
+
+`discoveredFromCampaignId` stays a bare scalar with **no relation declared** — adding one
+would put a foreign key on a live Postgres with no `_prisma_migrations` table.
+
+### THE 245 THAT BLAMED A MISSING TEMPLATE THAT EXISTS — FIXED
+
+From the 31 Aug audit: the planner's tally read `no-standard-message-for-this-fleet=245` on
+a day when the only second fleet HAD its copy written (280 chars). The governor has **no
+category check of its own** — a cross-fleet pair reaches it through `templateForSettings`
+answering `different-fleet`, and every template refusal was reported under one name.
+Executing the real resolver over all 3,356 fleet pairs: 3,000 bollywood, 111 marketing,
+**exactly 245 `different-fleet`.** Correct refusals wearing a label that says *go and write a
+template*, on the one line a person reads to find out why the fleet is quiet.
+
+Split into `SKIP_REASONS.DIFFERENT_CATEGORY`, carrying the **same string as the gate's**
+`RESEND_BLOCKS.DIFFERENT_CATEGORY` — one fact, one name, wherever a person meets it.
+`ambiguous` (a sender in two fleets) stays under NO_FLEET_TEMPLATE deliberately: there
+genuinely is no single standard message for such a route. `tests/stopInventory.test.ts` is
+TOTAL over `SKIP_REASONS` and **caught the new stop with no case the moment it was added**,
+which is that test doing exactly its job.
+
+### AN ERROR THAT NAMED NOTHING, 272 TIMES
+
+The device agent's log carried **272 lines reading `device tick failed error=`** — a failure
+report naming nothing, which is worse than no line because it looks handled. `err.message`
+is legitimately empty on some of what the database driver throws (the useful half sits on
+`name`, `code` or `cause`), and all ~50 catch blocks here reach for `.message` alone.
+`describeError` (logger.ts) falls back through code and cause to the constructor name, which
+always exists — *"something threw and we cannot say what" is itself a fact worth printing.*
+Applied at the two sites where the empty output was MEASURED, not swept across all 50.
+
+### THE "—" IN THE WE-MESSAGE COLUMN: MEASURED, AND IT IS MOSTLY THE VERIFIED RULE WORKING
+
+Tabish asked whether the em-dashes fill in over time and, if not, for discovery to be made
+accurate and efficient. **They do fill in.** Over 1,485 CAMPAIGN posts in 30 days, the share
+carrying at least one recipient by post age:
+
+```
+0-1d 59%   2-3d 62%   4-7d 70%   8-14d 68%   15-30d 63%
+```
+
+— an eleven-point rise over the first week as the badge door and discovery work the queue,
+then a plateau. Of the 512 posts still showing "—":
+
+| | |
+|---|---|
+| **331** | carry brand NAMES only, no handle asserted — `officialDiscovery`'s queue |
+| **113** | assert nothing at all — structurally unattributable, by design (a fully anonymous paid post yields no prospect) |
+| **68** | assert a handle we do not hold live |
+
+And that last 68 is **not** a discovery failure. Over the same window, of 1,047 distinct
+asserted handles: **685 live prospects, 233 refused at the badge bar, 55 retired, 55 awaiting
+a badge read, 9 our own pages.** The dominant cause of an em-dash on a tagged post is the
+VERIFIED ONLY rule correctly refusing an unverified account.
+
+**THE EFFICIENCY FINDING, STATED AND NOT ACTED ON.** `officialDiscovery` is running **40
+lookups a pass, ~1,920 a day, and creating ZERO** — because the names it resolves fail the
+badge bar, which is the bar working: *"salman khan" → @salman.khan (verified=false)*,
+*"chumbak" → @chumbak_official (verified=false)*. It is also spending lookups on names that
+can never be a brand — *"lenin"*, *"shashi"*, *"hindi zee"* — harvested from captions. The
+lever is a name filter before the budget is spent, and it is NOT built here: filtering
+single common words risks real one-word brands (Chumbak, Zomato, Sprite), and a detection
+change ships with a measurement or not at all.
+
+### HEALTH AT HAND-OVER
+
+| | |
+|---|---|
+| localhost | serving on :3100 under launchd, **survived Tabish closing VS Code** — the supervisor doing its job |
+| autopilot | ON, delivering; heartbeat 1 min, detect 6 min, plan 5 min; 0 challenged, 0 dead sessions, 0 stuck sends |
+| reply halts | 52 active, 38 expired, **23 of those resumed on their own** — most within 5-30 minutes of freeing |
+| tests / layout | **2,054 / 119 files** green; `pnpm ig:layout` ALL PASSED; `/` 156/160 |
+
+---
+
 ## 27 AUGUST, AFTERNOON — THE FULL-PIPELINE AUDIT, AND INSTAGRAM NOW HIDES SOME ACCOUNTS FROM EVERYONE
 
 **Tabish: *"audit paid post detection, the 'We message' column, our detection of official
