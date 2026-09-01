@@ -150,6 +150,21 @@ stays per-person. Verified in both directions (correct password accepted, wrong 
 audited as `user.shared-viewer-account`. The standing rule — rebuild after major changes —
 lives beside the pipeline-diagram rule in Style.
 
+### AND THE REST TALLY HAD NOT LEARNED THE LEDGER — CAUGHT BY TABISH READING THE TABLE
+
+*"Is autopilot truly healthy, also is this number correct? Now that we have follow up
+messages in the loop."* Almost: the tally's material prediction still excluded only the
+ELECTED PAIR's used posts (`usedByPair`) while `freshCampaignsFor` has excluded the whole
+RECIPIENT's claims since the ledger went per-recipient — so a post claimed by page A read
+as fresh here for pages B–D. MEASURED by fixing it: `no-new-material` 140 → **149**,
+`no-post-we-can-describe` 38 → **41** — twelve companies had been misfiled under later
+rules, mildly overstating readiness. `claimedByTarget` now joins `usedByPair` (the
+selector's union verbatim, same rows, one more column, zero extra queries), and the
+fleet-wide recompute with the REAL selector reconciles arithmetically with the buckets.
+**And "any minute" was the null-clock fallback on the two buckets whose release is the
+next paid post** — each carries its honest phrase now ("their next paid post", "a post
+whose subject is theirs") via `REST_RULES.clock`.
+
 ### HEALTH AT HAND-OVER
 
 | | |
