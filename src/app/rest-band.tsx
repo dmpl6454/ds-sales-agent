@@ -120,7 +120,9 @@ export function RestBand({ tally, showBreakdown = true }: { tally: RestTally; sh
                     {r.needsAPerson ? <> — <strong>needs a person</strong></> : null}
                   </td>
                   <td className="muted">
-                    {r.nextReleaseAt ? istPostedLabel(r.nextReleaseAt) : r.needsAPerson ? 'not on a clock' : 'any minute'}
+                    {r.nextReleaseAt
+                      ? istPostedLabel(r.nextReleaseAt)
+                      : r.clockLabel ?? (r.needsAPerson ? 'not on a clock' : 'any minute')}
                   </td>
                 </tr>
               ))}

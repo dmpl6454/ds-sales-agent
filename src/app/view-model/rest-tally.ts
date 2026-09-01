@@ -155,7 +155,14 @@ const NO_PAGE_FOR_FLEET = 'no-page-sends-for-their-fleet'
  */
 const AWAITING_FIRST_POST = 'awaiting-a-first-paid-post'
 
-const REST_RULES: Record<string, { label: string; needsAPerson: boolean }> = {
+/**
+ * `clock` is the honest release phrase for a bucket whose release is NOT a timestamp.
+ * Without it the band's null-clock fallback reads "any minute" — which is right for a
+ * per-minute re-check like rotation, and wrong for "waiting for their next paid post",
+ * where nothing is imminent and nothing is broken. Tabish read exactly that ambiguity
+ * off the live table on 2026-09-01.
+ */
+const REST_RULES: Record<string, { label: string; needsAPerson: boolean; clock?: string }> = {
   [SKIP_REASONS.MATERIAL_EXHAUSTED]: {
     label:
       'they have had a message for every paid post of theirs we have found — the next one waits until a channel we watch posts about them again',
@@ -175,8 +182,9 @@ const REST_RULES: Record<string, { label: string; needsAPerson: boolean }> = {
     needsAPerson: false,
   },
   [SKIP_REASONS.NO_NEW_MATERIAL]: {
-    label: 'the page whose turn it is has already written about everything we have seen from them',
+    label: 'every paid post of theirs has already been claimed by a message — the next one waits until a channel we watch posts about them again',
     needsAPerson: false,
+    clock: 'their next paid post',
   },
   [SKIP_REASONS.NO_DESCRIBABLE_POST]: {
     /**
@@ -187,6 +195,7 @@ const REST_RULES: Record<string, { label: string; needsAPerson: boolean }> = {
     label:
       'their recent paid posts name no film, product or campaign of their own — a follow-up must say what the post was about, so the next message waits for a post whose subject is theirs',
     needsAPerson: false,
+    clock: 'a post whose subject is theirs',
   },
   [SKIP_REASONS.NO_FOLLOW_UP_TEMPLATE]: {
     /**
@@ -246,6 +255,12 @@ export interface RestReason {
   needsAPerson: boolean
   /** The soonest instant any company in this row frees up, where that is a clock at all. */
   nextReleaseAt: Date | null
+  /**
+   * What actually releases this bucket when there is no timestamp — "their next paid post",
+   * never a clock. Null = the band's own fallback ("any minute" / "not on a person"). Set
+   * per bucket in REST_RULES; a screen cannot invent a release this way.
+   */
+  clockLabel: string | null
 }
 
 export interface RestTally {
@@ -413,7 +428,10 @@ export async function buildRestTally(now: Date = new Date()): Promise<RestTally>
        */
       prisma.outreachAttempt.findMany({
         where: { campaignId: { not: null }, status: { in: [...IN_FLIGHT_STATUSES] } },
-        select: { pairId: true, campaignId: true },
+        /* `targetId` since the claim ledger went per RECIPIENT (2026-09-01): the selector
+           excludes the whole recipient's claims, so this tally must too — see below. The
+           denormalised column, exactly what `claimedCampaignIds` reads. */
+        select: { pairId: true, targetId: true, campaignId: true },
       }),
       /* Which fleet each end belongs to — the follow-up copy is per fleet. React-cached, so
          this is free on a page whose other builders already ask for it. */
@@ -422,11 +440,23 @@ export async function buildRestTally(now: Date = new Date()): Promise<RestTally>
 
   /** pairId → the campaigns that pair has already used. The map `usedCampaignIds` returned. */
   const usedByPair = new Map<string, string[]>()
+  /**
+   * targetId → every campaign ANY page has claimed against that recipient — the ledger's
+   * own scope (2026-09-01). `freshCampaignsFor` excludes the UNION of the pair's uses and
+   * the recipient's claims, so a tally that excluded only the pair's would report material
+   * where the governor finds none: a post claimed by page A read as "fresh" here for pages
+   * B–D, filing a fully-claimed company under the ring rule or "clear to write" instead of
+   * under the material rules. Same rows, one more column, zero extra queries.
+   */
+  const claimedByTarget = new Map<string, string[]>()
   for (const row of campaignUsage) {
     if (row.campaignId === null) continue
     const list = usedByPair.get(row.pairId)
     if (list) list.push(row.campaignId)
     else usedByPair.set(row.pairId, [row.campaignId])
+    const claims = claimedByTarget.get(row.targetId)
+    if (claims) claims.push(row.campaignId)
+    else claimedByTarget.set(row.targetId, [row.campaignId])
   }
 
   const prospects = targetRows.filter((t) => t.role === 'PROSPECT' && !t.optedOut)
@@ -646,11 +676,14 @@ export async function buildRestTally(now: Date = new Date()): Promise<RestTally>
        * the breakdown stopped being an approximation above 80 rows as a side effect.
        */
       pairChecksDone += 1
-      const used = usedByPair.get(electedPairId) ?? []
+      /* The selector's own exclusion: the pair's uses UNION the recipient's claims —
+         `freshCampaignsFor` verbatim. Pair-only here would file a fully-claimed company
+         under a later rule; see `claimedByTarget` above. */
+      const used = new Set([...(usedByPair.get(electedPairId) ?? []), ...(claimedByTarget.get(p.id) ?? [])])
       /* `newMaterialFloor`, NOT the allowance window — that is the floor the governor's own
          query uses, and the two are genuinely different (72h vs 7 days). */
       const rows = await campaignsNamingHandleRows(preloaded, p, materialFloor)
-      const unclaimed = rows.filter((r) => !used.includes(r.id))
+      const unclaimed = rows.filter((r) => !used.has(r.id))
       if (unclaimed.length === 0) {
         bump(SKIP_REASONS.NO_NEW_MATERIAL, null)
         continue
@@ -759,6 +792,7 @@ export async function buildRestTally(now: Date = new Date()): Promise<RestTally>
         count: b.count,
         needsAPerson: rule?.needsAPerson ?? true,
         nextReleaseAt: b.next,
+        clockLabel: rule?.clock ?? null,
       }
     })
     .sort((a, b) => b.count - a.count)
