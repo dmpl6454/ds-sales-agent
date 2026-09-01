@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { MAX_DELIVERY_ATTEMPTS } from '@/lib/constants'
 
 /**
  * ── defect (f): retrying into a checkpoint, inside one run ─────────────────
@@ -166,6 +167,58 @@ describe('a follow-up reads its conversation before it is sent', () => {
     expect(send).not.toHaveBeenCalled()
     expect(out.sent).toBe(0)
     expect(out.outcomes[0]!.result).toContain('could not be read')
+  })
+
+  /**
+   * ── AN UNREADABLE READ IS A BROWSER DRIVE, SO IT COUNTS (2026-09-01) ──────
+   *
+   * `unreadable`/`incomplete` mean a real Chrome profile was just driven and came back
+   * without a usable read. Held in place, the draft kept its queue position and the next
+   * tick drove the SAME profile again — MEASURED as @acearteofficial's deleted page and
+   * @officialsleepwell's incomplete read, each re-driving a revenue account every ~2
+   * minutes forever. So it takes the send-failure discipline: `attempts` incremented,
+   * `queuedAt` bumped to the back, parked FAILED at the cap. Mirrors the `no-composer`
+   * loop fix of 2026-08-18 on the READ path, where nothing had counted the drives.
+   */
+  it('increments attempts and bumps an unreadable follow-up to the back of the queue', async () => {
+    attemptFindMany.mockResolvedValue([{ ...twoDraftsFromOneSender(2)[0]!, attempts: 0 }])
+    ensureConversationChecked.mockResolvedValue({
+      ok: false,
+      reason: 'unreadable',
+      detail: 'the conversation with @target_a could not be read (no-message-button)',
+    })
+    const out = await deliverWaiting()
+    expect(send).not.toHaveBeenCalled()
+    expect(out.failed).toBe(1)
+    const upd = attemptUpdate.mock.calls[0]![0] as { data: { status: string; attempts: unknown; queuedAt?: Date } }
+    expect(upd.data.status).toBe('READY') // back of the queue, not parked yet
+    expect(upd.data.attempts).toEqual({ increment: 1 })
+    expect(upd.data.queuedAt).toBeInstanceOf(Date)
+  })
+
+  it('parks an unreadable follow-up once it has failed the delivery-attempt cap', async () => {
+    // One below the cap already, so this read tips it over.
+    attemptFindMany.mockResolvedValue([{ ...twoDraftsFromOneSender(2)[0]!, attempts: MAX_DELIVERY_ATTEMPTS - 1 }])
+    ensureConversationChecked.mockResolvedValue({
+      ok: false,
+      reason: 'incomplete',
+      detail: 'only part of the conversation with @target_a was visible',
+    })
+    const out = await deliverWaiting()
+    expect(send).not.toHaveBeenCalled()
+    expect(out.failed).toBe(1)
+    const upd = attemptUpdate.mock.calls[0]![0] as { data: { status: string; queuedAt?: Date } }
+    expect(upd.data.status).toBe('FAILED')
+    expect(upd.data.queuedAt, 'a parked row keeps its position').toBeUndefined()
+  })
+
+  it('a no-session read holds for free — no browser was driven, so nothing is counted', async () => {
+    attemptFindMany.mockResolvedValue([{ ...twoDraftsFromOneSender(2)[0]!, attempts: 0 }])
+    ensureConversationChecked.mockResolvedValue({ ok: false, reason: 'no-session', detail: 'no session on disk' })
+    const out = await deliverWaiting()
+    expect(send).not.toHaveBeenCalled()
+    expect(out.failed).toBe(0)
+    expect(attemptUpdate).not.toHaveBeenCalled() // a plain hold, not a counted failure
   })
 
   it('holds the send when a reply is discovered by that read', async () => {
