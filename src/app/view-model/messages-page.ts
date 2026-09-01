@@ -469,9 +469,7 @@ export async function buildMessagesPage(): Promise<MessagesPageView> {
    */
   const preloadedPosts = await prisma.detectedCampaign.findMany({
     where: { verdict: 'CAMPAIGN', postedAt: { gte: cooldownFloor } },
-    /* `targetId` — the CHANNEL that posted, carried on `NamingCampaign` since 2026-09-01.
-       A scalar on a query already being made, so the stub stays one round trip. */
-    select: { id: true, postedAt: true, targetId: true, caption: true, taggedAccounts: true, brands: true },
+    select: { id: true, postedAt: true, caption: true, taggedAccounts: true, brands: true },
   })
   const preloaded = {
     detectedCampaign: {

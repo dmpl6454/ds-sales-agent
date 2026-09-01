@@ -182,22 +182,40 @@ export function followUpForSettings(
 }
 
 /**
- * HOW A FOLLOW-UP NAMES THE POST IT IS FOR — "your placement with @viralbhayani on 30 Aug".
+ * HOW A FOLLOW-UP NAMES THE POST IT IS FOR — "your placement on 30 Aug", and NOTHING ELSE.
  *
- * Two facts and no judgement. The channel HANDLE rather than a prettified publisher name:
- * `publisherDisplayName` is a hand-mapped list that returns null for anything unknown, and
- * a handle is what Instagram itself asserts about who published the post — verifiable by
- * the recipient in one tap.
+ * ── WE NEVER NAME THE PUBLISHER. THIS FUNCTION CANNOT (2026-09-01, Tabish) ────
  *
- * The DATE is stated plainly rather than banded ("last week"), and that is a deliberate
- * departure from `describeRecency`. Banding exists because a dated claim in a FIRST touch
- * reads as surveillance and goes stale in a frozen draft; here the date is the post's own
- * public timestamp and it is the thing that identifies WHICH placement is meant, which is
- * the entire content of Tabish's instruction. IST, from the one formatter, so a DM and the
- * dashboard cannot name different days across midnight.
+ * The first version of this read `your placement with @${channelHandle} on 30 Aug`, and
+ * that is a real defect that reached a real recipient before it was caught. **Every channel
+ * we watch is a COMPETITOR** — @filmygyan, @viralbhayani, @voompla — so naming the publisher
+ * puts a competitor's handle, by name, in a media-buying pitch to a company we want to sell
+ * our own inventory to. It advertises them, and it tells the recipient exactly where we
+ * watch. Tabish, on seeing it: *"Never mention our competitors in this way never mention
+ * their names."*
+ *
+ * MEASURED before it was stopped: ONE delivered (@bollywoodchronicle → @arshad_warsi,
+ * 07:04Z) and 28 waiting drafts, all discarded. The one that went cannot be unsent.
+ *
+ * **THE FIX IS THAT THE FUNCTION NO LONGER TAKES A HANDLE**, rather than a rule saying not
+ * to pass one. A parameter that must never be used is a parameter somebody uses; the whole
+ * `channelId` field added to `NamingCampaign` for it was removed with it, so there is no
+ * publisher identity anywhere on the path from a claimed post to a rendered body. That is
+ * the same discipline as `frameText` being forbidden from naming brands after the salon
+ * control produced a DM claiming a collaboration with the signage behind a celebrity.
+ *
+ * WHAT IS LEFT IS THE DATE, and it is enough. It is the post's own public timestamp, it
+ * identifies which placement is meant, it varies per post — which is what keeps two
+ * follow-ups from being byte-identical — and it reveals nothing about how we found it. IST,
+ * from the one formatter, so a DM and the dashboard cannot name different days across
+ * midnight.
+ *
+ * TWO POSTS ON ONE DAY RENDER THE SAME REFERENCE, and that is handled rather than ignored:
+ * `plan.ts` renders this exact body before deciding, so such a pair is refused as a repeat
+ * instead of writing a draft the gate would wedge.
  */
-export function followUpPostReference(post: { channelHandle: string; postedAt: Date }): string {
-  return `your placement with @${post.channelHandle} on ${istDayMonth(post.postedAt)}`
+export function followUpPostReference(post: { postedAt: Date }): string {
+  return `your placement on ${istDayMonth(post.postedAt)}`
 }
 
 /**
@@ -216,12 +234,12 @@ export function renderFollowUp(body: string, postReference: string): string {
  *
  * `checkFollowUpBody` validates the RENDERED text, and the rendered length depends on the
  * reference — so the check must use the WORST case, which is the shortest, because
- * `distinctiveSlice` fails by having no line of 40+ characters left. A one-character handle
- * and a one-digit day is the floor. Built rather than written as a literal, so it cannot go
- * stale green the day the wording changes.
+ * `distinctiveSlice` fails by having no line of 40+ characters left. A one-digit day is the
+ * floor. Built rather than written as a literal, so it cannot go stale green the day the
+ * wording changes.
  */
 export const SHORTEST_POST_REFERENCE = followUpPostReference({
-  channelHandle: 'x',
-  /* A fixed instant. `new Date()` here would make a pure module depend on the clock. */
+  /* A fixed instant, and the shortest day-and-month there is. `new Date()` here would make
+     a pure module depend on the clock. */
   postedAt: new Date(Date.UTC(2026, 0, 1, 12, 0, 0)),
 })

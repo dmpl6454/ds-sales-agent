@@ -364,18 +364,6 @@ export async function runOutreach(): Promise<PlanSummary> {
       categoriesFor(memberships.byTargetHandle, p.target.handle),
     )
 
-  /**
-   * The WATCHED PAGE behind every campaign id — ONE query for the whole run.
-   *
-   * A follow-up names the post it claims by its publisher's handle, and
-   * `campaignsNamingHandleRows` carries only the channel's ID (a scalar, so the pages that
-   * preload those rows pay no extra round trip). Resolving the handle per pair would be an
-   * N+1 over senders x targets inside this loop — the defect this file has killed four
-   * times. One read of the channels, reused for every pair.
-   */
-  const channelHandleById = new Map(
-    (await prisma.targetAccount.findMany({ select: { id: true, handle: true } })).map((t) => [t.id, t.handle]),
-  )
 
   for (const pair of pairs) {
     const pairKey = `${pair.sender.handle}→${pair.target.handle}`
@@ -601,10 +589,8 @@ export async function runOutreach(): Promise<PlanSummary> {
           if (!f.ok) return false
           const newest = [...freshCampaigns].sort((a, b) => b.postedAt.getTime() - a.postedAt.getTime())[0]
           if (!newest) return false
-          const channelHandle = channelHandleById.get(newest.channelId)
-          if (!channelHandle) return false
           return delivered.includes(
-            renderFollowUp(f.body, followUpPostReference({ channelHandle, postedAt: newest.postedAt })).trim(),
+            renderFollowUp(f.body, followUpPostReference({ postedAt: newest.postedAt })).trim(),
           )
         }
 

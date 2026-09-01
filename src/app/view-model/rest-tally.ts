@@ -343,10 +343,7 @@ export async function buildRestTally(now: Date = new Date()): Promise<RestTally>
       }),
       prisma.detectedCampaign.findMany({
         where: { verdict: 'CAMPAIGN', postedAt: { gte: preloadFloor } },
-        /* `targetId` is the CHANNEL that posted, carried on `NamingCampaign` since
-           2026-09-01 so the follow-up can name the post. A scalar column on a query already
-           being made — no extra round trip, which is why it is the id and not a join. */
-        select: { id: true, postedAt: true, targetId: true, caption: true, taggedAccounts: true, brands: true },
+        select: { id: true, postedAt: true, caption: true, taggedAccounts: true, brands: true },
       }),
       /* ALL delivered messages, not a window: rotation's `lastSenderTo` is all-time, and the
          ring rule wants each sender's most recent delivery "at any age". Ascending, so the last

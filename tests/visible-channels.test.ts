@@ -9,7 +9,7 @@ import { ourOwnPageHandles } from '@/detection/visibleChannels'
  * assertion that pins it to `materialAllowance.ts`.
  */
 const ENFORCER_PROJECTION =
-  'select: { id: true, postedAt: true, targetId: true, caption: true, taggedAccounts: true, brands: true }'
+  'select: { id: true, postedAt: true, caption: true, taggedAccounts: true, brands: true }'
 
 
 /**
