@@ -231,15 +231,68 @@ export async function deliverWaiting(opts: DeliverOptions = {}): Promise<Deliver
         touchNumber: attempt.touchNumber,
       })
       if (!conversation.ok) {
-        hold(conversation.detail)
         /**
          * A checkpoint stops the whole tick and the account with it. Everything else is
          * about this one conversation, so the loop moves on.
          */
         if (conversation.reason === 'checkpoint') {
+          hold(conversation.detail)
           challengedThisRun.add(sender.id)
           out.failed += 1
+          continue
         }
+
+        /**
+         * ── AN UNREADABLE READ IS A BROWSER DRIVE, AND IT COUNTS LIKE ONE (2026-09-01) ──
+         *
+         * `unreadable` and `incomplete` mean a REAL Chrome profile was just driven at
+         * Instagram and came back without a usable read. Held in place, the draft kept its
+         * queue position and the next tick drove the SAME profile again — MEASURED:
+         * @acearteofficial's profile was deleted after its first touches, and the follow-up's
+         * pre-send read failed `no-message-button` every ~2 minutes, indefinitely, from a
+         * revenue account; @officialsleepwell looped the same way on an incomplete read.
+         * That is the exact class the retry cap below was built for (the `no-composer`
+         * loop of 2026-08-18), reintroduced on the READ path where nothing counted drives.
+         *
+         * So it takes the SAME discipline as a retryable send failure: to the BACK of the
+         * queue with `attempts` incremented, and parked FAILED at MAX_DELIVERY_ATTEMPTS,
+         * where the landing page names it with the re-queue and discard controls. A read
+         * that never drove a browser (`no-session`) still holds for free below, and a found
+         * reply is the gate's business — neither burns an attempt.
+         */
+        if (conversation.reason === 'unreadable' || conversation.reason === 'incomplete') {
+          const totalAttempts = attempt.attempts + 1
+          const park = totalAttempts >= MAX_DELIVERY_ATTEMPTS
+          await prisma.outreachAttempt.update({
+            where: { id: attempt.id },
+            data: {
+              status: park ? 'FAILED' : 'READY',
+              error: conversation.detail,
+              failureCode: 'navigation',
+              attempts: { increment: 1 },
+              ...(park ? {} : { queuedAt: new Date() }),
+            },
+          })
+          out.failed += 1
+          out.outcomes.push({
+            pairKey,
+            result: park
+              ? `the conversation could not be read ${totalAttempts} times — parked for a person to look at`
+              : `held: ${conversation.detail} — retries after the rest of the queue`,
+          })
+          if (park) {
+            log.alarm('a follow-up’s conversation could not be read repeatedly and is parked — it will not be retried on its own', {
+              pair: pairKey,
+              attempts: totalAttempts,
+              check: `pnpm ig:thread ${sender.handle} ${target.handle}`,
+            })
+          } else {
+            log.step('waiting message held back', { pair: pairKey, reason: `${conversation.detail} — moved to the back of the queue` })
+          }
+          continue
+        }
+
+        hold(conversation.detail)
         continue
       }
 
