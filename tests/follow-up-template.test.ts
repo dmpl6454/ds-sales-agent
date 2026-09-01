@@ -8,6 +8,7 @@ import {
   followUpForRoute,
   followUpForSettings,
   followUpPostReference,
+  followUpSubject,
   followUpTemplateKey,
   renderFollowUp,
 } from '@/outreach/followUpTemplate'
@@ -131,6 +132,101 @@ describe('what the follow-up says about the post it is for', () => {
   })
 
   /**
+   * ── WHAT THE POST WAS ABOUT (2026-09-01, Tabish) ─────────────────────────
+   *
+   * *"refer what the post was about … if the paid post references a movie mention that
+   * movie etc."* Every fixture below is a REAL `brands` array from the live corpus, because
+   * the filters exist for things the measurement actually found — `"fyp"` really came back
+   * as a post's only subject, and `"@primevideoIN"` really sits in a brands list.
+   */
+  const PUBLISHER = { handle: 'filmygyan', displayName: 'F I L M Y G Y A N' }
+  const RECIPIENT = { handle: 'primevideoin', displayName: 'Prime Video IN', campaignTalent: false }
+  /** A person on a paid campaign post — the film IS what they were in. */
+  const TALENT = { handle: 'tarasutaria', displayName: 'Tara Sutaria', campaignTalent: true }
+
+  it('names the one subject for TALENT — the film is what they were in', () => {
+    expect(followUpSubject(['Toxic'], PUBLISHER, TALENT)).toBe('Toxic')
+    expect(followUpSubject(['Toxic: A Fairy Tale for Grown-Ups'], PUBLISHER, TALENT)).toBe(
+      'Toxic: A Fairy Tale for Grown-Ups',
+    )
+  })
+
+  it('names a company’s own product line', () => {
+    const titan = { handle: 'titanwatchesindia', displayName: 'Titan', campaignTalent: false }
+    expect(followUpSubject(['Titan Raga'], PUBLISHER, titan)).toBe('Titan Raga')
+  })
+
+  /**
+   * ── THE ONE CAUGHT BY RENDERING IT, NOT BY READING IT ────────────────────
+   *
+   * A live post naming @jiohotstar carried exactly one surviving subject, "Amazon Prime", so
+   * every other filter passed and the sentence read *"We saw your Amazon Prime placement"*
+   * to a rival streaming platform. One SUBJECT is not one ADVERTISER.
+   */
+  it('never tells a company about somebody else’s campaign', () => {
+    const jio = { handle: 'jiohotstar', displayName: 'JioHotstar', campaignTalent: false }
+    expect(followUpSubject(['Amazon Prime'], PUBLISHER, jio)).toBeNull()
+    expect(followUpSubject(['TECNO'], PUBLISHER, RECIPIENT)).toBeNull()
+    expect(followUpSubject(['Green Soul'], PUBLISHER, RECIPIENT)).toBeNull()
+  })
+
+  it('renders it into the reference', () => {
+    expect(followUpPostReference({ postedAt: new Date('2026-08-29T05:00:00Z'), subject: 'Toxic' })).toBe(
+      'your Toxic placement on 29 Aug',
+    )
+    expect(followUpPostReference({ postedAt: new Date('2026-08-29T05:00:00Z'), subject: null })).toBe(
+      'your placement on 29 Aug',
+    )
+  })
+
+  /**
+   * THE DIRECTION THAT MATTERS MOST. The publisher is a FILTER input and must never be an
+   * output — this drives its own name and its own series code through `brands` and asserts
+   * neither survives. One competitor-naming message reached a real prospect on 1 September;
+   * this is the assertion that says never again.
+   */
+  it('the publisher cannot survive as a subject, by name or by series code', () => {
+    expect(followUpSubject(['Filmygyan'], PUBLISHER, TALENT)).toBeNull()
+    expect(followUpSubject(['fg6'], PUBLISHER, TALENT)).toBeNull()
+    expect(followUpSubject(['FG17'], PUBLISHER, TALENT)).toBeNull()
+    /* And with a real subject beside it, the real subject survives and the mark does not. */
+    expect(followUpSubject(['fg6', 'Toxic'], PUBLISHER, TALENT)).toBe('Toxic')
+  })
+
+  it('never lets a raw handle through — brands really contains them', () => {
+    expect(followUpSubject(['@primevideoIN'], PUBLISHER, RECIPIENT)).toBeNull()
+    expect(followUpSubject(['Prime Video', '@primevideoIN'], PUBLISHER, RECIPIENT)).toBe('Prime Video')
+    /* Kept because 'Prime Video' stems into 'Prime Video IN' — it is their own name for a
+       product line, not a third party's. */
+  })
+
+  it('drops a hashtag artefact rather than putting it in a DM', () => {
+    /* MEASURED: "fyp" came back as a whole post's only subject. */
+    expect(followUpSubject(['fyp'], PUBLISHER, TALENT)).toBeNull()
+    expect(followUpSubject(['ad'], PUBLISHER, TALENT)).toBeNull()
+  })
+
+  it('does not read the recipient their own name', () => {
+    expect(followUpSubject(['Prime Video IN'], PUBLISHER, RECIPIENT)).toBeNull()
+    expect(followUpSubject(['primevideoin'], PUBLISHER, RECIPIENT)).toBeNull()
+  })
+
+  /**
+   * SEVERAL SUBJECTS MEANS NONE. MEASURED: 385 of 681 in-window paid posts carry more than
+   * one, and `["Google India","Kerala Tourism"]` is two unrelated advertisers on one
+   * round-up — a first-wins rule would tell Kerala Tourism about Google India, naming a
+   * third party in a pitch. The date alone is the honest answer.
+   */
+  it('refuses to guess which of several subjects a post was about', () => {
+    expect(followUpSubject(['Google India', 'Kerala Tourism'], PUBLISHER, TALENT)).toBeNull()
+    expect(followUpSubject(['Pralay', 'Ranveer Singh', 'Birla Studios'], PUBLISHER, TALENT)).toBeNull()
+  })
+
+  it('an empty brands list is the date alone, not a crash', () => {
+    expect(followUpSubject([], PUBLISHER, TALENT)).toBeNull()
+  })
+
+  /**
    * A SOURCE GREP, because the failure mode is a call site nobody has written yet and no
    * behavioural test can fail for that. Nothing on the path from a claimed post to a
    * rendered body may carry the publishing channel.
@@ -144,12 +240,19 @@ describe('what the follow-up says about the post it is for', () => {
       'NamingCampaign carries the publishing channel again — that is how the competitor got named',
     ).not.toMatch(/channelId|targetId|channelHandle/)
 
-    const composer = code(read('src/outreach/compose.ts'))
-    const pick = composer.indexOf('async function pickHook')
+    /**
+     * And the RENDERER cannot take one. `pickHook` does fetch the publisher — it is what
+     * `followUpSubject` strips with — so the structural guarantee is one layer in: the
+     * function that produces the sentence accepts a date and an already-vetted subject, and
+     * nothing else.
+     */
+    const src = code(read('src/outreach/followUpTemplate.ts'))
+    const at2 = src.indexOf('export function followUpPostReference')
+    expect(at2).toBeGreaterThan(-1)
     expect(
-      composer.slice(pick, pick + 600),
-      'pickHook joins the publishing channel again — the follow-up must name the date alone',
-    ).not.toMatch(/include:\s*\{\s*target/)
+      src.slice(at2, src.indexOf(')', at2)),
+      'the reference builder accepts publisher identity again',
+    ).not.toMatch(/handle|publisher|channel/i)
   })
 
   it('substitutes every occurrence and touches nothing else', () => {
