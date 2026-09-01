@@ -1,4 +1,5 @@
 import { istDayMonth } from '@/lib/time'
+import { stripOwnMarksFromBrands } from '@/detection/ownMarks'
 import { DEFAULT_CATEGORY_SLUG } from './senderCategories'
 import { routeFleets } from './fleetTemplate'
 
@@ -214,8 +215,123 @@ export function followUpForSettings(
  * `plan.ts` renders this exact body before deciding, so such a pair is refused as a repeat
  * instead of writing a draft the gate would wedge.
  */
-export function followUpPostReference(post: { postedAt: Date }): string {
-  return `your placement on ${istDayMonth(post.postedAt)}`
+export function followUpPostReference(post: { postedAt: Date; subject?: string | null }): string {
+  const day = istDayMonth(post.postedAt)
+  const subject = post.subject?.trim()
+  return subject ? `your ${subject} placement on ${day}` : `your placement on ${day}`
+}
+
+/**
+ * ── WHAT THE POST WAS ABOUT — the film, the product, the campaign (2026-09-01) ──
+ *
+ * Tabish, after the publisher name was removed: *"refer what the post was about. Basically,
+ * the message should mention the post on say the 29th, rather than mentioning only the date
+ * only of that paid post. Example if the paid post references a movie mention that movie
+ * etc. Keep this futureproof."*
+ *
+ * The source is `DetectedCampaign.brands` — the entities the classifier read out of the
+ * caption. It is the only stored fact about what a post is FOR, and it is deliberately not
+ * `frameText`: OCR is FORBIDDEN from naming brands here, because the salon control frame
+ * produced a DM claiming a collaboration with the signage behind a celebrity.
+ *
+ * ── MEASURED FIRST, OVER 681 IN-WINDOW PAID POSTS ─────────────────────────────
+ *
+ *   105 (15%)  no usable subject at all once own marks are stripped
+ *   191 (28%)  exactly ONE subject — "TECNO", "Green Soul", "Titan Raga", "Toxic", "Tanishq"
+ *   385 (57%)  several — ["Prime Video","The Revolutionaries","@primevideoIN","@Nikkhiladvani"]
+ *
+ * So this NAMES A SUBJECT ONLY WHEN THERE IS EXACTLY ONE, and otherwise renders the date
+ * alone. Picking the first of several is a guess about what a post was "about", and the
+ * measured data shows what that guess costs: `["Google India","Kerala Tourism"]` is two
+ * unrelated advertisers on one round-up, so a first-wins rule would tell Kerala Tourism
+ * about Google India — naming a third party, possibly their competitor, in a pitch. The same
+ * refusal-rather-than-guess this codebase applies to a handle it cannot verify.
+ *
+ * FUTUREPROOF IS THE COVERAGE RISING BY ITSELF: every post that gains a cleaner subject
+ * gains a named follow-up with no code change, and `captionEntities` is already the module
+ * that improves it (987 → 2,810 distinct names when it last did).
+ *
+ * ── FOUR FILTERS, EACH FROM SOMETHING IN THE MEASURED DATA ────────────────────
+ *
+ *   own marks     `fg6`, `bs2`, `fg14` — a publisher's internal series codes, on 668
+ *                 @filmygyan rows. `stripOwnMarksFromBrands` is the one rule and it also
+ *                 removes the publisher's own NAME, which is what keeps a competitor out.
+ *   raw handles   `brands` genuinely contains `"@primevideoIN"`, `"@sidsshaw"` — other
+ *                 accounts, sometimes third parties. An @ never reaches a recipient.
+ *   junk tokens   `"fyp"` came back as a whole post's only subject. A short or all-lowercase
+ *                 token is a hashtag artefact, not a title; real ones here are `Toxic`,
+ *                 `TECNO`, `Green Soul`. Rejecting one costs the date, which is the safe way
+ *                 to be wrong.
+ *   the recipient itself — "your Prime Video placement" said to @primevideoin is their own
+ *                 name read back at them. Dropped, and the date is used instead.
+ *
+ * PURE. The publisher is an input to the FILTER and can never be an output: it is only ever
+ * used to remove things, and `tests/follow-up-template.test.ts` drives a brands list
+ * containing the publisher's own name and asserts it does not survive.
+ */
+export function followUpSubject(
+  brands: readonly string[],
+  publisher: { handle: string; displayName: string | null },
+  recipient: { handle: string; displayName: string | null; campaignTalent: boolean },
+): string | null {
+  const mineSquashed = [recipient.handle, recipient.displayName]
+    .filter((s): s is string => typeof s === 'string')
+    .map(squashName)
+    .filter((s) => s.length > 0)
+
+  const usable = stripOwnMarksFromBrands(brands, publisher).filter((raw) => {
+    const b = raw.trim()
+    if (b.length < 3) return false
+    if (b.includes('@')) return false
+    /* All lower case is a hashtag artefact ("fyp"), never a title. */
+    if (b === b.toLowerCase()) return false
+    /* Their own name read back at them. */
+    return !mineSquashed.includes(squashName(b))
+  })
+  if (usable.length !== 1) return null
+
+  const subject = usable[0]!.trim()
+
+  /**
+   * ── AND WHOSE CAMPAIGN IS IT? THE FILTERS ABOVE DO NOT ANSWER THAT ────────
+   *
+   * CAUGHT BY RENDERING IT AGAINST LIVE PAIRS, which is the only way it was ever going to
+   * surface. A post naming @jiohotstar carried exactly one surviving subject — **"Amazon
+   * Prime"** — so every filter above passed and the message read *"We saw your Amazon Prime
+   * placement on 31 Aug"* to a streaming platform that did not buy it.
+   *
+   * THE PRIMARY FAULT IS THAT IT IS FALSE. Tabish's rule about rivals is about the pages we
+   * MONITOR — never naming a watched publisher, which the filter above makes structurally
+   * impossible. This is the other kind of wrong: an invented claim about the RECIPIENT's own
+   * marketing, addressed to the one party certain to know it did not happen. That is the
+   * `{{brand}}` defect of 2026-08-05 verbatim, where a hook line told Royal Canin about a
+   * collaboration with Amazon.
+   *
+   * One subject is not the same fact as one ADVERTISER. So the subject is only spoken when
+   * it plausibly belongs to this recipient, and there are exactly two ways it can:
+   *
+   *   the recipient is TALENT — a person on a paid campaign post is there BECAUSE of the
+   *     thing being promoted, so the film or product is what they were in. @tarasutaria and
+   *     "Toxic", @thenameisyash and "Toxic: A Fairy Tale for Grown-Ups" — both correct, both
+   *     from the live corpus.
+   *   the subject SHARES A STEM with their own name — "Titan Raga" for @titan is their own
+   *     product line, which is a fact about them rather than about somebody else.
+   *
+   * Anything else falls to the date. That is the same refusal-rather-than-guess this
+   * codebase applies to a handle it cannot verify, and the cost of being wrong is one word
+   * less in a sentence rather than a competitor's name in a pitch.
+   */
+  if (recipient.campaignTalent) return subject
+  const squashed = squashName(subject)
+  const theirs = mineSquashed.some(
+    (mine) => mine.length >= 4 && squashed.length >= 4 && (squashed.includes(mine) || mine.includes(squashed)),
+  )
+  return theirs ? subject : null
+}
+
+/** Letters and digits only, lower case — enough to tell "Prime Video" from "primevideoin". */
+function squashName(s: string): string {
+  return s.toLowerCase().replace(/[^a-z0-9]/g, '')
 }
 
 /**

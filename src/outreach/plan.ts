@@ -16,9 +16,11 @@ import { composeForPair, freshCampaignsFor } from './compose'
 import {
   followUpForSettings,
   followUpPostReference,
+  followUpSubject,
   renderFollowUp,
   type FollowUpTemplate,
 } from './followUpTemplate'
+import { readStringArray } from '@/lib/json'
 import { describeRing, whoseTurn, type WhoseTurnResult } from './categories'
 import { fleetRingOrder } from './rotation'
 import { checkNewBrandTouchCap, checkRecipientIsNotAPerson } from './brandGuards'
@@ -349,6 +351,25 @@ export async function runOutreach(): Promise<PlanSummary> {
     else deliveredBodiesByPair.set(row.pairId, [row.renderedBody.trim()])
   }
 
+  /**
+   * WHAT EACH PAID POST WAS ABOUT — one query for the whole run, never one per pair.
+   *
+   * The planner decides `repeatsADeliveredBody` by rendering the EXACT follow-up body it
+   * would write, and that body now names the post's subject when there is exactly one
+   * (Tabish, 2026-09-01). The subject needs the post's `brands` and its PUBLISHER — the
+   * latter only so `followUpSubject` can strip the channel's own marks and its own name out,
+   * which is what keeps a competitor from being named. Resolving either per pair would be an
+   * N+1 over senders x targets, the defect this file has killed four times.
+   */
+  const campaignSubjectById = new Map<string, { brands: string; publisher: { handle: string; displayName: string | null } }>(
+    (
+      await prisma.detectedCampaign.findMany({
+        where: { verdict: 'CAMPAIGN', postedAt: { gte: newMaterialFloor(now) } },
+        select: { id: true, brands: true, target: { select: { handle: true, displayName: true } } },
+      })
+    ).map((c) => [c.id, { brands: c.brands, publisher: c.target }]),
+  )
+
   const fleetTemplateFor = (p: { sender: { handle: string }; target: { handle: string } }) =>
     templateForSettings(
       settings,
@@ -589,8 +610,12 @@ export async function runOutreach(): Promise<PlanSummary> {
           if (!f.ok) return false
           const newest = [...freshCampaigns].sort((a, b) => b.postedAt.getTime() - a.postedAt.getTime())[0]
           if (!newest) return false
+          const about = campaignSubjectById.get(newest.id)
+          const subject = about
+            ? followUpSubject(readStringArray(about.brands), about.publisher, pair.target)
+            : null
           return delivered.includes(
-            renderFollowUp(f.body, followUpPostReference({ postedAt: newest.postedAt })).trim(),
+            renderFollowUp(f.body, followUpPostReference({ postedAt: newest.postedAt, subject })).trim(),
           )
         }
 

@@ -9,7 +9,12 @@ import { generateMessageBody } from './generate'
 import { brandFirstTouch, publisherDisplayName, describeRecency } from './brandPitch'
 import { greetableName, renderMessage } from './render'
 import type { FleetTemplate } from './fleetTemplate'
-import { followUpPostReference, renderFollowUp, type FollowUpTemplate } from './followUpTemplate'
+import {
+  followUpPostReference,
+  followUpSubject,
+  renderFollowUp,
+  type FollowUpTemplate,
+} from './followUpTemplate'
 
 /**
  * Choosing WHAT to say to one pair — the single implementation.
@@ -55,6 +60,13 @@ export interface ComposablePair {
     contactFirstName: string | null
     kind: string
     discoveredFromCampaignId: string | null
+    /**
+     * A PERSON admitted under the celebrity door (Tabish, 2026-08-19). Read by
+     * `followUpSubject`: talent on a paid campaign post is there BECAUSE of the thing being
+     * promoted, so the post's subject is theirs to be told about; a COMPANY's is not, unless
+     * the name is their own. See the docblock there for the @jiohotstar case that forced it.
+     */
+    campaignTalent: boolean
   }
 }
 
@@ -250,11 +262,18 @@ export async function unusedCampaignCount(args: {
 async function pickHook(args: { target: NamedRecipient; targetId: string; pairId: string; now: Date }) {
   const fresh = (await freshCampaignsFor(args)).sort((a, b) => b.postedAt.getTime() - a.postedAt.getTime())[0]
   if (!fresh) return null
-  /* No `include` for the publishing channel, and that is deliberate rather than an
-     omission: the follow-up body names the post by DATE alone, because every channel we
-     watch is a competitor and naming one in a pitch advertises them. See
-     `followUpPostReference` — the reference builder cannot take a handle at all. */
-  return prisma.detectedCampaign.findUnique({ where: { id: fresh.id } })
+  /**
+   * The publisher comes back HERE and only as a FILTER input. `followUpSubject` needs it to
+   * strip the channel's own marks and its own name out of `brands` — which is precisely what
+   * keeps a competitor from being named — and it can never be an OUTPUT: the reference
+   * builder takes `{ postedAt, subject }` and has no way to render a handle. See the
+   * docblock on `followUpSubject`, and the test that drives the publisher's own name through
+   * `brands` and asserts it does not survive.
+   */
+  return prisma.detectedCampaign.findUnique({
+    where: { id: fresh.id },
+    include: { target: { select: { handle: true, displayName: true } } },
+  })
 }
 
 /**
@@ -521,7 +540,16 @@ export async function composeForPair(args: {
     if (touchNumber > 1) {
       if (!followUpTemplate.ok) throw new FollowUpTemplateNotSetError(pair.target.handle, followUpTemplate.detail)
       if (!hook) throw new NoMaterialForFollowUpError(pair.target.handle)
-      const body = renderFollowUp(followUpTemplate.body, followUpPostReference({ postedAt: hook.postedAt }))
+      const body = renderFollowUp(
+        followUpTemplate.body,
+        followUpPostReference({
+          postedAt: hook.postedAt,
+          /* What the post was ABOUT, when exactly one usable subject survives every filter —
+             otherwise the date alone. Tabish, 2026-09-01: "if the paid post references a
+             movie mention that movie". */
+          subject: followUpSubject(readStringArray(hook.brands), hook.target, pair.target),
+        }),
+      )
       return {
         body,
         hookLine: null,
