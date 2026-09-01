@@ -53,6 +53,7 @@ function ok(): ResendInput {
      tests/follow-up-template.test.ts. */
   isFollowUp: false,
   followUpTemplate: FOLLOW_UP_WRITTEN,
+  followUpCitesOnlyADate: false,
   repeatsADeliveredBody: false,
     targetIsVerified: true,
     targetRepliedAt: null,

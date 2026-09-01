@@ -11,6 +11,18 @@ import { ourOwnPageHandles } from '@/detection/visibleChannels'
 const ENFORCER_PROJECTION =
   'select: { id: true, postedAt: true, caption: true, taggedAccounts: true, brands: true }'
 
+/**
+ * The enforcer's projection PLUS the publisher (2026-09-01) — the rest tally's preload asks
+ * for this so it can predict `NO_DESCRIBABLE_POST` with the composer's own subject rule,
+ * which needs the publisher only as `followUpSubject`'s FILTER input (strip the channel's
+ * own marks and name). Still deliberately unscoped, for the same reason as the plain
+ * projection: `plan.ts` reads every channel, so a narrowed input would predict a hold the
+ * planner does not apply. The coupling test below pins this to the plain projection so the
+ * two cannot drift apart.
+ */
+const SUBJECT_PROJECTION =
+  'select: { id: true, postedAt: true, caption: true, taggedAccounts: true, brands: true, target: { select: { handle: true, displayName: true } } }'
+
 
 /**
  * ── OUR OWN PAGES MUST NOT APPEAR ON A SCREEN, AND THE FAILURE MODE IS A QUERY
@@ -165,7 +177,8 @@ describe('our own pages are excluded from every dashboard figure', () => {
            * below proves the enforcer really is unscoped, so this cannot quietly become
            * wrong the day that changes.
            */
-          window.includes(ENFORCER_PROJECTION)
+          window.includes(ENFORCER_PROJECTION) ||
+          window.includes(SUBJECT_PROJECTION)
         if (!scoped) unscoped.push(`${file}:${i + 1}  ${line.trim().slice(0, 90)}`)
       })
     }
@@ -181,6 +194,12 @@ describe('our own pages are excluded from every dashboard figure', () => {
    * gain one too, and the exemption would silently hide the mismatch. Asserted rather than
    * described, for the same reason `postsWhere`'s carve-out is backed by a proof.
    */
+  /** The publisher-carrying variant is the plain projection plus one relation, nothing else. */
+  it('the subject projection cannot drift from the enforcer projection', () => {
+    expect(SUBJECT_PROJECTION.startsWith(ENFORCER_PROJECTION.slice(0, -2))).toBe(true)
+    expect(SUBJECT_PROJECTION).toContain('target: { select: { handle: true, displayName: true } }')
+  })
+
   it('the material allowance itself reads every channel, which is why its preloads may too', () => {
     const src = read('src/outreach/materialAllowance.ts')
     expect(src, 'the allowance has gained a channel scope — the preload carve-out is now a hole').not.toContain(

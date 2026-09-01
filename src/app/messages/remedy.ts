@@ -165,6 +165,16 @@ export const REMEDIES = {
     label: 'Write the follow-up message on the Autopilot page \u2014 a second message has to differ from the first.',
   },
 
+  /**
+   * A draft from before follow-ups were required to name the post's subject (2026-09-01).
+   * Discarding is the whole remedy: the planner writes a replacement by itself the moment a
+   * post whose subject is theirs exists, and never writes another date-only one.
+   */
+  [RESEND_BLOCKS.FOLLOW_UP_CITES_ONLY_A_DATE]: {
+    href: '/',
+    label: 'Discard it \u2014 it only cites a date. The planner writes a follow-up that names what the post was about, when such a post exists.',
+  },
+
   // Clears by waiting — five a day from one account to one recipient.
   [RESEND_BLOCKS.PAIR_DAILY_CAP]: { href: null, label: 'The allowance resets at midnight IST.' },
 

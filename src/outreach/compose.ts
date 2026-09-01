@@ -277,6 +277,70 @@ async function pickHook(args: { target: NamedRecipient; targetId: string; pairId
 }
 
 /**
+ * THE NEWEST UNCLAIMED PAID POST THIS RECIPIENT WOULD RECOGNISE — or null (2026-09-01).
+ *
+ * A follow-up must say what the post was ABOUT ("your Toxic placement on 29 Aug"), and the
+ * date-only fallback is deleted — Tabish, from a delivered thread: *"this message is
+ * mentioning nothing but date and placement. This is an amateur message with no context to
+ * the paid posts."* So the pick is no longer "the newest unclaimed post" but **the newest
+ * unclaimed post whose subject `followUpSubject` can attribute to this recipient** — their
+ * own film or product, or the campaign they are talent on. A recipient none of whose posts
+ * can be described gets NO follow-up, which is the other half of the same instruction:
+ * a message with nothing specific to say is not sent to someone who does not need it.
+ *
+ * Walks newest-first so the reference stays as fresh as the rule allows. The subject is
+ * computed HERE and carried out, never recomputed by the caller — one computation, one
+ * answer, so the body rendered is about the post claimed by construction.
+ *
+ * One `findMany` over the fresh ids for the brands and publisher — never a query per
+ * campaign, the N+1 this file has killed four times.
+ */
+export async function pickFollowUpHook(args: {
+  target: { handle: string; displayName: string | null; campaignTalent: boolean }
+  targetId: string
+  pairId: string
+  now: Date
+}): Promise<{ id: string; postedAt: Date; subject: string } | null> {
+  const fresh = (await freshCampaignsFor(args)).sort((a, b) => b.postedAt.getTime() - a.postedAt.getTime())
+  if (fresh.length === 0) return null
+  const rows = await prisma.detectedCampaign.findMany({
+    where: { id: { in: fresh.map((f) => f.id) } },
+    select: { id: true, brands: true, target: { select: { handle: true, displayName: true } } },
+  })
+  const byId = new Map(rows.map((r) => [r.id, r]))
+  for (const f of fresh) {
+    const row = byId.get(f.id)
+    if (!row) continue
+    const subject = followUpSubject(readStringArray(row.brands), row.target, args.target)
+    if (subject !== null) return { id: f.id, postedAt: f.postedAt, subject }
+  }
+  return null
+}
+
+/**
+ * How many unclaimed paid posts naming this recipient can actually be DESCRIBED to them —
+ * the governor's input for `NO_DESCRIBABLE_POST`, and it must agree with `pickFollowUpHook`
+ * above for the reason `unusedCampaignCount` must agree with `pickHook`: a count that says
+ * "there is one" while the pick finds none is a follow-up permitted with nothing to cite.
+ * Both walk the same selector and the same subject rule; this one merely counts.
+ */
+export async function describableCampaignCount(args: {
+  target: { handle: string; displayName: string | null; campaignTalent: boolean }
+  targetId: string
+  pairId: string
+  now?: Date
+}): Promise<number> {
+  const { now = new Date() } = args
+  const fresh = await freshCampaignsFor({ ...args, now })
+  if (fresh.length === 0) return 0
+  const rows = await prisma.detectedCampaign.findMany({
+    where: { id: { in: fresh.map((f) => f.id) } },
+    select: { id: true, brands: true, target: { select: { handle: true, displayName: true } } },
+  })
+  return rows.filter((r) => followUpSubject(readStringArray(r.brands), r.target, args.target) !== null).length
+}
+
+/**
  * The FIRST message to a brand, built from the campaign it was discovered in.
  *
  * Never fabricates a placement: with no known campaign, `brandFirstTouch` degrades to a
@@ -407,7 +471,10 @@ export class FollowUpTemplateNotSetError extends Error {
  */
 export class NoMaterialForFollowUpError extends Error {
   constructor(readonly targetHandle: string) {
-    super(`no unclaimed paid post naming @${targetHandle} — a follow-up has nothing to reference`)
+    super(
+      `no unclaimed paid post naming @${targetHandle} can be described to them — ` +
+        `a follow-up must say what the post was about, so nothing is written`,
+    )
     this.name = 'NoMaterialForFollowUpError'
   }
 }
@@ -439,7 +506,14 @@ export async function composeForPair(args: {
   const { pair, senderHandle, touchNumber, fleetTemplate, followUpTemplate, now = new Date() } = args
   const settings = await getSettings()
 
-  const hook = await pickHook({ target: pair.target, targetId: pair.targetId, pairId: pair.id, now })
+  /* A single-template FOLLOW-UP picks through `pickFollowUpHook` inside its own branch below
+     — the newest post whose subject this recipient would recognise, never merely the newest
+     — so the plain pick is skipped for it rather than spent twice. The variants path and
+     first touches are unchanged. */
+  const hook =
+    settings.singleTemplate && touchNumber > 1
+      ? null
+      : await pickHook({ target: pair.target, targetId: pair.targetId, pairId: pair.id, now })
 
   /**
    * Least-recently-used variant, SCOPED TO THE POOL THIS TARGET BELONGS TO, and never one
@@ -539,23 +613,22 @@ export async function composeForPair(args: {
      */
     if (touchNumber > 1) {
       if (!followUpTemplate.ok) throw new FollowUpTemplateNotSetError(pair.target.handle, followUpTemplate.detail)
-      if (!hook) throw new NoMaterialForFollowUpError(pair.target.handle)
+      /* The newest unclaimed post whose subject BELONGS to this recipient — their film,
+         their product, the campaign they are talent on. The date-only fallback is deleted
+         (Tabish, 2026-09-01: "an amateur message with no context to the paid posts"), so a
+         recipient with nothing describable gets no follow-up at all. */
+      const named = await pickFollowUpHook({ target: pair.target, targetId: pair.targetId, pairId: pair.id, now })
+      if (!named) throw new NoMaterialForFollowUpError(pair.target.handle)
       const body = renderFollowUp(
         followUpTemplate.body,
-        followUpPostReference({
-          postedAt: hook.postedAt,
-          /* What the post was ABOUT, when exactly one usable subject survives every filter —
-             otherwise the date alone. Tabish, 2026-09-01: "if the paid post references a
-             movie mention that movie". */
-          subject: followUpSubject(readStringArray(hook.brands), hook.target, pair.target),
-        }),
+        followUpPostReference({ postedAt: named.postedAt, subject: named.subject }),
       )
       return {
         body,
         hookLine: null,
         variantId: variant.id,
         /* The claim, recorded as always — and now also the thing the body says out loud. */
-        campaignId: hook.id,
+        campaignId: named.id,
         usedBespoke: false,
         generated: false,
       }

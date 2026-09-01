@@ -534,6 +534,22 @@ export async function runOutreach(): Promise<PlanSummary> {
       }),
     ])
 
+    /**
+     * The unclaimed posts this recipient would RECOGNISE, newest-first with their subject —
+     * the same selector and the same subject rule `pickFollowUpHook` composes with, computed
+     * once here for the governor's count AND the repeat-check's rendering, so the three
+     * cannot disagree about which post a follow-up would cite. Pure JS over two preloads;
+     * no query per pair. A campaign missing from the subject map counts as not describable —
+     * absence of data must not become a sendable subject.
+     */
+    const describableCampaigns = [...freshCampaigns]
+      .sort((a, b) => b.postedAt.getTime() - a.postedAt.getTime())
+      .flatMap((c) => {
+        const about = campaignSubjectById.get(c.id)
+        const subject = about ? followUpSubject(readStringArray(about.brands), about.publisher, pair.target) : null
+        return subject === null ? [] : [{ id: c.id, postedAt: c.postedAt, subject }]
+      })
+
     const decision: GovernorDecision = evaluatePair({
       now,
       sender: { status: pair.sender.status },
@@ -562,6 +578,8 @@ export async function runOutreach(): Promise<PlanSummary> {
        */
       material: materialAllowance({ campaignsInWindow: targetCampaigns, deliveredInWindow: targetDelivered }),
       unusedCampaignCount: freshCampaigns.length,
+      /* How many of those a follow-up could actually DESCRIBE — see the block above. */
+      describableCampaignCount: describableCampaigns.length,
       totalSentEver,
       maxTotalSends: env.MAX_TOTAL_SENDS,
       /**
@@ -604,18 +622,17 @@ export async function runOutreach(): Promise<PlanSummary> {
 
         if (touches > 0) {
           const f = followUpTemplateFor(pair)
-          /* No copy and no material are refusals in their own right, named above and below.
-             Answering "would it repeat?" about a body that cannot exist would put the wrong
-             sentence on the queue. */
+          /* No copy and no describable post are refusals in their own right, named above and
+             below. Answering "would it repeat?" about a body that cannot exist would put the
+             wrong sentence on the queue. */
           if (!f.ok) return false
-          const newest = [...freshCampaigns].sort((a, b) => b.postedAt.getTime() - a.postedAt.getTime())[0]
+          /* The newest DESCRIBABLE post — the one the composer will actually cite — never
+             merely the newest unclaimed one, which since 2026-09-01 may not be citable at
+             all (the date-only fallback is deleted). */
+          const newest = describableCampaigns[0]
           if (!newest) return false
-          const about = campaignSubjectById.get(newest.id)
-          const subject = about
-            ? followUpSubject(readStringArray(about.brands), about.publisher, pair.target)
-            : null
           return delivered.includes(
-            renderFollowUp(f.body, followUpPostReference({ postedAt: newest.postedAt, subject })).trim(),
+            renderFollowUp(f.body, followUpPostReference({ postedAt: newest.postedAt, subject: newest.subject })).trim(),
           )
         }
 

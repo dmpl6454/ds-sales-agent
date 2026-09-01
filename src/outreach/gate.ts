@@ -5,7 +5,7 @@ import { mayArmAccount } from './cohorts'
 import { replyHaltWhere } from './replyHalt'
 import { sameCategory, crossCategoryDetail } from './senderCategories'
 import { templateForSettings, type FleetTemplate } from './fleetTemplate'
-import { followUpForSettings, type FollowUpTemplate } from './followUpTemplate'
+import { citesOnlyADate, followUpForSettings, type FollowUpTemplate } from './followUpTemplate'
 import { readCategoryMemberships, categoriesFor } from './categories'
 import { profileStatus } from './browser/profile'
 import { sessionUsable } from './sessionHealth'
@@ -123,6 +123,14 @@ export interface ResendInput {
    * caller forgot it, and the failure is a verbatim repeat delivered to a real company.
    */
   followUpTemplate: FollowUpTemplate
+  /**
+   * Does this draft's stored body carry the RETIRED date-only reference ("your placement on
+   * 31 Aug", no subject)? Only consulted when `isFollowUp`. Computed by the caller with
+   * `citesOnlyADate` over the STORED bytes — the current builder cannot produce the pattern,
+   * so a true here means a draft written before the subject became required (2026-09-01).
+   * REQUIRED with no default, for the reason `followUpTemplate` is.
+   */
+  followUpCitesOnlyADate: boolean
   /**
    * Is this draft's stored body byte-identical to one already DELIVERED on this pair? Read
    * from the stored bytes rather than recomposed, because an operator may have edited the
@@ -247,6 +255,23 @@ export const RESEND_BLOCKS = {
    * textarea, not a judgement call.
    */
   FOLLOW_UP_TEMPLATE_NOT_SET: 'no-follow-up-message-written',
+  /**
+   * ── A FOLLOW-UP THAT SAYS ONLY A DATE (2026-09-01, Tabish) ────────────────
+   *
+   * *"This message is mentioning nothing but date and placement. This is an amateur message
+   * with no context to the paid posts."* — said of a DELIVERED body reading "Hi,We saw your
+   * placement on 31 Aug — …". The date-only fallback is deleted from the reference builder
+   * (`subject` is required now), so the composer can no longer produce one; this catches
+   * the drafts WRITTEN BEFORE the rule — 25 were waiting when it shipped — from their
+   * STORED bytes, because an operator may have edited a draft and what matters is what
+   * would actually go out. `citesOnlyADate` is the one predicate, over the retired
+   * fallback's exact prefix, which the current builder is structurally unable to emit.
+   *
+   * ABSOLUTE, and deliberately absent from `OVERRIDABLE_BLOCKS`. Every stop a human may
+   * cross is about TIMING; this is about WHAT THE MESSAGE SAYS, and the remedy is to
+   * discard the draft so the planner writes one that names the post's subject — or nothing.
+   */
+  FOLLOW_UP_CITES_ONLY_A_DATE: 'follow-up-cites-only-a-date',
   /**
    * ── THE SAME BYTES THEY ALREADY HAVE (2026-08-26) ─────────────────────────
    *
@@ -609,6 +634,21 @@ export function evaluateResend(input: ResendInput): ResendResult {
     }
   }
 
+  /**
+   * A follow-up written before the subject became required (2026-09-01) — its stored bytes
+   * cite only a date, which is the "amateur message with no context" Tabish refused from a
+   * live thread. Discarding it is the remedy; the planner writes a replacement only when a
+   * post whose subject is theirs exists.
+   */
+  if (input.isFollowUp && input.followUpCitesOnlyADate) {
+    return {
+      ok: false,
+      reason: RESEND_BLOCKS.FOLLOW_UP_CITES_ONLY_A_DATE,
+      detail:
+        'this follow-up says only a date with nothing about what the post was — it was written before follow-ups were required to name the post’s subject; discard it and the planner writes one that does, when a post whose subject is theirs exists',
+    }
+  }
+
   return { ok: true }
 }
 
@@ -814,6 +854,9 @@ export async function recheckBeforeSend(
     /* Null body (the row vanished under us) is NOT a repeat — absence of data must not
        become a refusal any more than it may become a permission. */
     repeatsADeliveredBody: thisBody !== null && deliveredBodies.includes(thisBody),
+    /* Same bytes, same reasoning: a pre-rule draft whose reference is the retired date-only
+       fallback. Null body is not a date-only body — the NOT_WAITING/null rules own that. */
+    followUpCitesOnlyADate: thisBody !== null && citesOnlyADate(thisBody),
     targetIsVerified: target.isVerified,
     targetRepliedAt: replied?.replyPostedAt ?? null,
     pairSentTodayCount: pairToday,

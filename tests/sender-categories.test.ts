@@ -146,6 +146,7 @@ describe('the rule is enforced at BOTH ends', () => {
       crossSpacing: { held: false },
       /* A first touch, so the follow-up rule cannot mask the category rule under test. */
       isFollowUp: false,
+      followUpCitesOnlyADate: false,
       followUpTemplate: FOLLOW_UP_WRITTEN,
     } as Parameters<typeof evaluateResend>[0])
 

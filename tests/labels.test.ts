@@ -112,11 +112,19 @@ describe('no view model hands a raw displayName to the screen', () => {
  * initialisms. Handing it a trimmed name would silently stop "FILMYGYAN" matching
  * @filmygyan, which is the one thing that rule exists to do. Nothing inside it reaches prose.
  */
+/*
+ * `followUpSubject(` joined on 2026-09-01 for the same reason: it consumes the recipient's
+ * stored name as MATCHING INPUT — the own-name filter that stops "your Prime Video placement"
+ * being said to @primevideoin, and the stem test that lets "Titan Raga" through to @titan.
+ * A trimmed name would silently weaken both. Its OUTPUT is a brand string from the post,
+ * never the displayName it was handed.
+ */
 const SAFE_WRAPPERS = [
   'operatorName(',
   'campaignsNamingHandle(',
   'brandStringsNameProspect(',
   'stripOwnMarksFromBrands(',
+  'followUpSubject(',
 ]
 
 function unwrappedReads(src: string): string[] {

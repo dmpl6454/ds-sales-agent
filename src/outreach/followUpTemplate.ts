@@ -205,20 +205,50 @@ export function followUpForSettings(
  * the same discipline as `frameText` being forbidden from naming brands after the salon
  * control produced a DM claiming a collaboration with the signage behind a celebrity.
  *
- * WHAT IS LEFT IS THE DATE, and it is enough. It is the post's own public timestamp, it
- * identifies which placement is meant, it varies per post — which is what keeps two
- * follow-ups from being byte-identical — and it reveals nothing about how we found it. IST,
- * from the one formatter, so a DM and the dashboard cannot name different days across
- * midnight.
+ * ── AND THE SUBJECT IS REQUIRED — THE DATE-ONLY FALLBACK IS DELETED (2026-09-01, Tabish) ──
  *
- * TWO POSTS ON ONE DAY RENDER THE SAME REFERENCE, and that is handled rather than ignored:
- * `plan.ts` renders this exact body before deciding, so such a pair is refused as a repeat
- * instead of writing a draft the gate would wedge.
+ * The first version fell back to `your placement on 31 Aug` when no subject survived the
+ * filters, and that fallback was the COMMON case (16 of 25 live pairs) and it reached real
+ * inboxes — Tabish, from a delivered thread: *"this message is mentioning nothing but date
+ * and placement. This is an amateur message with no context to the paid posts."* He is
+ * right: a stranger reading "your placement on 31 Aug" learns nothing about which placement
+ * is meant and everything about the message being templated.
+ *
+ * **THE FIX IS THAT `subject` IS REQUIRED**, not a rule saying to avoid the fallback — the
+ * same discipline as the publisher handle above: a fallback that must never render is a
+ * fallback that renders. A follow-up that cannot say what the post was about is now refused
+ * upstream (`SKIP_REASONS.NO_DESCRIBABLE_POST` at the governor, `FOLLOW_UP_CITES_ONLY_A_DATE`
+ * at the gate for drafts written before this rule), so the recipient either reads a sentence
+ * about THEIR film, product or campaign, or reads nothing.
+ *
+ * THE DATE STAYS, beside the subject: it is the post's own public timestamp, it identifies
+ * WHICH placement is meant when a subject repeats, and it varies per post — which is what
+ * keeps two follow-ups from being byte-identical. IST, from the one formatter, so a DM and
+ * the dashboard cannot name different days across midnight.
+ *
+ * TWO POSTS ON ONE DAY CAN STILL RENDER THE SAME REFERENCE (same subject, same IST day), and
+ * that is handled rather than ignored: `plan.ts` renders this exact body before deciding, so
+ * such a pair is refused as a repeat instead of writing a draft the gate would wedge.
  */
-export function followUpPostReference(post: { postedAt: Date; subject?: string | null }): string {
-  const day = istDayMonth(post.postedAt)
-  const subject = post.subject?.trim()
-  return subject ? `your ${subject} placement on ${day}` : `your placement on ${day}`
+export function followUpPostReference(post: { postedAt: Date; subject: string }): string {
+  return `your ${post.subject.trim()} placement on ${istDayMonth(post.postedAt)}`
+}
+
+/**
+ * The RETIRED date-only fallback's exact bytes — `your placement on 31 Aug` had this prefix
+ * and only this prefix, and the current builder is structurally unable to produce it (a
+ * subject of `MIN_SUBJECT_LENGTH`+ characters always sits between "your " and " placement").
+ *
+ * Exists so the gate can recognise a draft WRITTEN BEFORE the subject became required and
+ * refuse it by name from its stored bytes — the stored bytes rather than a recomputation,
+ * because an operator may have edited the draft and what matters is what would actually go
+ * out. 25 such drafts were waiting when the fallback was deleted; 12 had already delivered.
+ */
+export const RETIRED_DATE_ONLY_MARK = 'your placement on '
+
+/** Does a stored body carry the retired date-only reference? PURE, over the bytes alone. */
+export function citesOnlyADate(body: string): boolean {
+  return body.includes(RETIRED_DATE_ONLY_MARK)
 }
 
 /**
@@ -281,16 +311,45 @@ export function followUpSubject(
 
   const usable = stripOwnMarksFromBrands(brands, publisher).filter((raw) => {
     const b = raw.trim()
-    if (b.length < 3) return false
+    if (b.length < MIN_SUBJECT_LENGTH) return false
     if (b.includes('@')) return false
     /* All lower case is a hashtag artefact ("fyp"), never a title. */
-    if (b === b.toLowerCase()) return false
-    /* Their own name read back at them. */
-    return !mineSquashed.includes(squashName(b))
+    return b !== b.toLowerCase()
   })
-  if (usable.length !== 1) return null
 
-  const subject = usable[0]!.trim()
+  /**
+   * ── THE PARTITION, NOT A FILTER (2026-09-01, second pass) ─────────────────
+   *
+   * The first version DROPPED the recipient's own name and then required "exactly one"
+   * survivor — and rendering that against live pairs found the hole: the #Daayra trailer
+   * names TWO studios, ["Junglee Pictures","Pen Studios"], so dropping Junglee's own name
+   * first made a two-advertiser post read as one, and "your Pen Studios placement" — a
+   * co-producer's name — was about to be said to @jungleepictures. A filter that removes
+   * the recipient's name destroys the very evidence that the post has more than one
+   * advertiser. So the candidates are PARTITIONED instead:
+   *
+   *   exactly their name   never spoken (their own name read back at them), but COUNTED —
+   *                        its presence means the post names them as an advertiser, and a
+   *                        co-advertiser's name is then not their subject.
+   *   stems into their name  "Titan Raga" for @titan, "Prime Video" for @primevideoin —
+   *                        theirs by construction, so nameable even when other names sit
+   *                        beside it on the post.
+   *   everything else      nameable only through the TALENT arm below.
+   */
+  const exactMine = usable.filter((b) => mineSquashed.includes(squashName(b)))
+  const stemMine = usable.filter((b) => {
+    const s = squashName(b)
+    return (
+      !mineSquashed.includes(s) &&
+      mineSquashed.some((mine) => mine.length >= 4 && s.length >= 4 && (s.includes(mine) || mine.includes(s)))
+    )
+  })
+  const others = usable.filter((b) => !exactMine.includes(b) && !stemMine.includes(b))
+
+  /* Their own product line — a fact about them whatever else the post names. Two of their
+     own lines on one post is ambiguous, and ambiguity falls to refusal, never to a guess. */
+  if (stemMine.length === 1) return stemMine[0]!.trim()
+  if (stemMine.length > 1) return null
 
   /**
    * ── AND WHOSE CAMPAIGN IS IT? THE FILTERS ABOVE DO NOT ANSWER THAT ────────
@@ -307,32 +366,42 @@ export function followUpSubject(
    * `{{brand}}` defect of 2026-08-05 verbatim, where a hook line told Royal Canin about a
    * collaboration with Amazon.
    *
-   * One subject is not the same fact as one ADVERTISER. So the subject is only spoken when
-   * it plausibly belongs to this recipient, and there are exactly two ways it can:
+   * One subject is not the same fact as one ADVERTISER. So beyond the stem arm above, the
+   * subject is only spoken through the TALENT arm: a person on a paid campaign post is there
+   * BECAUSE of the thing being promoted, so the film or product is what they were in —
+   * @tarasutaria and "Toxic", @thenameisyash and "Toxic: A Fairy Tale for Grown-Ups", both
+   * correct, both from the live corpus.
    *
-   *   the recipient is TALENT — a person on a paid campaign post is there BECAUSE of the
-   *     thing being promoted, so the film or product is what they were in. @tarasutaria and
-   *     "Toxic", @thenameisyash and "Toxic: A Fairy Tale for Grown-Ups" — both correct, both
-   *     from the live corpus.
-   *   the subject SHARES A STEM with their own name — "Titan Raga" for @titan is their own
-   *     product line, which is a fact about them rather than about somebody else.
+   * ── AND THE TALENT ARM IS NARROWER THAN THE FLAG (2026-09-01, second pass) ──
    *
-   * Anything else falls to the date. That is the same refusal-rather-than-guess this
-   * codebase applies to a handle it cannot verify, and the cost of being wrong is one word
-   * less in a sentence rather than a competitor's name in a pitch.
+   * `campaignTalent` is TRUE on 555 of the live prospects — the badge door sets it on
+   * admission — so the flag alone is a vacuous test (the @tips lesson: a guard whose
+   * strength depends on its input's size must have that input measured). Companies carry it
+   * too, and a company on a co-branded post is NOT there because of the other company's
+   * product: rendering against live pairs caught "your Pen Studios placement" about to be
+   * said to @jungleepictures, the co-producer, on their JOINT #Daayra trailer.
+   *
+   * So the talent arm speaks only when the post names the recipient as NO advertiser at all
+   * (`exactMine` empty — their name in the brands list means co-advertiser, and a
+   * co-advertiser's name is not their subject) and exactly ONE other thing survives. A
+   * refusal here costs the follow-up entirely, never a wrong claim: that is the same
+   * refusal-rather-than-guess this codebase applies to a handle it cannot verify.
    */
-  if (recipient.campaignTalent) return subject
-  const squashed = squashName(subject)
-  const theirs = mineSquashed.some(
-    (mine) => mine.length >= 4 && squashed.length >= 4 && (squashed.includes(mine) || mine.includes(squashed)),
-  )
-  return theirs ? subject : null
+  if (recipient.campaignTalent && exactMine.length === 0 && others.length === 1) return others[0]!.trim()
+  return null
 }
 
 /** Letters and digits only, lower case — enough to tell "Prime Video" from "primevideoin". */
 function squashName(s: string): string {
   return s.toLowerCase().replace(/[^a-z0-9]/g, '')
 }
+
+/**
+ * The shortest brand string `followUpSubject` will accept as a subject. Shared between the
+ * filter above and `SHORTEST_POST_REFERENCE` below, so the validation worst case cannot
+ * drift from the rule that produces it.
+ */
+export const MIN_SUBJECT_LENGTH = 3
 
 /**
  * The body a recipient actually receives. The ONLY substitution in the system.
@@ -350,12 +419,15 @@ export function renderFollowUp(body: string, postReference: string): string {
  *
  * `checkFollowUpBody` validates the RENDERED text, and the rendered length depends on the
  * reference — so the check must use the WORST case, which is the shortest, because
- * `distinctiveSlice` fails by having no line of 40+ characters left. A one-digit day is the
- * floor. Built rather than written as a literal, so it cannot go stale green the day the
- * wording changes.
+ * `distinctiveSlice` fails by having no line of 40+ characters left. A one-digit day and a
+ * `MIN_SUBJECT_LENGTH`-character subject are the floor. Built rather than written as a
+ * literal, so it cannot go stale green the day the wording changes.
  */
 export const SHORTEST_POST_REFERENCE = followUpPostReference({
   /* A fixed instant, and the shortest day-and-month there is. `new Date()` here would make
      a pure module depend on the clock. */
   postedAt: new Date(Date.UTC(2026, 0, 1, 12, 0, 0)),
+  /* The shortest subject the filter admits — `MIN_SUBJECT_LENGTH` letters, not all lower
+     case. "Ace" is a real live prospect's display name, so this is not a hypothetical. */
+  subject: 'Ace',
 })
