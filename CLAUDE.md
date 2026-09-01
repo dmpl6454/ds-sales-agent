@@ -71,6 +71,202 @@ properly rather than kept on a handle we could never confirm.
 
 ---
 
+## 1 SEPTEMBER, AFTERNOON — THE SECOND MESSAGE EXISTS, AND IT NAMED A COMPETITOR BEFORE TABISH CAUGHT IT
+
+**Read the two defects first. Both were mine, both reached or nearly reached real
+recipients, and both were found by Tabish reading a live thread rather than by any test.**
+
+### DEFECT 1: EVERY WATCHED CHANNEL IS A COMPETITOR, AND THE FOLLOW-UP NAMED ONE
+
+The follow-up body cites the paid post it claimed, and the first version rendered that as
+**"your placement with @filmygyan on 29 Aug"**. Tabish, from the thread: *"Why are
+competitor targets we monitor being sent as a follow up? Never mention our competitors in
+this way never mention their names."*
+
+He is right and it is not a small thing: **the channels we watch ARE the rivals** — that is
+his own definition, given the same hour — so that sentence puts a rival's handle inside a
+media-buying pitch for our own inventory, and tells the recipient exactly where we watch.
+
+| | |
+|---|---|
+| delivered before it was stopped | **1** — @bollywoodchronicle → @arshad_warsi, 07:04Z. Cannot be unsent |
+| waiting drafts carrying it | **28**, all discarded through `discardAttempt` with an audit row each |
+| time from his message to the copy being cleared | minutes — clearing the Setting refuses every follow-up at BOTH ends by name, and leaves first touches untouched |
+
+**THE FIX IS THAT `followUpPostReference` NO LONGER TAKES A HANDLE**, not a rule saying not
+to pass one — *a parameter that must never be used is a parameter somebody uses.* The
+`channelId` field added to `NamingCampaign` for it was removed with it, `pickHook`'s join to
+the publisher was reverted, and the two dashboard preloads went back to what they were. Same
+discipline as frame text being forbidden from naming brands after the salon control produced
+a DM claiming a collaboration with the signage behind a celebrity.
+
+### DEFECT 2: ONE SUBJECT IS NOT ONE ADVERTISER — CAUGHT BY RENDERING, NOT BY READING
+
+Tabish then asked for more, not less: *"refer what the post was about … if the paid post
+references a movie mention that movie etc. Keep this futureproof."* The source is
+`DetectedCampaign.brands`. **MEASURED over 681 in-window paid posts before building it:**
+
+```
+105 (15%)  no usable subject once own marks are stripped
+191 (28%)  exactly ONE — "TECNO", "Green Soul", "Titan Raga", "Toxic", "Tanishq"
+385 (57%)  several — ["Prime Video","The Revolutionaries","@primevideoIN","@Nikkhiladvani"]
+```
+
+So a subject is named only when there is EXACTLY ONE; several means the date alone, because
+`["Google India","Kerala Tourism"]` is two unrelated advertisers on one round-up and
+first-wins would tell Kerala Tourism about Google India. Four filters, every one of them
+from something the measurement actually found: own marks (`fg6`, on 668 @filmygyan rows),
+**raw handles** (`brands` genuinely contains `"@primevideoIN"`), junk (`"fyp"` came back as a
+whole post's only subject), and the recipient's own name.
+
+**AND THAT WAS STILL NOT ENOUGH.** Rendering it against live pairs — the step this file
+insists on and which is the only reason this was caught before sending — produced:
+
+> *"We saw your **Amazon Prime** placement on 31 Aug"* → **@jiohotstar**
+
+One surviving subject, every filter passed, and the sentence is FALSE: JioHotstar did not
+buy that. **One SUBJECT is not one ADVERTISER.** The primary fault is truthfulness, not
+rivalry — this is the `{{brand}}` defect of 2026-08-05 verbatim, where a hook line told
+Royal Canin about a collaboration with Amazon. The subject is now spoken only when it
+plausibly belongs to this recipient, and there are exactly two ways it can: they are
+**TALENT** (a person on a paid campaign post is there because of the thing promoted), or the
+name **stems into their own** ("Titan Raga" for @titan). Everything else is the date.
+
+**LIVE AFTER THE RULE, 25 real pairs: 9 named, 16 date-only, @jiohotstar correctly among the
+16, and ZERO handles of any kind in any body.**
+
+### AND THEN IT DELIVERED, WHICH IS THE VERIFICATION THAT MATTERS
+
+```
+07:53:23Z  @bollywoodpaparazzii → @akshay0beroi   touch 2
+  thread  https://www.instagram.com/direct/t/119643222756930
+  body    "Hi,We saw your Love Lottery placement on 31 Aug — we can put that same campaign
+           in front of 300M+ views a day across our network. Happy to talk tomorrow if
+           useful. +916000189766 - Kapil"
+  claims  Dcs0-cpKb-e — published by @viralbhayani, and NOT NAMED IN THE BODY
+  pair    t1 = 238ch (the standard template) · t2 = 185ch — genuinely different bytes
+```
+
+---
+
+### PHASE 1 — THE CLAIM LEDGER IS PER RECIPIENT
+
+`pickHook` excluded campaigns used by **this PAIR**, so a post used by page A stayed fresh
+for B, C and D and newest-first handed all four the same one. **MEASURED fleet-wide before
+the change: 139 (post, recipient) pairs claimed MORE THAN ONCE, 369 messages involved, up to
+five per post.** @dorothy's four-under-one-post was one instance of it.
+
+`claimedCampaignIds(targetId)` joins the exclusion with the SAME `IN_FLIGHT_STATUSES`
+semantics — an undelivered draft's claim blocks a second claim, a discarded one releases it.
+The count, the pick and the planner's own figure now go through **one selector**
+(`freshCampaignsFor`), and that unification is a correctness requirement rather than tidying:
+a count excluding less than the pick lets the governor report "there is new material" and the
+composer then find none.
+
+**VOLUME DID NOT MOVE BY ONE MESSAGE** — `materialAllowance` is untouched. Live proof the
+ledger now binds: @arshad_warsi has 8 naming posts and 6 delivered, so the allowance permits
+more, and @bollywoodchronicle has **0 unclaimed posts left** because the other pages hold
+them. The pair rests on `no-new-material-to-reference`, which is the truer reason than
+"identical" ever was.
+
+**THE PAIR ARM IS A SUBSET AND IS KEPT ANYWAY, measured.** Deleting `usedCampaignIds` from
+the union breaks no test — every attempt carrying a pair also carries that pair's `targetId`.
+It stays because that column is DENORMALISED while `pairId` is the row's own key, and
+`tests/claim-ledger.test.ts` drives an attempt whose `targetId` is deliberately wrong so the
+arm is not merely redundant-and-untested.
+
+### PHASE 2 — THE FOLLOW-UP, AND UNSET REFUSES FOR EVERY FLEET
+
+`followUpTemplate.ts` mirrors `fleetTemplate.ts` except in the one way that matters: **there
+is no shipped copy for any fleet**, so unset refuses at the governor AND the gate
+(`no-follow-up-message-written`, absent from `OVERRIDABLE_BLOCKS`). It shipped inert and the
+fleet behaved byte-for-byte as before until Tabish's copy was saved.
+
+**`{{post}}` IS REQUIRED, and that is a correctness rule.** Without it every follow-up from a
+page carries identical bytes, so follow-up #2 is refused as a repeat — the wall this exists to
+release, rebuilt one storey up and found weeks later as a queue that stopped draining.
+`checkFollowUpBody` refuses a body without it, at the textarea, running the REAL
+`renderFollowUp` and the REAL `distinctiveSlice` at the WORST case (the shortest reference),
+because the needle fails by having no 40-character line LEFT.
+
+**BOTH NEW STOPS ARE CHECKED LAST, breaking the governor's most-fundamental-first order on
+purpose.** Reported earlier they would relabel every held follow-up in the fleet, including
+the ones waiting on a paid post or on the ring — neither of which a textarea releases. That
+is the `DIFFERENT_CATEGORY` mistake of 31 August, where 245 correct refusals wore a label
+saying *go and write a template*. Reported last, the number IS what a saved textarea
+releases: the planner read **`no-follow-up-message-written=167`** on the pass before the copy
+was written.
+
+**THE WALL, RELEASING:** `identical-to-a-message-they-already-have` went from **1,522** to
+**absent from the tally**, and the queue from 64 waiting drafts to **95, of which 91 are
+follow-ups**. The ceiling is unchanged — allowance, pair cap, ring rule, 1-minute gap — so
+this is reachability, arriving at the pace paid posts arrive.
+
+### PHASE 3 — A REPLY HALTS THE PAGE THAT GOT IT, AND ONLY THAT PAGE (TABISH'S CALL)
+
+*"It does not make sense if all activity is halted for a target for 7 days by all senders if
+a reply is detected. Only the channel (sender) which has gotten the reply should halt."*
+
+**The risk was put to him with the alternatives before anything changed** — the person who
+replied is the one engaged human in the funnel, other pages writing mid-conversation is
+"repeated unwanted contact" aimed at exactly the wrong person, and every page signs with the
+same phone number so "a different page" is transparent to this reader. He was offered the
+safer variant (pair-scoped, but only follow-ups during the hold) and chose the plain pair
+scope. **Recorded as his,** like the caps removal and the 24/7 window.
+
+`replyHalt.ts` owns the scope, the window and the early release in ONE `where`
+(`replyHaltWhere`), and the two screens that PREDICT a hold group by the same key
+(`replyHaltKey`) — otherwise a page enforces a rule the gate dropped. **MEASURED: 55 active
+halts over 54 recipients were holding 204 live routes; 149 released.** `target` restores the
+old behaviour in one Setting row and both scopes are driven by tests.
+
+**AN UNREADABLE VALUE FALLS TO `target`, NOT TO THE DEFAULT** — the asymmetry is deliberate,
+because here the default is the PERMISSIVE scope and a typo falling back to it would silently
+widen who is messaged mid-conversation.
+
+### AND @bachelorssociety's REMOVAL — TWO THINGS IT COST, BOTH FIXED
+
+Tabish retired it (430 messages kept, correctly — that history is what stops anyone being
+contacted twice). The hand-off moved 4 drafts and **4 could not move.**
+
+**THE HAND-OFF BUILT ONE RING FROM THE WHOLE FLEET.** All four stuck drafts had the same
+cause: the ring elected `@madaboutmarketingg` — the MARKETING page — for four BOLLYWOOD
+companies, `routeAllowed` refuses that route, no pair exists, so the draft stayed on an
+account that had just left. **`ringMembersFor` is the FOURTH ring builder to need the
+recipient's own fleet** — `fleetRingFor`'s docblock makes the argument, and `whoseTurn`
+learned it on 26 August when the same page was elected for 15 bollywood companies and
+stalled every one. All four moved to @bollywoodpaparazzii.
+
+**AND RETIRING IT MADE 430 CONVERSATIONS INVISIBLE.** `removeSender` retires with
+`status: 'PAUSED'`, and `replyCheck` reads only ACTIVE senders' threads — so 430 open
+conversations, **299 of them never read**, dropped out of the reply sweep. Set to **ACTIVE +
+`fleetMember: false`** — the burner shape, exactly what @madaboutmarketingg was left in on 19
+August for this reason: rotation cannot elect it, the planner writes nothing for it, and its
+conversations stay readable. **NAMED, NOT FIXED:** the INBOX-SCAN half of the sweep filters
+`fleetMember: true` as well, so it still skips those threads; only the capped deep read
+covers them. Widening that query is an exposure change (browser drives on a retired account),
+so it is stated rather than slipped in.
+
+### HEALTH AT HAND-OVER
+
+| | |
+|---|---|
+| autopilot | **ON throughout**, never paused. 24 delivered today, newest 1 min old, 0 challenged |
+| the fleet | 5 pages — chronicle, societyy, paparazzii, totalfilmii, madaboutmarketingg — all ACTIVE with sessions |
+| queue | 95 waiting, 91 of them follow-ups; **0 bodies containing any @handle** |
+| prospects | 747 live, **0 unverified** |
+| tests / typecheck | **2,119 / 121 files**, clean; every new guard mutation-tested in both directions |
+| `pnpm ig:layout` | ALL PASSED. Budgets confirmed by a BROWSER-FREE control probe, twice, identical: `/` **156/160**, `/targets` 108/120, `/paid-posts` 93/120, `/analytics` 98/125, `/senders` 24/35, `/rules` 18/30, `/cost` 18/30 |
+
+**THE LAYOUT HARNESS SPIKES AND IT IS THE DOCUMENTED FLAKE, now much worse.** Runs showed
+`/cost 172/30`, `/paid-posts 247/120`, `/senders 60/35` — **a different page each time**,
+which a per-row loop cannot be. `auto-refresh.tsx` re-renders every 30-45s and the fleet is
+actively delivering, so a refresh lands inside the check window and counts a second full
+render against the same delta. The control probe (plain `fetch`, no browser) is the
+diagnostic that settles it, and it should be the first thing anyone reaches for.
+
+---
+
 ## 1 SEPTEMBER — THE FOUR-MESSAGES-UNDER-ONE-POST SCREENSHOT WAS THE CLAIM LEDGER COLLAPSING, NOT A BREACH
 
 **Tabish, from the live page: @dorothy shown messaged four times under ONE @instantbollywood
