@@ -71,6 +71,91 @@ properly rather than kept on a handle we could never confirm.
 
 ---
 
+## 1 SEPTEMBER, EVENING — A FOLLOW-UP SAYS WHAT THE POST WAS ABOUT, OR IT DOES NOT EXIST
+
+**Tabish, from a delivered thread, with the screenshot: *"this message is mentioning nothing
+but date and placement. This is an amateur message with no context to the paid posts …
+make sure follow up messages are not stupid and are not being sent to individuals who dont
+need them."*** He is right, and the afternoon's own measurement said how right: the date-only
+fallback ("Hi,We saw your placement on 31 Aug — …") was the COMMON case — 16 of 25 rendered
+pairs — not the edge. **12 such messages were delivered and cannot be unsent**; 25 more were
+waiting.
+
+### THE BLEEDING WAS STOPPED IN MINUTES, WITH THE AFTERNOON'S OWN PLAYBOOK
+
+Both `followUpBody` Setting rows were backed up and cleared, which refuses every follow-up at
+the governor AND the gate by name (`no-follow-up-message-written`) while first touches flow
+untouched — verified by executing the real gate on three waiting date-only drafts, all HELD.
+First touches delivered at 08:48, 08:50, 08:51Z straight through the halt. Restored after the
+deploy; the halt cost roughly fifty minutes of follow-up traffic and zero first touches.
+
+### THE FIX IS THAT THE FALLBACK IS DELETED, NOT DISCOURAGED
+
+`followUpPostReference` now REQUIRES a subject — the same discipline as the publisher handle
+that morning: *a fallback that must never render is a fallback that renders.* Around that
+type change, at every end:
+
+| | |
+|---|---|
+| `pickFollowUpHook` (compose.ts) | the pick is no longer "the newest unclaimed post" but **the newest unclaimed post whose subject belongs to this recipient**; the subject is computed once and carried out, so the body and the claim agree by construction |
+| `governor.ts` → `NO_DESCRIBABLE_POST` (`no-post-we-can-describe`) | unclaimed posts exist and none can be described — beside `NO_NEW_MATERIAL`, same family, self-releasing on the next paid post whose subject is theirs. `describableCampaignCount` is a REQUIRED input, computed in the planner from the same preloads (no new queries) |
+| `gate.ts` → `FOLLOW_UP_CITES_ONLY_A_DATE` | catches drafts written BEFORE the rule, from their STORED bytes (`citesOnlyADate` over the retired fallback's exact prefix, which the new builder is structurally unable to emit). NOT overridable — it is about what the message says |
+| the rest tally | predicts the new stop with the composer's own subject rule over its existing preloads (the posts query gained the publisher as a JOIN, not a query) |
+
+**And "not sent to individuals who dont need them" is the same rule's other half:** a
+recipient none of whose posts can be described gets NO follow-up at all, rather than a vague
+one. MEASURED live: 94 waiting follow-up pairs → **12 named truthfully, 82 refused, 0
+date-only, 0 handles.**
+
+### RENDERING AGAINST LIVE PAIRS CAUGHT THE SECOND DEFECT, AGAIN
+
+The first render showed *"your Pen Studios placement"* about to go to **@jungleepictures** —
+the CO-PRODUCER, on their joint #Daayra trailer. Two compounding causes, both now fixed:
+
+- **dropping the recipient's own name before the exactly-one test collapsed a two-advertiser
+  post into one.** The candidates are PARTITIONED now (exactly-their-name / stems-into-their-
+  name / others): an own-name entry means CO-ADVERTISER and blocks the talent arm outright,
+  while a stem match ("Titan Raga" for @titan) is theirs by construction and survives other
+  names beside it.
+- **`campaignTalent` is TRUE on 555 live prospects** — the badge door sets it on admission —
+  so the flag alone was a vacuous test (the @tips lesson, on a flag instead of a subset).
+  The talent arm now needs the flag AND no own-name on the post AND exactly one other subject.
+
+Re-rendered: Junglee refused, and *"your Onam placement"* (a box-office hashtag) to
+@toxic_themovie gone with it. The kept namings read exactly as intended — Toxic to its cast
+and director, Haiwaan to KVN Productions, Love Lottery to @akshay0beroi.
+
+### AND THE QUEUE HELD 63 DRAFTS THAT COULD NEVER SEND AND WEDGED THEIR PAIRS
+
+Auditing the waiting follow-ups found 63 rows from 24–26 Aug carrying the FIRST-touch
+template bytes on `touchNumber > 1` — written before the follow-up copy existed, held forever
+as `identical-to-a-message-they-already-have`, and each one blocking its pair via
+`hasPendingAttempt` from ever getting a real follow-up. All 63 discarded through
+`discardAttempt` (audited), plus the 25 date-only ones, plus one old-rule subject the new
+partition refuses (*"District By Zomato"* to a singer). 5 drafts survived — every one a
+subject the new rule reproduces byte-for-byte.
+
+### VERIFIED DELIVERED, WHICH IS THE VERIFICATION THAT MATTERS
+
+```
+09:00:10Z  @bollywoodsocietyy → @toxic_themovie   touch 2
+  body   "…your Toxic: A Fairy Tale for Grown-Ups placement on 30 Aug…"
+```
+
+The first post-deploy planner pass wrote **11 follow-ups, all named, 0 date-only, 0 handles**
+(Toxic ×6 to its cast and director, Netflix, Haiwaan, Amazon MGM Studios, Love Lottery, ACE
+Group), and its tally reads **`no-post-we-can-describe=145`** — the honest count of pairs
+waiting for a post whose subject is theirs, which releases itself as detection finds more.
+
+| | |
+|---|---|
+| tests / typecheck | **2,129 / 121 files**, clean; all three new guards mutation-tested (each deletion fails a test) |
+| `pnpm ig:layout` | ALL PASSED |
+| autopilot | ON throughout — the halt touched only follow-ups, by name |
+| delivered date-only, ever | 12, all before the halt; 0 since, structurally unreachable now |
+
+---
+
 ## 1 SEPTEMBER, AFTERNOON — THE SECOND MESSAGE EXISTS, AND IT NAMED A COMPETITOR BEFORE TABISH CAUGHT IT
 
 **Read the two defects first. Both were mine, both reached or nearly reached real
