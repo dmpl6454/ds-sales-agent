@@ -74,17 +74,24 @@ else
   esac
   bold "A short name for this machine (it shows on the dashboard), e.g. your first name:"
   read -r DEV
-  {
-    echo ""
-    echo "# ── written by the DS Sales Agent installer ──"
-    echo "DATABASE_URL=\"$DBURL\""
-    echo "SEND_ENABLED=true"
-    echo "AUTOPILOT_ENABLED=true"
-    echo "DRY_RUN=0"
-    echo "MAX_TOTAL_SENDS=unlimited"
-    echo "DS_DEVICE_NAME=$DEV"
-    echo "OPERATOR_NAME=$DEV"
-  } >> "$DEST/.env"
+  # REPLACE each key, never append beside it: the example already defines most of these
+  # (it is deliberately total over the env schema), and dotenv keeps the FIRST occurrence —
+  # so an appended DATABASE_URL lost to the example's SQLite line, and the freshly installed
+  # agent ran inert against an empty local file with DRY_RUN=1. Found by running the real
+  # installer and reading "prisma client: sqlite (matches DATABASE_URL)" in its own output.
+  set_env() {
+    grep -v "^${1}=" "$DEST/.env" > "$DEST/.env.tmp" && mv "$DEST/.env.tmp" "$DEST/.env"
+    printf '%s=%s\n' "$1" "$2" >> "$DEST/.env"
+  }
+  echo "" >> "$DEST/.env"
+  echo "# ── written by the DS Sales Agent installer ──" >> "$DEST/.env"
+  set_env DATABASE_URL "\"$DBURL\""
+  set_env SEND_ENABLED true
+  set_env AUTOPILOT_ENABLED true
+  set_env DRY_RUN 0
+  set_env MAX_TOTAL_SENDS unlimited
+  set_env DS_DEVICE_NAME "$DEV"
+  set_env OPERATOR_NAME "$DEV"
   echo ".env written (this file stays on this machine only)"
 fi
 
