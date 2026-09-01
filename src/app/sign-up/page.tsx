@@ -1,3 +1,5 @@
+import { redirect } from 'next/navigation'
+import { currentUser } from '@/lib/session'
 import { AuthShell } from '../auth-shell'
 
 export const dynamic = 'force-dynamic'
@@ -21,6 +23,9 @@ export default async function SignUpPage({
 }: {
   searchParams: Promise<{ next?: string }>
 }) {
+  /* Validated, never cookie presence — see the sign-in page for the redirect loop this
+     placement fixes. */
+  if (await currentUser()) redirect('/')
   const { next } = await searchParams
   return <AuthShell mode="sign-up" next={next} />
 }
