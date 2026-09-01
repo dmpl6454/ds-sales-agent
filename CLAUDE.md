@@ -71,6 +71,85 @@ properly rather than kept on a handle we could never confirm.
 
 ---
 
+## 1 SEPTEMBER, LATE EVENING — TWO SEND LOOPS, THE DMG, AND THE READ PATH NEVER COUNTED ITS DRIVES
+
+**Tabish, from three screenshots: *"the agent has tried multiple times messaging acearteofficial
+and failed … the agent is also trying sleepwell repeatedly, is autopilot healthy? … It is like
+its a loop that has been going on between same sending targets."*** Both loops were real, both
+had the same shape, and the shape is one this file has fixed once before on the other path.
+
+### A FOLLOW-UP'S PRE-SEND READ IS A BROWSER DRIVE, AND NOTHING WAS COUNTING IT
+
+`deliver.ts` reads a follow-up's own thread before writing into it (Phase 6), and when that
+read comes back `unreadable` or `incomplete` it HELD the draft — kept its queue position, no
+counter touched. So the next tick drove the SAME Chrome profile at the SAME recipient, every
+~2 minutes, forever, from a revenue account. MEASURED in the agent log:
+
+```
+15:45  bollywoodchronicle→acearteofficial  no-message-button   (profile 404)
+15:46  madaboutmarketingg→officialsleepwell  saw 0 of 1 messages we sent
+15:47  bollywoodchronicle→acearteofficial  the To: search offered no exact match — refusing to guess
+… identical pair every minute, indefinitely
+```
+
+**This is the `no-composer` livelock of 2026-08-18 on the READ path** — that one drove a
+browser once per waiting draft with the `attempts` counter stuck at zero, and the fix was the
+retry cap. The read path grew the same hole because `ensureConversationChecked` returns
+before any counter and nothing downstream counted the drive.
+
+`unreadable`/`incomplete` now take the send-failure discipline verbatim: `attempts`
+incremented, `queuedAt` bumped to the BACK of the queue, parked FAILED at
+`MAX_DELIVERY_ATTEMPTS` where the landing page names it with re-queue and discard. A read
+that drove no browser (`no-session`) still holds for free; a found reply is the gate's
+business. `tests/deliver-challenged.test.ts` drives all three (bump, park, free hold).
+**VERIFIED live: @kvn.productions parked after 3 incomplete reads instead of looping.**
+
+### THE TWO RECIPIENTS, AND WHY EACH WAS STUCK
+
+- **@acearteofficial's Instagram page NO LONGER EXISTS** — profile 404, inbox compose finds
+  no exact match. It was **verified and live when admitted on 25 Aug** (5 first touches
+  delivered that day), so its selection was correct; it was deleted or renamed since. Retired
+  (`optedOut`, history kept), its waiting draft discarded. If a renamed verified page
+  appears, discovery admits it as a NEW row — the lead is re-acquired properly, never kept on
+  a handle we can no longer confirm. **The general lesson: a target verified at admission can
+  cease to exist, and a follow-up loop is how that surfaces.**
+- **@officialsleepwell had REPLIED** ("Hi, thanks for contacting us…", an autoresponder) and
+  the reply was never recorded, so the halt never armed. Recorded with its own written date
+  (`ig:reply … --at`); the governor now reports `target-replied` and the loop is dead.
+
+### THE DMG — YES, AND IT IS BUILT (`~/Downloads/DS-Sales-Agent.dmg`)
+
+Tabish asked whether the project can ship as a Mac app anyone runs 24/7, connecting only their
+channel while detection/targets stay central. It can, because the hosting split was designed
+for exactly this: the Linode does detection, planning and the database; each Mac runs only the
+device agent + its own Chrome profiles + its home IP. The image (2.4 MB) carries a
+`DS Sales Agent.app` whose installer unpacks the repo, installs a private Node runtime if
+needed, writes `.env` and the tunnel Host entry, and installs the tunnel + agent LaunchAgents
+(24/7, reboot-surviving). **It contains ZERO credentials** — verified: the git-archive tar
+has no `.env` and no key; the DATABASE_URL, the tunnel key file and the invite code are
+handed over person-to-person.
+
+Two constraints stated as facts, not smoothed over:
+- **Unsigned** (no Apple Developer ID here): first launch is right-click → Open past
+  Gatekeeper. Signing/notarising needs Tabish's Apple account.
+- **The tunnel key** is a NEW ed25519 key, authorized on the Linode as
+  `restrict,port-forwarding,permitopen="127.0.0.1:5432",command="/usr/bin/false"` — it can
+  ONLY forward to the database port, no shell, no files (verified: exec refused, forward
+  works). Anyone with the DMG + the three secrets reads the shared data through the app, which
+  is inherent to "everyone runs the same operation."
+
+### HEALTH AT HAND-OVER
+
+| | |
+|---|---|
+| autopilot | ON, delivering — 21 in the last 2h, newest a named follow-up minutes old |
+| the two loops | GONE — acearte retired, sleepwell halted by its recorded reply, kvn parked by the new cap |
+| queue | 2 waiting, 0 SENDING, 0 challenged; 1 parked `navigation` (the new discipline working) |
+| tests | **2,132 / 121 files** green; the read-retry path driven in both directions |
+| DMG | `~/Downloads/DS-Sales-Agent.dmg`, 2.4 MB, zero credentials, restricted forward-only key |
+
+---
+
 ## 1 SEPTEMBER, EVENING — A FOLLOW-UP SAYS WHAT THE POST WAS ABOUT, OR IT DOES NOT EXIST
 
 **Tabish, from a delivered thread, with the screenshot: *"this message is mentioning nothing
