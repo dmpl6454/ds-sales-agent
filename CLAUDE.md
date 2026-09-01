@@ -190,6 +190,16 @@ is missing. Until Tabish adds it (Cloudflare → digitalsukoon.com → DNS: **A,
 `e035e4d46c` → 172.105.53.101, Proxied ON** — proxied is required, the origin cert is
 only trusted by Cloudflare's edge), DMG operators have no dashboard at all.
 
+**AND CLICKING THE APP EXPOSED A SIGN-IN REDIRECT LOOP AS OLD AS THE FRONT DOOR.** Safari
+opened localhost:3100 and hit *"Too many redirects"*: the middleware bounced
+`hasCookie && /sign-in` HOME on cookie PRESENCE (it may not touch the database), while the
+dashboard bounced an INVALID session the other way, validated — so a browser holding a DEAD
+cookie ping-ponged forever and could never reach the one form that would have replaced it.
+Reproduced with `ds_session=deadbeef00` in two curls. The already-signed-in bounce lives in
+the sign-in/sign-up PAGES now, where `currentUser()` validates; a dead cookie falls through
+to the form. Both directions verified live, the loop regression pinned in
+`tests/middleware.test.ts`, deployed to both hosts, DMG rebuilt.
+
 **THE PASS THAT COUNTS:** the third run came up clean — `prisma client: postgresql`, one
 DATABASE_URL line, tunnel forwarding, and the agent ticking against the shared database as
 `device=tabish-dmg-test`, seeing all seven Chrome profiles (they are machine-global, not
