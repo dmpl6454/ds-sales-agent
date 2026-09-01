@@ -36,6 +36,7 @@
 
 import { crossSpacingDetail, type CrossSpacingVerdict } from './crossSpacing'
 import type { FleetTemplate } from './fleetTemplate'
+import type { FollowUpTemplate } from './followUpTemplate'
 import { materialAllowanceDetail, type MaterialVerdict } from './materialAllowance'
 
 export interface GovernorInput {
@@ -173,6 +174,16 @@ export interface GovernorInput {
   fleetTemplate: FleetTemplate
 
   /**
+   * WHAT A SECOND MESSAGE TO THIS RECIPIENT WOULD SAY, or why there is none (2026-09-01).
+   *
+   * Only consulted when `touchesSoFar > 0`: a first touch is the standard message and is
+   * untouched by this. Computed by the caller with `followUpForSettings` — the same pure
+   * rule the gate and the composer ask. REQUIRED with no default, so the compiler names
+   * every call site rather than one of them silently permitting a repeat.
+   */
+  followUpTemplate: FollowUpTemplate
+
+  /**
    * Would the body about to be written be BYTE-IDENTICAL to one this pair has already
    * delivered? Computed by the caller against the same template this decision is made with,
    * so the two cannot disagree. REQUIRED, so the compiler names every call site.
@@ -266,6 +277,35 @@ export const SKIP_REASONS = {
    * `singleTemplate` off and the variant pools return, or give the fleet a second template.
    */
   IDENTICAL_TO_A_SENT_MESSAGE: 'identical-to-a-message-they-already-have',
+  /**
+   * ── THIS PAIR HAS EARNED A FOLLOW-UP AND THERE IS NO FOLLOW-UP MESSAGE (2026-09-01) ──
+   *
+   * Everything else about this pair is fine — the recipient is verified and not retired,
+   * the account is healthy, nobody has replied on this route, the allowance has room, a
+   * paid post naming them is unclaimed, the ring says it is this page's turn, the daily cap
+   * is not spent. The ONLY thing missing is what a second message would say.
+   *
+   * ── AND THAT IS WHY IT IS CHECKED LAST, WHICH BREAKS THIS FILE'S USUAL ORDER ──
+   *
+   * Every other stop here is ordered most-fundamental-first so the reason reported is the
+   * deepest true one, and by that logic a missing template belongs beside
+   * `NO_FLEET_TEMPLATE`, near the top. It is deliberately at the bottom instead, and the
+   * argument is the one this file already paid for on 2026-08-31: `DIFFERENT_CATEGORY` had
+   * to be split out of `NO_FLEET_TEMPLATE` because **245 correct refusals were wearing a
+   * label that says *go and write a template*, on the one line a person reads to find out
+   * why the fleet is quiet.**
+   *
+   * Placed early, this stop would relabel every held follow-up in the fleet — including the
+   * ones waiting on a paid post, on the ring, or on the daily cap, none of which a textarea
+   * releases. Placed last, the number it reports is exactly the number of messages that
+   * would go out the moment Tabish writes the copy, which is the only figure worth putting
+   * next to the box.
+   *
+   * NOT overridable at the gate's end, for the `FLEET_TEMPLATE_NOT_SET` reason: every stop a
+   * human may cross is about TIMING, this one is about WHAT THE MESSAGE SAYS, and the remedy
+   * is a textarea rather than a judgement call.
+   */
+  NO_FOLLOW_UP_TEMPLATE: 'no-follow-up-message-written',
 } as const
 
 export function evaluatePair(input: GovernorInput): GovernorDecision {
@@ -450,6 +490,23 @@ export function evaluatePair(input: GovernorInput): GovernorDecision {
       eligible: false,
       reason: SKIP_REASONS.PAIR_DAILY_CAP,
       detail: `this account already sent this recipient ${input.pairSentTodayCount} message(s) today (limit ${input.maxPerPairPerDay})`,
+    }
+  }
+
+  /**
+   * LAST, AND ONLY FOR A FOLLOW-UP. See `SKIP_REASONS.NO_FOLLOW_UP_TEMPLATE` for why this
+   * one breaks the most-fundamental-first ordering: reported here, the count is exactly the
+   * pairs a textarea would release, and every other pair keeps the reason that is actually
+   * holding it.
+   *
+   * A FIRST touch never reaches this — `touchesSoFar` is 0 — so writing no follow-up copy
+   * leaves first-touch outreach byte-for-byte as it was.
+   */
+  if (input.touchesSoFar > 0 && !input.followUpTemplate.ok) {
+    return {
+      eligible: false,
+      reason: SKIP_REASONS.NO_FOLLOW_UP_TEMPLATE,
+      detail: input.followUpTemplate.detail,
     }
   }
 

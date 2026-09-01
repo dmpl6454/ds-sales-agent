@@ -115,10 +115,45 @@ describe('no query asks DetectedCampaign.targetId for a RECIPIENT', () => {
     expect(/detectedCampaign\.(count|findMany|findFirst|groupBy|aggregate)\s*\(/.test(before)).toBe(true)
   })
 
-  it('the three former copies now call the shared linkage', () => {
+  /**
+   * ── THE SHARED LINKAGE, NOW REACHED ONE LAYER UP FROM plan.ts (2026-09-01) ──
+   *
+   * `compose.ts` still calls `campaignsNamingHandleRows` directly. `plan.ts` no longer
+   * does, and that is a strengthening rather than a regression: it used to filter the rows
+   * with its own inline `usedCampaignIds(pair.id)` — a THIRD reading of "what has this pair
+   * already written about". With the claim ledger going per-RECIPIENT that third copy would
+   * have excluded a different set from `pickHook`, so the governor could report "there is
+   * new material" and the composer then find none. `freshCampaignsFor` is the one selector,
+   * and it is what `plan.ts` asks.
+   *
+   * So the accepted call is either the linkage itself or the selector built on it — and the
+   * assertion directly below PROVES the selector really does ask the linkage, which is what
+   * keeps this from being a name that launders a re-implementation (the `postsWhere`
+   * discipline in tests/visible-channels.test.ts).
+   */
+  it('the three former copies now call the shared linkage, or the one selector built on it', () => {
     for (const f of ['src/outreach/plan.ts', 'src/outreach/compose.ts']) {
-      expect(code(read(f)), `${f} must ask the shared function`).toMatch(/campaignsNamingHandleRows\(/)
+      expect(code(read(f)), `${f} must ask the shared function`).toMatch(
+        /campaignsNamingHandleRows\(|freshCampaignsFor\(/,
+      )
     }
+  })
+
+  it('freshCampaignsFor — the name plan.ts trusts — is itself built on the linkage', () => {
+    const src = code(read('src/outreach/compose.ts'))
+    const at = src.indexOf('export async function freshCampaignsFor')
+    expect(at, 'freshCampaignsFor is gone or renamed — re-check the carve-out above').toBeGreaterThan(-1)
+    const body = src.slice(at, at + 800)
+    expect(body, 'freshCampaignsFor no longer asks campaignsNamingHandleRows').toMatch(
+      /campaignsNamingHandleRows\(/,
+    )
+    /* And that it excludes BOTH sets: the pair's own claims and the whole recipient's. A
+       version that dropped the second would silently restore the four-messages-under-one-post
+       ledger collapse of 2026-09-01. */
+    expect(body, 'the per-pair arm of the exclusion is gone').toMatch(/usedCampaignIds\(/)
+    expect(body, 'the per-recipient arm of the exclusion is gone — the claim ledger is back to per-pair').toMatch(
+      /claimedCampaignIds\(/,
+    )
   })
 })
 

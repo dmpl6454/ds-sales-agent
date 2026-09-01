@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { evaluateResend, RESEND_BLOCKS, type ResendInput } from '@/outreach/gate'
 import { templateForSettings } from '@/outreach/fleetTemplate'
+import { followUpForSettings } from '@/outreach/followUpTemplate'
 
 /**
  * The DEFAULT fleet's template, built by the REAL rule rather than written as a literal —
@@ -12,6 +13,19 @@ const DEFAULT_FLEET_TEMPLATE = templateForSettings(
   [],
   [],
 )
+
+/**
+ * A WRITTEN follow-up message, built by the REAL rule — the state the fleet is in once
+ * Tabish has filled the box. Long enough that `distinctiveSlice` finds a needle, and it
+ * carries `{{post}}` because `checkFollowUpBody` requires it.
+ */
+const FOLLOW_UP_WRITTEN = followUpForSettings(
+  { followUpBody: `Hi,Following up on {{post}} — we can put the same campaign in front of a much larger audience. Let's talk tomorrow.`, followUpBodies: new Map() },
+  [],
+  [],
+)
+/** And the state it ships in: nobody has written it, so no follow-up is drafted or sent. */
+const FOLLOW_UP_UNWRITTEN = followUpForSettings({ followUpBody: null, followUpBodies: new Map() }, [], [])
 
 
 /**
@@ -35,6 +49,10 @@ function ok(): ResendInput {
     targetOptedOut: false,
     targetIsWatchOnly: false,
   fleetTemplate: DEFAULT_FLEET_TEMPLATE,
+  /* A first touch: the follow-up rule is not about this file. Both directions live in
+     tests/follow-up-template.test.ts. */
+  isFollowUp: false,
+  followUpTemplate: FOLLOW_UP_WRITTEN,
   repeatsADeliveredBody: false,
     targetIsVerified: true,
     targetRepliedAt: null,

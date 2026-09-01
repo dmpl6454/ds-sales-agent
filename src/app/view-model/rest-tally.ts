@@ -6,10 +6,11 @@ import { SKIP_REASONS } from '@/outreach/governor'
 import { BRAND_BLOCKS, checkRecipientIsNotAPerson } from '@/outreach/brandGuards'
 import { materialAllowance, campaignsNamingHandleRows } from '@/outreach/materialAllowance'
 import { crossSpacingVerdict } from '@/outreach/crossSpacing'
-import { replyHaltFloor } from '@/outreach/replyHalt'
+import { replyHaltFloor, replyHaltKey } from '@/outreach/replyHalt'
 import { eligibleFleetSenderIds, readSenderAvailability } from '@/outreach/availability'
 import { fleetRingOrder, nextSender } from '@/outreach/rotation'
-import { unavailableForTarget } from '@/outreach/categories'
+import { categoriesFor, readCategoryMemberships, unavailableForTarget } from '@/outreach/categories'
+import { followUpForSettings } from '@/outreach/followUpTemplate'
 
 /**
  * HOW MANY COMPANIES ARE RESTING RIGHT NOW, OUT OF HOW MANY — and which rule holds each.
@@ -176,6 +177,21 @@ const REST_RULES: Record<string, { label: string; needsAPerson: boolean }> = {
     label: 'the page whose turn it is has already written about everything we have seen from them',
     needsAPerson: false,
   },
+  [SKIP_REASONS.NO_FOLLOW_UP_TEMPLATE]: {
+    /**
+     * The one bucket on this page whose remedy is a TEXTAREA, which is why it needs a person
+     * and why the sentence names the box. Everything else here arrives by itself.
+     *
+     * It is bumped LAST, matching the governor: reported earlier it would swallow every
+     * held follow-up in the fleet — including the ones waiting on a paid post or on the ring,
+     * neither of which writing the copy releases. That is the `DIFFERENT_CATEGORY` mistake of
+     * 2026-08-31, where 245 correct refusals wore a label saying *go and write a template*.
+     * Here the count IS the number of companies a saved textarea would release.
+     */
+    label:
+      'the page whose turn it is has already written to them once, and no follow-up message is written — a second message has to say something different from the first',
+    needsAPerson: true,
+  },
   [BRAND_BLOCKS.RECIPIENT_IS_A_PERSON]: {
     label: 'Instagram lists them as a profession rather than a company — a media-buying pitch would be the wrong message',
     needsAPerson: true,
@@ -249,6 +265,15 @@ export interface RestTally {
   watched: number
   /** Sums exactly to `resting`, largest first. */
   byReason: RestReason[]
+  /**
+   * PER FLEET, how many companies are held for want of a FOLLOW-UP MESSAGE (2026-09-01).
+   *
+   * A subset of `byReason`'s `no-follow-up-message-written` bucket, split by the fleet whose
+   * textarea would release it — because that textarea is PER FLEET and a box showing the
+   * fleet-wide number would over-state what saving it does. Accumulated in the same pass at
+   * no cost: `followUpForSettings` already answers with the slug.
+   */
+  noFollowUpByFleet: Record<string, number>
   /** The soonest any resting company frees itself. */
   nextRelease: Date | null
   /** Resting companies that will not clear unless a person changes something. */
@@ -289,7 +314,7 @@ export async function buildRestTally(now: Date = new Date()): Promise<RestTally>
   /* Preload from the EARLIER of the two floors: the stub narrows per caller, it cannot widen. */
   const preloadFloor = allowanceFloor < materialFloor ? allowanceFloor : materialFloor
 
-  const [targetRows, posts, deliveries, replies, inFlightAndParked, pairs, eligibleSenderIds, unavailable, campaignUsage] =
+  const [targetRows, posts, deliveries, replies, inFlightAndParked, pairs, eligibleSenderIds, unavailable, campaignUsage, memberships] =
     await Promise.all([
       /**
        * EVERY target row in ONE query, partitioned in JS.
@@ -318,7 +343,10 @@ export async function buildRestTally(now: Date = new Date()): Promise<RestTally>
       }),
       prisma.detectedCampaign.findMany({
         where: { verdict: 'CAMPAIGN', postedAt: { gte: preloadFloor } },
-        select: { id: true, postedAt: true, caption: true, taggedAccounts: true, brands: true },
+        /* `targetId` is the CHANNEL that posted, carried on `NamingCampaign` since
+           2026-09-01 so the follow-up can name the post. A scalar column on a query already
+           being made — no extra round trip, which is why it is the id and not a join. */
+        select: { id: true, postedAt: true, targetId: true, caption: true, taggedAccounts: true, brands: true },
       }),
       /* ALL delivered messages, not a window: rotation's `lastSenderTo` is all-time, and the
          ring rule wants each sender's most recent delivery "at any age". Ascending, so the last
@@ -333,7 +361,9 @@ export async function buildRestTally(now: Date = new Date()): Promise<RestTally>
       }),
       prisma.outreachAttempt.findMany({
         where: { replyPostedAt: { gte: replyHaltFloor(settings.replyResumeHours, now) }, replyHandledAt: null },
-        select: { replyPostedAt: true, pair: { select: { targetId: true } } },
+        /* `senderId` since 2026-09-01 — the halt is PAIR-scoped by default, so this tally
+           must attribute a reply to the conversation it actually holds. */
+        select: { replyPostedAt: true, pair: { select: { targetId: true, senderId: true } } },
       }),
       /* Drafts in flight AND parked routes in one read, partitioned below on `status`: two
          filters over one table is two round trips for no reason. Same budget argument. */
@@ -371,6 +401,9 @@ export async function buildRestTally(now: Date = new Date()): Promise<RestTally>
         where: { campaignId: { not: null }, status: { in: [...IN_FLIGHT_STATUSES] } },
         select: { pairId: true, campaignId: true },
       }),
+      /* Which fleet each end belongs to — the follow-up copy is per fleet. React-cached, so
+         this is free on a page whose other builders already ask for it. */
+      readCategoryMemberships(),
     ])
 
   /** pairId → the campaigns that pair has already used. The map `usedCampaignIds` returned. */
@@ -430,12 +463,14 @@ export async function buildRestTally(now: Date = new Date()): Promise<RestTally>
     deliveredPairKeys.add(`${d.pair.targetId}:${d.pair.senderId}`)
   }
 
+  /** Keyed by `replyHaltKey`, so this tally groups replies the way the gate scopes them. */
   const haltUntil = new Map<string, Date>()
   for (const r of replies) {
     if (!r.replyPostedAt) continue
     const at = new Date(r.replyPostedAt.getTime() + settings.replyResumeHours * 3_600_000)
-    const cur = haltUntil.get(r.pair.targetId)
-    if (!cur || at > cur) haltUntil.set(r.pair.targetId, at)
+    const key = replyHaltKey(settings.replyHaltScope, { senderId: r.pair.senderId, targetId: r.pair.targetId })
+    const cur = haltUntil.get(key)
+    if (!cur || at > cur) haltUntil.set(key, at)
   }
 
   const pendingTargets = new Set(pending.map((p) => p.pair.targetId))
@@ -466,6 +501,8 @@ export async function buildRestTally(now: Date = new Date()): Promise<RestTally>
   }
 
   const buckets = new Map<string, { count: number; next: Date | null }>()
+  /** Fleet slug → companies held for want of that fleet's follow-up copy. See the interface. */
+  const noFollowUpByFleet: Record<string, number> = {}
   const bump = (reason: string, at: Date | null) => {
     const b = buckets.get(reason) ?? { count: 0, next: null }
     b.count += 1
@@ -488,7 +525,38 @@ export async function buildRestTally(now: Date = new Date()): Promise<RestTally>
       continue
     }
 
-    const halt = haltUntil.get(p.id)
+    /**
+     * ── WHOSE TURN, COMPUTED BEFORE THE REPLY CHECK (2026-09-01) ──────────────
+     *
+     * Election is PURE and query-free here — a ring over maps already in hand — so hoisting
+     * the computation above the reply check costs nothing, and it is now needed there: with
+     * the halt PAIR-scoped (Tabish, 2026-09-01) "is this company reply-held?" has no answer
+     * until you know WHICH page would write to them. A reply to a page that is not next in
+     * the ring does not stop this company being written to at all.
+     *
+     * Only the COMPUTATION moved. The refusal below stays exactly where it was, so the bucket
+     * ORDER is unchanged and `tests/rest-tally.test.ts`'s precedence assertions still describe
+     * the planner's own order.
+     */
+    const ring = fleetRingOrder(ringByTarget.get(p.id) ?? [])
+    const turn = nextSender({
+      ring,
+      lastSenderId: lastSenderPerTarget.get(p.id) ?? null,
+      unavailable: unavailableForTarget(unavailable, blockedRoutes, p.id),
+      targetId: p.id,
+    })
+
+    /**
+     * Under `pair` scope the halt belongs to ONE conversation, so this asks about the page
+     * that would actually write. When rotation can elect nobody there is no conversation to
+     * ask about, and the refusal below is the truer answer anyway.
+     */
+    const halt = haltUntil.get(
+      /* `replyHaltKey` ignores the sender under `target` scope, so the empty string is only
+         ever reached on a route that has no elected page under `pair` scope — where "no page
+         would write" is the honest answer and the refusal below states it. */
+      replyHaltKey(settings.replyHaltScope, { senderId: turn.ok ? turn.senderId : '', targetId: p.id }),
+    )
     if (halt) {
       bump(SKIP_REASONS.TARGET_REPLIED, halt)
       continue
@@ -503,15 +571,6 @@ export async function buildRestTally(now: Date = new Date()): Promise<RestTally>
       continue
     }
 
-    /* Whose turn is it? Rotation's own pure ring over the routes that already exist, so this
-       cannot name a page the planner would not use. */
-    const ring = fleetRingOrder(ringByTarget.get(p.id) ?? [])
-    const turn = nextSender({
-      ring,
-      lastSenderId: lastSenderPerTarget.get(p.id) ?? null,
-      unavailable: unavailableForTarget(unavailable, blockedRoutes, p.id),
-      targetId: p.id,
-    })
     /* NOBODY CAN WRITE TO THEM — and this used to fall through to `clear`, which counted a
        recipient no account can reach as spare capacity. `nextSender` refuses with `empty-ring`
        or `all-unavailable`; either way the answer is that this company is going nowhere. */
@@ -594,6 +653,32 @@ export async function buildRestTally(now: Date = new Date()): Promise<RestTally>
     }
 
     /**
+     * ── AND HAS THIS PAGE ALREADY WRITTEN, WITH NOTHING NEW TO SAY IT WITH? ──
+     *
+     * The governor's LAST stop, in the governor's own position: everything above holds a
+     * company for a reason a textarea cannot fix, so only what reaches here is genuinely
+     * waiting on the follow-up copy. `deliveredPairKeys` is `touchesSoFar > 0` for the
+     * ELECTED pair, which is exactly the condition the governor applies.
+     */
+    if (deliveredPairKeys.has(`${p.id}:${electedId}`)) {
+      const followUp = followUpForSettings(
+        settings,
+        /* The elected page's handle, from the ring already in hand — memberships are keyed by
+           handle and a second lookup would be a query per row. */
+        categoriesFor(memberships.bySenderHandle, ring.find((r) => r.senderId === electedId)?.handle ?? ''),
+        categoriesFor(memberships.byTargetHandle, p.handle),
+      )
+      if (!followUp.ok) {
+        bump(SKIP_REASONS.NO_FOLLOW_UP_TEMPLATE, null)
+        /* Split by the fleet whose box would release it. `slug` is null only for the two
+           refusals that are not "nobody wrote it" (cross-fleet, ambiguous), and neither is
+           fixed by writing copy — so they are counted in the bucket and in no box. */
+        if (followUp.slug) noFollowUpByFleet[followUp.slug] = (noFollowUpByFleet[followUp.slug] ?? 0) + 1
+        continue
+      }
+    }
+
+    /**
      * IS THIS RECIPIENT A PERSON? Asked LAST, because that is where `plan.ts` asks it — after
      * the governor and after rotation — so a person who is also material-held is attributed to
      * the material rule, exactly as the planner would report it.
@@ -648,6 +733,7 @@ export async function buildRestTally(now: Date = new Date()): Promise<RestTally>
     clear,
     queued,
     retired,
+    noFollowUpByFleet,
     watched,
     byReason,
     nextRelease: clocks.length > 0 ? new Date(Math.min(...clocks.map((d) => d.getTime()))) : null,

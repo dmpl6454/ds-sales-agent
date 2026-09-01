@@ -117,6 +117,16 @@ export function SentList({ recent, paging }: { recent: SentMessage[]; paging?: S
                     content rather than looking at the layout.
                   */}
                   @{r.targetHandle}{' '}
+                  {/*
+                    FIRST MESSAGE OR FOLLOW-UP (2026-09-01). Both rows used to read the same,
+                    and they are different facts: a follow-up is a second message to a company
+                    that already heard from this page, permitted only by a paid post nobody had
+                    written about — which the "Why" column beside it names. Without the chip a
+                    reader cannot tell the two apart, and the feature would ship invisible.
+
+                    Only from touch 2 up: a chip on every row would be furniture.
+                  */}
+                  {r.touchNumber > 1 && <span className="chip chip-soft">follow-up</span>}{' '}
                   {r.replied && <span className="chip chip-soft">replied</span>}
                 </td>
                 <td className="how">{describeSentBy(r.sentBy)}</td>

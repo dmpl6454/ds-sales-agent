@@ -360,3 +360,102 @@ describe('marking a reply handled resumes messaging to that recipient', () => {
     expect(gate.reason).toBe(RESEND_BLOCKS.TARGET_REPLIED)
   })
 })
+
+/**
+ * ── WHOSE CONVERSATION DOES A REPLY HALT? (2026-09-01, Tabish's decision) ─────
+ *
+ * *"It does not make sense if all activity is halted for a target for 7 days by all senders
+ * if a reply is detected. Only the channel (sender) which has gotten the reply should halt."*
+ *
+ * The risk was put to him first and is recorded in `replyHalt.ts`: the person who replied is
+ * the one engaged human in the funnel, and every page signs with the same phone number, so
+ * "a different page" is transparent to exactly this reader. He chose the pair scope.
+ *
+ * DRIVEN AGAINST A REAL DATABASE for the reason this whole file exists: the halt is a QUERY,
+ * and a scope switch expressed as a Prisma `where` is a property of the generated client
+ * rather than of a pure function. `tests/replyHalt.test.ts` can prove `replyHaltPairFilter`
+ * returns the right object; only this can prove the gate asks it and Prisma honours it.
+ *
+ * BOTH SCOPES are driven, so the one that is switched off stays enforceable — the discipline
+ * `crossPageGapHours` (0) and the active-hours window (0/0) already have.
+ */
+describe('a reply halts the page that got it, and — by default — only that page', () => {
+  const OTHER = 'seeded_other_sender'
+
+  beforeEach(async () => {
+    /* A SECOND page with its own route to the same recipient and its own waiting draft.
+       Nothing has been delivered on it, so nothing about it has earned a reply. */
+    await prisma.senderAccount.create({
+      data: {
+        id: OTHER,
+        handle: OTHER,
+        displayName: OTHER,
+        cohort: 1,
+        status: 'ACTIVE',
+        personaName: '',
+        personaRole: '',
+        personaBrand: '',
+        personaPhone: '',
+        personaEmail: '',
+      },
+    })
+    await prisma.outreachPair.create({ data: { id: 'pair_other', senderId: OTHER, targetId: TARGET } })
+    await prisma.outreachAttempt.create({
+      data: {
+        id: 'waiting_other',
+        pairId: 'pair_other',
+        senderId: OTHER,
+        targetId: TARGET,
+        variantId: 'v3',
+        touchNumber: 1,
+        renderedBody: 'the standard template, from the other page',
+        status: 'READY',
+      },
+    })
+  })
+
+  it('the page that GOT the reply is halted', async () => {
+    const gate = await recheckBeforeSend(await attemptForGate('waiting'), { unattended: true })
+    if (gate.ok) throw new Error('unexpected: the page that got the reply must halt')
+    expect(gate.reason).toBe(RESEND_BLOCKS.TARGET_REPLIED)
+  })
+
+  /**
+   * The whole content of the change. `NO_SESSION` rather than `ok: true` for the reason
+   * stated above — a seeded account can never hold a session — and TARGET_REPLIED is asked
+   * BEFORE it, so its absence here is the release.
+   */
+  it('another page is NOT halted by it', async () => {
+    const gate = await recheckBeforeSend(await attemptForGate('waiting_other'), { unattended: true })
+    if (gate.ok) throw new Error('unexpected: a session-less seeded account cannot be clear to send')
+    expect(gate.reason, 'a reply to one page is still halting the whole fleet').not.toBe(
+      RESEND_BLOCKS.TARGET_REPLIED,
+    )
+    expect(gate.reason).toBe(RESEND_BLOCKS.NO_SESSION)
+  })
+
+  /**
+   * AND THE OLD BEHAVIOUR IS ONE ROW AWAY. The mechanism stays so a future decision costs a
+   * Setting write rather than a deploy — exactly as `crossPageGapHours` kept its mechanism
+   * at 0. Without this the `target` branch would be unreachable code inside a live rule.
+   */
+  it('replyHaltScope=target restores the fleet-wide halt, with no code change', async () => {
+    await prisma.setting.create({ data: { key: 'replyHaltScope', value: 'target' } })
+    const gate = await recheckBeforeSend(await attemptForGate('waiting_other'), { unattended: true })
+    if (gate.ok) throw new Error('unexpected: the fleet-wide halt must hold every page')
+    expect(gate.reason).toBe(RESEND_BLOCKS.TARGET_REPLIED)
+  })
+
+  /**
+   * An UNREADABLE value must not widen who is messaged. `parseReplyHaltScope` falls to
+   * `target` — the wider halt — rather than to the default, because the default is the
+   * permissive one and a typo silently permitting more sending is this codebase's
+   * most-repeated defect wearing a settings hat.
+   */
+  it('an unreadable scope falls to the WIDER halt, not to the default', async () => {
+    await prisma.setting.create({ data: { key: 'replyHaltScope', value: 'targt' } })
+    const gate = await recheckBeforeSend(await attemptForGate('waiting_other'), { unattended: true })
+    if (gate.ok) throw new Error('unexpected: an unreadable scope must fail closed')
+    expect(gate.reason).toBe(RESEND_BLOCKS.TARGET_REPLIED)
+  })
+})

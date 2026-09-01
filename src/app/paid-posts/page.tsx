@@ -392,6 +392,14 @@ export default async function PaidPostsPage({
                             }
                           >
                             @{m.senderHandle} → @{m.targetHandle}{' '}
+                            {/*
+                              A FOLLOW-UP, NAMED (2026-09-01). A first message and a second one
+                              to the same company are different facts about this post: the first
+                              is an introduction, the second exists BECAUSE this post did and
+                              says so in its own words. Rendered only from touch 2 up — a label
+                              on every line is furniture.
+                            */}
+                            {m.followUp ? <span className="muted">· follow-up </span> : null}
                             <span className="muted">{m.whenLabel}</span>
                           </div>
                         ))}

@@ -53,7 +53,10 @@ const STOP_LABELS: Record<(typeof RESEND_BLOCKS)[keyof typeof RESEND_BLOCKS], st
     'it is word for word the message this page already sent them — Instagram accepts a repeat and never delivers it',
   [RESEND_BLOCKS.FLEET_TEMPLATE_NOT_SET]:
     'this company\u2019s fleet has no standard message written yet — its recipients are never sent the other fleet\u2019s copy',
-  [RESEND_BLOCKS.TARGET_REPLIED]: 'they replied — paused for seven days, then resumes on its own',
+  [RESEND_BLOCKS.FOLLOW_UP_TEMPLATE_NOT_SET]:
+    'this page has already written to them and no follow-up message is written for their fleet — a second message has to say something different from the first',
+  [RESEND_BLOCKS.TARGET_REPLIED]:
+    'they replied to this page — that page pauses for seven days from the date they wrote, then resumes on its own',
   [RESEND_BLOCKS.MATERIAL_EXHAUSTED]:
     'every paid post we have seen from them has already been written about — one message per detected paid post, from one of our pages, not five',
   [RESEND_BLOCKS.UNCERTAIN_DELIVERY]:

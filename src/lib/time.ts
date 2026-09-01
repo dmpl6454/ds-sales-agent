@@ -65,12 +65,25 @@ export function istHourOfDay(at: Date = new Date()): number {
  * "1 day ago" in another. A table spanning several days wants the date stated plainly.
  */
 export function istPostedLabel(at: Date): string {
-  const date = new Intl.DateTimeFormat('en-GB', {
+  return `${istDayMonth(at)} (${istTimeKey(at)})`
+}
+
+/**
+ * "30 Aug" in IST — the shortest honest way to name a day.
+ *
+ * Extracted from `istPostedLabel` on 2026-09-01 because a SECOND caller appeared: the
+ * follow-up message names the paid post it is written about ("your placement with
+ * @instantbollywood on 30 Aug"), and that string goes to a real recipient. A private copy
+ * of the same `Intl` call in the outreach module is how a table reads "30 Aug" while a DM
+ * says "29 Aug" across the IST midnight boundary — the timezone class of bug this file's
+ * own comments already record twice.
+ */
+export function istDayMonth(at: Date): string {
+  return new Intl.DateTimeFormat('en-GB', {
     timeZone: TIMEZONE,
     day: 'numeric',
     month: 'short',
   }).format(at)
-  return `${date} (${istTimeKey(at)})`
 }
 
 /**

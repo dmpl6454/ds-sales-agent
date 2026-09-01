@@ -104,6 +104,7 @@ export async function buildSentHistory(input: {
         replied: a.repliedAt !== null,
         replyHandled: a.replyHandledAt !== null,
         replyText: a.replyText,
+        touchNumber: a.touchNumber,
         provenance: prov.post
           ? {
               label: provenanceLabel(prov.post, istDateKey(prov.post.postedAt)),

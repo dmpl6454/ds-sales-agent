@@ -4,6 +4,15 @@ import { join } from 'node:path'
 import { ourOwnPageHandles } from '@/detection/visibleChannels'
 
 /**
+ * The enforcer's own SELECT, written once. The two dashboard preloads are exempt from the
+ * channel-scope grep precisely because they ask for THIS — see the carve-out below and the
+ * assertion that pins it to `materialAllowance.ts`.
+ */
+const ENFORCER_PROJECTION =
+  'select: { id: true, postedAt: true, targetId: true, caption: true, taggedAccounts: true, brands: true }'
+
+
+/**
  * ── OUR OWN PAGES MUST NOT APPEAR ON A SCREEN, AND THE FAILURE MODE IS A QUERY
  *    NOBODY HAS WRITTEN YET ───────────────────────────────────────────────
  *
@@ -156,7 +165,7 @@ describe('our own pages are excluded from every dashboard figure', () => {
            * below proves the enforcer really is unscoped, so this cannot quietly become
            * wrong the day that changes.
            */
-          window.includes('select: { id: true, postedAt: true, caption: true, taggedAccounts: true, brands: true }')
+          window.includes(ENFORCER_PROJECTION)
         if (!scoped) unscoped.push(`${file}:${i + 1}  ${line.trim().slice(0, 90)}`)
       })
     }
@@ -177,6 +186,24 @@ describe('our own pages are excluded from every dashboard figure', () => {
     expect(src, 'the allowance has gained a channel scope — the preload carve-out is now a hole').not.toContain(
       'visibleChannelFilter',
     )
+  })
+
+  /**
+   * ── AND THE CARVE-OUT'S LITERAL IS THE ENFORCER'S OWN (2026-09-01) ─────────
+   *
+   * The exemption above is granted to a query whose SELECT matches the enforcer's exactly —
+   * that shape is what makes it an allowance input rather than a figure somebody totals. It
+   * was a hand-copied string, so when `NamingCampaign` gained `targetId` (the publishing
+   * channel, for the follow-up's post reference) the two preloads correctly failed the grep
+   * while the enforcer had already moved. That is the mechanism working; a hand-copied
+   * string is still one edit from a hole, so the coupling is asserted rather than assumed.
+   */
+  it('the projection the carve-out trusts is the one the enforcer actually asks for', () => {
+    const src = read('src/outreach/materialAllowance.ts')
+    expect(
+      src,
+      'campaignsNamingHandleRows no longer selects what the preload carve-out matches — update ENFORCER_PROJECTION and both preloads together',
+    ).toContain(ENFORCER_PROJECTION)
   })
 
   /**

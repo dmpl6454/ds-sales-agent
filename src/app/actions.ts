@@ -34,8 +34,9 @@ import { discardAttempt } from '@/outreach/discard'
 import { handOffWaitingDrafts } from '@/outreach/handOff'
 import { log } from '@/lib/logger'
 import { validatePersona } from '@/outreach/render'
-import { checkTemplateBody } from '@/outreach/templateGuard'
+import { checkFollowUpBody, checkTemplateBody } from '@/outreach/templateGuard'
 import { fleetTemplateKey } from '@/outreach/fleetTemplate'
+import { FOLLOW_UP_DEFAULT_KEY, followUpTemplateKey } from '@/outreach/followUpTemplate'
 import { DEFAULT_CATEGORY_SLUG } from '@/outreach/senderCategories'
 import { requireOperator } from '@/lib/session'
 import { MESSAGE_VARIANTS } from '../../prisma/variants'
@@ -1136,6 +1137,77 @@ export async function setFleetTemplateBody(
   return {
     ok: true,
     message: `Saved. New drafts for ${category.name} companies use this text, and any that were held for want of a message can now go out.`,
+  }
+}
+
+/**
+ * ── THE SECOND MESSAGE (2026-09-01, Tabish) ────────────────────────────────
+ *
+ * A THIRD template action rather than a flag on either of the two above, and the reason is
+ * the same one that split `setFleetTemplateBody` off from `setSingleTemplateBody`: the three
+ * boxes do different things with an empty one, and merging them makes that difference a
+ * runtime branch nobody reads.
+ *
+ *   the standard message   — clearing RESTORES the shipped copy. Sending continues.
+ *   a second FLEET's copy  — clearing means nobody has written it; that fleet is refused.
+ *   the FOLLOW-UP          — clearing means no page ever writes a SECOND message to anyone.
+ *                            First touches are untouched.
+ *
+ * It validates with `checkFollowUpBody`, not `checkTemplateBody`, because the two disagree
+ * about braces: the standard message refuses every `{{token}}` and this one REQUIRES exactly
+ * `{{post}}`. Without the token every follow-up from a page carries identical bytes, so
+ * follow-up #2 would be refused as a repeat — the wall this feature exists to remove,
+ * rebuilt one storey up and found weeks later as a queue that stopped draining.
+ *
+ * `slug` is null for the DEFAULT fleet, matching the key shapes in `followUpTemplate.ts`.
+ */
+export async function setFollowUpBody(
+  slug: string | null,
+  body: string | null,
+): Promise<{ ok: boolean; message: string }> {
+  const user = await requireOperator()
+
+  const clean = slug?.trim().toLowerCase() ?? null
+  let name = 'default'
+  if (clean !== null && clean !== DEFAULT_CATEGORY_SLUG) {
+    /* An unknown slug REFUSES rather than creating a row nothing reads — the same call the
+       fleet-template action makes, for the same reason: a `followUpBody:` row for a fleet
+       that does not exist would look saved and be invisible to `followUpForRoute`. */
+    const category = await prisma.category.findUnique({ where: { slug: clean } })
+    if (!category) return { ok: false, message: `There is no fleet called "${slug}".` }
+    name = category.name
+  }
+  const key = clean === null || clean === DEFAULT_CATEGORY_SLUG ? FOLLOW_UP_DEFAULT_KEY : followUpTemplateKey(clean)
+
+  if (body === null || body.trim().length === 0) {
+    await prisma.setting.deleteMany({ where: { key } })
+    await audit(user.email, 'setting.changed', `Setting:${key}`, `${name} follow-up message cleared`)
+    revalidatePath('/')
+    return {
+      ok: true,
+      message:
+        'Cleared. No page writes a second message to anyone in this fleet until one is written here. ' +
+        'First messages are unaffected.',
+    }
+  }
+
+  const verdict = checkFollowUpBody(body)
+  if (!verdict.ok) return { ok: false, message: verdict.reason }
+
+  await setSetting(key, body.trim())
+  await audit(
+    user.email,
+    'setting.changed',
+    `Setting:${key}`,
+    `${name} follow-up message set (${body.trim().length} chars)`,
+  )
+  revalidatePath('/')
+  return {
+    ok: true,
+    message:
+      'Saved. Companies with a paid post nobody has written about yet can now receive a second ' +
+      'message naming that post. Volume is unchanged — the allowance still permits one message ' +
+      'per paid post.',
   }
 }
 

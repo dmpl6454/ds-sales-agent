@@ -2,9 +2,10 @@ import { prisma } from '@/lib/db'
 import { istDayStart } from '@/lib/time'
 import { getSettings } from '@/lib/settings'
 import { mayArmAccount } from './cohorts'
-import { replyHaltFloor } from './replyHalt'
+import { replyHaltWhere } from './replyHalt'
 import { sameCategory, crossCategoryDetail } from './senderCategories'
 import { templateForSettings, type FleetTemplate } from './fleetTemplate'
+import { followUpForSettings, type FollowUpTemplate } from './followUpTemplate'
 import { readCategoryMemberships, categoriesFor } from './categories'
 import { profileStatus } from './browser/profile'
 import { sessionUsable } from './sessionHealth'
@@ -106,6 +107,22 @@ export interface ResendInput {
    * from the one caller that forgot it, which is this codebase's signature failure.
    */
   fleetTemplate: FleetTemplate
+  /**
+   * Is this a SECOND message on this pair? `OutreachAttempt.touchNumber > 1` (2026-09-01).
+   *
+   * Read from the draft's own stored touch number rather than recounted, because that is
+   * the number the composer wrote the body against: a follow-up is the row that carries
+   * follow-up bytes, and a recount could disagree with it if a delivery landed in between.
+   */
+  isFollowUp: boolean
+  /**
+   * WHAT A SECOND MESSAGE ON THIS ROUTE SAYS, or why there is none.
+   *
+   * Only consulted when `isFollowUp`. REQUIRED with no default for the reason
+   * `fleetTemplate` is — a default of "fine" makes the stop unreachable from whichever
+   * caller forgot it, and the failure is a verbatim repeat delivered to a real company.
+   */
+  followUpTemplate: FollowUpTemplate
   /**
    * Is this draft's stored body byte-identical to one already DELIVERED on this pair? Read
    * from the stored bytes rather than recomposed, because an operator may have edited the
@@ -213,6 +230,23 @@ export const RESEND_BLOCKS = {
    * The remedy is a textarea, not a judgement call.
    */
   FLEET_TEMPLATE_NOT_SET: 'no-standard-message-for-this-fleet',
+  /**
+   * ── A FOLLOW-UP DRAFT WITH NO FOLLOW-UP MESSAGE (2026-09-01, Tabish) ──────
+   *
+   * The other end of the governor's `NO_FOLLOW_UP_TEMPLATE`. That one stops a second
+   * message being WRITTEN; this stops one that already exists — a draft written while the
+   * copy was there and sent after it was cleared, or one written before this rule at all.
+   * Both ends, like every load-bearing rule here.
+   *
+   * Checked LAST, breaking this file's most-fundamental-first ordering for the same reason
+   * the governor's twin does: reported here it names the pairs a textarea would release,
+   * and everything else keeps the reason actually holding it. See the governor's docblock.
+   *
+   * ABSOLUTE, and deliberately absent from `OVERRIDABLE_BLOCKS`. Every stop a human may
+   * cross is about TIMING; this is about WHAT THE MESSAGE SAYS, and the remedy is a
+   * textarea, not a judgement call.
+   */
+  FOLLOW_UP_TEMPLATE_NOT_SET: 'no-follow-up-message-written',
   /**
    * ── THE SAME BYTES THEY ALREADY HAVE (2026-08-26) ─────────────────────────
    *
@@ -562,6 +596,19 @@ export function evaluateResend(input: ResendInput): ResendResult {
     }
   }
 
+  /**
+   * LAST, AND ONLY FOR A FOLLOW-UP — see `RESEND_BLOCKS.FOLLOW_UP_TEMPLATE_NOT_SET`. A first
+   * touch never reaches it, so an unwritten follow-up message leaves first-touch sending
+   * exactly as it was.
+   */
+  if (input.isFollowUp && !input.followUpTemplate.ok) {
+    return {
+      ok: false,
+      reason: RESEND_BLOCKS.FOLLOW_UP_TEMPLATE_NOT_SET,
+      detail: input.followUpTemplate.detail,
+    }
+  }
+
   return { ok: true }
 }
 
@@ -611,11 +658,21 @@ export async function recheckBeforeSend(
        * "resume after 7 days automatically or manually" instruction) and then releases ITSELF.
        * "Handled" survives as an early release. See src/outreach/replyHalt.ts.
        */
-      where: {
-        pair: { targetId },
-        replyPostedAt: { gte: replyHaltFloor(settings.replyResumeHours) },
-        replyHandledAt: null,
-      },
+      /**
+       * ── AND SCOPED BY `replyHaltScope` SINCE 2026-09-01 (Tabish) ─────────
+       *
+       * `pair` — the default and his instruction — halts only the page that got the reply;
+       * every other page carries on under the ring rule. `target` restores the fleet-wide
+       * halt in one Setting row. The filter is built by `replyHalt.ts` rather than spelled
+       * here, so the gate, the planner, the on-demand dialog and the two screens that
+       * PREDICT a hold cannot answer differently. See the risk paragraph in that file.
+       */
+      where: replyHaltWhere({
+        scope: settings.replyHaltScope,
+        senderId,
+        targetId,
+        resumeHours: settings.replyResumeHours,
+      }),
       orderBy: { repliedAt: 'desc' },
       select: { replyPostedAt: true },
     }),
@@ -702,7 +759,9 @@ export async function recheckBeforeSend(
      * Scoped by (senderId, targetId) rather than `pairId`, which `ResendAttempt` does not
      * carry; it is the same pair by definition.
      */
-    prisma.outreachAttempt.findUnique({ where: { id: attempt.id }, select: { renderedBody: true } }),
+    /* `touchNumber` rides along: the follow-up stop needs to know whether this draft IS a
+       second message, and it is the number the composer wrote the body against. */
+    prisma.outreachAttempt.findUnique({ where: { id: attempt.id }, select: { renderedBody: true, touchNumber: true } }),
     prisma.outreachAttempt.findMany({
       where: { senderId, targetId, status: { in: [...DELIVERED_STATUSES] }, id: { not: attempt.id } },
       select: { renderedBody: true },
@@ -736,6 +795,16 @@ export async function recheckBeforeSend(
     senderCategories: categoriesFor(memberships.bySenderHandle, sender.handle),
     targetCategories: categoriesFor(memberships.byTargetHandle, target.handle),
     fleetTemplate: templateForSettings(
+      settings,
+      categoriesFor(memberships.bySenderHandle, sender.handle),
+      categoriesFor(memberships.byTargetHandle, target.handle),
+    ),
+    /* A draft with no stored row cannot be proved a follow-up, so it is treated as a first
+       touch here — `NOT_WAITING` and the null-body rule below already handle a row that
+       vanished, and inventing a follow-up out of missing data is the direction this file
+       refuses in every other place. */
+    isFollowUp: (thisDraft?.touchNumber ?? 1) > 1,
+    followUpTemplate: followUpForSettings(
       settings,
       categoriesFor(memberships.bySenderHandle, sender.handle),
       categoriesFor(memberships.byTargetHandle, target.handle),

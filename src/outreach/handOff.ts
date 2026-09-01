@@ -3,6 +3,7 @@ import { log } from '@/lib/logger'
 import { DELIVERED_STATUSES } from '@/lib/constants'
 import { fleetRingOrder, nextSender } from './rotation'
 import { readSenderAvailability } from './availability'
+import { readCategoryMemberships, ringMembersFor } from './categories'
 import { ensureFleetPairs } from './plan'
 import { discardAttempt } from './discard'
 
@@ -61,16 +62,36 @@ export async function handOffWaitingDrafts(args: {
     where: { fleetMember: true, id: { not: senderId } },
     select: { id: true, handle: true, cohort: true },
   })
-  const ring = fleetRingOrder(fleet)
 
   /**
    * Pairs must exist before drafts can move onto them. `ensureFleetPairs` is the ONE
    * permitted creator for fleet routes (routes.ts rules applied, watch-only and retired
    * targets excluded) — this file deliberately creates no pair row of its own.
    */
-  if (ring.length > 0) await ensureFleetPairs()
+  if (fleet.length > 0) await ensureFleetPairs()
 
   const unavailable = await readSenderAvailability()
+  /**
+   * ── THE RING IS PER RECIPIENT, BECAUSE A FLEET RING NAMES PAGES THAT CANNOT WRITE ──
+   *
+   * This built ONE ring from the whole fleet and handed every draft to whoever came next in
+   * it. MEASURED 2026-09-01, removing @bachelorssociety: **4 of its 8 movable drafts could
+   * not move**, and the reason was the same for all four — the ring elected
+   * `@madaboutmarketingg`, the MARKETING page, for four BOLLYWOOD companies
+   * (@satishfenn, @tarasutaria, @abhishekpathakk, @arunabhkumar). `routeAllowed` refuses
+   * that route, so no pair exists, so the draft was "kept" on an account that had just left
+   * the rotation and can never send it.
+   *
+   * `ringMembersFor` is the rule that already exists for this and it is the FOURTH ring
+   * builder to need it: `fleetRingFor`'s own docblock makes the argument, and `whoseTurn`
+   * learned it on 2026-08-26 when the same marketing page was elected for 15 bollywood
+   * companies and stalled every one of them. A hand-off that can elect a page the gate
+   * refuses is that stall arriving through the removal door.
+   *
+   * Memberships are read ONCE for the whole hand-off, not per draft.
+   */
+  const memberships = await readCategoryMemberships()
+  const ringFor = (targetHandle: string) => fleetRingOrder(ringMembersFor(fleet, targetHandle, memberships))
 
   const moving = await prisma.outreachAttempt.findMany({
     where: {
@@ -127,9 +148,13 @@ export async function handOffWaitingDrafts(args: {
       await discard(attempt.id, target.handle, 'another account already has a draft waiting for this recipient')
       continue
     }
+    /* This recipient's OWN ring — the pages whose fleet permits writing to them. */
+    const ring = ringFor(target.handle)
     if (ring.length === 0) {
       out.kept += 1
-      out.details.push(`@${target.handle}: kept — no other account in the rotation to take it`)
+      out.details.push(
+        `@${target.handle}: kept — no other account in the rotation sends for their fleet`,
+      )
       continue
     }
 

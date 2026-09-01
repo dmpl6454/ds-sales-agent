@@ -127,19 +127,42 @@ export const REMEDIES = {
    * fleet's copy yet, and the moment they do every held draft for it clears by itself.
    */
   /**
-   * NO CONTROL, and that is the honest answer: nothing about this recipient is wrong and
-   * waiting does not help. What releases it is having something DIFFERENT to say — turning
-   * the single template off so the variant pools return, or writing a follow-up template.
-   * Offering a "send anyway" here would be offering to do the thing Instagram silently drops.
+   * ── THERE IS A CONTROL NOW, AND THE LABEL HAD TO CHANGE WITH IT (2026-09-01) ──
+   *
+   * This read *"It clears when a follow-up says something different from the first message"*
+   * with `href: null`, and that was correct on the day it was written: nothing in the product
+   * could produce a different second message, so there was no screen to send anyone to.
+   * There is one now — the follow-up box on the Autopilot page — and `href: null` is reserved
+   * for stops with NO control at all, not for stops whose control someone forgot to name.
+   *
+   * THE LABEL DOES NOT PROMISE THIS ROW GOES OUT, deliberately. A draft already written with
+   * the first message's bytes stays a repeat whatever is typed into that box; what the copy
+   * changes is what the planner writes NEXT. Saying "these go out" here would be the
+   * `MAX_TOTAL_SENDS` shape — a screen promising a release the enforcer will not give.
    */
   [RESEND_BLOCKS.IDENTICAL_TO_A_SENT_MESSAGE]: {
-    href: null,
-    label: 'It clears when a follow-up says something different from the first message.',
+    href: '/',
+    label:
+      'Write the follow-up message on the Autopilot page — then a second message names a new paid post instead of repeating the first.',
   },
 
   [RESEND_BLOCKS.FLEET_TEMPLATE_NOT_SET]: {
     href: '/',
     label: 'Write this fleet\u2019s standard message on the Autopilot page and these go out.',
+  },
+
+  /**
+   * A TEXTAREA, like the fleet template above and for the same reason \u2014 nothing about this
+   * recipient is wrong, there is simply no second message written yet, and the moment there
+   * is, every draft holding on this clears by itself.
+   *
+   * It is deliberately NOT the same label as the standard message's: two boxes on that page
+   * mean opposite things by being empty, and sending someone to "the Autopilot page" without
+   * saying WHICH box is how they edit the wrong one.
+   */
+  [RESEND_BLOCKS.FOLLOW_UP_TEMPLATE_NOT_SET]: {
+    href: '/',
+    label: 'Write the follow-up message on the Autopilot page \u2014 a second message has to differ from the first.',
   },
 
   // Clears by waiting — five a day from one account to one recipient.

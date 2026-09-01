@@ -1246,7 +1246,20 @@ export interface PaidPostRow {
    * only when the message claimed nothing — the recipient was DISCOVERED from this post.
    * See `messageProvenance.ts` for why nothing is reconstructed when neither answers.
    */
-  messagesSent: { targetHandle: string; senderHandle: string; whenLabel: string; basis: 'claimed' | 'discovered' }[]
+  /**
+   * `followUp` since 2026-09-01: a message to a company this page had already written to,
+   * permitted by THIS post and naming it. "We wrote to them" and "we wrote to them again,
+   * about this post" are different facts about one row, and the column showed one sentence
+   * for both — which would have made the follow-up ship invisible on the screen it is most
+   * legible from. Read from `OutreachAttempt.touchNumber`, a column that already existed.
+   */
+  messagesSent: {
+    targetHandle: string
+    senderHandle: string
+    whenLabel: string
+    basis: 'claimed' | 'discovered'
+    followUp: boolean
+  }[]
   /**
    * ── THERE IS NO "candidateNote" ANY MORE (2026-08-25, Tabish) ──────────────
    *
@@ -1593,6 +1606,8 @@ export async function buildPaidPostsView(input?: {
     select: {
       sentAt: true,
       campaignId: true,
+      /* A scalar on a query already being made — see PaidPostRow.messagesSent. */
+      touchNumber: true,
       sender: { select: { handle: true } },
       target: { select: { handle: true, discoveredFromCampaignId: true } },
     },
@@ -1608,6 +1623,7 @@ export async function buildPaidPostsView(input?: {
       senderHandle: a.sender.handle,
       whenLabel: relative(a.sentAt),
       basis: claimed ? 'claimed' : 'discovered',
+      followUp: a.touchNumber > 1,
     })
     causedByPost.set(postId, list)
   }
