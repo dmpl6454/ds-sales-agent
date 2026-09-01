@@ -138,6 +138,18 @@ Two constraints stated as facts, not smoothed over:
   works). Anyone with the DMG + the three secrets reads the shared data through the app, which
   is inherent to "everyone runs the same operation."
 
+**AND SINCE THE SAME EVENING THE BUILD IS A REPO SCRIPT AND THE SIGN-UP STEP IS GONE
+(Tabish's instruction).** The image's sources moved out of the session scratchpad into
+`scripts/dmg/` with `scripts/build-dmg.sh` as the one-command rebuild — a session directory
+is not a place a deliverable can live, and *a rule written down is not a rule enforced; this
+one is a script now* (the deploy.sh lesson). The invite-code sign-up was replaced by a
+READY-MADE SHARED LOGIN: `team@digitalsukoon.com`, **role VIEWER deliberately** — a shared
+operator login would hand strangers the autopilot switch, retirement and the template
+textareas, and every mutation would audit as one indistinguishable actor. Operator promotion
+stays per-person. Verified in both directions (correct password accepted, wrong refused);
+audited as `user.shared-viewer-account`. The standing rule — rebuild after major changes —
+lives beside the pipeline-diagram rule in Style.
+
 ### HEALTH AT HAND-OVER
 
 | | |
@@ -9446,6 +9458,16 @@ docs/specs/            design docs and plans
   signature at the bottom of every message. Tabish asked. It now shows the actual signature
   and names the specific mismatch. Accuracy is not the bar for a warning; being understood
   by the person who must act on it is.
+- **THE DMG IS PART OF THE DELIVERABLE TOO (Tabish, 2026-09-01): rebuild it after any major
+  change, or at least remind him.** `bash scripts/build-dmg.sh` — one command, refuses a
+  dirty tree, snapshots HEAD, verifies no credential rides along, overwrites
+  `~/Downloads/DS-Sales-Agent.dmg` (so there is never an outdated copy lying beside a
+  current one). Installed machines do NOT auto-update; a stale image hands a new operator
+  last week's rules. What travels with it, person to person and never inside it: the
+  DATABASE_URL, the tunnel key at `~/Downloads/ds_tunnel_key` (forward-only, no shell), and
+  the SHARED VIEWER dashboard login (`team@digitalsukoon.com` — viewer DELIBERATELY: a
+  shared operator login would hand strangers autopilot, retire and template controls;
+  operator promotion stays per-person, Tabish's act).
 - **The pipeline diagram is part of the deliverable, not a one-off.** Tabish keeps
   https://claude.ai/code/artifact/517b2e18-4c61-428c-a300-9b21de07d1c6 as his picture of
   how this works. **Whenever the flow of operations changes, update it in the same session
