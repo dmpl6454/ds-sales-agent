@@ -109,13 +109,47 @@ describe('an unwritten follow-up REFUSES — for every fleet, including the defa
 })
 
 describe('what the follow-up says about the post it is for', () => {
-  it('names the publishing page and the day, in IST', () => {
+  /**
+   * ── AND IT NEVER NAMES THE PUBLISHER (2026-09-01, Tabish) ────────────────
+   *
+   * The first version read "your placement with @instantbollywood on 31 Aug", and one such
+   * message reached a real prospect before it was caught: **every channel we watch is a
+   * COMPETITOR**, so that sentence advertises one by name inside a pitch for our own
+   * inventory, and tells the recipient where we watch. Tabish: *"Never mention our
+   * competitors in this way never mention their names."*
+   *
+   * The date alone is what is left, and it is enough: it identifies the post, it varies per
+   * post — which is what keeps two follow-ups from being byte-identical — and it reveals
+   * nothing. The real defence is that `followUpPostReference` no longer TAKES a handle, so
+   * the second assertion here is about a shape rather than a value.
+   */
+  it('names the day and NOTHING about the publisher, in IST', () => {
     /* 30 Aug 22:00 UTC is 31 Aug in IST — the reason this goes through the one formatter. */
-    const ref = followUpPostReference({
-      channelHandle: 'instantbollywood',
-      postedAt: new Date('2026-08-30T22:00:00.000Z'),
-    })
-    expect(ref).toBe('your placement with @instantbollywood on 31 Aug')
+    const ref = followUpPostReference({ postedAt: new Date('2026-08-30T22:00:00.000Z') })
+    expect(ref).toBe('your placement on 31 Aug')
+    expect(ref, 'a watched publisher reached a real recipient once; never again').not.toMatch(/@/)
+  })
+
+  /**
+   * A SOURCE GREP, because the failure mode is a call site nobody has written yet and no
+   * behavioural test can fail for that. Nothing on the path from a claimed post to a
+   * rendered body may carry the publishing channel.
+   */
+  it('no publisher identity travels with a claimed post', () => {
+    const linkage = code(read('src/outreach/materialAllowance.ts'))
+    const at = linkage.indexOf('export interface NamingCampaign')
+    expect(at).toBeGreaterThan(-1)
+    expect(
+      linkage.slice(at, linkage.indexOf('}', at)),
+      'NamingCampaign carries the publishing channel again — that is how the competitor got named',
+    ).not.toMatch(/channelId|targetId|channelHandle/)
+
+    const composer = code(read('src/outreach/compose.ts'))
+    const pick = composer.indexOf('async function pickHook')
+    expect(
+      composer.slice(pick, pick + 600),
+      'pickHook joins the publishing channel again — the follow-up must name the date alone',
+    ).not.toMatch(/include:\s*\{\s*target/)
   })
 
   it('substitutes every occurrence and touches nothing else', () => {
@@ -314,7 +348,11 @@ describe('composing the second message', () => {
       followUpTemplate: WRITTEN,
       now: NOW,
     })
-    expect(r.body).toContain('your placement with @instantbollywood on 29 Aug')
+    expect(r.body).toContain('your placement on 29 Aug')
+    /* And NOT the publisher. The mock's campaign is on @instantbollywood; one such message
+       reached a real recipient on 1 September before this was caught. */
+    expect(r.body, 'a watched competitor is named in a pitch to a prospect').not.toContain('instantbollywood')
+    expect(r.body, 'no handle of ours or theirs belongs in a follow-up').not.toMatch(/@[a-z0-9_.]+/i)
     expect(r.body, 'the token reached a real recipient').not.toContain(FOLLOW_UP_POST_TOKEN)
     /* And it is genuinely different bytes from the first touch, which is the release. */
     expect(r.body).not.toBe(FLEET_TEMPLATE.ok ? FLEET_TEMPLATE.body : '')

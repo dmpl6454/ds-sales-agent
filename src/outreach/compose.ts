@@ -250,14 +250,11 @@ export async function unusedCampaignCount(args: {
 async function pickHook(args: { target: NamedRecipient; targetId: string; pairId: string; now: Date }) {
   const fresh = (await freshCampaignsFor(args)).sort((a, b) => b.postedAt.getTime() - a.postedAt.getTime())[0]
   if (!fresh) return null
-  /* The PUBLISHING channel comes back with it: the follow-up body names the post it is
-     written about ("your placement with @viralbhayani on 30 Aug"), and `DetectedCampaign.
-     targetId` is that channel — never the recipient. A second lookup for one handle would
-     be a query per draft. */
-  return prisma.detectedCampaign.findUnique({
-    where: { id: fresh.id },
-    include: { target: { select: { handle: true } } },
-  })
+  /* No `include` for the publishing channel, and that is deliberate rather than an
+     omission: the follow-up body names the post by DATE alone, because every channel we
+     watch is a competitor and naming one in a pitch advertises them. See
+     `followUpPostReference` — the reference builder cannot take a handle at all. */
+  return prisma.detectedCampaign.findUnique({ where: { id: fresh.id } })
 }
 
 /**
@@ -524,10 +521,7 @@ export async function composeForPair(args: {
     if (touchNumber > 1) {
       if (!followUpTemplate.ok) throw new FollowUpTemplateNotSetError(pair.target.handle, followUpTemplate.detail)
       if (!hook) throw new NoMaterialForFollowUpError(pair.target.handle)
-      const body = renderFollowUp(
-        followUpTemplate.body,
-        followUpPostReference({ channelHandle: hook.target.handle, postedAt: hook.postedAt }),
-      )
+      const body = renderFollowUp(followUpTemplate.body, followUpPostReference({ postedAt: hook.postedAt }))
       return {
         body,
         hookLine: null,
