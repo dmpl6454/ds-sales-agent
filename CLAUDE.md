@@ -71,6 +71,36 @@ properly rather than kept on a handle we could never confirm.
 
 ---
 
+## 1 SEPTEMBER — THE FOUR-MESSAGES-UNDER-ONE-POST SCREENSHOT WAS THE CLAIM LEDGER COLLAPSING, NOT A BREACH
+
+**Tabish, from the live page: @dorothy shown messaged four times under ONE @instantbollywood
+post — "either this new column is wrong or there is some issue taking place, dig deeper."**
+Measured, and it is neither a column bug nor a rule breach:
+
+- **@dorothy is named on FOUR syndicated copies of one campaign** (@varindertchawla,
+  @viralbhayani, @voompla, @instantbollywood — all 29 Aug, 10:22–10:49). Allowance 4,
+  delivered 4. **The one-message-per-paid-post rule held exactly** — this is the documented
+  syndication multiplier (25 Aug, @arshad_warsi), made visible for the first time.
+- **But all four messages CLAIMED the same newest copy** (`DcnwkuCTxwE`), because
+  `pickHook` excludes campaigns used **by this pair** — a post used by page A is still
+  "fresh" for pages B, C, D. So the column truthfully stacks four claims under one post and
+  shows em-dashes under its three siblings. The fix is a per-RECIPIENT claim ledger, and it
+  is PHASE 1 of `docs/specs/2026-09-01-follow-ups-and-claim-ledger-plan.md`.
+- **Fleet-wide: ZERO real allowance breaches.** A quick sweep flagged two recipients and
+  both evaporated under the as-of-send-time check — the sweep had used TODAY'S window while
+  the allowance is evaluated at each send's own moment. **A compliance sweep over a moving
+  window must re-evaluate at each event's time, or it manufactures violations.**
+- **The reply halt is TARGET-scoped, verified at the gate** (`pair: { targetId }`): one
+  reply halts every page for 7 days; the ring does NOT continue. Tabish asked; answered.
+
+The plan file carries the rest: the follow-up-on-new-material message (the second template
+that releases the `identical=1808` wall), the reply-scope decision with its risk paragraph,
+and the UI half (follow-ups labelled in the sent list and on /paid-posts). Nothing was
+implemented this session beyond the measurements — the plan ships features inert-until-copy
+by design, and autopilot stayed on throughout.
+
+---
+
 ## 31 AUGUST — EVERY MESSAGE NOW NAMES THE PAID POST THAT CAUSED IT
 
 **Tabish: *"nowhere does a person when looking at the dashboard know why that particular
