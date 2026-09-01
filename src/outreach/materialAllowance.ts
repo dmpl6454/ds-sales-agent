@@ -251,6 +251,19 @@ export function brandStringsNameProspect(
 export interface NamingCampaign {
   id: string
   postedAt: Date
+  /**
+   * `DetectedCampaign.targetId` — the CHANNEL THAT POSTED, never the recipient. The one
+   * column in this file whose name lies about what it holds, which is why it is renamed
+   * here and why that mistake has its own docblock in `compose.ts`.
+   *
+   * Carried since 2026-09-01 because the FOLLOW-UP message names the post it is written
+   * about ("your placement with @viralbhayani on 30 Aug"), so the planner must be able to
+   * render the exact body it is deciding about — the same discipline it already keeps for
+   * `fleetTemplate`. It is the SCALAR id and not a joined handle on purpose: a relation
+   * select here would cost an extra round trip on every page that preloads these rows, and
+   * `/` runs at 156 against a ceiling of 160.
+   */
+  channelId: string
 }
 
 export async function campaignsNamingHandleRows(
@@ -260,7 +273,7 @@ export async function campaignsNamingHandleRows(
     detectedCampaign: {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       findMany: (args: any) => Promise<
-        Array<{ id?: string; postedAt?: Date; caption: string; taggedAccounts: string; brands: string }>
+        Array<{ id?: string; postedAt?: Date; targetId?: string; caption: string; taggedAccounts: string; brands: string }>
       >
     }
   },
@@ -282,11 +295,11 @@ export async function campaignsNamingHandleRows(
         { brands: { not: '[]' } },
       ],
     },
-    select: { id: true, postedAt: true, caption: true, taggedAccounts: true, brands: true },
+    select: { id: true, postedAt: true, targetId: true, caption: true, taggedAccounts: true, brands: true },
   })
   return candidates
     .filter((c) => mentionsHandleExactly(c, handle) || brandStringsNameProspect(c.brands, prospect))
-    .map((c) => ({ id: c.id ?? '', postedAt: c.postedAt ?? new Date(0) }))
+    .map((c) => ({ id: c.id ?? '', postedAt: c.postedAt ?? new Date(0), channelId: c.targetId ?? '' }))
 }
 
 export async function campaignsNamingHandle(

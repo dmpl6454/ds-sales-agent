@@ -17,6 +17,7 @@ function clean(): OnDemandFacts {
     pairSentTodayCount: 0,
     maxPerPairPerDay: 5,
     isSelfSend: false,
+    followUpTemplateSet: true,
     touchesSoFar: 0,
     targetRepliedAt: null,
     pendingAttemptCount: 0,

@@ -224,6 +224,9 @@ async function seedDraft(args: {
 
 beforeEach(async () => {
   await prisma.auditLog.deleteMany({})
+  await prisma.categorySender.deleteMany({})
+  await prisma.categoryTarget.deleteMany({})
+  await prisma.category.deleteMany({})
   await prisma.outreachAttempt.deleteMany({})
   await prisma.outreachPair.deleteMany({})
   await prisma.targetAccount.deleteMany({})
@@ -351,6 +354,81 @@ describe('handOffWaitingDrafts', () => {
     const row = await prisma.outreachAttempt.findUniqueOrThrow({ where: { id: 'd_lonely' } })
     expect(row.status).toBe('READY')
     expect(row.senderId).toBe('leaving')
+  })
+
+  /**
+   * ── THE RING IS THE RECIPIENT'S OWN, NOT THE WHOLE FLEET'S (2026-09-01) ───
+   *
+   * MEASURED removing @bachelorssociety: 4 of its 8 movable drafts could not move, all four
+   * because the fleet-wide ring elected `@madaboutmarketingg` — the MARKETING page — for
+   * BOLLYWOOD companies. `routeAllowed` refuses that route, so `ensureFleetPairs` creates no
+   * pair, so the draft was "kept" on an account that had just left the rotation.
+   *
+   * That is the same self-locking stall `whoseTurn` learned about on 2026-08-26, arriving
+   * through the removal door. Both directions are driven: the marketing page must not be
+   * elected for a bollywood company, and it MUST be elected for a marketing one — otherwise
+   * the fix could be "never elect the marketing page", which would strand the other fleet.
+   */
+  it('never hands a draft to a page whose fleet forbids the route', async () => {
+    await seedSender('leaving')
+    await seedSender('bolly')
+    await seedSender('mktg')
+    await prisma.category.create({ data: { id: 'c_mktg', name: 'Marketing', slug: 'marketing' } })
+    await prisma.categorySender.create({ data: { id: 'cs1', categoryId: 'c_mktg', senderId: 'mktg' } })
+    /* A DEFAULT-fleet company: no CategoryTarget row, which is what "bollywood" is. */
+    await seedTarget('t_bolly')
+    /**
+     * A DELIVERED message from @bolly, so rotation's starting point is DETERMINISTIC rather
+     * than the never-messaged hash. The ring is ordered cohort-then-handle (bolly, mktg), so
+     * "the next one after bolly" is the MARKETING page — which is exactly what the fleet-wide
+     * ring would elect and what this test must prove it does not.
+     *
+     * Without this the first version of this test PASSED under the mutation, because the hash
+     * for `t_bolly` happened to land on @bolly anyway. A test that passes the mutation is
+     * decoration; this is the fixture that makes it drive the branch.
+     */
+    await seedDraft({ id: 'd_prior', senderId: 'bolly', targetId: 't_bolly', status: 'SENT' })
+    await seedDraft({ id: 'd_bolly', senderId: 'leaving', targetId: 't_bolly' })
+
+    const summary = await handOffWaitingDrafts({ senderId: 'leaving', senderHandle: 'leaving', actor: 'test' })
+    expect(summary, 'a bollywood draft was stranded or given to the marketing page').toMatchObject({
+      transferred: 1,
+      kept: 0,
+    })
+    const moved = await prisma.outreachAttempt.findUniqueOrThrow({ where: { id: 'd_bolly' } })
+    expect(moved.senderId, 'the marketing page cannot write to a bollywood company').toBe('bolly')
+  })
+
+  it('still hands a MARKETING draft to the marketing page — the fix is not "never elect it"', async () => {
+    await seedSender('leaving')
+    await seedSender('bolly')
+    await seedSender('mktg')
+    await prisma.category.create({ data: { id: 'c_mktg', name: 'Marketing', slug: 'marketing' } })
+    await prisma.categorySender.create({ data: { id: 'cs1', categoryId: 'c_mktg', senderId: 'mktg' } })
+    await prisma.categorySender.create({ data: { id: 'cs2', categoryId: 'c_mktg', senderId: 'leaving' } })
+    await seedTarget('t_mktg')
+    await prisma.categoryTarget.create({ data: { id: 'ct1', categoryId: 'c_mktg', targetId: 't_mktg' } })
+    await seedDraft({ id: 'd_mktg', senderId: 'leaving', targetId: 't_mktg' })
+
+    const summary = await handOffWaitingDrafts({ senderId: 'leaving', senderHandle: 'leaving', actor: 'test' })
+    expect(summary).toMatchObject({ transferred: 1, kept: 0 })
+    const moved = await prisma.outreachAttempt.findUniqueOrThrow({ where: { id: 'd_mktg' } })
+    expect(moved.senderId, 'only the marketing page may write to a marketing company').toBe('mktg')
+  })
+
+  /** And when the recipient's fleet has no OTHER page, the draft stays put and says so. */
+  it('keeps a draft whose fleet has no other page, naming the fleet', async () => {
+    await seedSender('leaving')
+    await seedSender('bolly')
+    await prisma.category.create({ data: { id: 'c_mktg', name: 'Marketing', slug: 'marketing' } })
+    await prisma.categorySender.create({ data: { id: 'cs1', categoryId: 'c_mktg', senderId: 'leaving' } })
+    await seedTarget('t_mktg')
+    await prisma.categoryTarget.create({ data: { id: 'ct1', categoryId: 'c_mktg', targetId: 't_mktg' } })
+    await seedDraft({ id: 'd_mktg', senderId: 'leaving', targetId: 't_mktg' })
+
+    const summary = await handOffWaitingDrafts({ senderId: 'leaving', senderHandle: 'leaving', actor: 'test' })
+    expect(summary).toMatchObject({ transferred: 0, discarded: 0, kept: 1 })
+    expect(summary.details[0]).toContain('sends for their fleet')
   })
 
   it("computes the moved draft's touchNumber from the RECEIVING pair's history", async () => {

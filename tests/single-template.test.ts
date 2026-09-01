@@ -50,6 +50,7 @@ vi.mock('@/lib/db', () => ({
 const { composeForPair, SINGLE_TEMPLATE_MIDDLE } = await import('@/outreach/compose')
 const { distinctiveSlice, proseLines, bodyAppearedSince, MIN_NEEDLE_CHARS } = await import('@/outreach/matching')
 import { templateForSettings } from '@/outreach/fleetTemplate'
+import { followUpForSettings } from '@/outreach/followUpTemplate'
 
 /**
  * The DEFAULT fleet's template, built by the REAL rule rather than written as a literal —
@@ -60,6 +61,14 @@ const DEFAULT_FLEET_TEMPLATE = templateForSettings(
   [],
   [],
 )
+
+/** A written follow-up message, built by the REAL rule — see tests/follow-up-template.test.ts. */
+const FOLLOW_UP_WRITTEN = followUpForSettings(
+  { followUpBody: `Hi,Following up on {{post}} — we can put the same campaign in front of a much larger audience. Let's talk tomorrow.`, followUpBodies: new Map() },
+  [],
+  [],
+)
+
 
 
 const PERSONA = {
@@ -83,7 +92,7 @@ function pairFor(args: { senderId?: string; persona?: typeof PERSONA; handle?: s
 }
 
 const compose = (p: ReturnType<typeof pairFor>, senderHandle = 'bollywoodchronicle') =>
-  composeForPair({ fleetTemplate: DEFAULT_FLEET_TEMPLATE, pair: p, senderHandle, touchNumber: 1 })
+  composeForPair({ fleetTemplate: DEFAULT_FLEET_TEMPLATE, followUpTemplate: FOLLOW_UP_WRITTEN, pair: p, senderHandle, touchNumber: 1 })
 
 beforeEach(() => {
   campaignFindFirst.mockReset().mockResolvedValue(null)

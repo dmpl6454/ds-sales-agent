@@ -17,7 +17,7 @@ import { getSettings } from '@/lib/settings'
  */
 import { readNewBrandTouchCounts } from '@/outreach/brandTouchCounts'
 import { recheckBeforeSend } from '@/outreach/gate'
-import { replyHaltFloor } from '@/outreach/replyHalt'
+import { replyHaltFloor, replyHaltKey } from '@/outreach/replyHalt'
 import { crossSpacingVerdict, crossSpacingDetail } from '@/outreach/crossSpacing'
 import { materialAllowance, materialAllowanceDetail, campaignsNamingHandle } from '@/outreach/materialAllowance'
 import { eligibleFleetSenderIds } from '@/outreach/availability'
@@ -89,6 +89,15 @@ export interface SentMessage {
   replied: boolean
   replyHandled: boolean
   replyText: string | null
+  /**
+   * WHICH TOUCH THIS WAS — 1 is a first message, 2+ a follow-up (2026-09-01).
+   *
+   * Rendered as a chip beside the recipient, because "we wrote to them" and "we wrote to
+   * them AGAIN, about a new paid post" are different facts and the sent list showed one
+   * sentence for both. The column already exists on `OutreachAttempt` and, as with the
+   * provenance columns before it, nothing had ever drawn it.
+   */
+  touchNumber: number
   /**
    * WHY THIS MESSAGE WENT OUT — the paid post behind it (Tabish, 2026-08-31).
    *
@@ -396,7 +405,10 @@ export async function buildMessagesPage(): Promise<MessagesPageView> {
       // The DATED clock, matching the gate: the halt counts seven days from when the
       // reply was WRITTEN, and a resume time computed from the observation clock would
       // promise a later release than the enforcer's (2026-08-21).
-      select: { targetId: true, replyPostedAt: true },
+      /* `senderId` since 2026-09-01: the halt is PAIR-scoped by default, so a reply to one
+         page must not hold another page's draft on this screen — a page enforcing a rule the
+         gate dropped is the same defect as a page promising a send the gate refuses. */
+      select: { targetId: true, senderId: true, replyPostedAt: true },
     }),
     eligibleFleetSenderIds(),
   ])
@@ -408,13 +420,21 @@ export async function buildMessagesPage(): Promise<MessagesPageView> {
     m.set(r.pair.senderId, { sentAt: r.sentAt, handle: r.pair.sender.handle })
     deliveriesByTarget.set(r.targetId, m)
   }
-  /** target → when its reply halt releases (newest reply wins, matching replyHalt.ts). */
+  /**
+   * The halt's own key → when it releases (newest reply wins, matching replyHalt.ts).
+   *
+   * `replyHaltKey` rather than `targetId`, so this screen groups replies exactly as the gate
+   * scopes them: one page's conversation under `pair` (the default since 2026-09-01), the
+   * whole recipient under `target`. The map is keyed by the same function on both sides, so
+   * the two cannot be given different answers by a Setting row.
+   */
   const replyResumesAt = new Map<string, Date>()
   for (const r of repliedRows) {
     if (r.replyPostedAt === null) continue
     const resumes = new Date(r.replyPostedAt.getTime() + settings.replyResumeHours * 3_600_000)
-    const prev = replyResumesAt.get(r.targetId)
-    if (prev === undefined || resumes > prev) replyResumesAt.set(r.targetId, resumes)
+    const key = replyHaltKey(settings.replyHaltScope, { senderId: r.senderId, targetId: r.targetId })
+    const prev = replyResumesAt.get(key)
+    if (prev === undefined || resumes > prev) replyResumesAt.set(key, resumes)
   }
 
   /**
@@ -449,7 +469,9 @@ export async function buildMessagesPage(): Promise<MessagesPageView> {
    */
   const preloadedPosts = await prisma.detectedCampaign.findMany({
     where: { verdict: 'CAMPAIGN', postedAt: { gte: cooldownFloor } },
-    select: { id: true, postedAt: true, caption: true, taggedAccounts: true, brands: true },
+    /* `targetId` — the CHANNEL that posted, carried on `NamingCampaign` since 2026-09-01.
+       A scalar on a query already being made, so the stub stays one round trip. */
+    select: { id: true, postedAt: true, targetId: true, caption: true, taggedAccounts: true, brands: true },
   })
   const preloaded = {
     detectedCampaign: {
@@ -475,9 +497,17 @@ export async function buildMessagesPage(): Promise<MessagesPageView> {
 
   /** Reply first, then material, then spacing — the gate's own order, so the sentence names the deeper stop. */
   const holdFor = (draft: { senderId: string; targetId: string; targetHandle?: string }): { why: string; resumesAt: Date } | null => {
-    const replyResume = replyResumesAt.get(draft.targetId)
+    const replyResume = replyResumesAt.get(
+      replyHaltKey(settings.replyHaltScope, { senderId: draft.senderId, targetId: draft.targetId }),
+    )
     if (replyResume !== undefined) {
-      return { why: 'they replied — resumes on its own seven days after they wrote', resumesAt: replyResume }
+      return {
+        why:
+          settings.replyHaltScope === 'pair'
+            ? 'they replied to this page — it resumes on its own seven days after they wrote'
+            : 'they replied — resumes on its own seven days after they wrote',
+        resumesAt: replyResume,
+      }
     }
     const material = draft.targetHandle ? materialHolds.get(draft.targetHandle) : undefined
     if (material !== undefined) {
@@ -610,6 +640,7 @@ export async function buildMessagesPage(): Promise<MessagesPageView> {
         replied: a.repliedAt !== null,
         replyHandled: a.replyHandledAt !== null,
         replyText: a.replyText,
+        touchNumber: a.touchNumber,
         provenance: prov.post
           ? {
               label: provenanceLabel(prov.post, istDateKey(prov.post.postedAt)),

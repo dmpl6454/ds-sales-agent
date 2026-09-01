@@ -26,6 +26,15 @@ vi.mock('@/lib/db', () => ({ prisma: {} }))
 import { evaluateResend, RESEND_BLOCKS, OVERRIDABLE_BLOCKS } from '@/outreach/gate'
 import { evaluatePair, SKIP_REASONS } from '@/outreach/governor'
 import { templateForSettings } from '@/outreach/fleetTemplate'
+import { followUpForSettings } from '@/outreach/followUpTemplate'
+
+/** A WRITTEN follow-up message, built by the REAL rule. See tests/follow-up-template.test.ts. */
+const FOLLOW_UP_WRITTEN = followUpForSettings(
+  { followUpBody: `Hi,Following up on {{post}} — we can put the same campaign in front of a much larger audience. Let's talk tomorrow.`, followUpBodies: new Map() },
+  [],
+  [],
+)
+
 
 /**
  * The DEFAULT fleet's template, built by the REAL rule rather than written as a literal —
@@ -52,6 +61,9 @@ const gateInput = (over: Record<string, unknown> = {}) =>
     targetIsWatchOnly: false,
     repeatsADeliveredBody: false,
   fleetTemplate: DEFAULT_FLEET_TEMPLATE,
+    /* A first touch — the follow-up rule is a separate one and must not mask this file's. */
+    isFollowUp: false,
+    followUpTemplate: FOLLOW_UP_WRITTEN,
     /* Both empty = the DEFAULT category on either side, which is the permitted case — the
        VERIFIED ONLY rule this file is about is unaffected by which fleet a recipient is in. */
     senderCategories: [],

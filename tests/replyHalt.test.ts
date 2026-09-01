@@ -1,5 +1,16 @@
 import { describe, expect, it } from 'vitest'
-import { replyHaltActive, replyHaltFloor, REPLY_RESUME_HOURS_DEFAULT } from '@/outreach/replyHalt'
+import {
+  REPLY_HALT_SCOPE_DEFAULT,
+  REPLY_RESUME_HOURS_DEFAULT,
+  parseReplyHaltScope,
+  replyHaltActive,
+  replyHaltFloor,
+  replyHaltKey,
+  replyHaltPairFilter,
+  replyHaltWhere,
+} from '@/outreach/replyHalt'
+import { readFileSync } from 'node:fs'
+import { join, resolve } from 'node:path'
 
 /**
  * The reply halt releases ITSELF after `replyResumeHours` — Tabish's decision,
@@ -84,5 +95,95 @@ describe('replyHaltFloor', () => {
 
   it('default is seven days — Tabish\'s "resume after 7 days automatically or manually" (2026-08-19)', () => {
     expect(REPLY_RESUME_HOURS_DEFAULT).toBe(168)
+  })
+})
+
+/**
+ * ── THE SCOPE (2026-09-01, Tabish's decision) ─────────────────────────────────
+ *
+ * *"Only the channel (sender) which has gotten the reply should halt for 7 days."* The risk
+ * was put to him with the alternatives before the change and is recorded in `replyHalt.ts`;
+ * the pair scope is his call. Both scopes are driven here so the one that is switched off
+ * stays enforceable — the discipline `crossPageGapHours` (0) and the active-hours window
+ * (0/0) already have.
+ */
+describe('replyHaltScope', () => {
+  const IDS = { senderId: 'send_a', targetId: 'targ_1' }
+
+  it('defaults to the pair — one page’s conversation, not the whole recipient', () => {
+    expect(REPLY_HALT_SCOPE_DEFAULT).toBe('pair')
+  })
+
+  it('pair scope filters on both ends; target scope on the recipient alone', () => {
+    expect(replyHaltPairFilter('pair', IDS)).toEqual({ senderId: 'send_a', targetId: 'targ_1' })
+    expect(replyHaltPairFilter('target', IDS)).toEqual({ targetId: 'targ_1' })
+  })
+
+  /** The in-memory twin, for the two screens that group replies rather than query per draft. */
+  it('the grouping key separates pages under pair scope and merges them under target', () => {
+    const other = { senderId: 'send_b', targetId: 'targ_1' }
+    expect(replyHaltKey('pair', IDS)).not.toBe(replyHaltKey('pair', other))
+    expect(replyHaltKey('target', IDS)).toBe(replyHaltKey('target', other))
+  })
+
+  /** The whole `where`, handed out as one object so a caller cannot take half of it. */
+  it('the where clause carries the scope, the window AND the early release together', () => {
+    const now = new Date('2026-09-01T12:00:00Z')
+    const w = replyHaltWhere({ scope: 'pair', senderId: 'send_a', targetId: 'targ_1', resumeHours: 24, now })
+    expect(w.pair).toEqual({ senderId: 'send_a', targetId: 'targ_1' })
+    expect(w.replyPostedAt.gte.toISOString()).toBe('2026-08-31T12:00:00.000Z')
+    expect(w.replyHandledAt).toBeNull()
+  })
+
+  /**
+   * ABSENT keeps the default; UNREADABLE falls to the WIDER halt. The asymmetry is
+   * deliberate: the default here is the PERMISSIVE scope, so a typo falling back to it would
+   * silently widen who is messaged mid-conversation — absence of a readable value becoming a
+   * permission, which is this codebase's most-repeated defect.
+   */
+  it('an absent value keeps the default and an unreadable one fails closed', () => {
+    expect(parseReplyHaltScope(undefined)).toBe(REPLY_HALT_SCOPE_DEFAULT)
+    expect(parseReplyHaltScope('pair')).toBe('pair')
+    expect(parseReplyHaltScope(' TARGET ')).toBe('target')
+    for (const junk of ['targt', 'all', '', 'true', 'sender']) {
+      expect(parseReplyHaltScope(junk), `"${junk}" must not widen the halt`).toBe('target')
+    }
+  })
+})
+
+/**
+ * ── AND EVERY ENFORCER ASKS replyHalt.ts, NOT ITS OWN `where` ─────────────────
+ *
+ * A source grep, because the failure mode is a call site nobody has written yet. The halt
+ * was once spelled out at seven sites and drifted, which is why this module exists at all;
+ * a SCOPE spelled out at eight of them would produce a page claiming a hold the gate is not
+ * enforcing — the "a page reporting a rule by a different rule than the one enforcing it"
+ * failure this repo's history is full of.
+ */
+describe('the halt is expressed in one place', () => {
+  const ROOT = resolve(__dirname, '..')
+  const strip = (s: string) => s.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')
+
+  it.each([
+    ['src/outreach/gate.ts', 'the gate refuses the send'],
+    ['src/outreach/plan.ts', 'the planner refuses the draft'],
+    ['src/outreach/onDemand.ts', 'the dialog warns about it'],
+  ])('%s builds its halt query with replyHaltWhere — %s', (file) => {
+    const src = strip(readFileSync(join(ROOT, file), 'utf8'))
+    expect(src, `${file} must ask replyHalt.ts for the scope`).toMatch(/replyHaltWhere\(/)
+    /* And must NOT hand-write the old target-only shape beside it. */
+    expect(src, `${file} still spells the halt out itself — the scope will drift`).not.toMatch(
+      /replyPostedAt:\s*\{\s*gte:\s*replyHaltFloor/,
+    )
+  })
+
+  it.each([
+    ['src/app/view-model/messages-page.ts', 'the queue predicts a hold per draft'],
+    ['src/app/view-model/rest-tally.ts', 'the tally attributes a company to it'],
+  ])('%s groups replies with replyHaltKey — %s', (file) => {
+    const src = strip(readFileSync(join(ROOT, file), 'utf8'))
+    expect(src, `${file} groups replies by recipient, so it will hold pages the gate does not`).toMatch(
+      /replyHaltKey\(/,
+    )
   })
 })

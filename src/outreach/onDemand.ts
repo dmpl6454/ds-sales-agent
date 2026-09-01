@@ -10,12 +10,15 @@ import {
   NoVariantsError,
   VariantsExhaustedError,
   FleetTemplateNotSetError,
+  FollowUpTemplateNotSetError,
+  NoMaterialForFollowUpError,
 } from './compose'
 import { templateForSettings } from './fleetTemplate'
+import { followUpForSettings } from './followUpTemplate'
 import { readCategoryMemberships, categoriesFor } from './categories'
 import { profileStatus } from './browser/profile'
 import { sessionUsable } from './sessionHealth'
-import { replyHaltFloor } from './replyHalt'
+import { replyHaltWhere } from './replyHalt'
 import { RESEND_BLOCKS } from './gate'
 
 /**
@@ -59,6 +62,22 @@ export interface OnDemandFacts {
   maxPerPairPerDay: number
   /** A sender must never message itself; Instagram's self-thread is a different surface. */
   isSelfSend: boolean
+
+  /**
+   * IS THERE A FOLLOW-UP MESSAGE FOR THIS ROUTE? (2026-09-01)
+   *
+   * A BLOCK rather than a warning, and only when `touchesSoFar > 0`. Not a judgement call:
+   * with no follow-up copy there are no bytes to send, `composeForPair` throws by design,
+   * and the gate refuses it anyway — so offering a dialog would offer to cross something
+   * that cannot be crossed. It matches `RESEND_BLOCKS.FOLLOW_UP_TEMPLATE_NOT_SET`, which is
+   * absent from `OVERRIDABLE_BLOCKS`.
+   *
+   * The FIRST-touch equivalent is caught one layer down instead — `composeForPair` throws
+   * `FleetTemplateNotSetError` and `prepareOnDemand` renders it as the same named block. Both
+   * shapes are covered here as well as there, which is this repo's both-ends discipline: the
+   * dialog refuses before anything is created, and the throw is the backstop.
+   */
+  followUpTemplateSet: boolean
 
   /** Warning inputs — everything the governor would have refused on. */
   touchesSoFar: number
@@ -164,6 +183,14 @@ export function describeOnDemand(f: OnDemandFacts): OnDemandVerdict {
     })
   }
 
+  /* A SECOND message needs a second message to send. Not crossable — there are no bytes. */
+  if (f.touchesSoFar > 0 && !f.followUpTemplateSet) {
+    blocks.push({
+      reason: RESEND_BLOCKS.FOLLOW_UP_TEMPLATE_NOT_SET,
+      text: 'This page has already written to them, and no follow-up message has been written for this fleet — so there is nothing different to send. Write it on the Autopilot page.',
+    })
+  }
+
   if (f.pairSentTodayCount >= f.maxPerPairPerDay) {
     blocks.push({
       reason: RESEND_BLOCKS.PAIR_DAILY_CAP,
@@ -264,7 +291,7 @@ export async function prepareOnDemand(senderHandle: string, targetHandle: string
         }))
 
   const dayStart = istDayStart()
-  const [touches, replied, pairToday, pending, totalInFlight, unusedCampaigns] =
+  const [touches, replied, pairToday, pending, totalInFlight, unusedCampaigns, memberships] =
     await Promise.all([
       pair
         ? prisma.outreachAttempt.count({ where: { pairId: pair.id, status: { in: [...DELIVERED_STATUSES] } } })
@@ -272,11 +299,16 @@ export async function prepareOnDemand(senderHandle: string, targetHandle: string
       prisma.outreachAttempt.findFirst({
         // The warning matches the stop's window: a reply older than replyResumeHours no
         // longer halts, so warning about it would name a rule that is not in force.
-        where: {
-          pair: { targetId: target.id },
-          replyPostedAt: { gte: replyHaltFloor(settings.replyResumeHours) },
-          replyHandledAt: null,
-        },
+        /* Scoped exactly as the gate scopes it (`replyHaltScope`, pair by default since
+           2026-09-01) — a dialog that warned about a halt the gate no longer enforces would
+           be naming a rule that is not in force, which is the failure this file's own
+           `CROSSABLE_RULES` docblock records. */
+        where: replyHaltWhere({
+          scope: settings.replyHaltScope,
+          senderId: sender.id,
+          targetId: target.id,
+          resumeHours: settings.replyResumeHours,
+        }),
         orderBy: { repliedAt: 'desc' },
         select: { repliedAt: true },
       }),
@@ -303,8 +335,21 @@ export async function prepareOnDemand(senderHandle: string, targetHandle: string
        * `no-new-material` is a WARNING here, so the operator could cross a rule using a
        * campaign the system does not consider new at all.
        */
-      pair ? unusedCampaignCount({ target, pairId: pair.id }) : 0,
+      /* `targetId` since 2026-09-01: the ledger is per RECIPIENT, so a post another of our
+         pages has already claimed is not new material for this one either. */
+      pair ? unusedCampaignCount({ target, targetId: target.id, pairId: pair.id }) : 0,
+      /* Hoisted into this Promise.all because the verdict below needs it now — the
+         follow-up block is a fact about the ROUTE's fleet. It is React-cached per request,
+         so the composer's own call further down is free. */
+      readCategoryMemberships(),
     ])
+
+  /** The route's follow-up copy, from the same pure rule the planner and the gate ask. */
+  const followUpTemplate = followUpForSettings(
+    settings,
+    categoriesFor(memberships.bySenderHandle, sender.handle),
+    categoriesFor(memberships.byTargetHandle, target.handle),
+  )
 
   const verdict = describeOnDemand({
     now: new Date(),
@@ -319,6 +364,7 @@ export async function prepareOnDemand(senderHandle: string, targetHandle: string
     pairSentTodayCount: pairToday,
     maxPerPairPerDay: settings.maxPerPairPerDay,
     isSelfSend: sender.handle === target.handle,
+    followUpTemplateSet: followUpTemplate.ok,
     touchesSoFar: touches,
     targetRepliedAt: replied?.repliedAt ?? null,
     pendingAttemptCount: pending,
@@ -341,7 +387,6 @@ export async function prepareOnDemand(senderHandle: string, targetHandle: string
    */
   let composed
   try {
-    const memberships = await readCategoryMemberships()
     /**
      * The on-demand dialog crosses TIMING rules a person acknowledges; it does not choose
      * the copy. So the route's own fleet decides the body here exactly as it does in the
@@ -357,12 +402,35 @@ export async function prepareOnDemand(senderHandle: string, targetHandle: string
         categoriesFor(memberships.bySenderHandle, sender.handle),
         categoriesFor(memberships.byTargetHandle, target.handle),
       ),
+      /* Resolved once above, beside the verdict that already refused on it. */
+      followUpTemplate,
     })
   } catch (e) {
     if (e instanceof FleetTemplateNotSetError) {
       return {
         ok: false,
         blocks: [{ reason: RESEND_BLOCKS.FLEET_TEMPLATE_NOT_SET, text: e.detail }],
+        warnings: [],
+      }
+    }
+    /* Both are refused by `describeOnDemand` above, so reaching these means the verdict and
+       the composer disagreed — the backstop, rendered as a block rather than a stack trace. */
+    if (e instanceof FollowUpTemplateNotSetError) {
+      return {
+        ok: false,
+        blocks: [{ reason: RESEND_BLOCKS.FOLLOW_UP_TEMPLATE_NOT_SET, text: e.detail }],
+        warnings: [],
+      }
+    }
+    if (e instanceof NoMaterialForFollowUpError) {
+      return {
+        ok: false,
+        blocks: [
+          {
+            reason: 'no-material-for-follow-up',
+            text: `Every paid post naming @${target.handle} has already been written about by one of our pages, so a follow-up has nothing to reference. It clears when they appear in another one.`,
+          },
+        ],
         warnings: [],
       }
     }

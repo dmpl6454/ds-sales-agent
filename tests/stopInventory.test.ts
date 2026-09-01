@@ -10,6 +10,17 @@ import { describeOnDemand, CROSSABLE_RULES } from '@/outreach/onDemand'
 import { readFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { templateForSettings } from '@/outreach/fleetTemplate'
+import { followUpForSettings } from '@/outreach/followUpTemplate'
+
+/** A WRITTEN follow-up message, built by the REAL rule. See tests/follow-up-template.test.ts. */
+const FOLLOW_UP_WRITTEN = followUpForSettings(
+  { followUpBody: `Hi,Following up on {{post}} — we can put the same campaign in front of a much larger audience. Let's talk tomorrow.`, followUpBodies: new Map() },
+  [],
+  [],
+)
+/** The state the feature ships in: nobody has written a second message yet. */
+const FOLLOW_UP_UNWRITTEN = followUpForSettings({ followUpBody: null, followUpBodies: new Map() }, [], [])
+
 
 /**
  * The DEFAULT fleet's template, built by the REAL rule rather than written as a literal —
@@ -104,6 +115,7 @@ function governorInput(over: Record<string, unknown> = {}) {
     totalSentEver: 0,
     maxTotalSends: null,
     fleetTemplate: DEFAULT_FLEET_TEMPLATE,
+    followUpTemplate: FOLLOW_UP_WRITTEN,
     repeatsADeliveredBody: false,
     ...over,
   } as Parameters<typeof evaluatePair>[0]
@@ -166,6 +178,16 @@ const GOVERNOR_CASES: Array<[string, Record<string, unknown>]> = [
   [SKIP_REASONS.UNCERTAIN_DELIVERY, { parkedFailureCode: 'not-in-thread' }],
   [SKIP_REASONS.PARKED_FAILURE, { parkedFailureCode: 'no-composer' }],
   [SKIP_REASONS.NO_NEW_MATERIAL, { touchesSoFar: 1, unusedCampaignCount: 0 }],
+  /**
+   * ── A SECOND MESSAGE WITH NOTHING DIFFERENT TO SAY (2026-09-01) ───────────
+   *
+   * Reachable only on a FOLLOW-UP (`touchesSoFar > 0`) whose fleet has no follow-up copy —
+   * which is the state the feature ships in, so this case is the shipping behaviour rather
+   * than an edge. It is checked LAST in the governor on purpose: reported earlier it would
+   * relabel every held follow-up in the fleet, including the ones waiting on a paid post or
+   * on the ring, which is the `DIFFERENT_CATEGORY` mistake of 2026-08-31 exactly.
+   */
+  [SKIP_REASONS.NO_FOLLOW_UP_TEMPLATE, { touchesSoFar: 1, followUpTemplate: FOLLOW_UP_UNWRITTEN }],
   // Five per day from one account to one recipient (2026-08-18).
   [SKIP_REASONS.PAIR_DAILY_CAP, { pairSentTodayCount: 5, maxPerPairPerDay: 5 }],
   /**
@@ -227,6 +249,8 @@ function gateInput(over: Record<string, unknown> = {}) {
     pairSentTodayCount: 0,
     maxPerPairPerDay: 5,
     crossSpacing: { held: false },
+    isFollowUp: false,
+    followUpTemplate: FOLLOW_UP_WRITTEN,
     ...over,
   } as Parameters<typeof evaluateResend>[0]
 }
@@ -287,6 +311,14 @@ const GATE_CASES: Array<[string, Record<string, unknown>]> = [
   [RESEND_BLOCKS.PAIR_DAILY_CAP, { pairSentTodayCount: 5, maxPerPairPerDay: 5 }],
   // The ring rule (2026-08-19): reachable only when every page has written in-window.
   [RESEND_BLOCKS.TARGET_RECENTLY_CONTACTED, { crossSpacing: RING_HOLD }],
+  /**
+   * ── A FOLLOW-UP DRAFT WITH NO FOLLOW-UP MESSAGE (2026-09-01) ─────────────
+   *
+   * The gate's end of the governor's twin above. Reachable only on a draft whose stored
+   * `touchNumber > 1` — a first touch never sees it, which is what makes an unwritten
+   * follow-up leave first-touch sending byte-for-byte as it was.
+   */
+  [RESEND_BLOCKS.FOLLOW_UP_TEMPLATE_NOT_SET, { isFollowUp: true, followUpTemplate: FOLLOW_UP_UNWRITTEN }],
 ]
 
 describe('every gate stop is reachable and explains itself', () => {
@@ -336,6 +368,19 @@ describe('every gate stop is reachable and explains itself', () => {
     )
     expect(r.ok, 'an override sent a message Instagram will silently drop').toBe(false)
     if (!r.ok) expect(r.reason).toBe(RESEND_BLOCKS.IDENTICAL_TO_A_SENT_MESSAGE)
+  })
+
+  it('refuses to let anyone override a missing follow-up message', () => {
+    const r = evaluateResend(
+      gateInput({
+        isFollowUp: true,
+        followUpTemplate: FOLLOW_UP_UNWRITTEN,
+        unattended: false,
+        overrides: [RESEND_BLOCKS.FOLLOW_UP_TEMPLATE_NOT_SET],
+      }),
+    )
+    expect(r.ok, 'an override sent a second message with no second message written').toBe(false)
+    if (!r.ok) expect(r.reason).toBe(RESEND_BLOCKS.FOLLOW_UP_TEMPLATE_NOT_SET)
   })
 
   it('refuses to let anyone override a fleet with no standard message', () => {
@@ -484,6 +529,9 @@ describe('every gate stop is reachable and explains itself', () => {
       /* WHICH FLEET the recipient belongs to. A recipient that genuinely belongs to both is
          put in both categories; that is the supported answer, not an override. */
       RESEND_BLOCKS.DIFFERENT_CATEGORY,
+      /* WHAT THE MESSAGE SAYS. There are no bytes to send, so there is nothing to cross —
+         the remedy is a textarea, exactly as for the standard message above. */
+      RESEND_BLOCKS.FOLLOW_UP_TEMPLATE_NOT_SET,
     ]
     for (const code of absolute) {
       expect(OVERRIDABLE_BLOCKS, `${code} must never be crossable`).not.toContain(code)
@@ -680,6 +728,7 @@ describe('every rule a person may cross is declared, and the page can name it', 
     pairSentTodayCount: 0,
     maxPerPairPerDay: 5,
     isSelfSend: false,
+    followUpTemplateSet: true,
     touchesSoFar: 3,
     targetRepliedAt: new Date(NOW.getTime() - 3_600_000),
     pendingAttemptCount: 1,

@@ -1,8 +1,9 @@
 import { cache } from 'react'
 import { prisma } from './db'
-import { REPLY_RESUME_HOURS_DEFAULT } from '@/outreach/replyHalt'
+import { REPLY_HALT_SCOPE_DEFAULT, REPLY_RESUME_HOURS_DEFAULT, parseReplyHaltScope, type ReplyHaltScope } from '@/outreach/replyHalt'
 import { env } from './env'
 import { fleetTemplateKey } from '@/outreach/fleetTemplate'
+import { FOLLOW_UP_DEFAULT_KEY, followUpTemplateKey } from '@/outreach/followUpTemplate'
 import {
   FLEET_MAX_PER_DAY,
   FLEET_MAX_PER_HOUR,
@@ -26,6 +27,13 @@ import {
  */
 const FLEET_TEMPLATE_PREFIX = fleetTemplateKey('')
 
+/**
+ * The prefix every NON-DEFAULT fleet's follow-up copy carries, derived from its own writer
+ * for the reason above. Note it ends in a colon and `FOLLOW_UP_DEFAULT_KEY` does not, so
+ * the default fleet's row can never be swept up by this scan.
+ */
+const FOLLOW_UP_PREFIX = followUpTemplateKey('')
+
 export const SETTING_KEYS = {
   maxPerPairPerDay: 'maxPerPairPerDay',
   defaultCooldownDays: 'defaultCooldownDays',
@@ -40,6 +48,10 @@ export const SETTING_KEYS = {
   generateMessages: 'generateMessages',
   singleTemplate: 'singleTemplate',
   singleTemplateBody: 'singleTemplateBody',
+  /** The DEFAULT fleet's follow-up copy. Unset means no follow-up is sent at all. */
+  followUpBody: FOLLOW_UP_DEFAULT_KEY,
+  /** Which conversations a reply halts: 'pair' (the page that got it) or 'target' (all). */
+  replyHaltScope: 'replyHaltScope',
   tagsAsEvidence: 'tagsAsEvidence',
   publisherAsContext: 'publisherAsContext',
   replyResumeHours: 'replyResumeHours',
@@ -251,6 +263,38 @@ export interface RuntimeSettings {
   fleetTemplateBodies: ReadonlyMap<string, string>
 
   /**
+   * ── THE SECOND MESSAGE, AND WHY IT HAS NO SHIPPED DEFAULT (2026-09-01) ─────
+   *
+   * The DEFAULT fleet's FOLLOW-UP copy — what a page says to a company it has already
+   * written to. `null` means nobody has written it, and unlike `singleTemplateBody` there
+   * is nothing behind it: no follow-up copy means no follow-up is drafted and none is sent,
+   * by name, at both the governor and the gate.
+   *
+   * That asymmetry is the whole safety content and is the thing most likely to be
+   * "simplified" into a fallback. See `followUpTemplate.ts`: falling back to the FIRST-touch
+   * template is the verbatim repeat Instagram silently drops (measured: touch 2 fails 83%),
+   * and an empty body makes `distinctiveSlice` return null, which refuses every send in the
+   * system naming no cause.
+   *
+   * WRITTEN ONLY through `setFollowUpBody` in actions.ts, which refuses any text failing
+   * `checkFollowUpBody` — it must carry `{{post}}` exactly once and still leave a quotable
+   * line after the post is named.
+   */
+  followUpBody: string | null
+  /** Per-slug follow-up copy for NON-default fleets, keyed by category slug. */
+  followUpBodies: ReadonlyMap<string, string>
+
+  /**
+   * WHOSE CONVERSATIONS A REPLY HALTS — `pair` since 2026-09-01, Tabish's instruction.
+   *
+   * *"Only the channel (sender) which has gotten the reply should halt for 7 days."* The
+   * risk of the other pages continuing mid-conversation was put to him with the safer
+   * variant beside it and he chose this; see `replyHalt.ts` for the paragraph he was shown.
+   * `target` — the old fleet-wide halt — is one row away and the tests drive both.
+   */
+  replyHaltScope: ReplyHaltScope
+
+  /**
    * ── TAGS AND CO-AUTHORS AS CLASSIFIER EVIDENCE — BUILT, MEASURED, OFF ──
    *
    * Defaults FALSE, and it is off because the harness said so, not because it is
@@ -326,6 +370,12 @@ function defaults(): RuntimeSettings {
     // Empty until somebody writes a second fleet's copy — which REFUSES sends to that
     // fleet rather than falling back. See fleetTemplate.ts.
     fleetTemplateBodies: new Map<string, string>(),
+    // NULL for every fleet, including the default: there is no shipped follow-up copy and
+    // there must not be one. Until Tabish writes it, no follow-up is drafted or sent.
+    followUpBody: null,
+    followUpBodies: new Map<string, string>(),
+    // PAIR-scoped since 2026-09-01, his instruction. See replyHalt.ts for the risk stated.
+    replyHaltScope: REPLY_HALT_SCOPE_DEFAULT,
     // OFF, because the harness measured precision falling 90% -> 83% with it on while
     // recall held. See the interface comment for all three runs and why it is kept.
     tagsAsEvidence: false,
@@ -484,6 +534,27 @@ async function readSettings(): Promise<RuntimeSettings> {
       }
       return out
     })(),
+    /**
+     * The DEFAULT fleet's follow-up copy. Whitespace-only is unset, for the reason the
+     * standard message treats it so — except that here "unset" REFUSES rather than falling
+     * back to shipped text, because there is none.
+     */
+    followUpBody: (() => {
+      const raw = map.get(SETTING_KEYS.followUpBody)
+      return raw !== undefined && raw.trim().length > 0 ? raw.trim() : d.followUpBody
+    })(),
+    /** Every `followUpBody:<slug>` row, blank ones dropped. Mirrors `fleetTemplateBodies`. */
+    followUpBodies: (() => {
+      const out = new Map<string, string>()
+      for (const [key, value] of map) {
+        if (!key.startsWith(FOLLOW_UP_PREFIX)) continue
+        const slug = key.slice(FOLLOW_UP_PREFIX.length).trim().toLowerCase()
+        const body = value?.trim() ?? ''
+        if (slug.length > 0 && body.length > 0) out.set(slug, body)
+      }
+      return out
+    })(),
+    replyHaltScope: parseReplyHaltScope(map.get(SETTING_KEYS.replyHaltScope)),
     tagsAsEvidence: bool(SETTING_KEYS.tagsAsEvidence, d.tagsAsEvidence),
     publisherAsContext: bool(SETTING_KEYS.publisherAsContext, d.publisherAsContext),
     /**

@@ -13,6 +13,15 @@ import { mayRouteExist } from '@/outreach/routes'
 import { ringMembersFor } from '@/outreach/categories'
 import { evaluateResend, RESEND_BLOCKS, OVERRIDABLE_BLOCKS } from '@/outreach/gate'
 import { templateForSettings } from '@/outreach/fleetTemplate'
+import { followUpForSettings } from '@/outreach/followUpTemplate'
+
+/** A WRITTEN follow-up message, built by the REAL rule. See tests/follow-up-template.test.ts. */
+const FOLLOW_UP_WRITTEN = followUpForSettings(
+  { followUpBody: `Hi,Following up on {{post}} — we can put the same campaign in front of a much larger audience. Let's talk tomorrow.`, followUpBodies: new Map() },
+  [],
+  [],
+)
+
 
 /**
  * The DEFAULT fleet's template, built by the REAL rule rather than written as a literal —
@@ -135,6 +144,9 @@ describe('the rule is enforced at BOTH ends', () => {
       pairSentTodayCount: 0,
       maxPerPairPerDay: 5,
       crossSpacing: { held: false },
+      /* A first touch, so the follow-up rule cannot mask the category rule under test. */
+      isFollowUp: false,
+      followUpTemplate: FOLLOW_UP_WRITTEN,
     } as Parameters<typeof evaluateResend>[0])
 
   it('gate.ts refuses to SEND one written before the rule', () => {

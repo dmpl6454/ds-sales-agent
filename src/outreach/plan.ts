@@ -12,7 +12,13 @@ import { materialAllowance, campaignsNamingHandle, campaignsNamingHandleRows } f
 import { eligibleFleetSenderIds } from './availability'
 import { routeAllowed } from './routes'
 import { readCategoryMemberships, categoriesFor } from './categories'
-import { composeForPair, usedCampaignIds } from './compose'
+import { composeForPair, freshCampaignsFor } from './compose'
+import {
+  followUpForSettings,
+  followUpPostReference,
+  renderFollowUp,
+  type FollowUpTemplate,
+} from './followUpTemplate'
 import { describeRing, whoseTurn, type WhoseTurnResult } from './categories'
 import { fleetRingOrder } from './rotation'
 import { checkNewBrandTouchCap, checkRecipientIsNotAPerson } from './brandGuards'
@@ -26,7 +32,7 @@ import { manualAssistSender } from './senders/manual'
 import { profileStatus } from '@/outreach/browser/profile'
 import { sessionUsable } from './sessionHealth'
 import { readSenderAvailability } from './availability'
-import { replyHaltFloor } from './replyHalt'
+import { replyHaltWhere } from './replyHalt'
 import type { SendOutcome } from './senders/types'
 
 /**
@@ -350,6 +356,27 @@ export async function runOutreach(): Promise<PlanSummary> {
       categoriesFor(memberships.byTargetHandle, p.target.handle),
     )
 
+  /** What a SECOND message on this route says, from the same pure rule the gate asks. */
+  const followUpTemplateFor = (p: { sender: { handle: string }; target: { handle: string } }): FollowUpTemplate =>
+    followUpForSettings(
+      settings,
+      categoriesFor(memberships.bySenderHandle, p.sender.handle),
+      categoriesFor(memberships.byTargetHandle, p.target.handle),
+    )
+
+  /**
+   * The WATCHED PAGE behind every campaign id — ONE query for the whole run.
+   *
+   * A follow-up names the post it claims by its publisher's handle, and
+   * `campaignsNamingHandleRows` carries only the channel's ID (a scalar, so the pages that
+   * preload those rows pay no extra round trip). Resolving the handle per pair would be an
+   * N+1 over senders x targets inside this loop — the defect this file has killed four
+   * times. One read of the channels, reused for every pair.
+   */
+  const channelHandleById = new Map(
+    (await prisma.targetAccount.findMany({ select: { id: true, handle: true } })).map((t) => [t.id, t.handle]),
+  )
+
   for (const pair of pairs) {
     const pairKey = `${pair.sender.handle}→${pair.target.handle}`
 
@@ -366,10 +393,8 @@ export async function runOutreach(): Promise<PlanSummary> {
      * on one pair — until the gate reported no-new-material with fresh campaigns sitting
      * right there. The command is gone; anything else that mass-SKIPs drafts revives this.
      */
-    const alreadyUsedIds = await usedCampaignIds(pair.id)
-
     const windowFloor = new Date(now.getTime() - settings.defaultCooldownDays * 86_400_000)
-    const [touches, replied, pairToday, ringDeliveries, pending, parked, unusedCampaignCount, targetCampaigns, targetDelivered] = await Promise.all([
+    const [touches, replied, pairToday, ringDeliveries, pending, parked, freshCampaigns, targetCampaigns, targetDelivered] = await Promise.all([
       /**
        * Both counts here use DELIVERED_STATUSES, not 'SENT'.
        *
@@ -380,12 +405,17 @@ export async function runOutreach(): Promise<PlanSummary> {
         where: { pairId: pair.id, status: { in: [...DELIVERED_STATUSES] } },
       }),
       prisma.outreachAttempt.findFirst({
-        // A reply halts for replyResumeHours (seven days since 2026-08-19), then releases itself — see replyHalt.ts.
-        where: {
-          pair: { targetId: pair.targetId },
-          replyPostedAt: { gte: replyHaltFloor(settings.replyResumeHours) },
-          replyHandledAt: null,
-        },
+        /* A reply halts for replyResumeHours (7 days), then releases itself; PAIR-scoped
+           since 2026-09-01 on Tabish's instruction, `target` one Setting row away. The
+           `where` is built by replyHalt.ts so the planner, the gate, the on-demand dialog
+           and the screens that predict a hold cannot answer differently. */
+        where: replyHaltWhere({
+          scope: settings.replyHaltScope,
+          senderId: pair.senderId,
+          targetId: pair.targetId,
+          resumeHours: settings.replyResumeHours,
+          now,
+        }),
         orderBy: { repliedAt: 'desc' },
         select: { repliedAt: true },
       }),
@@ -457,10 +487,18 @@ export async function runOutreach(): Promise<PlanSummary> {
        * One implementation (`campaignsNamingHandleRows`), and `tests/naming-linkage.test.ts`
        * greps for a reintroduced `targetId` copy, because the defect is a query somebody
        * writes next rather than one that is here now.
+       *
+       * ── AND THE EXCLUSION IS THE SHARED SELECTOR NOW (2026-09-01) ──────────
+       *
+       * This filtered `usedCampaignIds(pair.id)` inline — a THIRD reading of a question
+       * `compose.ts` answers twice. That was survivable while the exclusion was pair-scoped
+       * and identical in all three; with the claim ledger it is not, because a count that
+       * excluded only this pair's claims while `pickHook` excluded the whole recipient's
+       * would let the governor report "there is new material" and the composer then find
+       * none — a follow-up permitted with nothing to cite. `freshCampaignsFor` is the one
+       * selector; the ROWS come back so the exact body can be rendered below.
        */
-      campaignsNamingHandleRows(prisma, pair.target, newMaterialFloor(now)).then(
-        (rows) => rows.filter((r) => !alreadyUsedIds.includes(r.id)).length,
-      ),
+      freshCampaignsFor({ target: pair.target, targetId: pair.targetId, pairId: pair.id, now }),
       /**
        * ── THE RECIPIENT'S ALLOWANCE (2026-08-21) ─────────────────────────────
        *
@@ -514,7 +552,7 @@ export async function runOutreach(): Promise<PlanSummary> {
        * counts over the same window — see materialAllowance.ts for why that matters.
        */
       material: materialAllowance({ campaignsInWindow: targetCampaigns, deliveredInWindow: targetDelivered }),
-      unusedCampaignCount,
+      unusedCampaignCount: freshCampaigns.length,
       totalSentEver,
       maxTotalSends: env.MAX_TOTAL_SENDS,
       /**
@@ -523,6 +561,7 @@ export async function runOutreach(): Promise<PlanSummary> {
        * actually write and the gate will not hold.
        */
       fleetTemplate: fleetTemplateFor(pair),
+      followUpTemplate: followUpTemplateFor(pair),
       /**
        * ── WOULD THIS BE THE SAME BYTES THEY ALREADY HAVE? (2026-08-26) ────────
        *
@@ -533,11 +572,45 @@ export async function runOutreach(): Promise<PlanSummary> {
        *
        * Asked against the SAME template object the decision above is made with, so the
        * governor and the composer cannot disagree about what would be written.
+       *
+       * ── AND A FOLLOW-UP IS A DIFFERENT BODY, SO IT IS RENDERED (2026-09-01) ──
+       *
+       * A second message takes the FOLLOW-UP copy naming the post it claims, so comparing
+       * against the first-touch template would be asking about a body that will not be
+       * written. The exact bytes are rendered here from the same three inputs the composer
+       * will use — the same template object, the same newest unclaimed post from the same
+       * shared selector, the same `renderFollowUp`.
+       *
+       * A PREDICTION WOULD NOT HAVE BEEN ENOUGH, and the reason is specific: two paid posts
+       * from ONE channel on ONE IST day produce the SAME reference, hence identical bytes.
+       * Guessing "a follow-up always differs" would write a draft the gate then refuses as
+       * a repeat — and `hasPendingAttempt` blocks a replacement, so that pair is wedged
+       * until a person discards it. That is the self-locking stall this file records twice
+       * (the parked-route one, and @madaboutmarketingg's fifteen recipients).
        */
       repeatsADeliveredBody: (() => {
+        if (!settings.singleTemplate) return false
+        const delivered = deliveredBodiesByPair.get(pair.id) ?? []
+        if (delivered.length === 0) return false
+
+        if (touches > 0) {
+          const f = followUpTemplateFor(pair)
+          /* No copy and no material are refusals in their own right, named above and below.
+             Answering "would it repeat?" about a body that cannot exist would put the wrong
+             sentence on the queue. */
+          if (!f.ok) return false
+          const newest = [...freshCampaigns].sort((a, b) => b.postedAt.getTime() - a.postedAt.getTime())[0]
+          if (!newest) return false
+          const channelHandle = channelHandleById.get(newest.channelId)
+          if (!channelHandle) return false
+          return delivered.includes(
+            renderFollowUp(f.body, followUpPostReference({ channelHandle, postedAt: newest.postedAt })).trim(),
+          )
+        }
+
         const t = fleetTemplateFor(pair)
-        if (!settings.singleTemplate || !t.ok) return false
-        return (deliveredBodiesByPair.get(pair.id) ?? []).includes(t.body.trim())
+        if (!t.ok) return false
+        return delivered.includes(t.body.trim())
       })(),
     })
 
@@ -698,6 +771,7 @@ export async function runOutreach(): Promise<PlanSummary> {
         /* Resolved by the same call the governor just passed, so the body written is the
            body the decision was made about. */
         fleetTemplate: fleetTemplateFor(pair),
+        followUpTemplate: followUpTemplateFor(pair),
       })
       outcomes.push({ pairKey, eligible: true, ...result })
 
@@ -774,8 +848,10 @@ async function createAndDispatch(args: {
   autopilotEnabled: boolean
   /** The route's own standard message, already resolved by the caller. See fleetTemplate.ts. */
   fleetTemplate: FleetTemplate
+  /** ...and what it says on a SECOND message. See followUpTemplate.ts. */
+  followUpTemplate: FollowUpTemplate
 }): Promise<Omit<PlanOutcome, 'pairKey' | 'eligible'>> {
-  const { pair, touchNumber, autopilotEnabled, fleetTemplate } = args
+  const { pair, touchNumber, autopilotEnabled, fleetTemplate, followUpTemplate } = args
 
   /**
    * WHAT to say — hook, variant pool, bespoke-or-follow-up — is decided in `compose.ts`,
@@ -787,6 +863,7 @@ async function createAndDispatch(args: {
     senderHandle: pair.sender.handle,
     touchNumber,
     fleetTemplate,
+    followUpTemplate,
   })
 
   const attempt = await prisma.outreachAttempt.create({

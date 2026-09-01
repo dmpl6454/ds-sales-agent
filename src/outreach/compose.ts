@@ -9,6 +9,7 @@ import { generateMessageBody } from './generate'
 import { brandFirstTouch, publisherDisplayName, describeRecency } from './brandPitch'
 import { greetableName, renderMessage } from './render'
 import type { FleetTemplate } from './fleetTemplate'
+import { followUpPostReference, renderFollowUp, type FollowUpTemplate } from './followUpTemplate'
 
 /**
  * Choosing WHAT to say to one pair — the single implementation.
@@ -86,6 +87,97 @@ export async function usedCampaignIds(pairId: string): Promise<string[]> {
 }
 
 /**
+ * ── THE CLAIM LEDGER IS PER RECIPIENT (2026-09-01) ────────────────────────────
+ *
+ * Every campaign ANY of our pages has already claimed against THIS RECIPIENT.
+ *
+ * ── THE SCREENSHOT THAT PRODUCED THIS ─────────────────────────────────────────
+ *
+ * Tabish, from the live `/paid-posts`: @dorothy shown messaged FOUR times under ONE
+ * @instantbollywood post. Measured, and it is neither a column bug nor a rule breach:
+ * @dorothy is named on four SYNDICATED copies of one campaign (@varindertchawla,
+ * @viralbhayani, @voompla, @instantbollywood, all 29 Aug 10:22-10:49), so her allowance
+ * was 4 and exactly 4 were delivered — the documented syndication multiplier, working.
+ *
+ * What was wrong is that **all four messages CLAIMED the same newest copy**
+ * (`DcnwkuCTxwE`). `usedCampaignIds` is scoped to the PAIR, so a post used by page A is
+ * still "fresh" for pages B, C and D; `pickHook` sorts newest-first, so all four picked
+ * the same one. The provenance column then truthfully stacked four claims under one post
+ * and drew em-dashes under its three siblings — a real defect, in the ledger rather than
+ * in the screen.
+ *
+ * ── WHAT THIS CHANGES, AND WHAT IT DELIBERATELY DOES NOT ──────────────────────
+ *
+ * A paid post may now fund exactly ONE delivered message to a given recipient, fleet-wide.
+ * **VOLUME DOES NOT MOVE BY ONE MESSAGE.** `materialAllowance` is untouched and is still
+ * count-vs-count (posts naming them, against messages delivered to them, same window), so
+ * @dorothy's four messages stay four — they simply come to cite four different posts, one
+ * each. Only WHICH post each message claims changes.
+ *
+ * ── THE STATUS SET IS `usedCampaignIds`' SET, AND THAT IS LOAD-BEARING ────────
+ *
+ * `IN_FLIGHT_STATUSES`, deliberately identical: an UNDELIVERED draft's claim must block a
+ * second claim on the same post (otherwise two pages draft against one post the same pass
+ * and the ledger is back where it started), and a DISCARDED draft must RELEASE it —
+ * exactly the semantics that comment records for the pair-scoped read, where counting
+ * SKIPPED rows once burned four campaigns per pair and left the pool falsely exhausted.
+ *
+ * Reads the denormalised `OutreachAttempt.targetId` rather than joining through the pair:
+ * the column is NOT NULL, written by every creator, and already the basis of the gate's
+ * own per-recipient reads.
+ */
+export async function claimedCampaignIds(targetId: string): Promise<string[]> {
+  const rows = await prisma.outreachAttempt.findMany({
+    where: { targetId, campaignId: { not: null }, status: { in: [...IN_FLIGHT_STATUSES] } },
+    select: { campaignId: true },
+  })
+  return rows.map((r) => r.campaignId).filter((id): id is string => id !== null)
+}
+
+/**
+ * PAID POSTS NAMING THIS RECIPIENT THAT NOBODY HAS CLAIMED — the ONE selector.
+ *
+ * The count (`unusedCampaignCount` → `NO_NEW_MATERIAL`), the pick (`pickHook`) and the
+ * planner's own per-pair figure are three readings of ONE question, and this codebase has
+ * been bitten twice by exactly these queries drifting apart. They now share a floor, a
+ * status filter, an exclusion set and a function.
+ *
+ * That is not tidiness here, it is a correctness requirement introduced by the union: if
+ * the COUNT excluded only the pair's own claims while the PICK excluded the recipient's
+ * too, the governor could report "there is new material" and the composer could then find
+ * none — a follow-up permitted with nothing to cite. Both ask this.
+ *
+ * ── THE PAIR ARM IS A SUBSET TODAY, AND IS KEPT DELIBERATELY ─────────────────
+ *
+ * MEASURED by mutation, 2026-09-01: deleting `usedCampaignIds` from the union breaks NO
+ * test, because every attempt carrying a pair also carries that pair's `targetId` — the
+ * recipient read already contains it. It is kept for one reason, and it is not symmetry:
+ * `OutreachAttempt.targetId` is a DENORMALISED copy of the pair's target, while `pairId` is
+ * the row's own foreign key. "No pair writes about one post twice" is the older and more
+ * fundamental of the two rules, and resting it entirely on a denormalised column would make
+ * it fail silently the first time that column is wrong. One small indexed read, now issued
+ * in PARALLEL where the planner's copy used to be awaited before its `Promise.all`.
+ *
+ * `tests/claim-ledger.test.ts` drives that exact drift — an attempt whose `targetId` does
+ * not match its pair — so the arm is not merely redundant-and-untested.
+ */
+export async function freshCampaignsFor(args: {
+  target: NamedRecipient
+  /** `TargetAccount.id` — the RECIPIENT, never the posting channel. See campaignsNamingHandleRows. */
+  targetId: string
+  pairId: string
+  now: Date
+}): Promise<Awaited<ReturnType<typeof campaignsNamingHandleRows>>> {
+  const [naming, usedByThisPair, claimedForRecipient] = await Promise.all([
+    campaignsNamingHandleRows(prisma, args.target, newMaterialFloor(args.now)),
+    usedCampaignIds(args.pairId),
+    claimedCampaignIds(args.targetId),
+  ])
+  const spokenFor = new Set([...usedByThisPair, ...claimedForRecipient])
+  return naming.filter((c) => !spokenFor.has(c.id))
+}
+
+/**
  * How many campaigns are left that this pair has not used — the governor's new-material
  * input, and the count that must agree with `pickHook` below.
  *
@@ -131,32 +223,41 @@ export interface NamedRecipient {
   displayName?: string | null
 }
 
+/**
+ * `targetId` is REQUIRED with no default, so the compiler names every call site — the
+ * `RenderTarget.kind` pattern. A caller that omitted it would silently fall back to the
+ * old pair-only exclusion, which is precisely the defect being closed and would be
+ * invisible: the count would simply read one higher and a second page would claim a post
+ * the first already had.
+ */
 export async function unusedCampaignCount(args: {
   target: NamedRecipient
+  targetId: string
   pairId: string
   now?: Date
 }): Promise<number> {
-  const { pairId, target, now = new Date() } = args
-  const [naming, used] = await Promise.all([
-    campaignsNamingHandleRows(prisma, target, newMaterialFloor(now)),
-    usedCampaignIds(pairId),
-  ])
-  const usedSet = new Set(used)
-  return naming.filter((c) => !usedSet.has(c.id)).length
+  const { pairId, targetId, target, now = new Date() } = args
+  return (await freshCampaignsFor({ target, targetId, pairId, now })).length
 }
 
-/** The freshest campaign this pair has not written about yet, or null. */
-async function pickHook(args: { target: NamedRecipient; pairId: string; now: Date }) {
-  const [naming, used] = await Promise.all([
-    campaignsNamingHandleRows(prisma, args.target, newMaterialFloor(args.now)),
-    usedCampaignIds(args.pairId),
-  ])
-  const usedSet = new Set(used)
-  const fresh = naming
-    .filter((c) => !usedSet.has(c.id))
-    .sort((a, b) => b.postedAt.getTime() - a.postedAt.getTime())[0]
+/**
+ * The freshest paid post naming this recipient that NOBODY has claimed yet, or null.
+ *
+ * Newest-first is unchanged, and with the ledger now per RECIPIENT it finally means what
+ * it reads as: four pages writing about one syndicated campaign take its four copies in
+ * order of recency rather than all naming the newest.
+ */
+async function pickHook(args: { target: NamedRecipient; targetId: string; pairId: string; now: Date }) {
+  const fresh = (await freshCampaignsFor(args)).sort((a, b) => b.postedAt.getTime() - a.postedAt.getTime())[0]
   if (!fresh) return null
-  return prisma.detectedCampaign.findUnique({ where: { id: fresh.id } })
+  /* The PUBLISHING channel comes back with it: the follow-up body names the post it is
+     written about ("your placement with @viralbhayani on 30 Aug"), and `DetectedCampaign.
+     targetId` is that channel — never the recipient. A second lookup for one handle would
+     be a query per draft. */
+  return prisma.detectedCampaign.findUnique({
+    where: { id: fresh.id },
+    include: { target: { select: { handle: true } } },
+  })
 }
 
 /**
@@ -262,6 +363,39 @@ export class FleetTemplateNotSetError extends Error {
   }
 }
 
+/**
+ * Thrown when a FOLLOW-UP is composed for a fleet whose follow-up copy is unwritten.
+ *
+ * DEFENCE IN DEPTH, exactly like `FleetTemplateNotSetError` above and never the primary
+ * stop: `evaluatePair` refuses to draft and `evaluateResend` refuses to send, both by name
+ * and both with a remedy on screen. Reaching here means a caller composed a second message
+ * without asking either — and throwing beats returning the FIRST-touch template, because a
+ * crash is loud and a verbatim repeat Instagram silently drops is not.
+ */
+export class FollowUpTemplateNotSetError extends Error {
+  constructor(readonly targetHandle: string, readonly detail: string) {
+    super(`no follow-up message for @${targetHandle}'s fleet — ${detail}`)
+    this.name = 'FollowUpTemplateNotSetError'
+  }
+}
+
+/**
+ * Thrown when a follow-up has no unclaimed paid post to name.
+ *
+ * Unreachable through the planner by construction — `NO_NEW_MATERIAL` refuses a follow-up
+ * with `unusedCampaignCount === 0`, and that count and `pickHook` are now two readings of
+ * ONE selector (`freshCampaignsFor`), so they cannot disagree about whether material
+ * exists. It is here for the window between the two reads, and because a follow-up whose
+ * `{{post}}` rendered as nothing would be byte-identical to every other follow-up from
+ * this page — the wall this whole feature exists to remove.
+ */
+export class NoMaterialForFollowUpError extends Error {
+  constructor(readonly targetHandle: string) {
+    super(`no unclaimed paid post naming @${targetHandle} — a follow-up has nothing to reference`)
+    this.name = 'NoMaterialForFollowUpError'
+  }
+}
+
 export async function composeForPair(args: {
   pair: ComposablePair
   senderHandle: string
@@ -275,12 +409,21 @@ export async function composeForPair(args: {
    * inside the planner's own loop.
    */
   fleetTemplate: FleetTemplate
+  /**
+   * WHAT THIS ROUTE SAYS ON A SECOND MESSAGE, or why there is none (2026-09-01).
+   *
+   * REQUIRED with no default, for the reason `fleetTemplate` is: a default of "fine" would
+   * make the stop unreachable from whichever caller forgot it, and the failure would be a
+   * verbatim repeat sent to a real company. Resolved by the caller from the same pure rule
+   * the governor and the gate ask.
+   */
+  followUpTemplate: FollowUpTemplate
   now?: Date
 }): Promise<Composed> {
-  const { pair, senderHandle, touchNumber, fleetTemplate, now = new Date() } = args
+  const { pair, senderHandle, touchNumber, fleetTemplate, followUpTemplate, now = new Date() } = args
   const settings = await getSettings()
 
-  const hook = await pickHook({ target: pair.target, pairId: pair.id, now })
+  const hook = await pickHook({ target: pair.target, targetId: pair.targetId, pairId: pair.id, now })
 
   /**
    * Least-recently-used variant, SCOPED TO THE POOL THIS TARGET BELONGS TO, and never one
@@ -360,6 +503,42 @@ export async function composeForPair(args: {
      * as a fallback: a second fleet with nothing written REFUSES, so its recipients wait
      * for their own copy rather than receiving somebody else's pitch. See fleetTemplate.ts.
      */
+    /**
+     * ── A SECOND MESSAGE IS A DIFFERENT MESSAGE (2026-09-01, Tabish) ────────
+     *
+     * `touchNumber >= 2` takes the FOLLOW-UP copy, never the standard template. That is the
+     * whole release: the first touch and every follow-up used to be byte-identical, so
+     * every follow-up was a verbatim repeat Instagram accepts and never delivers (measured:
+     * 83% of touch-2 sends), and `IDENTICAL_TO_A_SENT_MESSAGE` correctly refused all of
+     * them — 1,808 pairs held on 1 September.
+     *
+     * The follow-up NAMES the paid post it claimed, and that is what makes each one differ
+     * from the last as well as from the first. `hook` is that post — the same row recorded
+     * on `campaignId` below and rendered by the provenance column — so the bytes a
+     * recipient reads and the "Why" a person reads on the dashboard cite the same thing by
+     * construction.
+     *
+     * Both refusals throw rather than fall back, and neither should ever be reached: the
+     * governor refuses to write and the gate refuses to send, by name, before this.
+     */
+    if (touchNumber > 1) {
+      if (!followUpTemplate.ok) throw new FollowUpTemplateNotSetError(pair.target.handle, followUpTemplate.detail)
+      if (!hook) throw new NoMaterialForFollowUpError(pair.target.handle)
+      const body = renderFollowUp(
+        followUpTemplate.body,
+        followUpPostReference({ channelHandle: hook.target.handle, postedAt: hook.postedAt }),
+      )
+      return {
+        body,
+        hookLine: null,
+        variantId: variant.id,
+        /* The claim, recorded as always — and now also the thing the body says out loud. */
+        campaignId: hook.id,
+        usedBespoke: false,
+        generated: false,
+      }
+    }
+
     if (!fleetTemplate.ok) throw new FleetTemplateNotSetError(pair.target.handle, fleetTemplate.detail)
     const body = fleetTemplate.body.trim()
     return {

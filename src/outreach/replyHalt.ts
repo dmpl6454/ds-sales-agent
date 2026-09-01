@@ -47,6 +47,112 @@ export function replyHaltFloor(resumeHours: number, now: Date = new Date()): Dat
 }
 
 /**
+ * ── WHOSE CONVERSATION DOES A REPLY HALT? (2026-09-01, Tabish's decision) ─────
+ *
+ * *"It does not make sense if all activity is halted for a target for 7 days by all
+ * senders if a reply is detected. Only the channel (sender) which has gotten the reply
+ * should halt for 7 days with the new logic of follow up."*
+ *
+ * Until today the halt was TARGET-scoped: one reply from any thread stopped EVERY page
+ * writing to that recipient for `replyResumeHours`. That was the deliberate 2026-08-03
+ * design ("a human takes over") and it is now PAIR-scoped by his instruction.
+ *
+ * ── THE RISK WAS STATED AND THE CALL IS RECORDED AS HIS ───────────────────────
+ *
+ * Put to him in one paragraph before the change, with the alternatives: the recipient who
+ * replied is the one engaged human in the funnel, other pages cold-messaging them
+ * mid-conversation is the "repeated unwanted contact" pattern aimed at exactly the wrong
+ * person, and every page signs with the SAME phone number and the same name — so "a
+ * different page" is transparent to precisely this reader. The offered safer variant was
+ * pair-scoped-plus-follow-ups-only; he chose the plain pair scope, with the other pages
+ * continuing under the ring rule. Recorded as his, like the caps removal, the 24/7 window
+ * and the auto-resume before it.
+ *
+ * ── THE MECHANISM STAYS, AND `target` IS ONE ROW AWAY ─────────────────────────
+ *
+ * Exactly as `crossPageGapHours` kept its mechanism at 0 and `ACTIVE_FROM_HOUR`/
+ * `ACTIVE_TO_HOUR` kept theirs at 0/0: `replyHaltScope = target` in one `Setting` row
+ * restores the old behaviour with no code change, and the tests drive BOTH scopes so the
+ * one that is switched off stays enforceable.
+ */
+export type ReplyHaltScope = 'pair' | 'target'
+
+/** Tabish, 2026-09-01. See the docblock above for the risk he was shown. */
+export const REPLY_HALT_SCOPE_DEFAULT: ReplyHaltScope = 'pair'
+
+/**
+ * An unrecognised value reads as `target`, NOT as the default — and the asymmetry is
+ * deliberate.
+ *
+ * `readNumericSetting` warns and falls back to the default, which is right when the default
+ * is the conservative value. Here it is not: the default is the PERMISSIVE scope, so a typo
+ * (`"targt"`, `"Target "`, `"all"`) falling back to it would silently widen who may be
+ * messaged mid-conversation — absence of a readable value becoming a permission, which is
+ * this codebase's most-repeated defect. And the only reason anybody writes this row at all
+ * is to move AWAY from the default, so `target` is also the likely intent.
+ *
+ * Absent is different from unreadable and keeps the default: nobody has expressed a wish.
+ */
+export function parseReplyHaltScope(raw: string | undefined): ReplyHaltScope {
+  if (raw === undefined) return REPLY_HALT_SCOPE_DEFAULT
+  const v = raw.trim().toLowerCase()
+  if (v === 'pair') return 'pair'
+  if (v === 'target') return 'target'
+  console.warn(
+    `[settings] ignoring replyHaltScope="${raw}" — expected "pair" or "target". ` +
+      `Using "target", the wider halt, because an unreadable value must not widen who is messaged.`,
+  )
+  return 'target'
+}
+
+/**
+ * The `OutreachPair` filter a halt applies through — the ONE place the scope is spelled.
+ *
+ * Every enforcer and every view model that predicts a hold asks this rather than writing
+ * `pair: { targetId }` itself. That is not tidiness: `replyHalt.ts` exists because the halt
+ * was once spelled out at seven call sites and drifted, and a scope switch spelled out at
+ * eight of them would produce a page claiming a halt the gate is not enforcing — the
+ * failure this file's own header records.
+ */
+export function replyHaltPairFilter(
+  scope: ReplyHaltScope,
+  ids: { senderId: string; targetId: string },
+): { targetId: string; senderId?: string } {
+  return scope === 'pair' ? { senderId: ids.senderId, targetId: ids.targetId } : { targetId: ids.targetId }
+}
+
+/**
+ * The whole `where` an enforcer needs: the right conversations, still inside the window,
+ * not released early. Handed out as one object so a caller cannot take the scope and forget
+ * the window, or the window and forget `replyHandledAt`.
+ */
+export function replyHaltWhere(args: {
+  scope: ReplyHaltScope
+  senderId: string
+  targetId: string
+  resumeHours: number
+  now?: Date
+}) {
+  return {
+    pair: replyHaltPairFilter(args.scope, { senderId: args.senderId, targetId: args.targetId }),
+    replyPostedAt: { gte: replyHaltFloor(args.resumeHours, args.now) },
+    replyHandledAt: null,
+  }
+}
+
+/**
+ * The key a halt applies TO, for callers holding rows in memory rather than issuing a query.
+ *
+ * `messages-page` and `rest-tally` load every in-window reply once and group it, because a
+ * lookup per draft would be an N+1 inside a render with a query budget. They grouped by
+ * `targetId`; under a pair-scoped halt that would hold every page's draft on one page's
+ * reply — a screen enforcing a rule the gate dropped. Same function, same answer.
+ */
+export function replyHaltKey(scope: ReplyHaltScope, ids: { senderId: string; targetId: string }): string {
+  return scope === 'pair' ? `${ids.senderId}→${ids.targetId}` : ids.targetId
+}
+
+/**
  * Is this attempt's reply holding the halt right now?
  *
  * ── THE HALT KEYS ON WHEN THEY WROTE, NOT ON WHEN WE LOOKED (2026-08-21) ──

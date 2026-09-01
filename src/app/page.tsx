@@ -18,12 +18,22 @@ import { OnDemandPanel } from './on-demand'
 import { TemplateForm } from './template-form'
 import { FleetTemplateForm } from './fleet-template-form'
 import { buildFleetTemplates } from './view-model/fleet-templates'
+import { FollowUpForm } from './follow-up-form'
+import { DEFAULT_CATEGORY_SLUG } from '@/outreach/senderCategories'
+
 import { getSettings } from '@/lib/settings'
 import { SINGLE_TEMPLATE_MIDDLE } from '@/outreach/compose'
 import { currentUser } from '@/lib/session'
 import { Nav } from './nav'
 import { PageHead } from './page-head'
 import { istHourOfDay, istTimeKey } from '@/lib/time'
+
+/**
+ * What to call the default fleet on screen, and ONLY when a second one exists — with one
+ * fleet a name distinguishing it from the others is furniture, which is the same reason the
+ * add-account dropdown appears only when there is a choice to make.
+ */
+const DEFAULT_FLEET_NAME = 'Bollywood'
 
 export const dynamic = 'force-dynamic'
 
@@ -311,6 +321,37 @@ export default async function AutopilotPage() {
               initialBody={f.body}
               waitingCompanies={f.waitingCompanies}
               senderCount={f.senderCount}
+            />
+          ))}
+        </section>
+
+        {/**
+          * ── THE SECOND MESSAGE (2026-09-01, Tabish) ─────────────────────────
+          *
+          * Its own section rather than a fourth box under the heading above, because the
+          * heading above is about what a company hears FIRST and this is about what it hears
+          * NEXT — and because an empty box here means something different again: no page
+          * writes to anybody twice, while first touches carry on untouched.
+          *
+          * The count on each box is the planner's own `no-follow-up-message-written` bucket,
+          * split by fleet, so it is the number of companies a saved textarea would actually
+          * release rather than an estimate.
+          */}
+        <section>
+          <h2>The second message</h2>
+          <FollowUpForm
+            slug={null}
+            name={fleetTemplates.length > 0 ? DEFAULT_FLEET_NAME : ''}
+            initialBody={settings.followUpBody ?? ''}
+            waitingPairs={rest.noFollowUpByFleet[DEFAULT_CATEGORY_SLUG] ?? 0}
+          />
+          {fleetTemplates.map((f) => (
+            <FollowUpForm
+              key={f.slug}
+              slug={f.slug}
+              name={f.name}
+              initialBody={settings.followUpBodies.get(f.slug) ?? ''}
+              waitingPairs={rest.noFollowUpByFleet[f.slug] ?? 0}
             />
           ))}
         </section>

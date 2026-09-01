@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest'
 import { evaluatePair, SKIP_REASONS, type GovernorInput } from '@/outreach/governor'
 import { crossSpacingVerdict } from '@/outreach/crossSpacing'
 import { templateForSettings } from '@/outreach/fleetTemplate'
+import { followUpForSettings } from '@/outreach/followUpTemplate'
 
 /**
  * The DEFAULT fleet's template, built by the REAL rule rather than written as a literal —
@@ -13,6 +14,19 @@ const DEFAULT_FLEET_TEMPLATE = templateForSettings(
   [],
   [],
 )
+
+/**
+ * A WRITTEN follow-up message, built by the REAL rule — the state the fleet is in once
+ * Tabish has filled the box. Long enough that `distinctiveSlice` finds a needle, and it
+ * carries `{{post}}` because `checkFollowUpBody` requires it.
+ */
+const FOLLOW_UP_WRITTEN = followUpForSettings(
+  { followUpBody: `Hi,Following up on {{post}} — we can put the same campaign in front of a much larger audience. Let's talk tomorrow.`, followUpBodies: new Map() },
+  [],
+  [],
+)
+/** And the state it ships in: nobody has written it, so no follow-up is drafted or sent. */
+const FOLLOW_UP_UNWRITTEN = followUpForSettings({ followUpBody: null, followUpBodies: new Map() }, [], [])
 
 
 /**
@@ -51,6 +65,9 @@ function base(overrides: Partial<GovernorInput> = {}): GovernorInput {
     totalSentEver: 0,
     maxTotalSends: null,
     fleetTemplate: DEFAULT_FLEET_TEMPLATE,
+    /* Written, so the follow-up stop is out of the way of every rule this file is about.
+       Its own two directions are driven in tests/follow-up-template.test.ts. */
+    followUpTemplate: FOLLOW_UP_WRITTEN,
     repeatsADeliveredBody: false,
     ...overrides,
   }
