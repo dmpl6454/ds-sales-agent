@@ -78,9 +78,20 @@ describe('decideRoute — public pages', () => {
     }
   })
 
-  it('bounces a signed-in visitor off the auth pages', () => {
+  /**
+   * ── THE REDIRECT LOOP REGRESSION (2026-09-01) ─────────────────────────────
+   *
+   * This used to assert `redirect-home` — a bounce on cookie PRESENCE, because the
+   * middleware may not touch the database. Composed with the dashboard's VALIDATED
+   * redirect the other way, a DEAD cookie ping-ponged /sign-in → / → /sign-in forever:
+   * Safari, holding an expired session, hit "Too many redirects" and could never reach
+   * the login form that would have replaced the cookie. The auth pages ALLOW every
+   * cookie state now; the signed-in bounce lives in the pages themselves, where
+   * `currentUser()` validates. Reintroducing the presence bounce here fails this case.
+   */
+  it('lets a cookie-carrying visitor reach the auth pages — a dead cookie must be able to reach the form', () => {
     for (const path of PUBLIC_PATHS) {
-      expect(decideRoute({ ...authed, pathname: path })).toEqual({ kind: 'redirect-home' })
+      expect(decideRoute({ ...authed, pathname: path })).toEqual({ kind: 'allow' })
     }
   })
 

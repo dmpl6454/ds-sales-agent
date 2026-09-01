@@ -47,7 +47,7 @@ import { SESSION_COOKIE } from '@/lib/session-cookie'
  * Paths reachable with no session.
  *
  * Deliberately tiny, and each entry is here for a stated reason:
- *   /sign-in, /sign-up   the only way to GET a session. Locking these would lock out
+ * /sign-in, /sign-up   the only way to GET a session. Locking these would lock out
  *                        everyone, permanently, including whoever must fix it.
  *   /_next, /favicon.ico static assets. The login page cannot render without its CSS,
  *                        and a login page that renders unstyled looks broken enough
@@ -72,7 +72,6 @@ export function isPublic(pathname: string): boolean {
  */
 export type RouteDecision =
   | { kind: 'allow' }
-  | { kind: 'redirect-home' }
   | { kind: 'redirect-signin'; next: string | null }
   | { kind: 'unauthorized' }
 
@@ -86,13 +85,22 @@ export function decideRoute(input: {
 
   if (isPublic(pathname)) {
     /**
-     * Someone already signed in has no business on the sign-in page; send them home.
-     * Restricted to the two real pages — applying it to assets would 307 every
-     * stylesheet request and the signed-in dashboard would render unstyled.
+     * ── NO already-signed-in BOUNCE HERE ANY MORE (2026-09-01) ──────────────
+     *
+     * This file used to send `hasCookie && /sign-in` home — presence, because this file
+     * may not touch the database. Composed with the DOWNSTREAM validated redirect the
+     * other way, that was an infinite loop for anyone holding a DEAD cookie:
+     *
+     *     /         currentUser() fails    → 307 /sign-in     (validated, correct)
+     *     /sign-in  cookie merely PRESENT  → 307 /            (presence, this file)
+     *
+     * Safari held an expired session and could never reach the one page that would have
+     * replaced it — "Too many redirects", locked out of the login form itself. The
+     * signed-in convenience bounce lives in the sign-in/sign-up PAGES now, where
+     * `currentUser()` can actually validate. Presence is not a session; this file's own
+     * docblock says a forged cookie buys "a redirect, not an action", and two such
+     * redirects composed into a lockout.
      */
-    if (hasCookie && PUBLIC_PATHS.includes(pathname as (typeof PUBLIC_PATHS)[number])) {
-      return { kind: 'redirect-home' }
-    }
     return { kind: 'allow' }
   }
 
@@ -133,9 +141,6 @@ export function middleware(request: NextRequest): NextResponse {
   switch (decision.kind) {
     case 'allow':
       return NextResponse.next()
-
-    case 'redirect-home':
-      return NextResponse.redirect(new URL('/', request.url))
 
     case 'unauthorized':
       return new NextResponse(null, { status: 401 }) as unknown as NextResponse
