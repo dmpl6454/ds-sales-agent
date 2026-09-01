@@ -150,6 +150,46 @@ stays per-person. Verified in both directions (correct password accepted, wrong 
 audited as `user.shared-viewer-account`. The standing rule — rebuild after major changes —
 lives beside the pipeline-diagram rule in Style.
 
+### THE DMG WAS RUN FOR REAL ON THIS MAC, AND THREE BUGS FELL OUT OF IT — ALL FIXED
+
+**Tabish: *"I am going to run it on this mac as a test. Make sure our localhost stops or
+what other approach should we take?"*** The honest answer: localhost never conflicts — the
+installer runs no dashboard and touches no port 3100. **What collides are the two launchd
+LABELS** (`…tunnel`, `…watch`), shared with production, so an install on this Mac repoints
+production at the `~/ds-sales-agent` copy. The approach taken: autopilot OFF (audited), run
+the installer exactly as an operator would (answers piped to the real script off the real
+mounted image), verify, then restore both jobs from the Desktop repo and turn autopilot
+back on. **Restore is two commands from the production repo:** `bash
+scripts/install-watch.sh install` + `bash scripts/install-tunnel.sh install`.
+
+Three real defects, none visible in review, all found by running it:
+
+1. **An aborted first run poisoned the re-run.** The example env is copied BEFORE the
+   prompts, so Tabish's Ctrl-C at the DATABASE_URL prompt left a bare `.env`, and the
+   re-run's `[ ! -f .env ]` check skipped the credentials entirely. The check is a
+   completion SENTINEL now, never file existence.
+2. **Appending env keys silently lost to the example.** dotenv keeps the FIRST occurrence
+   and `.env.example` is deliberately total over the schema — so every appended value lost:
+   the fresh agent came up on **SQLite with `DRY_RUN=1` and `MAX_TOTAL_SENDS=1`** — inert,
+   silently, on a machine whose whole job is sending. Read off the installer's own output
+   line *"prisma client: sqlite (matches DATABASE_URL)"*. `set_env` REPLACES per key now.
+3. **`permitopen` matches STRINGS, not addresses.** The restricted key permitted
+   `127.0.0.1:5432` while `install-tunnel.sh` forwards to `localhost:5432` — sshd refused
+   every channel AFTER the TCP connect, so the installer's `nc -z` probe passed while every
+   real query died with *"Server has closed the connection"* (and, because the label is
+   shared, this briefly broke the production tunnel too). The server's authorized_keys line
+   carries BOTH spellings now. **A port probe proves a listener, not a channel.**
+
+**THE PASS THAT COUNTS:** the third run came up clean — `prisma client: postgresql`, one
+DATABASE_URL line, tunnel forwarding, and the agent ticking against the shared database as
+`device=tabish-dmg-test`, seeing all seven Chrome profiles (they are machine-global, not
+per-repo) and honouring autopilot-off. Production was then restored and was mid-delivery
+within a minute of the switch going back on. Continuity is structural, and worth restating
+because Tabish asked: **all state lives in the shared Postgres** — a Mac turning off pauses
+only the sends of accounts whose sessions live on it; nothing is forgotten, nothing
+replays, and the claim ledger, pending-draft check and DB send lock serialize across
+machines.
+
 ### AND THE REST TALLY HAD NOT LEARNED THE LEDGER — CAUGHT BY TABISH READING THE TABLE
 
 *"Is autopilot truly healthy, also is this number correct? Now that we have follow up
