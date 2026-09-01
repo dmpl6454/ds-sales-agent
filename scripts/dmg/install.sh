@@ -55,7 +55,16 @@ tar -xzf "$RES/ds-sales-agent.tar.gz" -C "$DEST"
 echo "code unpacked to $DEST"
 
 # ── 3. Credentials — from Tabish, never from this disk image ──────────────────
-if [ ! -f "$DEST/.env" ]; then
+#
+# "Already configured" is the SENTINEL line the completed block writes, never bare file
+# existence: the example is copied BEFORE the prompts, so an installer aborted at the
+# DATABASE_URL prompt leaves a half-written .env behind, and a re-run that trusted
+# existence would skip the credentials entirely and install an agent that cannot reach
+# the database. Found by aborting a real run at that exact prompt (2026-09-01).
+ENV_DONE_MARK="written by the DS Sales Agent installer"
+if [ -f "$DEST/.env" ] && grep -qF "$ENV_DONE_MARK" "$DEST/.env"; then
+  echo ".env already configured — keeping it"
+else
   cp "$DEST/.env.example" "$DEST/.env"
   echo
   bold "Paste the DATABASE_URL Tabish gave you, then press Enter:"
@@ -77,8 +86,6 @@ if [ ! -f "$DEST/.env" ]; then
     echo "OPERATOR_NAME=$DEV"
   } >> "$DEST/.env"
   echo ".env written (this file stays on this machine only)"
-else
-  echo ".env already present — keeping it"
 fi
 
 KEY="$HOME/.ssh/ds_tunnel_key"
