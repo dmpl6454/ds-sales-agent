@@ -428,7 +428,7 @@ export async function prepareOnDemand(senderHandle: string, targetHandle: string
         blocks: [
           {
             reason: 'no-material-for-follow-up',
-            text: `Every paid post naming @${target.handle} has already been written about by one of our pages, so a follow-up has nothing to reference. It clears when they appear in another one.`,
+            text: `No unclaimed paid post naming @${target.handle} can be described to them — a follow-up must say what the post was about (their film, product or campaign), never just a date. It clears when they appear in a post whose subject is theirs.`,
           },
         ],
         warnings: [],

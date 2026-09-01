@@ -184,6 +184,17 @@ export interface GovernorInput {
   followUpTemplate: FollowUpTemplate
 
   /**
+   * Of the unclaimed paid posts naming this recipient, how many can be DESCRIBED to them —
+   * a subject `followUpSubject` attributes to this recipient: their own film or product, or
+   * the campaign they are talent on (2026-09-01, Tabish: *"an amateur message with no
+   * context to the paid posts"*). Only consulted when `touchesSoFar > 0`; a first touch is
+   * the standard message and names no post. Computed by the caller from the SAME selector
+   * and subject rule `pickFollowUpHook` uses, so the count and the pick cannot disagree.
+   * REQUIRED with no default, so the compiler names every call site.
+   */
+  describableCampaignCount: number
+
+  /**
    * Would the body about to be written be BYTE-IDENTICAL to one this pair has already
    * delivered? Computed by the caller against the same template this decision is made with,
    * so the two cannot disagree. REQUIRED, so the compiler names every call site.
@@ -207,6 +218,22 @@ export const SKIP_REASONS = {
   /** Repeated failures parked this pair. Re-drafting would re-drive the browser forever. */
   PARKED_FAILURE: 'parked-failure-unsettled',
   NO_NEW_MATERIAL: 'no-new-material-to-reference',
+  /**
+   * ── UNCLAIMED POSTS EXIST AND NONE CAN BE DESCRIBED TO THEM (2026-09-01) ──
+   *
+   * A follow-up must say what the post was about — "your Toxic placement on 29 Aug" — and
+   * the date-only fallback is DELETED: Tabish, from a delivered thread, *"this message is
+   * mentioning nothing but date and placement. This is an amateur message with no context
+   * to the paid posts."* MEASURED when he said it: 16 of 25 live pairs rendered date-only,
+   * 12 such messages already delivered.
+   *
+   * So a recipient whose unclaimed posts all fail `followUpSubject` — multi-advertiser
+   * round-ups, subjects belonging to somebody else — gets NO follow-up, which is the other
+   * half of the same instruction: a message with nothing specific to say is not sent to
+   * someone who does not need it. Releases by itself when a post arrives whose subject is
+   * theirs, exactly like NO_NEW_MATERIAL beside it; nothing a person does clears it faster.
+   */
+  NO_DESCRIBABLE_POST: 'no-post-we-can-describe',
   /** Every paid post we have seen naming this recipient has already been written about. */
   MATERIAL_EXHAUSTED: 'material-exhausted',
   PAIR_DAILY_CAP: 'pair-daily-cap',
@@ -467,6 +494,23 @@ export function evaluatePair(input: GovernorInput): GovernorDecision {
       eligible: false,
       reason: SKIP_REASONS.NO_NEW_MATERIAL,
       detail: 'nothing new to reference since the last message — waiting for a fresh campaign',
+    }
+  }
+
+  /**
+   * The stronger half of the same rule (2026-09-01): unclaimed posts exist, but none has a
+   * subject this recipient would recognise as their own, and a follow-up that cites only a
+   * date is the "amateur message with no context" Tabish refused from a live thread.
+   * Directly after NO_NEW_MATERIAL because it is the same family with the same release —
+   * a new paid post — not a textarea, which is why it does not join the two follow-up
+   * stops checked last.
+   */
+  if (input.touchesSoFar > 0 && input.describableCampaignCount === 0) {
+    return {
+      eligible: false,
+      reason: SKIP_REASONS.NO_DESCRIBABLE_POST,
+      detail:
+        'paid posts naming them are unclaimed, but none can be described to them — the subject is unclear or belongs to another advertiser, and a follow-up must say what the post was about; waiting for a post whose subject is theirs',
     }
   }
 

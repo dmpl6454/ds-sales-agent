@@ -4,7 +4,10 @@ import { resolve, join } from 'node:path'
 import {
   FOLLOW_UP_DEFAULT_KEY,
   FOLLOW_UP_POST_TOKEN,
+  MIN_SUBJECT_LENGTH,
+  RETIRED_DATE_ONLY_MARK,
   SHORTEST_POST_REFERENCE,
+  citesOnlyADate,
   followUpForRoute,
   followUpForSettings,
   followUpPostReference,
@@ -119,16 +122,42 @@ describe('what the follow-up says about the post it is for', () => {
    * inventory, and tells the recipient where we watch. Tabish: *"Never mention our
    * competitors in this way never mention their names."*
    *
-   * The date alone is what is left, and it is enough: it identifies the post, it varies per
-   * post — which is what keeps two follow-ups from being byte-identical — and it reveals
-   * nothing. The real defence is that `followUpPostReference` no longer TAKES a handle, so
-   * the second assertion here is about a shape rather than a value.
+   * The subject and the date are what is left: the subject is what the post was ABOUT and
+   * the date identifies which post, varying per post — which is what keeps two follow-ups
+   * from being byte-identical. The real defence is that `followUpPostReference` no longer
+   * TAKES a handle, so the second assertion here is about a shape rather than a value.
    */
-  it('names the day and NOTHING about the publisher, in IST', () => {
+  it('names the subject and the day and NOTHING about the publisher, in IST', () => {
     /* 30 Aug 22:00 UTC is 31 Aug in IST — the reason this goes through the one formatter. */
-    const ref = followUpPostReference({ postedAt: new Date('2026-08-30T22:00:00.000Z') })
-    expect(ref).toBe('your placement on 31 Aug')
+    const ref = followUpPostReference({ postedAt: new Date('2026-08-30T22:00:00.000Z'), subject: 'Toxic' })
+    expect(ref).toBe('your Toxic placement on 31 Aug')
     expect(ref, 'a watched publisher reached a real recipient once; never again').not.toMatch(/@/)
+  })
+
+  /**
+   * ── THE DATE-ONLY FALLBACK IS DELETED (2026-09-01, Tabish) ────────────────
+   *
+   * *"This message is mentioning nothing but date and placement. This is an amateur message
+   * with no context to the paid posts."* — said of a DELIVERED "Hi,We saw your placement on
+   * 31 Aug…". The builder now REQUIRES a subject (a type, not a rule), and `citesOnlyADate`
+   * is how the gate recognises a draft written before that — over the retired fallback's
+   * exact bytes, which the current builder is structurally unable to emit.
+   */
+  it('the retired date-only reference is recognised, and the current builder cannot produce it', () => {
+    expect(citesOnlyADate('Hi,We saw your placement on 31 Aug — we can put that same campaign…')).toBe(true)
+    expect(citesOnlyADate(RETIRED_DATE_ONLY_MARK)).toBe(true)
+    /* Every reference the builder can emit carries a subject between "your " and " placement". */
+    expect(citesOnlyADate(followUpPostReference({ postedAt: new Date('2026-08-31T05:00:00Z'), subject: 'Toxic' }))).toBe(false)
+    expect(citesOnlyADate(followUpPostReference({ postedAt: new Date('2026-01-01T12:00:00Z'), subject: 'Ace' }))).toBe(false)
+    expect(citesOnlyADate('Hi,We saw your Love Lottery placement on 31 Aug — …')).toBe(false)
+  })
+
+  it('the validation worst case uses the shortest subject the filter admits', () => {
+    /* MIN_SUBJECT_LENGTH is the filter's floor; the worst case must not be looser or stricter. */
+    expect(SHORTEST_POST_REFERENCE).toBe(
+      followUpPostReference({ postedAt: new Date(Date.UTC(2026, 0, 1, 12, 0, 0)), subject: 'x'.repeat(MIN_SUBJECT_LENGTH) })
+        .replace('xxx', 'Ace'),
+    )
   })
 
   /**
@@ -170,12 +199,41 @@ describe('what the follow-up says about the post it is for', () => {
     expect(followUpSubject(['Green Soul'], PUBLISHER, RECIPIENT)).toBeNull()
   })
 
+  /**
+   * ── CAUGHT BY RENDERING AGAINST LIVE PAIRS, SECOND PASS (2026-09-01) ───────
+   *
+   * The real #Daayra trailer names TWO studios — ["Junglee Pictures","Pen Studios"] — and
+   * the first version DROPPED the recipient's own name before the exactly-one test, so the
+   * co-producer's name survived alone and "your Pen Studios placement" was about to be said
+   * to @jungleepictures. `campaignTalent` is true on 555 live prospects (the badge door sets
+   * it on admission), so the flag alone could not stop it — the @tips vacuous-test lesson.
+   * The recipient's own name in the brands list now means CO-ADVERTISER, which blocks the
+   * talent arm outright.
+   */
+  it('a co-advertiser on their own joint post is never given the other company’s name', () => {
+    const junglee = { handle: 'jungleepictures', displayName: 'Junglee Pictures', campaignTalent: true }
+    expect(
+      followUpSubject(['Junglee Pictures', 'Pen Studios', '@kareenakapoorkhan'], PUBLISHER, junglee),
+    ).toBeNull()
+  })
+
+  /** The other live catch: a box-office hashtag ("Onam") beside their own film's name. */
+  it('a hashtag beside their own exact name is not their subject either', () => {
+    const toxic = { handle: 'toxic_themovie', displayName: 'TOXIC', campaignTalent: true }
+    expect(followUpSubject(['Toxic', 'Onam'], PUBLISHER, toxic)).toBeNull()
+  })
+
+  /** A stem-match is theirs by construction, so it survives other names on the post. */
+  it('their own product line is nameable even beside another advertiser', () => {
+    const titan = { handle: 'titanwatchesindia', displayName: 'Titan', campaignTalent: false }
+    expect(followUpSubject(['Titan Raga', 'Tanishq'], PUBLISHER, titan)).toBe('Titan Raga')
+    /* Two of their own lines is ambiguous — refusal, never a guess. */
+    expect(followUpSubject(['Titan Raga', 'Titan Eye+'], PUBLISHER, titan)).toBeNull()
+  })
+
   it('renders it into the reference', () => {
     expect(followUpPostReference({ postedAt: new Date('2026-08-29T05:00:00Z'), subject: 'Toxic' })).toBe(
       'your Toxic placement on 29 Aug',
-    )
-    expect(followUpPostReference({ postedAt: new Date('2026-08-29T05:00:00Z'), subject: null })).toBe(
-      'your placement on 29 Aug',
     )
   })
 
@@ -402,6 +460,10 @@ const PAIR = {
     contactFirstName: null,
     kind: 'BRAND',
     discoveredFromCampaignId: null,
+    /* TALENT, like the live delivered example (@akshay0beroi × "Love Lottery"): a person on
+       a paid campaign post is there because of the thing promoted, which is what makes the
+       subject speakable to them. The refusal direction drives campaignTalent: false. */
+    campaignTalent: true,
   },
 } as Parameters<typeof composeForPair>[0]['pair']
 
@@ -413,7 +475,11 @@ beforeEach(() => {
       targetId: 'chan_1',
       caption: 'a paid placement with @dorothy',
       taggedAccounts: '[]',
-      brands: '[]',
+      /* Exactly one subject, so the follow-up can say what the post was ABOUT — required
+         since 2026-09-01; a post with no subject is not citable at all. */
+      brands: '["Love Lottery"]',
+      /* The PUBLISHER — followUpSubject's filter input, never an output. */
+      target: { handle: 'instantbollywood', displayName: 'Instant Bollywood' },
     },
   ])
   campaignFindUnique.mockReset().mockResolvedValue({
@@ -451,7 +517,10 @@ describe('composing the second message', () => {
       followUpTemplate: WRITTEN,
       now: NOW,
     })
-    expect(r.body).toContain('your placement on 29 Aug')
+    expect(r.body).toContain('your Love Lottery placement on 29 Aug')
+    expect(r.body, 'the date-only reference is retired — a follow-up says what the post was about').not.toContain(
+      'your placement on ',
+    )
     /* And NOT the publisher. The mock's campaign is on @instantbollywood; one such message
        reached a real recipient on 1 September before this was caught. */
     expect(r.body, 'a watched competitor is named in a pitch to a prospect').not.toContain('instantbollywood')
@@ -483,6 +552,40 @@ describe('composing the second message', () => {
     await expect(
       composeForPair({
         pair: PAIR,
+        senderHandle: 'bollywoodsocietyy',
+        touchNumber: 2,
+        fleetTemplate: FLEET_TEMPLATE,
+        followUpTemplate: WRITTEN,
+        now: NOW,
+      }),
+    ).rejects.toBeInstanceOf(NoMaterialForFollowUpError)
+  })
+
+  /**
+   * ── THE DATE-ONLY REFUSAL, DRIVEN (2026-09-01, Tabish) ──────────────────
+   *
+   * An unclaimed post EXISTS and its subject cannot be attributed to this recipient — a
+   * multi-advertiser round-up here, `brands` naming two unrelated companies. The old code
+   * rendered "your placement on 29 Aug" for exactly this input and one such message was
+   * DELIVERED; it must now refuse instead. Deleting the `describableCampaignCount` check
+   * or resurrecting the date-only fallback fails this case.
+   */
+  it('refuses rather than citing only a date when no post can be described to them', async () => {
+    campaignFindMany.mockReturnValue([
+      {
+        id: 'camp_2',
+        postedAt: new Date('2026-08-29T05:19:00.000Z'),
+        targetId: 'chan_1',
+        caption: 'a round-up naming @dorothy among others',
+        taggedAccounts: '[]',
+        /* Two unrelated advertisers — the measured 57% case. Not describable to anyone. */
+        brands: '["Google India","Kerala Tourism"]',
+        target: { handle: 'instantbollywood', displayName: 'Instant Bollywood' },
+      },
+    ])
+    await expect(
+      composeForPair({
+        pair: { ...PAIR, target: { ...PAIR.target, campaignTalent: false } },
         senderHandle: 'bollywoodsocietyy',
         touchNumber: 2,
         fleetTemplate: FLEET_TEMPLATE,

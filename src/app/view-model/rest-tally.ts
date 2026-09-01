@@ -10,7 +10,8 @@ import { replyHaltFloor, replyHaltKey } from '@/outreach/replyHalt'
 import { eligibleFleetSenderIds, readSenderAvailability } from '@/outreach/availability'
 import { fleetRingOrder, nextSender } from '@/outreach/rotation'
 import { categoriesFor, readCategoryMemberships, unavailableForTarget } from '@/outreach/categories'
-import { followUpForSettings } from '@/outreach/followUpTemplate'
+import { followUpForSettings, followUpSubject } from '@/outreach/followUpTemplate'
+import { readStringArray } from '@/lib/json'
 
 /**
  * HOW MANY COMPANIES ARE RESTING RIGHT NOW, OUT OF HOW MANY — and which rule holds each.
@@ -175,6 +176,16 @@ const REST_RULES: Record<string, { label: string; needsAPerson: boolean }> = {
   },
   [SKIP_REASONS.NO_NEW_MATERIAL]: {
     label: 'the page whose turn it is has already written about everything we have seen from them',
+    needsAPerson: false,
+  },
+  [SKIP_REASONS.NO_DESCRIBABLE_POST]: {
+    /**
+     * Self-releasing, like NO_NEW_MATERIAL beside it: the release is a new paid post whose
+     * subject is theirs, which detection finds by itself. A follow-up that cites only a date
+     * is never written (2026-09-01, Tabish: "an amateur message with no context").
+     */
+    label:
+      'their recent paid posts name no film, product or campaign of their own — a follow-up must say what the post was about, so the next message waits for a post whose subject is theirs',
     needsAPerson: false,
   },
   [SKIP_REASONS.NO_FOLLOW_UP_TEMPLATE]: {
@@ -343,7 +354,13 @@ export async function buildRestTally(now: Date = new Date()): Promise<RestTally>
       }),
       prisma.detectedCampaign.findMany({
         where: { verdict: 'CAMPAIGN', postedAt: { gte: preloadFloor } },
-        select: { id: true, postedAt: true, caption: true, taggedAccounts: true, brands: true },
+        /* The enforcer's projection PLUS the publisher — `followUpSubject`'s filter input
+           (strip the channel's own marks and name) so this tally can predict
+           NO_DESCRIBABLE_POST by the composer's own rule. A join on a query already made,
+           never a query per row. ONE line: the visible-channels grep carves it out by this
+           exact shape. */
+        // eslint-disable-next-line prettier/prettier
+        select: { id: true, postedAt: true, caption: true, taggedAccounts: true, brands: true, target: { select: { handle: true, displayName: true } } },
       }),
       /* ALL delivered messages, not a window: rotation's `lastSenderTo` is all-time, and the
          ring rule wants each sender's most recent delivery "at any age". Ascending, so the last
@@ -428,6 +445,9 @@ export async function buildRestTally(now: Date = new Date()): Promise<RestTally>
       },
     },
   }
+
+  /** id → the post's brands and publisher, for the describable-post prediction. In memory already. */
+  const postById = new Map(posts.map((c) => [c.id, c]))
 
   const lastBySenderPerTarget = new Map<string, Map<string, { sentAt: Date; handle: string }>>()
   /**
@@ -630,8 +650,32 @@ export async function buildRestTally(now: Date = new Date()): Promise<RestTally>
       /* `newMaterialFloor`, NOT the allowance window — that is the floor the governor's own
          query uses, and the two are genuinely different (72h vs 7 days). */
       const rows = await campaignsNamingHandleRows(preloaded, p, materialFloor)
-      if (rows.filter((r) => !used.includes(r.id)).length === 0) {
+      const unclaimed = rows.filter((r) => !used.includes(r.id))
+      if (unclaimed.length === 0) {
         bump(SKIP_REASONS.NO_NEW_MATERIAL, null)
+        continue
+      }
+      /**
+       * ── AND CAN ANY OF THEM BE DESCRIBED? (2026-09-01) ────────────────────
+       *
+       * The governor's next stop, in the governor's own position: a follow-up must say what
+       * the post was about (the date-only fallback is deleted), so unclaimed posts none of
+       * which `followUpSubject` attributes to this recipient hold the pair exactly as no
+       * posts at all would. Same subject rule the composer picks with, over the preloaded
+       * rows — no query per prospect.
+       */
+      const describable = unclaimed.some((r) => {
+        const post = postById.get(r.id)
+        return post
+          ? followUpSubject(readStringArray(post.brands), post.target, {
+              handle: p.handle,
+              displayName: p.displayName,
+              campaignTalent: p.campaignTalent,
+            }) !== null
+          : false
+      })
+      if (!describable) {
+        bump(SKIP_REASONS.NO_DESCRIBABLE_POST, null)
         continue
       }
     }

@@ -109,6 +109,7 @@ function governorInput(over: Record<string, unknown> = {}) {
     parkedFailureCode: null,
     material: { held: false as const, allowance: 1, delivered: 0 },
     unusedCampaignCount: 5,
+    describableCampaignCount: 5,
     pairSentTodayCount: 0,
     maxPerPairPerDay: 5,
     crossSpacing: { held: false },
@@ -178,6 +179,14 @@ const GOVERNOR_CASES: Array<[string, Record<string, unknown>]> = [
   [SKIP_REASONS.UNCERTAIN_DELIVERY, { parkedFailureCode: 'not-in-thread' }],
   [SKIP_REASONS.PARKED_FAILURE, { parkedFailureCode: 'no-composer' }],
   [SKIP_REASONS.NO_NEW_MATERIAL, { touchesSoFar: 1, unusedCampaignCount: 0 }],
+  /**
+   * ── UNCLAIMED POSTS EXIST AND NONE CAN BE DESCRIBED (2026-09-01) ──────────
+   * The date-only fallback is deleted — a follow-up must say what the post was about, so a
+   * recipient whose unclaimed posts all fail `followUpSubject` waits exactly as one with no
+   * posts does. Note `unusedCampaignCount > 0`: this stop is the OTHER half of the material
+   * rule, reachable only past NO_NEW_MATERIAL.
+   */
+  [SKIP_REASONS.NO_DESCRIBABLE_POST, { touchesSoFar: 1, unusedCampaignCount: 3, describableCampaignCount: 0 }],
   /**
    * ── A SECOND MESSAGE WITH NOTHING DIFFERENT TO SAY (2026-09-01) ───────────
    *
@@ -250,6 +259,7 @@ function gateInput(over: Record<string, unknown> = {}) {
     maxPerPairPerDay: 5,
     crossSpacing: { held: false },
     isFollowUp: false,
+    followUpCitesOnlyADate: false,
     followUpTemplate: FOLLOW_UP_WRITTEN,
     ...over,
   } as Parameters<typeof evaluateResend>[0]
@@ -319,6 +329,12 @@ const GATE_CASES: Array<[string, Record<string, unknown>]> = [
    * follow-up leave first-touch sending byte-for-byte as it was.
    */
   [RESEND_BLOCKS.FOLLOW_UP_TEMPLATE_NOT_SET, { isFollowUp: true, followUpTemplate: FOLLOW_UP_UNWRITTEN }],
+  /**
+   * A pre-rule draft whose stored bytes cite only a date ("your placement on 31 Aug") —
+   * 25 were waiting when the subject became required (2026-09-01). Recognised from the
+   * BYTES, never recomposed, because an operator may have edited the draft.
+   */
+  [RESEND_BLOCKS.FOLLOW_UP_CITES_ONLY_A_DATE, { isFollowUp: true, followUpCitesOnlyADate: true }],
 ]
 
 describe('every gate stop is reachable and explains itself', () => {

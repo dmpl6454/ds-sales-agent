@@ -55,6 +55,8 @@ const STOP_LABELS: Record<(typeof RESEND_BLOCKS)[keyof typeof RESEND_BLOCKS], st
     'this company\u2019s fleet has no standard message written yet — its recipients are never sent the other fleet\u2019s copy',
   [RESEND_BLOCKS.FOLLOW_UP_TEMPLATE_NOT_SET]:
     'this page has already written to them and no follow-up message is written for their fleet — a second message has to say something different from the first',
+  [RESEND_BLOCKS.FOLLOW_UP_CITES_ONLY_A_DATE]:
+    'this follow-up says only a date with nothing about what the paid post was — follow-ups must name the post’s subject (their film, product or campaign), so a draft written before that rule never sends',
   [RESEND_BLOCKS.TARGET_REPLIED]:
     'they replied to this page — that page pauses for seven days from the date they wrote, then resumes on its own',
   [RESEND_BLOCKS.MATERIAL_EXHAUSTED]:

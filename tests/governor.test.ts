@@ -58,6 +58,7 @@ function base(overrides: Partial<GovernorInput> = {}): GovernorInput {
     /* Room for one message: the allowance is max(1, campaigns). */
     material: { held: false as const, allowance: 1, delivered: 0 },
     unusedCampaignCount: 2,
+    describableCampaignCount: 2,
     pairSentTodayCount: 0,
     maxPerPairPerDay: 5,
     crossSpacing: { held: false },
