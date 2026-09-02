@@ -10,6 +10,7 @@ import { discoverOfficialPages } from '@/detection/officialDiscovery'
 import { badgeDoorPass } from '@/detection/badgeDoor'
 import { checkForReplies } from '@/outreach/replyCheck'
 import { getSettings } from '@/lib/settings'
+import { DISK_CARE_INTERVAL_MS, diskCareTick } from './diskCare'
 
 /**
  *   pnpm agent:device
@@ -517,6 +518,18 @@ export async function runDeviceAgent(): Promise<void> {
   const replies = setInterval(() => void replyPass(), REPLY_INTERVAL_MS)
   replies.unref?.()
 
+  /**
+   * Disk care, on its own clock and NOT gated on autopilot: rotating a log and pruning
+   * browser cache is housekeeping about THIS machine, not activity against anyone's
+   * account — the prune itself still takes the send lock and still refuses any profile a
+   * live Chrome holds. Fired once at startup because the machine most in need of it is
+   * one that has just been restarted after filling up. This machine has hit literally
+   * zero bytes free twice with the fix one un-run command away; see src/agent/diskCare.ts.
+   */
+  void diskCareTick()
+  const disk = setInterval(() => void diskCareTick(), DISK_CARE_INTERVAL_MS)
+  disk.unref?.()
+
   while (!stopping) {
     /**
      * ── THE POLL IS A PERIOD, NOT IDLE TIME AFTER A SEND (2026-08-22) ────────
@@ -577,6 +590,7 @@ export async function runDeviceAgent(): Promise<void> {
   clearInterval(presence)
   clearInterval(brands)
   clearInterval(replies)
+  clearInterval(disk)
 }
 
 export function stopDeviceAgent(): void {

@@ -71,6 +71,71 @@ properly rather than kept on a handle we could never confirm.
 
 ---
 
+## 2 SEPTEMBER, MIDDAY — THE QUIET MORNING WAS A CLOSED LID, AND THE DISK LOOKS AFTER ITSELF NOW
+
+**Tabish: *"why are no messages being sent rapidly? … my mac lid was closed only temporarily
+… is autopilot and paid post target detection healthy? Why has message frequency dropped?"***
+Measured before anything was changed, and the system was healthy the whole time:
+
+- **THE DMG IS NOT RUNNING THIS MAC, AND NEVER WAS AFTER THE TEST.** All three launchd jobs
+  point at the Desktop repo (`WorkingDirectory` read from the plists), `~/ds-sales-agent`
+  does not exist, and the app in /Applications is a dashboard SHORTCUT once an install
+  exists — it runs nothing. The previous session's correction stands. "It feels like since
+  the DMG the frequency dropped" has no mechanism: the runtime never changed.
+- **THE MORNING GAP WAS THE LID.** `pmset -g log`: **Clamshell Sleep 08:49 IST**, then only
+  2-second DarkWakes until a full wake at **10:27** — on BATTERY throughout, and
+  `caffeinate -i` prevents IDLE sleep only; nothing overrides a closed lid on battery (the
+  documented one uncoverable case). ~1.6 hours of sends lost, nothing forgotten: the queue
+  resumed on wake, and at the moment of checking the agent was delivering at the 1-minute
+  pace (four sends 12:16–12:20, then the honest all-held state).
+- **FREQUENCY IS MATERIAL-BOUND, NOT FAULT-BOUND.** Drafts written per day ≈ deliveries per
+  day (88 / 55 / 80 / 157 across 30 Aug–2 Sep); detection minutes-fresh with **688 posts
+  stored, 67 paid in 24h**; all 5 senders ACTIVE, 0 challenged, 0 dead sessions;
+  plan/detect/heartbeat stamps seconds old; cost **$0.093/24h over 2,879 calls**. The 13:00
+  and 14:00 IST hours of 1 Sep delivered 22 and 19 — the rate is whatever paid posts fund.
+
+### DISK CARE RUNS ITSELF NOW (`src/agent/diskCare.ts`) — THE THIRD "COMMAND NOBODY RAN" CLOSED
+
+This Mac hit literally zero bytes free twice with `pnpm ig:prune` one un-run command away —
+the 166-frames shape, on the disk. MEASURED at build time: **5.0 GB of Chrome profile cache**
+and a **236 MB watch.log** (launchd appends forever, nothing rotated), against 8.6 GB free.
+The device agent now runs a disk-care pass on its own timer (startup + every 6h):
+
+| | |
+|---|---|
+| log rotation | every pass: any `*.log` in the data logs dir over **25 MB** keeps a 2 MB tail in `<name>.1` and is truncated IN PLACE (launchd holds the fd; a rename would detach it) |
+| profile prune | only when free disk **< 10 GiB**: every profile worth ≥64 MB, through the REAL `pruneProfile` — allowlist, is-Chrome-open refusal, backup and hash-verify unchanged — under the send lock, so a delete can never race a live browser drive. A busy lock skips the pass |
+| failure posture | never takes the agent down; identity damage after a prune is ALARMED with the backup named |
+
+**FIRST LIVE PASS, same minute as the deploy:** watch.log 236 MB → rotated; **6 profiles
+pruned, 4,345 MB freed, free disk 8.6 → 13.3 GB**, 0 refused, 0 identity damage, the burner
+skipped as too small. This ships in the repo, so every DMG install gets it on its next
+install/update — "no manual step" now covers the disk on every machine that sends.
+
+**A MUTATION RUN THAT FAILS FOR THE WRONG REASON IS NOT EVIDENCE.** The first floor-check
+mutation "failed the suite" — with `Tests: no tests`: the file had failed to LOAD, because a
+targeted `pnpm vitest run` skips the SQLite client regeneration that `pnpm test` does and the
+Postgres client was on disk. Regenerate first (`pnpm prisma generate`), then mutate: 8 pass →
+exactly the above-the-floor case fails → restore → 8 pass. And `git checkout` cannot revert a
+mutation on an UNTRACKED file — the perl edit was still live until reversed by hand.
+
+### THE DMG ON ANOTHER MAC — VERIFIED COMPLETE, WITH THE CAVEATS THAT STAY TRUE
+
+The installer runs the same `install-tunnel.sh` + `install-watch.sh` (caffeinate-wrapped,
+KeepAlive, reboot-surviving) from the unpacked repo, and README.txt covers the three secrets,
+right-click → Open, the shared VIEWER login and the one-time `pnpm ig:login <handle>`. So
+yes: another Mac behaves exactly like this one — including the parts that are physics, not
+software: **it sends only for accounts hand-logged-in ON that Mac**, a closed lid on battery
+sleeps THAT machine's sends, and installed Macs do NOT auto-update (rebuild + re-hand the
+image after major changes — done for this one). **The hosted dashboard still needs the
+Cloudflare DNS record** (A, `e035e4d46c` → 172.105.53.101, Proxied ON) or DMG operators see
+no dashboard; localhost:3100 exists only where the dashboard supervisor is installed.
+
+| tests / typecheck | **2,140 / 122 files**, clean; the floor check mutation-tested properly |
+| autopilot | ON, delivering through the whole session; the restart waited for the reply sweep's browser to close |
+
+---
+
 ## 2 SEPTEMBER, MORNING — THREE SMALL SCREEN LIES, CAUGHT FROM ONE PAIR OF SCREENSHOTS
 
 **Tabish: *"appropriate and updated values are not being displayed."*** All three were real,
