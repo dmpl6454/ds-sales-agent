@@ -14,8 +14,7 @@ import { operatorName } from '@/outreach/render'
  * `prospects/list.tsx` imports `ProspectRow` with `import type`, which is erased at compile
  * time and carries no runtime edge; keep it that way.
  */
-import { profileStatus } from '@/outreach/browser/profile'
-import { sessionUsable } from '@/outreach/sessionHealth'
+import { sessionIsUsable } from './session-view'
 import { describeRing, whoseTurnForMany } from '@/outreach/categories'
 import { readSenderAvailability } from '@/outreach/availability'
 import { auditTarget, AUDIT_WHY_SENTENCE } from '@/outreach/targetAudit'
@@ -218,18 +217,17 @@ export async function buildProspectsPage(): Promise<ProspectsPageView> {
      */
     prisma.senderAccount.findMany({
       where: { fleetMember: true, status: 'ACTIVE' },
-      select: { handle: true, sessionInvalidAt: true },
+      select: { handle: true, sessionInvalidAt: true, sessionPath: true },
     }),
   ])
 
   /**
-   * Composed exactly the way `plan.ts` composes it: a cookie on disk AND nothing has since
-   * proved it dead. `hasSession` alone reported @tabishmukaddam1 as connected while every
-   * real send failed with a login form — freshness is not liveness.
+   * Composed exactly the way `plan.ts` composes it — a session AND nothing has since proved
+   * it dead — but read HOST-AWARE (2026-09-02): on the hosted dashboard the local disk made
+   * this 0 for a fleet that was actively sending. sessionIsUsable trusts the device's DB
+   * record there and this machine's disk on a sending machine.
    */
-  const sendersAble = fleetSenders.filter((s) =>
-    sessionUsable({ hasSessionOnDisk: profileStatus(s.handle).hasSession, sessionInvalidAt: s.sessionInvalidAt }),
-  ).length
+  const sendersAble = fleetSenders.filter((s) => sessionIsUsable(s)).length
 
   /**
    * Delivered counts and reply state in ONE query rather than per row.

@@ -243,14 +243,28 @@ export async function writePresence(handles: string[]): Promise<void> {
     .catch(() => undefined) // presence must never take the agent down
 }
 
-/** Every device the dashboard knows about, freshest first. */
+/**
+ * A device is "present" only while its agent is actually beating. Entries are written every
+ * 30s (`PRESENCE_INTERVAL_MS`) and never removed, so without a cutoff a Mac that stopped —
+ * lid closed, uninstalled, a one-off test install — stays in the array forever and the
+ * dashboard's "Online now" and the Connect device picker offer a dead machine (measured
+ * 2026-09-02: `tabish-dmg-test`, 22 hours dead, listed beside the live device; a sign-in
+ * addressed to it sits at 'requested' until the 20-minute TTL cancels it). Four missed
+ * beats is decisively offline, not a blip.
+ */
+export const PRESENCE_FRESH_MS = 4 * PRESENCE_INTERVAL_MS
+
+/** Every device whose agent is beating right now, freshest first. */
 export async function readPresence(): Promise<DevicePresence[]> {
   const row = await prisma.setting.findUnique({ where: { key: DEVICE_PRESENCE_KEY } })
   if (!row) return []
   try {
     const parsed = JSON.parse(row.value)
     if (!Array.isArray(parsed)) return []
-    return (parsed as DevicePresence[]).sort((a, b) => b.at.localeCompare(a.at))
+    const cutoff = Date.now() - PRESENCE_FRESH_MS
+    return (parsed as DevicePresence[])
+      .filter((d) => new Date(d.at).getTime() >= cutoff)
+      .sort((a, b) => b.at.localeCompare(a.at))
   } catch {
     return []
   }

@@ -5,7 +5,7 @@ import { prisma } from '@/lib/db'
 import { createSession, destroySession, pruneExpiredSessions } from '@/lib/session'
 import { emailProblem, hashPassword, normaliseEmail, passwordProblem, verifyPassword } from '@/lib/password'
 import { safeNext } from '@/lib/safe-next'
-import { inviteCodeAccepted, DEFAULT_ROLE, type Role } from '@/lib/roles'
+import { inviteCodeAccepted, type Role } from '@/lib/roles'
 import { env } from '@/lib/env'
 
 /**
@@ -116,20 +116,17 @@ export async function signUp(
   }
 
   /**
-   * FIRST ACCOUNT BOOTSTRAPS AS OPERATOR, everyone after is a viewer.
+   * EVERY ACCOUNT IS AN OPERATOR — Tabish, 2026-09-02, verbatim: "All users must be at same
+   * high level access (chuck operator, viewer, everyone has utmost access)."
    *
-   * Otherwise a fresh deployment has nobody who can promote anybody — a locked door with
-   * the key inside, which would be "solved" by editing the database by hand and would
-   * therefore teach exactly the wrong habit. The first account already proves possession
-   * of the invite code, and there is nothing yet for it to be dangerous with: no
-   * connected Instagram profiles, no drafts.
-   *
-   * Counted rather than assumed. A `count()` here is fine because signup is rare and the
-   * race — two people registering simultaneously on a brand-new deployment — would grant
-   * a second operator on a server where both are holding the same invite code anyway.
+   * This replaces "first account bootstraps operator, everyone after is a viewer". The
+   * trade is stated once and recorded as his: whoever holds the invite code gets the
+   * autopilot switch, retirement, templates and role controls the moment they register.
+   * The invite code (`SIGNUP_INVITE_CODE`, unset = signup CLOSED) is now the entire gate,
+   * so treat it as a credential. The role column and `requireOperator` stay — reversing
+   * this is one line here plus demotions in the Team panel.
    */
-  const isFirstAccount = (await prisma.user.count()) === 0
-  const role: Role = isFirstAccount ? 'operator' : DEFAULT_ROLE
+  const role: Role = 'operator'
 
   const user = await prisma.user.create({
     data: { email: normalised, passwordHash: await hashPassword(password), role },
@@ -141,9 +138,7 @@ export async function signUp(
       actor: user.email,
       action: 'auth.signup',
       entity: `User:${user.email}`,
-      detail: isFirstAccount
-        ? 'first account on this deployment — created as an operator, so someone can approve the rest'
-        : 'invited — created as a viewer, and cannot send until an operator approves it',
+      detail: 'created as an operator — all users share full access (Tabish, 2026-09-02)',
     },
   })
 

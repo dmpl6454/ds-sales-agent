@@ -90,6 +90,15 @@ export interface RuntimeSettings {
    */
   autopilotEnabled: boolean
   /**
+   * The RAW fleet-wide switch, un-floored by this machine's env. `autopilotEnabled` above is
+   * what THIS deployment may act on (env && row) and stays the enforcement value everywhere;
+   * this one is what the fleet has chosen, and it exists for the DISPLAY: the hosted
+   * dashboard (env floor false) was rendering "Autopilot is OFF" about a fleet that was
+   * actively sending from the device (Tabish, 2026-09-02). A screen must report the fleet's
+   * truth; only a dispatcher needs the machine's.
+   */
+  autopilotFleetWide: boolean
+  /**
    * How many brands may be contacted for the FIRST time in one IST day.
    *
    * Separate from `SenderAccount.dailyCap` because they protect different things:
@@ -349,6 +358,8 @@ function defaults(): RuntimeSettings {
     defaultCooldownDays: env.DEFAULT_COOLDOWN_DAYS,
     hookMaxAgeHours: env.HOOK_MAX_AGE_HOURS,
     autopilotEnabled: env.AUTOPILOT_ENABLED,
+    // With no DB row there is no fleet choice recorded; OFF, same default as the row read.
+    autopilotFleetWide: false,
     // Unlimited since 2026-08-18 ("Remove all caps", Tabish). The queue-depth bound
     // below is what still bounds the draft backlog; delivered volume is bounded only
     // by the per-pair rule and the fleet minimum gap.
@@ -504,6 +515,7 @@ async function readSettings(): Promise<RuntimeSettings> {
      * chosen that. Granting permission must never be the same act as switching on.
      */
     autopilotEnabled: d.autopilotEnabled && bool(SETTING_KEYS.autopilotEnabled, false),
+    autopilotFleetWide: bool(SETTING_KEYS.autopilotEnabled, false),
     maxNewBrandTouchesPerDay: num(SETTING_KEYS.maxNewBrandTouchesPerDay, d.maxNewBrandTouchesPerDay, {
       allowUnlimited: true,
     }),

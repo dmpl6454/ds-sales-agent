@@ -21,8 +21,9 @@ import {
  */
 import { validatePersona, prettifyBrand, operatorName } from '@/outreach/render'
 import { FOLLOWER_SNAPSHOT, DELIVERED_STATUSES, IN_FLIGHT_STATUSES } from '@/lib/constants'
-import { profileStatus } from '@/outreach/browser/profile'
-import { sessionUsable } from '@/outreach/sessionHealth'
+// Host-aware "is this account signed in" — DB record on the hosted dashboard, disk on a
+// sending machine. Never read profileStatus directly for a page: the Linode has no profiles.
+import { sessionIsUsable } from './view-model/session-view'
 import { postUrl } from '@/lib/urls'
 import { isConnecting } from '@/outreach/browser/connect'
 import { getSettings } from '@/lib/settings'
@@ -800,12 +801,9 @@ export async function buildCeoView(): Promise<CeoView> {
     let state: AccountCard['state']
     let note: string
 
-    // §3.5: a cookie on disk AND nothing has since proved it dead. `hasSession` alone said
-    // "connected" about a session every real send was failing against.
-    const hasProfile = sessionUsable({
-      hasSessionOnDisk: profileStatus(s.handle).hasSession,
-      sessionInvalidAt: s.sessionInvalidAt,
-    })
+    // §3.5: a cookie on disk AND nothing has since proved it dead — read HOST-AWARE
+    // (sessionIsUsable): on the Linode there is no disk truth, the device's DB record is it.
+    const hasProfile = sessionIsUsable(s)
 
     if (s.status === 'CHALLENGED') {
       state = 'broken'
@@ -859,7 +857,13 @@ export async function buildCeoView(): Promise<CeoView> {
 
   const hb = heartbeat
   const autopilot: AutopilotState = {
-    on: settings.autopilotEnabled,
+    /**
+     * The FLEET-WIDE setting, not this machine's effective value. `settings.autopilotEnabled`
+     * is env-floored (`env.AUTOPILOT_ENABLED && setting`), so the hosted dashboard read
+     * "OFF" about a fleet that was actively sending — which is what Tabish saw (2026-09-02).
+     * Enforcement still uses the floored value everywhere; only the DISPLAY is fleet truth.
+     */
+    on: settings.autopilotFleetWide,
     // `from === to` is the zero-width window `withinActiveHours` reads as "always on".
     paceClause:
       ACTIVE_FROM_HOUR === ACTIVE_TO_HOUR
@@ -889,19 +893,15 @@ export async function buildCeoView(): Promise<CeoView> {
      * was invisible on the one card that explains why nothing is sending. Every session-less
      * account is now named there.
      */
-    readyHandles: senders
-      .filter(
-        (s) =>
-          s.status === 'ACTIVE' &&
-          sessionUsable({ hasSessionOnDisk: profileStatus(s.handle).hasSession, sessionInvalidAt: s.sessionInvalidAt }),
-      )
-      .map((s) => s.handle),
-    needLoginHandles: senders
-      .filter(
-        (s) =>
-          !sessionUsable({ hasSessionOnDisk: profileStatus(s.handle).hasSession, sessionInvalidAt: s.sessionInvalidAt }),
-      )
-      .map((s) => s.handle),
+    /**
+     * HOST-AWARE since 2026-09-02. These read `profileStatus` (LOCAL DISK) directly, so on
+     * the hosted dashboard — no Chrome profiles — every signed-in, actively-sending account
+     * rendered "not signed in, so they cannot send" on the landing page while the fleet was
+     * delivering 9/hour. Tabish caught it from the live page. Same defect class the
+     * /senders fix closed; the shared rule is `sessionIsUsable` (session-view.ts).
+     */
+    readyHandles: senders.filter((s) => s.status === 'ACTIVE' && sessionIsUsable(s)).map((s) => s.handle),
+    needLoginHandles: senders.filter((s) => !sessionIsUsable(s)).map((s) => s.handle),
   }
 
 
@@ -1765,51 +1765,63 @@ export interface CostView {
 }
 
 export async function buildCostView(): Promise<CostView> {
-  const calls = await prisma.modelCall.findMany({
-    select: { ok: true, purpose: true, subject: true, costUsd: true, inputTokens: true, cachedInputTokens: true },
-  })
+  /**
+   * AGGREGATED IN THE DATABASE, 2026-09-02. This was a `findMany` over EVERY ModelCall row —
+   * fine when the ledger was small, and at 50,753 rows it loaded the whole table into memory
+   * (plus an IN-clause join over every distinct classify shortcode) on each render. On the
+   * hosted dashboard that pushed /cost past Cloudflare's 100-second origin ceiling: the page
+   * answered 502/504/524, one of the seven pages simply did not load (found live,
+   * 2026-09-02). The ledger only grows (~2,800 calls/day), so the fix is aggregation where
+   * the rows live — the SUM measured 597ms over the tunnel against 33s for one bare count.
+   * Note for the query budget: `ig:layout` counts QUERIES, so the old single fat findMany
+   * passed the budget while being the slowest read in the product — a budget over query
+   * COUNT cannot see payload size.
+   */
+  const [agg, failed, purposeRows, channelRows] = await Promise.all([
+    prisma.modelCall.aggregate({
+      _count: { _all: true },
+      _sum: { costUsd: true, inputTokens: true, cachedInputTokens: true },
+    }),
+    prisma.modelCall.count({ where: { ok: false } }),
+    prisma.modelCall.groupBy({ by: ['purpose'], _count: { _all: true }, _sum: { costUsd: true } }),
+    /**
+     * A classify call's subject is the post's shortcode, so the channel it was spent on is
+     * one join away — done IN SQL so tens of thousands of rows never cross the wire. Calls
+     * whose subject no longer resolves are reported under 'no longer stored', never dropped.
+     * Written to run on BOTH providers (the two-provider trap): quoted identifiers and
+     * CAST(... AS INTEGER) are Postgres AND SQLite; no `::` casts, no provider functions.
+     */
+    prisma.$queryRaw<Array<{ handle: string; calls: number | bigint; usd: number }>>`
+      SELECT COALESCE(t."handle", 'no longer stored') AS handle,
+             CAST(COUNT(*) AS INTEGER) AS calls,
+             COALESCE(SUM(m."costUsd"), 0) AS usd
+      FROM "ModelCall" m
+      LEFT JOIN "DetectedCampaign" dc ON dc."shortcode" = m."subject"
+      LEFT JOIN "TargetAccount" t ON t."id" = dc."targetId"
+      WHERE m."purpose" = 'classify'
+      GROUP BY COALESCE(t."handle", 'no longer stored')
+    `,
+  ])
 
-  const input = calls.reduce((n, c) => n + c.inputTokens, 0)
-  const cached = calls.reduce((n, c) => n + c.cachedInputTokens, 0)
-
-  const byPurpose = new Map<string, { calls: number; usd: number }>()
-  for (const c of calls) {
-    const row = byPurpose.get(c.purpose) ?? { calls: 0, usd: 0 }
-    row.calls += 1
-    row.usd += c.costUsd
-    byPurpose.set(c.purpose, row)
-  }
-
-  // A classify call's subject is the post's shortcode, so the channel it was spent on is
-  // one join away. Calls whose subject no longer resolves are reported, never dropped.
-  const shortcodes = [...new Set(calls.filter((c) => c.purpose === 'classify' && c.subject).map((c) => c.subject!))]
-  const posts = await prisma.detectedCampaign.findMany({
-    where: { shortcode: { in: shortcodes } },
-    select: { shortcode: true, target: { select: { handle: true } } },
-  })
-  const channelOf = new Map(posts.map((p) => [p.shortcode, p.target.handle]))
-
-  const perChannelMap = new Map<string, { calls: number; usd: number }>()
-  for (const c of calls) {
-    if (c.purpose !== 'classify') continue
-    const handle = (c.subject && channelOf.get(c.subject)) ?? 'no longer stored'
-    const row = perChannelMap.get(handle) ?? { calls: 0, usd: 0 }
-    row.calls += 1
-    row.usd += c.costUsd
-    perChannelMap.set(handle, row)
-  }
+  const input = agg._sum.inputTokens ?? 0
+  const cached = agg._sum.cachedInputTokens ?? 0
 
   return {
     spend: {
-      calls: calls.length,
-      failed: calls.filter((c) => !c.ok).length,
-      usd: calls.reduce((n, c) => n + c.costUsd, 0),
+      calls: agg._count._all,
+      failed,
+      usd: agg._sum.costUsd ?? 0,
       // Null rather than 0 when nothing has been sent: "no calls yet" and "the cache never
       // hits" are different facts, and a bare 0% would report the second.
       cachedShare: input + cached > 0 ? cached / (input + cached) : null,
     },
-    byPurpose: [...byPurpose.entries()].map(([purpose, r]) => ({ purpose, ...r })).sort((a, b) => b.usd - a.usd),
-    perChannel: [...perChannelMap.entries()].map(([handle, r]) => ({ handle, ...r })).sort((a, b) => b.usd - a.usd),
+    byPurpose: purposeRows
+      .map((r) => ({ purpose: r.purpose, calls: r._count._all, usd: r._sum.costUsd ?? 0 }))
+      .sort((a, b) => b.usd - a.usd),
+    // Raw drivers disagree on integer width (Postgres bigint vs SQLite integer) — coerce.
+    perChannel: channelRows
+      .map((r) => ({ handle: r.handle, calls: Number(r.calls), usd: Number(r.usd) }))
+      .sort((a, b) => b.usd - a.usd),
   }
 }
 

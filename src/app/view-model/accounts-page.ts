@@ -4,27 +4,11 @@ import { daysAgo, istDateKey, relativeLabel } from '@/lib/time'
 import { operatorName } from '@/outreach/render'
 import { cohortSoakDays, mayArmCohort, readCohortStates } from '@/outreach/cohorts'
 import { profileStatus } from '@/outreach/browser/profile'
-import { sessionUsable, sessionRecorded } from '@/outreach/sessionHealth'
 import { getSettings } from '@/lib/settings'
 import { env } from '@/lib/env'
-
-/**
- * ── "SIGNED IN" IS A DIFFERENT QUESTION ON THE HOSTED DASHBOARD ──────────────
- *
- * On a SENDING machine (localhost, the device — `SEND_ENABLED`), the truth about a session
- * is the cookie file on THIS disk: that is what the browser will actually find. On the
- * HOSTED dashboard (the Linode, `SEND_ENABLED=false`) there are no profiles at all, so the
- * disk always says "never signed in" — which would render every account as disconnected on
- * the one dashboard other operators use. There the machine-independent DB record is the
- * right witness: `sessionPath` is what the device wrote when it connected (via the relay or
- * reconcile), and `sessionInvalidAt` is what a failed send wrote. So the hosted view trusts
- * the record, and a sending machine trusts its disk.
- */
-function sessionIsUsable(s: { handle: string; sessionPath: string | null; sessionInvalidAt: Date | null }): boolean {
-  return env.SEND_ENABLED
-    ? sessionUsable({ hasSessionOnDisk: profileStatus(s.handle).hasSession, sessionInvalidAt: s.sessionInvalidAt })
-    : sessionRecorded(s)
-}
+// The "signed in" rule is host-aware and SHARED — it drifted here privately once and the
+// landing page, nav badge and /targets kept lying on the hosted dashboard. See its docblock.
+import { sessionIsUsable } from './session-view'
 
 /**
  * The `/accounts` page, and only that page.
