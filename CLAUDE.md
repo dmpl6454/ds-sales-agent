@@ -127,9 +127,18 @@ right-click → Open, the shared VIEWER login and the one-time `pnpm ig:login <h
 yes: another Mac behaves exactly like this one — including the parts that are physics, not
 software: **it sends only for accounts hand-logged-in ON that Mac**, a closed lid on battery
 sleeps THAT machine's sends, and installed Macs do NOT auto-update (rebuild + re-hand the
-image after major changes — done for this one). **The hosted dashboard still needs the
-Cloudflare DNS record** (A, `e035e4d46c` → 172.105.53.101, Proxied ON) or DMG operators see
-no dashboard; localhost:3100 exists only where the dashboard supervisor is installed.
+image after major changes — done for this one).
+
+**AND THE HOSTED DASHBOARD IS LIVE — Tabish added the Cloudflare record the same afternoon**
+(A, `e035e4d46c` → 172.105.53.101, Proxied ON), closing the 1 September open item. VERIFIED
+from outside: DNS resolves to Cloudflare edge IPs, `/` answers HTTP/2 **307 → /sign-in**
+through the edge (`cf-ray` present), and the sign-in page serves 200 with the form. So the
+handover split is now complete and worth stating as the rule: **anyone who only WATCHES
+needs no DMG — the hosted URL and the shared viewer login are enough; the DMG is required
+exactly for a machine that SENDS**, because sending needs Chrome profiles hand-logged-in
+from a home IP, which no website can ever provide (that would be the session transplant the
+whole design forbids). localhost:3100 exists only where `install-dashboard.sh` was run —
+today, Tabish's Mac alone.
 
 | tests / typecheck | **2,140 / 122 files**, clean; the floor check mutation-tested properly |
 | autopilot | ON, delivering through the whole session; the restart waited for the reply sweep's browser to close |
