@@ -71,6 +71,37 @@ properly rather than kept on a handle we could never confirm.
 
 ---
 
+## 2 SEPTEMBER, MORNING — THREE SMALL SCREEN LIES, CAUGHT FROM ONE PAIR OF SCREENSHOTS
+
+**Tabish: *"appropriate and updated values are not being displayed."*** All three were real,
+all verified against the SERVED BYTES before and after (never the source alone):
+
+- **A time-less row led the "Delivered" list.** One REPLIED attempt carries `sentAt: null`,
+  and **Postgres puts NULL FIRST under `DESC`** — so it rendered at the TOP wearing an
+  em-dash, presented as the newest send. `nulls: 'last'` on all six delivered-list
+  orderings, pinned in `tests/sent-history.test.ts`. (The same trap corrupted a script of
+  mine the same day; it is a QUERY property, not a UI one.)
+- **Three dropped spaces on `/paid-posts`**: *"that wayand are marked"*, *"1posts have no
+  frame"*, *"caption ."* — the `themunder` JSX class again, twice beside an element rather
+  than a line break, which the previous scan pattern did not cover. Explicit `{' '}`;
+  the served HTML now reads `</strong> <!-- -->and`.
+
+Paid posts were populating throughout (newest post 0 min old at verification; detection and
+planner stamps minutes fresh) — the VALUES were right, the RENDERING lied, which is this
+file's oldest distinction. Deployed to both hosts; DMG rebuilt per the standing rule.
+
+**And the lifecycle questions, answered once for the record:** closing Terminal stops
+NOTHING (launchd owns the agent, tunnel and dashboard; Terminal only mattered during the
+interactive install) — and **trashing the .app stops nothing either** (the code lives in
+`~/ds-sales-agent`, the jobs in `~/Library/LaunchAgents`). Stopping is a decision, not an
+accident: the Autopilot toggle for sends, `install-watch.sh uninstall` +
+`install-tunnel.sh uninstall` for the machine. A fresh Mac is NEVER exempt from the one
+hand act: `pnpm ig:login <handle>` once per Instagram account — this Mac skipped it only
+because its Chrome profiles (machine-global, `~/.ds-sales-agent`) already hold sessions. A
+person who connects nothing sends nothing, harmlessly.
+
+---
+
 ## 1 SEPTEMBER, LATE EVENING — TWO SEND LOOPS, THE DMG, AND THE READ PATH NEVER COUNTED ITS DRIVES
 
 **Tabish, from three screenshots: *"the agent has tried multiple times messaging acearteofficial
