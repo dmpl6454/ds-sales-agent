@@ -57,12 +57,12 @@ export function AutopilotPanel({ state }: { state: AutopilotState }) {
             aria-checked={state.on}
             aria-label="Autopilot"
             className="bigswitch"
-            disabled={busy || (!state.on && !state.allowedByEnv)}
+            disabled={busy}
             onClick={() => flip(!state.on)}
             title={
               state.allowedByEnv
                 ? 'Switches unattended sending on or off'
-                : 'Blocked by AUTOPILOT_ENABLED=false in .env'
+                : 'Controls the whole fleet — this machine itself never sends'
             }
           >
             <span className="bigswitch-knob" />
@@ -110,7 +110,7 @@ export function AutopilotPanel({ state }: { state: AutopilotState }) {
             <p className="autopilot-envnote">
               {state.allowedByEnv
                 ? 'This deployment allows unattended sending. The switch is yours.'
-                : 'This deployment does not allow unattended sending at all. The switch cannot turn on here.'}
+                : 'This machine never sends itself — the signed-in Macs do. The switch controls the whole fleet, including them.'}
             </p>
             {busy ? <p className="autopilot-envnote muted">Saving…</p> : null}
           </div>

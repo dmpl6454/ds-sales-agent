@@ -1,7 +1,6 @@
 import { prisma } from '@/lib/db'
 import { log } from '@/lib/logger'
 import { deviceId } from './claim'
-import { withSendLock } from '@/outreach/dispatcher'
 import {
   startConnect,
   pollConnect,
@@ -34,12 +33,18 @@ import {
  * opened one pass is still open the next — exactly the property the local dashboard relies
  * on. `isConnecting(handle)` is how we tell "a window is already open here" from "start one".
  *
- * ── WHY EACH BROWSER STEP TAKES THE SEND LOCK ───────────────────────────────
+ * ── WHY THIS DOES NOT TAKE THE SEND LOCK ────────────────────────────────────
  *
- * Opening a profile is driving a browser, and two contexts on one profile is how identity
- * dies. Every send goes through `withSendLock`, so taking it here serialises connect against
- * send. A busy lock means a send is mid-flight: the request is left untouched and retried
- * next cycle, exactly as the reply sweep defers. Never a throw that stops the agent.
+ * The obvious instinct — wrap each browser step in `withSendLock` — was tried and starves:
+ * a send holds that lock for the whole ~47s it drives Chrome, and the connect pass polling
+ * every 3s never wins the gap, so a sign-in request sat at 'requested' forever (MEASURED
+ * 2026-09-02). The local dashboard's connect flow does NOT lock either, and for the reason
+ * that makes it safe here too: two contexts on ONE profile is the danger, and Chrome's own
+ * per-profile SingletonLock prevents it — a second launch on a user-data-dir already open
+ * fails rather than opening a rival context. On localhost the dashboard and the agent are
+ * two processes and have always relied on exactly that; the relay is one process and no
+ * worse. A collision (a send and a connect on the SAME account at once) makes one launch
+ * fail and retry, which is self-healing and touches only the account being connected.
  */
 
 /** Adaptive cadence: responsive while a sign-in is live, quiet when nothing is pending. */
@@ -98,13 +103,7 @@ async function applyOutcome(request: ConnectRequest, outcome: ConnectState): Pro
 /** Drive one request one step: open the window if none is open here, else poll it. */
 async function serviceOne(request: ConnectRequest): Promise<void> {
   const { handle } = request
-  const outcome = await withSendLock(`connect:${handle}`, async () =>
-    isConnecting(handle) ? pollConnect(handle) : startConnect(handle),
-  )
-  if (outcome === null) {
-    // A send holds the lock. Leave the request as-is; the next cycle retries.
-    return
-  }
+  const outcome: ConnectState = isConnecting(handle) ? await pollConnect(handle) : await startConnect(handle)
   await applyOutcome(request, outcome)
 }
 

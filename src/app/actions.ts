@@ -692,19 +692,26 @@ export async function editAttemptBody(attemptId: string, body: string): Promise<
  */
 export async function setAutopilot(on: boolean): Promise<{ ok: boolean; message: string }> {
   const user = await requireOperator()
-  if (on && !env.AUTOPILOT_ENABLED) {
-    return {
-      ok: false,
-      message:
-        'Autopilot is disabled for this deployment. Set AUTOPILOT_ENABLED=true in .env and restart — that switch is deliberately not changeable from this page.',
-    }
-  }
+  /**
+   * THE SWITCH IS FLEET-WIDE AND WRITABLE FROM ANY DASHBOARD — Tabish, 2026-09-02:
+   * "Autopilot button cannot be pressed by any user using the website url. This is wrong."
+   *
+   * This used to refuse `on` when `env.AUTOPILOT_ENABLED` was false, which made the HOSTED
+   * dashboard — the one product every operator shares — the one place the fleet could never
+   * be armed. The env floor's real job is unchanged and unweakened: it still decides whether
+   * THIS machine may act on the setting (`settings.autopilotEnabled` stays env-floored for
+   * every enforcement path, and `SEND_ENABLED=false` inside `withSendLock` means the server
+   * structurally cannot drive a browser regardless). Writing the shared Setting from a
+   * floored machine arms only the machines that are allowed to send — the devices.
+   */
   await setSetting(SETTING_KEYS.autopilotEnabled, on ? 'true' : 'false')
   await audit(user.email, 'autopilot.set', 'Setting:autopilotEnabled', on ? 'ON' : 'OFF')
   revalidatePath('/')
   return {
     ok: true,
-    message: on ? 'Autopilot on — armed accounts will send at each slot.' : 'Autopilot off — messages will wait for you.',
+    message: on
+      ? 'Autopilot on — the sending Macs deliver at each slot.'
+      : 'Autopilot off — messages will wait for you.',
   }
 }
 

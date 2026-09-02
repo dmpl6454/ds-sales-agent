@@ -1,7 +1,6 @@
 import Link from 'next/link'
 import { prisma } from '@/lib/db'
-import { profileStatus } from '@/outreach/browser/profile'
-import { sessionUsable } from '@/outreach/sessionHealth'
+import { sessionIsUsable } from './view-model/session-view'
 import { getSettings } from '@/lib/settings'
 import { replyHaltFloor } from '@/outreach/replyHalt'
 import { daysAgo } from '@/lib/time'
@@ -94,6 +93,8 @@ async function navCounts(): Promise<NavCounts> {
         handle: true,
         status: true,
         sessionInvalidAt: true,
+        // The hosted dashboard has no disk truth; the badge reads the device's record.
+        sessionPath: true,
       },
     }),
     prisma.targetAccount.count({ where: { kind: 'CHANNEL', optedOut: false } }),
@@ -121,11 +122,10 @@ async function navCounts(): Promise<NavCounts> {
     }),
   ])
 
-  // §3.5: a session PROVED dead counts as needing a sign-in — the badge said 3 while a
-  // fourth account was logged out with a cookie still on disk.
-  const needSignIn = senders.filter(
-    (s) => !sessionUsable({ hasSessionOnDisk: profileStatus(s.handle).hasSession, sessionInvalidAt: s.sessionInvalidAt }),
-  ).length
+  // §3.5: a session PROVED dead counts as needing a sign-in — and the read is HOST-AWARE
+  // (2026-09-02): on the Linode the local disk said "7 need sign-in" about a fleet that was
+  // signed in and sending. sessionIsUsable trusts the device's DB record there.
+  const needSignIn = senders.filter((s) => !sessionIsUsable(s)).length
   const challenged = senders.filter((s) => s.status === 'CHALLENGED').length
 
   return {
