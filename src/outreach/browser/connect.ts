@@ -210,6 +210,15 @@ export function isConnecting(handle: string): boolean {
 }
 
 /**
+ * Every handle with a Chrome window open right now. The relay uses this to close a window
+ * whose request the operator cancelled (the request row is deleted, so nothing else would
+ * ever close it before the 20-minute sweep).
+ */
+export function connectingHandles(): string[] {
+  return [...sessions.keys()]
+}
+
+/**
  * Close abandoned Connect windows.
  *
  * `MAX_AGE_MS` was only enforced when `pollConnect` was called, so closing the dashboard

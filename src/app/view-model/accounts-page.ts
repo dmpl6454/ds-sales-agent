@@ -4,8 +4,27 @@ import { daysAgo, istDateKey, relativeLabel } from '@/lib/time'
 import { operatorName } from '@/outreach/render'
 import { cohortSoakDays, mayArmCohort, readCohortStates } from '@/outreach/cohorts'
 import { profileStatus } from '@/outreach/browser/profile'
-import { sessionUsable } from '@/outreach/sessionHealth'
+import { sessionUsable, sessionRecorded } from '@/outreach/sessionHealth'
 import { getSettings } from '@/lib/settings'
+import { env } from '@/lib/env'
+
+/**
+ * ── "SIGNED IN" IS A DIFFERENT QUESTION ON THE HOSTED DASHBOARD ──────────────
+ *
+ * On a SENDING machine (localhost, the device — `SEND_ENABLED`), the truth about a session
+ * is the cookie file on THIS disk: that is what the browser will actually find. On the
+ * HOSTED dashboard (the Linode, `SEND_ENABLED=false`) there are no profiles at all, so the
+ * disk always says "never signed in" — which would render every account as disconnected on
+ * the one dashboard other operators use. There the machine-independent DB record is the
+ * right witness: `sessionPath` is what the device wrote when it connected (via the relay or
+ * reconcile), and `sessionInvalidAt` is what a failed send wrote. So the hosted view trusts
+ * the record, and a sending machine trusts its disk.
+ */
+function sessionIsUsable(s: { handle: string; sessionPath: string | null; sessionInvalidAt: Date | null }): boolean {
+  return env.SEND_ENABLED
+    ? sessionUsable({ hasSessionOnDisk: profileStatus(s.handle).hasSession, sessionInvalidAt: s.sessionInvalidAt })
+    : sessionRecorded(s)
+}
 
 /**
  * The `/accounts` page, and only that page.
@@ -110,7 +129,7 @@ export async function buildAccountsPage(connectingHandles: readonly string[] = [
      * rendered @tabishmukaddam1 as "connected" while every real send failed with "not
      * logged in" — both true at once, and the dashboard was the half that lied.
      */
-    const usable = sessionUsable({ hasSessionOnDisk: profile.hasSession, sessionInvalidAt: s.sessionInvalidAt })
+    const usable = sessionIsUsable(s)
 
     /**
      * ONE SWITCH, 2026-08-08. This used to require `s.autoSendEnabled` as well.
@@ -145,14 +164,15 @@ export async function buildAccountsPage(connectingHandles: readonly string[] = [
           s.sessionInvalidAt !== null
           ? `Found signed out ${relativeLabel(s.sessionInvalidAt)}. Sign in once — the switch does the rest.`
           : /**
-               * `initialised` is still distinguished, and deliberately so: a profile directory
-               * WITHOUT a session already holds the device identity a hand login wrote (`mid`,
-               * `ig_did`), so that re-login is cheaper AND safer than a first one — Instagram
-               * sees a device it already knows. Collapsing the two would hide the difference
-               * between "expired" and "never", which is a real fact about the account.
+               * `initialised` is still distinguished on a SENDING machine, and deliberately so:
+               * a profile directory WITHOUT a session already holds the device identity a hand
+               * login wrote (`mid`, `ig_did`), so that re-login is cheaper AND safer than a
+               * first one. On the HOSTED dashboard there is no disk to read, so `!usable` (the
+               * DB record says no live session) is the honest question and the nuance is
+               * dropped — the sign-in still happens on the operator's own Mac via the relay.
                */
-            !profile.hasSession
-            ? profile.initialised
+            !usable
+            ? env.SEND_ENABLED && profile.initialised
               ? 'Signed out. Sign in once — the switch does the rest.'
               : 'Sign in once — the switch does the rest.'
             : null
@@ -314,8 +334,9 @@ export async function buildLoginQueue(now: Date = new Date()): Promise<LoginQueu
   for (const s of senders) {
     const p = profileStatus(s.handle)
     // §3.5: a session PROVED dead belongs in the queue, not under "already logged in" —
-    // the whole failure was a dead session reading as done.
-    if (sessionUsable({ hasSessionOnDisk: p.hasSession, sessionInvalidAt: s.sessionInvalidAt })) {
+    // the whole failure was a dead session reading as done. Machine-aware: disk truth on a
+    // sending machine, the DB record on the hosted dashboard (see sessionIsUsable above).
+    if (sessionIsUsable(s)) {
       connected.push({ handle: s.handle, name: operatorName(s.displayName) })
     } else {
       queue.push({

@@ -100,6 +100,15 @@ const schema = z.object({
    */
   SEND_ENABLED: boolish(true),
 
+  /**
+   * Where the built macOS installer (.dmg) lives, so the hosted dashboard can serve it from
+   * a Download button. The Linode is Linux and CANNOT build a .dmg (`hdiutil` is macOS-only),
+   * so the image is built on a Mac (`bash scripts/build-dmg.sh`) and the deploy copies it
+   * here. Optional: unset (or a missing file) makes the download route say the installer has
+   * not been published yet, rather than 500.
+   */
+  AGENT_DMG_PATH: z.string().optional(),
+
   OPERATOR_NAME: z.string().optional().transform((v) => v ?? 'operator'),
 
   /**

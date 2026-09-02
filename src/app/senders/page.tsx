@@ -2,12 +2,15 @@ import { redirect } from 'next/navigation'
 import { currentUser } from '@/lib/session'
 import { buildAccountsPage, buildLoginQueue } from '../view-model/accounts-page'
 import { listCategories } from '@/outreach/categories'
+import { readPresence } from '@/agent'
 import { Nav } from '../nav'
 import { PageHead } from '../page-head'
 import { AccountGroupView } from '../accounts/group'
 import { LoginQueue } from '../accounts/login/queue'
 import { AddSenderForm } from './add-form'
 import { RemoveSenderForm } from './remove-form'
+import { TeamPanel } from './team-panel'
+import { listTeam } from '../actions'
 
 export const dynamic = 'force-dynamic'
 
@@ -26,6 +29,20 @@ export const dynamic = 'force-dynamic'
 export default async function SendersPage() {
   const user = await currentUser()
   if (!user) redirect('/sign-in')
+
+  /**
+   * The Macs currently running an agent (seen within 2 minutes). On the hosted dashboard a
+   * Connect click opens the sign-in window on one of THESE, not on the server — so the rows
+   * offer a picker when more than one is online. Read here (a server component) rather than
+   * via the operator-gated action, so a VIEWER can still load the page.
+   */
+  const now = Date.now()
+  const devices = (await readPresence())
+    .filter((d) => now - new Date(d.at).getTime() < 2 * 60_000)
+    .map((d) => d.device)
+
+  // Only an operator manages the team; a viewer gets the page without that section.
+  const team = user.role === 'operator' ? await listTeam() : null
 
   const [v, q, fleets] = await Promise.all([
     buildAccountsPage(),
@@ -142,12 +159,12 @@ export default async function SendersPage() {
               </div>
             )}
 
-            <LoginQueue queue={q.queue} />
+            <LoginQueue queue={q.queue} devices={devices} />
           </section>
         )}
 
         {v.groups.map((g) => (
-          <AccountGroupView key={g.key} group={g} fleets={fleets.map((f) => ({ slug: f.slug, name: f.name }))} />
+          <AccountGroupView key={g.key} group={g} fleets={fleets.map((f) => ({ slug: f.slug, name: f.name }))} devices={devices} />
         ))}
 
         {/*
@@ -176,6 +193,30 @@ export default async function SendersPage() {
           */
           handles={v.groups.flatMap((g) => g.rows.map((r) => r.handle))}
         />
+
+        {/*
+          ── ONBOARDING A NEW SENDING MAC ─────────────────────────────────────
+          The sending half only runs on a real Mac (a hand-logged-in profile from a home
+          IP). Hand the installer to the person whose Mac will send; once their agent is
+          running it shows up online and Connect above opens the sign-in window there.
+        */}
+        <section className="group">
+          <h2>Add a sending Mac</h2>
+          <p className="muted">
+            Sending runs on a Mac with the accounts signed in on it — not here. Give the
+            installer to the person whose Mac will send, along with the database URL, the
+            tunnel key and their login. Once their agent is running, their Mac appears online
+            and you can Connect its accounts from this page.
+          </p>
+          <a className="btn" href="/api/download/agent" download>
+            Download the installer (.dmg)
+          </a>
+          {devices.length > 0 && (
+            <p className="muted">Online now: {devices.map((d) => d).join(', ')}.</p>
+          )}
+        </section>
+
+        {team && <TeamPanel users={team} />}
       </div>
     </>
   )

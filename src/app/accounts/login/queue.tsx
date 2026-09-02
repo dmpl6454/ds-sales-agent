@@ -14,7 +14,7 @@ type Item = LoginQueueView['queue'][number]
  * anyway. The start-then-poll flow lives in `useConnect`, shared with the row button on
  * /senders; it was duplicated once and the copy that drifted burned a real login.
  */
-export function LoginQueue({ queue }: { queue: Item[] }) {
+export function LoginQueue({ queue, devices = [] }: { queue: Item[]; devices?: readonly string[] }) {
   const [index, setIndex] = useState(0)
   const current = queue[index]
 
@@ -36,6 +36,7 @@ export function LoginQueue({ queue }: { queue: Item[] }) {
             item={current}
             position={index + 1}
             of={queue.length}
+            devices={devices}
             onDone={() => setIndex((i) => Math.min(i + 1, queue.length - 1))}
             onSkip={() => setIndex((i) => (i + 1) % queue.length)}
           />
@@ -67,16 +68,20 @@ function LoginCard({
   item,
   position,
   of,
+  devices = [],
   onDone,
   onSkip,
 }: {
   item: Item
   position: number
   of: number
+  devices?: readonly string[]
   onDone: () => void
   onSkip: () => void
 }) {
   const connect = useConnect(item.handle)
+  const [targetDevice, setTargetDevice] = useState<string | undefined>(devices[0])
+  const startConnecting = () => connect.start(targetDevice)
 
   return (
     <article className="login-card">
@@ -93,7 +98,21 @@ function LoginCard({
       </p>
 
       <div className="account-actions">
-        {connect.phase === 'idle' && <button onClick={connect.start}>Open Chrome and sign in</button>}
+        {devices.length > 1 && (connect.phase === 'idle' || connect.phase === 'error') && (
+          <select
+            value={targetDevice ?? ''}
+            onChange={(e) => setTargetDevice(e.target.value)}
+            aria-label={`Which Mac opens the sign-in for @${item.handle}`}
+            title="More than one sending Mac is online — choose which one opens the sign-in window"
+          >
+            {devices.map((d) => (
+              <option key={d} value={d}>
+                on {d}
+              </option>
+            ))}
+          </select>
+        )}
+        {connect.phase === 'idle' && <button onClick={startConnecting}>Open Chrome and sign in</button>}
         {connect.phase === 'opening' && <button disabled>Opening Chrome…</button>}
         {connect.phase === 'waiting' && (
           <>
@@ -104,7 +123,7 @@ function LoginCard({
           </>
         )}
         {connect.phase === 'done' && <button onClick={onDone}>Next account →</button>}
-        {connect.phase === 'error' && <button onClick={connect.start}>Try again</button>}
+        {connect.phase === 'error' && <button onClick={startConnecting}>Try again</button>}
         {connect.phase !== 'waiting' && of > 1 && (
           <button className="link-quiet" onClick={onSkip}>
             skip for now

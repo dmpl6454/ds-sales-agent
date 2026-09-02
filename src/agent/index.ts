@@ -11,6 +11,7 @@ import { badgeDoorPass } from '@/detection/badgeDoor'
 import { checkForReplies } from '@/outreach/replyCheck'
 import { getSettings } from '@/lib/settings'
 import { DISK_CARE_INTERVAL_MS, diskCareTick } from './diskCare'
+import { startConnectLoop } from './connectPass'
 
 /**
  *   pnpm agent:device
@@ -530,6 +531,16 @@ export async function runDeviceAgent(): Promise<void> {
   const disk = setInterval(() => void diskCareTick(), DISK_CARE_INTERVAL_MS)
   disk.unref?.()
 
+  /**
+   * Servicing sign-in requests raised from the HOSTED website: an operator with no
+   * localhost dashboard clicks Connect there, the server writes a request addressed to
+   * this device, and this loop opens the Chrome window here — the only machine that
+   * legitimately can. NOT gated on autopilot: connecting an account is a prerequisite to
+   * sending, not sending, and gating it would make "turn autopilot on" require an account
+   * you cannot connect while it is off. See src/agent/connectPass.ts.
+   */
+  const stopConnectLoop = startConnectLoop()
+
   while (!stopping) {
     /**
      * ── THE POLL IS A PERIOD, NOT IDLE TIME AFTER A SEND (2026-08-22) ────────
@@ -591,6 +602,7 @@ export async function runDeviceAgent(): Promise<void> {
   clearInterval(brands)
   clearInterval(replies)
   clearInterval(disk)
+  stopConnectLoop()
 }
 
 export function stopDeviceAgent(): void {
