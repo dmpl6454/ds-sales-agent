@@ -308,7 +308,11 @@ export async function buildMessagesPage(): Promise<MessagesPageView> {
            `discoveredFromCampaignId` is resolved separately rather than as a relation. */
         target: { select: { handle: true, discoveredFromCampaignId: true } },
       },
-      orderBy: { sentAt: 'desc' },
+      /* `nulls: 'last'` on every delivered-list ordering (2026-09-02): Postgres puts NULL
+         FIRST under DESC, so one REPLIED row with no sentAt sat at the TOP of the
+         "Delivered" list wearing an em-dash for its time — a time-less row presented as
+         the newest send, on the page a person reads to see what just went out. */
+      orderBy: { sentAt: { sort: 'desc', nulls: 'last' } },
       take: 50,
     }),
     prisma.outreachAttempt.count({
@@ -364,7 +368,7 @@ export async function buildMessagesPage(): Promise<MessagesPageView> {
     }),
     prisma.outreachAttempt.findFirst({
       where: { status: { in: [...DELIVERED_STATUSES] }, sentAt: { not: null } },
-      orderBy: { sentAt: 'desc' },
+      orderBy: { sentAt: { sort: 'desc', nulls: 'last' } },
       select: { sentAt: true },
     }),
   ])

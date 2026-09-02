@@ -45,8 +45,13 @@ describe('buildSentHistory', () => {
    * concurrent claim, and an unstable sort silently repeats or skips a row across a page
    * boundary — quiet wrongness in the one view whose job is being the complete record.
    */
-  it('orders by a stable key, not by timestamp alone', () => {
-    expect(src).toMatch(/orderBy:\s*\[\{\s*sentAt:\s*'desc'\s*\},\s*\{\s*id:\s*'desc'\s*\}\]/)
+  it('orders by a stable key, not by timestamp alone — and a NULL timestamp sorts LAST', () => {
+    /* `nulls: 'last'` (2026-09-02): Postgres puts NULL first under DESC, so a REPLIED row
+       with no sentAt rendered at the TOP of the delivered lists as the "newest" send,
+       wearing an em-dash for its time. */
+    expect(src).toMatch(
+      /orderBy:\s*\[\{\s*sentAt:\s*\{\s*sort:\s*'desc',\s*nulls:\s*'last'\s*\}\s*\},\s*\{\s*id:\s*'desc'\s*\}\]/,
+    )
   })
 
   it('the page size is a named bound', () => {

@@ -68,7 +68,7 @@ export async function GET(req: NextRequest) {
       sender: { select: { handle: true } },
       target: { select: { handle: true, displayName: true } },
     },
-    orderBy: { sentAt: 'desc' },
+    orderBy: { sentAt: { sort: 'desc', nulls: 'last' } },
     // A bound so a stray click cannot stream the whole table forever; the UI says so.
     take: 10_000,
   })

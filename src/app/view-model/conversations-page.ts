@@ -120,7 +120,7 @@ export async function buildConversationsPage(): Promise<ConversationsPageView> {
     prisma.outreachAttempt.findMany({
       where: { status: { in: [...DELIVERED_STATUSES] } },
       include: { sender: { select: { handle: true } }, target: true, pair: { select: { id: true } } },
-      orderBy: { sentAt: 'desc' },
+      orderBy: { sentAt: { sort: 'desc', nulls: 'last' } },
       take: 60,
     }),
     replyCoverage(),

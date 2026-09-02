@@ -178,15 +178,19 @@ export default async function PaidPostsPage({
           <p className="muted">
             {v.framesRead}{' '}
             posts had the text in their video read as well as their caption &mdash; a paid placement can
-            sit in the footage under an ordinary caption
+            sit in the footage under an ordinary caption.
+            {/* {' '} throughout: the served HTML dropped the spaces around the <strong> —
+                "that wayand are marked" reached the live page (Tabish's screenshot,
+                2026-09-01). Same class as "themunder"; never rely on an implicit space
+                beside an element or expression here. */}
             {v.frameFlagged > 0 ? (
               <>
-                . <strong>{v.frameFlagged} were flagged that way</strong> and are marked &ldquo;from the
-                footage&rdquo; below.
+                {' '}
+                <strong>{v.frameFlagged} were flagged that way</strong>
+                {' '}
+                and are marked &ldquo;from the footage&rdquo; below.
               </>
-            ) : (
-              '.'
-            )}
+            ) : null}
           </p>
 
           {/*
@@ -209,7 +213,7 @@ export default async function PaidPostsPage({
           ) : null}
           {v.framesNotSaved > 0 ? (
             <p className="muted">
-              {v.framesNotSaved} posts have no frame at all. Frames are saved when a post is first seen, and the link
+              {v.framesNotSaved}{' '}posts have no frame at all. Frames are saved when a post is first seen, and the link
               they come from expires &mdash; older posts never had one and cannot get one now.
             </p>
           ) : null}
