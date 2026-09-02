@@ -79,7 +79,7 @@ export async function buildSentHistory(input: {
        */
       target: { select: { handle: true, discoveredFromCampaignId: true } },
     },
-    orderBy: [{ sentAt: 'desc' }, { id: 'desc' }],
+    orderBy: [{ sentAt: { sort: 'desc', nulls: 'last' } }, { id: 'desc' }],
     skip: (page - 1) * SENT_PAGE_SIZE,
     take: SENT_PAGE_SIZE,
   })

@@ -481,7 +481,7 @@ export async function buildCeoView(): Promise<CeoView> {
       prisma.outreachAttempt.findMany({
         where: { sentAt: { gte: daysAgo(14) } },
         include: { pair: { include: { sender: true, target: true } }, campaign: true },
-        orderBy: { sentAt: 'desc' },
+        orderBy: { sentAt: { sort: 'desc', nulls: 'last' } },
         take: 40,
       }),
       /**
@@ -1602,7 +1602,7 @@ export async function buildPaidPostsView(input?: {
         { campaignId: null, target: { discoveredFromCampaignId: { in: pageIds } } },
       ],
     },
-    orderBy: { sentAt: 'desc' },
+    orderBy: { sentAt: { sort: 'desc', nulls: 'last' } },
     select: {
       sentAt: true,
       campaignId: true,
@@ -1862,7 +1862,7 @@ async function buildChannelCards(
      */
     prisma.outreachAttempt.findMany({
       where: { targetId: { in: cardTargetIds }, status: { in: ['SENT', 'REPLIED'] } },
-      orderBy: { sentAt: 'desc' },
+      orderBy: { sentAt: { sort: 'desc', nulls: 'last' } },
       distinct: ['targetId'],
       select: { targetId: true, sentAt: true },
     }),
