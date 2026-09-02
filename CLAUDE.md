@@ -71,6 +71,80 @@ properly rather than kept on a handle we could never confirm.
 
 ---
 
+## 2 SEPTEMBER, AFTERNOON — THE HOSTED WEBSITE IS THE WHOLE PRODUCT: CONNECT VIA A DEVICE RELAY
+
+**Tabish's goal, stated plainly: hand the DMG to another person, they run the agent and sign
+in the senders ON THEIR MAC, and then he can stop sending from his own device — with the
+website giving everyone the dashboard AND the ability to connect/disconnect/sign-in accounts,
+so localhost is no longer needed at all.** The DNS record he added the same afternoon made the
+hosted dashboard live; this made it OPERABLE.
+
+### THE ONE HARD FACT THAT SHAPES ALL OF THIS: THE SERVER HAS NO BROWSER AND MUST NEVER
+
+A Connect click cannot open Chrome on the Linode — no display, no profiles, and a signing
+session on a datacenter is the cookie transplant the whole design forbids (`SEND_ENABLED=false`
+is the hard floor). So "connect from the website" is IMPOSSIBLE as a direct action, and until
+now the hosted Connect silently tried and did nothing — the exact "a button that no-ops" defect
+this project keeps fixing.
+
+**The answer is the relay this codebase already uses for sending: the server WRITES, the device
+DRIVES.** `src/outreach/connectRelay.ts` — the hosted `connectAccount` writes a connect-request
+(one `Setting` row per handle, `connectRequest:<handle>`, no schema migration) addressed to a
+DEVICE; the operator's own agent (`src/agent/connectPass.ts`) claims requests for ITS device and
+runs the UNCHANGED `startConnect`/`pollConnect` locally. The browser code is not re-implemented —
+only WHO triggers it and WHERE the status lives moved into the DB. Both paths settle through the
+identical `ConnectState`, so `use-connect.ts` is unchanged in shape.
+
+- **Multi-operator safe, by construction.** A request NAMES its target Mac, and only that
+  device's active list returns it — so operator B's machine can never claim a sign-in meant for
+  operator A, which would create the profile on the wrong home IP. The `/senders` rows show a
+  device picker only when more than one Mac is online; with one, it auto-targets.
+- **`localhost` vs hosted is `env.SEND_ENABLED`.** A machine that may drive a browser opens
+  Chrome directly (unchanged); the hosted server relays. The device agent is the only servicer,
+  and it only starts when `SEND_ENABLED` — so a relay is serviced only by machines allowed to send.
+- **The connect pass does NOT take the send lock**, and that was MEASURED: wrapping it in
+  `withSendLock` starved it — a send holds that lock for the whole ~47s it drives Chrome, so a
+  3s-cadence connect never won the gap and the request sat at `requested` forever. The local
+  dashboard's connect flow does not lock either; Chrome's own per-profile SingletonLock is what
+  prevents two contexts on one profile, and localhost has always relied on exactly that across
+  its two processes. A collision makes one launch fail and retry — self-healing, one account.
+
+### THE ACCOUNTS VIEW IS MACHINE-AWARE NOW, OR THE HOSTED DASHBOARD LIES ABOUT EVERY SENDER
+
+`row.connected` was computed from the LOCAL disk (`profileStatus`). On the Linode there are no
+profiles, so the hosted dashboard would render EVERY sender as "never signed in". Fixed:
+`sessionIsUsable` uses disk truth on a sending machine and the machine-independent DB record
+(`sessionRecorded`, what the device wrote) on the hosted dashboard. `checkSignIn` already
+degrades to an honest message there (it bails at the no-session check before launching a browser).
+
+### OPERATORS, AND AN INSTALLER DOWNLOAD
+
+- **People arrive as VIEWERS** (a leaked invite code must never reach a Send button — unchanged),
+  and an operator promotes trusted people (`listTeam`/`setUserRole`, audited, no self-demotion so
+  an operator can't lock themselves out). The Team panel renders only for an operator. This keeps
+  the per-person audit trail rather than a shared operator login where every act is one actor.
+- **`/api/download/agent` serves the DMG** the deploy uploads to the server's data dir (the Linode
+  cannot build a `.dmg` — `hdiutil` is macOS-only, so it is built on a Mac and copied up). Behind
+  auth, but the DMG carries no credentials so the download alone grants nothing. The senders page
+  has a "Download the installer" button and shows which Macs are online.
+
+### VERIFIED LIVE, END TO END
+
+| | |
+|---|---|
+| the relay | a real request enqueued for `tabish-mac` went `requested → connected: verified=true` in **20s** — agent opened Chrome, `identify` matched, session persisted, audit row `connected via the hosted dashboard, relayed through device:tabish-mac`, 0 leftover rows |
+| the download | through Cloudflare with a viewer cookie: **HTTP 200, `application/x-apple-diskimage`, 2,568,670 bytes, `attachment; filename="DS-Sales-Agent.dmg"`** |
+| `/senders` hosted | **200** for a viewer (renders with the machine-aware session state) |
+| health | autopilot ON, 20 delivered in 2h, detection minutes-fresh (79 paid/24h), cost $0.094/24h |
+| tests / typecheck | **2,151 / 123 files** green; the relay driven both directions incl. device targeting and verified-vs-cookie recording; DMG rebuilt and deployed |
+
+**THE STANDING RULE THIS SETTLES:** anyone who only WATCHES needs no DMG — the hosted URL and a
+viewer login are enough. The DMG is required exactly for a machine that SENDS, because sending
+needs a hand-logged-in Chrome profile from a home IP that no website can ever provide. Connecting
+an account from the website now opens the sign-in window on the operator's OWN Mac via the relay.
+
+---
+
 ## 2 SEPTEMBER, MIDDAY — THE QUIET MORNING WAS A CLOSED LID, AND THE DISK LOOKS AFTER ITSELF NOW
 
 **Tabish: *"why are no messages being sent rapidly? … my mac lid was closed only temporarily
