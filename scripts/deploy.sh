@@ -129,6 +129,11 @@ if ! pnpm build > /tmp/ds-build.log 2>&1; then
 fi
 
 pm2 start ds-sales-agent >/dev/null
+# Detection runs in its OWN process (ds-sales-worker) so a heavy pass cannot OOM the web
+# server and 502 the dashboard (2026-09-02). It reads source via tsx, so it must be
+# restarted too or it keeps running the code from before this deploy. Restart if present;
+# do not create it here — its first creation and memory cap are a one-time setup step.
+pm2 describe ds-sales-worker >/dev/null 2>&1 && pm2 restart ds-sales-worker >/dev/null || true
 sleep 8
 
 CODE=\$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:3100/sign-in || echo 000)

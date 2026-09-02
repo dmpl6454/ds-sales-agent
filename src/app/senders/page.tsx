@@ -92,6 +92,41 @@ export default async function SendersPage() {
           )}
         </ul>
 
+        {/*
+          ── ONBOARDING A NEW SENDING MAC — AT THE TOP (2026-09-02) ────────────
+          This lived at the BOTTOM, below seven account cards and two forms, and Tabish
+          could not find the download button ("Where is the download button? How would an
+          individual know to download the file and sign in?"). A new operator's first job is
+          to get a Mac sending, so it goes first — and urgent when no Mac is online, because
+          then nothing can send at all and this is the only thing to do.
+        */}
+        <section className="group">
+          <h2>{devices.length === 0 ? 'Start here — set up a sending Mac' : 'Add another sending Mac'}</h2>
+          {devices.length === 0 ? (
+            <p>
+              Sending runs on a Mac with the accounts signed in on it — never on this server, so{' '}
+              <strong>no account can send until a Mac is set up</strong>. Three steps:{' '}
+              <strong>1.</strong> download the installer below. <strong>2.</strong> get the three secrets
+              (the database URL, the tunnel key and a login) from whoever runs this. <strong>3.</strong> open
+              the installer on the Mac that will send and follow its README. Once its agent is running, that
+              Mac shows up here and you press <strong>Connect</strong> on each account — the sign-in window
+              opens on that Mac, and it sends from that person&rsquo;s home internet.
+            </p>
+          ) : (
+            <p className="muted">
+              Sending runs on a Mac with the accounts signed in on it — not here. To add another sender&rsquo;s
+              Mac, give them the installer plus the database URL, the tunnel key and a login. Once their agent
+              is running, press <strong>Connect</strong> on its accounts below — the sign-in opens on their Mac.
+            </p>
+          )}
+          <a className="btn" href="/api/download/agent" download>
+            Download the installer (.dmg)
+          </a>{' '}
+          <span className="muted">
+            {devices.length > 0 ? `Online now: ${devices.join(', ')}.` : 'No sending Mac is online yet.'}
+          </span>
+        </section>
+
         {q.remaining > 0 && (
           <section className="group">
             <h2>Sign-ins</h2>
@@ -193,28 +228,6 @@ export default async function SendersPage() {
           */
           handles={v.groups.flatMap((g) => g.rows.map((r) => r.handle))}
         />
-
-        {/*
-          ── ONBOARDING A NEW SENDING MAC ─────────────────────────────────────
-          The sending half only runs on a real Mac (a hand-logged-in profile from a home
-          IP). Hand the installer to the person whose Mac will send; once their agent is
-          running it shows up online and Connect above opens the sign-in window there.
-        */}
-        <section className="group">
-          <h2>Add a sending Mac</h2>
-          <p className="muted">
-            Sending runs on a Mac with the accounts signed in on it — not here. Give the
-            installer to the person whose Mac will send, along with the database URL, the
-            tunnel key and their login. Once their agent is running, their Mac appears online
-            and you can Connect its accounts from this page.
-          </p>
-          <a className="btn" href="/api/download/agent" download>
-            Download the installer (.dmg)
-          </a>
-          {devices.length > 0 && (
-            <p className="muted">Online now: {devices.map((d) => d).join(', ')}.</p>
-          )}
-        </section>
 
         {team && <TeamPanel users={team} />}
       </div>

@@ -911,6 +911,34 @@ export async function checkSignIn(handleRaw: string): Promise<MutationResult> {
 
   const sender = await prisma.senderAccount.findUnique({ where: { handle } })
   if (!sender) return { ok: false, message: `@${handle} is not one of your accounts.` }
+
+  /**
+   * HOSTED DASHBOARD (2026-09-02): there is no browser here to ask Instagram and no profile
+   * on this disk, so the old `profileStatus` check reported EVERY account "no browser profile
+   * on this machine" — even ones signed in and actively sending. Tabish hit exactly this
+   * ("unable to sign in or even check sign in"). Report the machine-independent record the
+   * sending Mac wrote, and route real (re-)verification to Connect, which opens the sign-in
+   * on the operator's own Mac via the relay. Never launch a browser here.
+   */
+  if (!env.SEND_ENABLED) {
+    if (sender.sessionInvalidAt !== null) {
+      return {
+        ok: false,
+        message: `@${handle} was found signed out on its sending Mac. Press Connect to sign in again.`,
+      }
+    }
+    if (sender.sessionPath) {
+      return {
+        ok: true,
+        message: `@${handle} is signed in on its sending Mac. Instagram is re-checked from that Mac; press Connect if you want to sign in fresh.`,
+      }
+    }
+    return {
+      ok: false,
+      message: `@${handle} has not been signed in on any sending Mac yet. Press Connect to sign in — the window opens on that Mac.`,
+    }
+  }
+
   if (!profileStatus(handle).hasSession) {
     return { ok: false, message: `@${handle} has no browser profile on this machine yet — press Connect to sign in.` }
   }
