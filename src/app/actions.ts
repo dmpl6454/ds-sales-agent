@@ -14,6 +14,14 @@ import { recheckBeforeSend, isOverridable } from '@/outreach/gate'
 import { prepareOnDemand, type OnDemandPreview } from '@/outreach/onDemand'
 import { getSettings, setSetting, SETTING_KEYS } from '@/lib/settings'
 import { startConnect, pollConnect, cancelConnect, type ConnectState } from '@/outreach/browser/connect'
+import {
+  enqueueConnectRequest,
+  readConnectRequest,
+  deleteConnectRequest,
+  requestToConnectState,
+} from '@/outreach/connectRelay'
+import { readPresence } from '@/agent'
+import { parseRole, type Role } from '@/lib/roles'
 import { launchProfile, identify } from '@/outreach/browser/session'
 import { profileUrl } from '@/lib/urls'
 import { handleExists, probeHandle } from '@/detection/exists'
@@ -1240,25 +1248,74 @@ export async function setFollowUpBody(
  * is worth stating because it is the whole safety argument — no credential is read
  * by this process, and no session is imported from anywhere.
  */
-export async function connectAccount(handle: string): Promise<ConnectState> {
+/**
+ * ── CONNECT WORKS FROM THE HOSTED WEBSITE NOW, VIA THE DEVICE RELAY ──────────
+ *
+ * On a machine that may drive a browser (`SEND_ENABLED` — localhost, dev), this opens
+ * Chrome HERE, exactly as before. On the HOSTED dashboard the server has no browser and
+ * must never (the datacenter cookie-transplant the whole design forbids), so it writes a
+ * request addressed to a device and the operator's own agent opens the window there. Both
+ * paths settle through the identical `ConnectState`, so the client flow is unchanged. See
+ * src/outreach/connectRelay.ts.
+ */
+export async function connectAccount(handle: string, device?: string): Promise<ConnectState> {
   const user = await requireOperator()
   const sender = await prisma.senderAccount.findUnique({ where: { handle } })
   if (!sender) return { state: 'error', message: `@${handle} is not one of your accounts` }
   await audit(user.email, 'sender.connect.start', `SenderAccount:${handle}`)
-  const result = await startConnect(handle)
-  // `startConnect` can report connected immediately (the profile was already logged in,
-  // identity-verified against Instagram) — a path `checkConnect` never sees, so it must
-  // be recorded here or that login leaves no trace.
-  if (result.state === 'connected') await recordConnected(handle, user.email, result.verified)
-  return result
+
+  if (env.SEND_ENABLED) {
+    const result = await startConnect(handle)
+    // `startConnect` can report connected immediately (the profile was already logged in,
+    // identity-verified against Instagram) — a path `checkConnect` never sees, so it must
+    // be recorded here or that login leaves no trace.
+    if (result.state === 'connected') await recordConnected(handle, user.email, result.verified)
+    return result
+  }
+
+  const target = device ?? (await freshestSendingDevice())
+  if (!target) {
+    return {
+      state: 'error',
+      message:
+        'No sending device is online. Install the agent on the Mac that will send from this ' +
+        'account (Download the installer), start it, then try Connect again.',
+    }
+  }
+  const request = await enqueueConnectRequest({ handle, device: target, requestedBy: user.email })
+  return requestToConnectState(request, handle)
 }
 
 /** Polled by the page every few seconds while the Chrome window is open. */
 export async function checkConnect(handle: string): Promise<ConnectState> {
   const user = await requireOperator()
-  const result = await pollConnect(handle)
-  if (result.state === 'connected') await recordConnected(handle, user.email, result.verified)
-  return result
+  if (env.SEND_ENABLED) {
+    const result = await pollConnect(handle)
+    if (result.state === 'connected') await recordConnected(handle, user.email, result.verified)
+    return result
+  }
+  // Hosted: the device recorded the session itself when it reached 'connected'; the server
+  // only reads the relayed status and refreshes the page once it lands.
+  const state = requestToConnectState(await readConnectRequest(handle), handle)
+  if (state.state === 'connected') revalidatePath('/')
+  return state
+}
+
+/** The devices currently running an agent, freshest first — the sign-in target picker. */
+const DEVICE_FRESH_MS = 2 * 60_000
+export async function listSendingDevices(): Promise<Array<{ device: string; handles: string[] }>> {
+  await requireOperator()
+  const now = Date.now()
+  return (await readPresence())
+    .filter((d) => now - new Date(d.at).getTime() < DEVICE_FRESH_MS)
+    .map((d) => ({ device: d.device, handles: d.handles }))
+}
+
+/** The freshest present device, or null when none is online. Used when the UI names none. */
+async function freshestSendingDevice(): Promise<string | null> {
+  const now = Date.now()
+  const fresh = (await readPresence()).find((d) => now - new Date(d.at).getTime() < DEVICE_FRESH_MS)
+  return fresh?.device ?? null
 }
 
 /**
@@ -1329,9 +1386,67 @@ export async function clearChallenge(handle: string): Promise<MutationResult> {
   }
 }
 
+/**
+ * ── WHO MAY USE THIS DASHBOARD, AND AT WHAT LEVEL ───────────────────────────
+ *
+ * People arrive as VIEWERS (the invite code lands a viewer — a leaked code must never reach
+ * a Send button, `roles.ts`). An operator promotes a trusted person to operator here, and
+ * every promotion is audited under the promoter's name so "who can send from a revenue
+ * account" is always answerable. Promotion is a per-person act, deliberately, rather than a
+ * shared operator login that would make every action audit as one indistinguishable actor.
+ */
+export async function listTeam(): Promise<Array<{ email: string; role: Role; isSelf: boolean }>> {
+  const actor = await requireOperator()
+  const users = await prisma.user.findMany({ orderBy: { email: 'asc' }, select: { email: true, role: true } })
+  return users.map((u) => ({
+    email: u.email,
+    role: parseRole(u.role),
+    isSelf: u.email.toLowerCase() === actor.email.toLowerCase(),
+  }))
+}
+
+export async function setUserRole(email: string, role: Role): Promise<MutationResult> {
+  const actor = await requireOperator()
+  const normalised = email.trim().toLowerCase()
+  /**
+   * You cannot change your OWN role. It stops the two ways this bites: an operator
+   * demoting themselves into a locked-out dashboard (the key-inside-the-locked-door
+   * shape), and — since every other operator can still act — it keeps at least one
+   * operator standing by construction whenever one exists.
+   */
+  if (normalised === actor.email.toLowerCase()) {
+    return { ok: false, message: 'You cannot change your own role — ask another operator to do it.' }
+  }
+  const target = await prisma.user.findUnique({ where: { email: normalised } })
+  if (!target) return { ok: false, message: `No account for ${normalised}.` }
+
+  const next: Role = role === 'operator' ? 'operator' : 'viewer'
+  await prisma.user.update({ where: { id: target.id }, data: { role: next } })
+  await audit(
+    actor.email,
+    next === 'operator' ? 'user.promoted' : 'user.demoted',
+    `User:${normalised}`,
+    `role set to ${next}`,
+  )
+  revalidatePath('/senders')
+  return {
+    ok: true,
+    message:
+      next === 'operator'
+        ? `${normalised} is now an operator — they can connect accounts, send, and arm autopilot.`
+        : `${normalised} is now a viewer — they can watch but not change anything.`,
+  }
+}
+
 export async function abortConnect(handle: string): Promise<{ ok: true }> {
   const user = await requireOperator()
-  await cancelConnect(handle)
+  if (env.SEND_ENABLED) {
+    await cancelConnect(handle)
+  } else {
+    // Deleting the request tells the device to close the window it opened (its next pass
+    // finds a live window with no backing request and cancels it).
+    await deleteConnectRequest(handle)
+  }
   await audit(user.email, 'sender.connect.cancel', `SenderAccount:${handle}`)
   revalidatePath('/')
   return { ok: true }

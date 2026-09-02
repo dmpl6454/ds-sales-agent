@@ -69,10 +69,12 @@ export function useConnect(handle: string, opts?: { onConnected?: () => void }) 
     }
   }
 
-  const start = async () => {
+  const start = async (device?: string) => {
     setPhase('opening')
     setDetail(null)
-    const first = await connectAccount(handle)
+    // `device` is ignored on a machine that drives Chrome directly (localhost); on the
+    // hosted dashboard it names which Mac's agent opens the sign-in window.
+    const first = await connectAccount(handle, device)
     settle(first)
     if (first.state === 'waiting') {
       poll.current = setInterval(async () => {

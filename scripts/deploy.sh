@@ -49,6 +49,20 @@ echo "    $COUNT tracked files"
 tar czf "$ARCHIVE" --null -T /tmp/ds-deploy-files.z
 scp -q "$ARCHIVE" "$HOST:/tmp/"
 
+# ── SHIP THE macOS INSTALLER SO THE HOSTED DASHBOARD CAN SERVE IT ────────────
+# The Linode is Linux and cannot build a .dmg, so the image built on this Mac is uploaded to
+# the server's data dir — exactly where /api/download/agent looks by default (DATA_ROOT). It
+# is NOT in the git archive (a 2.4 MB binary does not belong in the code tree), so it rides
+# separately. Optional: if there is no built image, the download route simply says so.
+DMG="${DS_DMG:-$HOME/Downloads/DS-Sales-Agent.dmg}"
+if [[ -f "$DMG" ]]; then
+  echo "==> Uploading the installer ($(du -h "$DMG" | cut -f1))"
+  ssh "$HOST" 'mkdir -p ~/.ds-sales-agent-data'
+  scp -q "$DMG" "$HOST:~/.ds-sales-agent-data/DS-Sales-Agent.dmg"
+else
+  echo "==> No local installer at $DMG — the download button will report it unpublished"
+fi
+
 echo "==> Extracting, and REMOVING what is no longer in the repo"
 #
 # The stale-file sweep is scoped to the directories we ship code in. `src/generated` is

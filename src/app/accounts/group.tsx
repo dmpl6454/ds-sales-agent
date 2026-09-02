@@ -16,10 +16,17 @@ import type { AccountGroup, AccountRow } from '../view-model/accounts-page'
 export function AccountGroupView({
   group,
   fleets = [],
+  devices = [],
 }: {
   group: AccountGroup
   /** Fleets an out-of-rotation account may rejoin for. Empty = only the default exists. */
   fleets?: readonly { slug: string; name: string }[]
+  /**
+   * Devices currently running an agent. On the hosted dashboard a Connect click opens the
+   * sign-in window on one of these Macs, not here — so when more than one is online the row
+   * offers a picker. On localhost this is ignored (the dashboard drives Chrome itself).
+   */
+  devices?: readonly string[]
 }) {
   /**
    * OUT-OF-FLEET OPENS TOO, WHEN THERE IS SOMETHING TO DECIDE (2026-08-26).
@@ -44,7 +51,7 @@ export function AccountGroupView({
       {open && (
         <div className="sendergrid">
           {group.rows.map((r) => (
-            <AccountRowView key={r.id} row={r} fleets={fleets} />
+            <AccountRowView key={r.id} row={r} fleets={fleets} devices={devices} />
           ))}
         </div>
       )}
@@ -52,7 +59,15 @@ export function AccountGroupView({
   )
 }
 
-function AccountRowView({ row, fleets = [] }: { row: AccountRow; fleets?: readonly { slug: string; name: string }[] }) {
+function AccountRowView({
+  row,
+  fleets = [],
+  devices = [],
+}: {
+  row: AccountRow
+  fleets?: readonly { slug: string; name: string }[]
+  devices?: readonly string[]
+}) {
   const router = useRouter()
   const [busyClear, setBusyClear] = useState(false)
   const [message, setMessage] = useState<string | null>(null)
@@ -62,6 +77,15 @@ function AccountRowView({ row, fleets = [] }: { row: AccountRow; fleets?: readon
    * closes the window (which is what saves the session), and records it.
    */
   const connect = useConnect(row.handle, { onConnected: () => router.refresh() })
+
+  /**
+   * Which Mac opens the sign-in window on the hosted dashboard. Defaults to the first
+   * online device, so the common single-Mac case needs no choice; the picker appears only
+   * when more than one is online, because then the wrong target would sign the account in
+   * from the wrong home IP. Ignored on localhost (the server drives Chrome itself).
+   */
+  const [targetDevice, setTargetDevice] = useState<string | undefined>(devices[0])
+  const startConnecting = () => connect.start(targetDevice)
 
   return (
     <article className={`account account-${row.state}`}>
@@ -113,11 +137,25 @@ function AccountRowView({ row, fleets = [] }: { row: AccountRow; fleets?: readon
           made reachable deliberately rather than only after something breaks.
         */}
         {row.connected && connect.phase !== 'done' && <CheckSignIn handle={row.handle} onDone={() => router.refresh()} />}
+        {devices.length > 1 && connect.phase !== 'done' && (
+          <select
+            value={targetDevice ?? ''}
+            onChange={(e) => setTargetDevice(e.target.value)}
+            aria-label={`Which Mac opens the sign-in for @${row.handle}`}
+            title="More than one sending Mac is online — choose which one opens the sign-in window"
+          >
+            {devices.map((d) => (
+              <option key={d} value={d}>
+                on {d}
+              </option>
+            ))}
+          </select>
+        )}
         {row.connected && connect.phase !== 'done' && (
           <button
             className="btn-quiet"
             disabled={connect.phase === 'opening' || connect.phase === 'waiting' || row.connecting}
-            onClick={connect.start}
+            onClick={startConnecting}
           >
             {connect.phase === 'opening'
               ? 'Opening Chrome…'
@@ -131,7 +169,7 @@ function AccountRowView({ row, fleets = [] }: { row: AccountRow; fleets?: readon
           <>
             <button
               disabled={connect.phase === 'opening' || connect.phase === 'waiting' || row.connecting}
-              onClick={connect.start}
+              onClick={startConnecting}
             >
               {connect.phase === 'opening'
                 ? 'Opening Chrome…'

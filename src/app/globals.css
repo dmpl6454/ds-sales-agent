@@ -1043,6 +1043,8 @@ label { display: block; }
 
 /* lists */
 .plain-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 0.45rem; font-size: 12.5px; }
+.team-row { display: flex; align-items: center; justify-content: space-between; gap: 0.75rem; }
+a.btn { text-decoration: none; display: inline-block; }
 .summary-row { list-style: none; margin: 12px 0; padding: 0; display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; }
 .summary-row li { display: flex; flex-direction: column; }
 .summary-row strong { font-size: 26px; font-weight: 600; letter-spacing: -0.026em; line-height: 1.1; }
