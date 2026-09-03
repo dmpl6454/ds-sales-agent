@@ -196,7 +196,9 @@ This window closes by itself once approved."
 
   DBURL=""; SSH_HOST=""; SSH_USER=""
   for _ in $(seq 1 300); do
-    P=$(curl -fsS "$DASHBOARD_URL/api/device/enrol/poll?device=$DEVICE_CODE" 2>/dev/null || echo '{"status":"pending"}')
+    # The device code is the secret that releases the connection string: it goes in the BODY, never
+    # the URL, so it is not written to any access log on the way.
+    P=$(curl -fsS -X POST -H 'Content-Type: application/json' --data "{\"deviceCode\":\"$DEVICE_CODE\"}" "$DASHBOARD_URL/api/device/enrol/poll" 2>/dev/null || echo '{"status":"pending"}')
     STATUS=$(printf '%s' "$P" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{const j=JSON.parse(s);console.log(j.status, j.databaseUrl||"", j.sshHost||"", j.sshUser||"")}catch{console.log("pending")}})')
     read -r ST DBURL SSH_HOST SSH_USER <<< "$STATUS"
     case "$ST" in

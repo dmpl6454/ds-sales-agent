@@ -88,7 +88,8 @@ database URL and a key file. It is yes now, and the mechanism is a device-author
    That appends the key to the server's `authorized_keys` under the SAME forward-only
    restrictions the shared key carried — `restrict,port-forwarding,permitopen=…5432,
    command="/usr/bin/false"`: no shell, no files, one port.
-3. Polling `/api/device/enrol/poll` with its 32-byte device code, the installer is handed
+3. POSTing its 32-byte device code to `/api/device/enrol/poll` — in the body, never the URL, so
+   it reaches no access log — the installer is handed
    `DEVICE_DATABASE_URL` (the tunnel-side URL) and the SSH endpoint **once**; the row is
    deleted. It writes `.env` and `~/.ssh/config`, installs, and shows a "ready" dialog.
 
