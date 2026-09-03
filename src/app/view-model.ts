@@ -435,7 +435,43 @@ function accuracyNoteFor(labels: number, stored: number): string {
   return `Accuracy is checked against only ${labels} of ${stored} posts here, so the figure is thin.`
 }
 
+/**
+ * ── ONE COMPUTATION SERVES EVERY PAGE FOR TEN SECONDS (2026-09-02) ────────────
+ *
+ * `buildCeoView` is 55 queries plus heavy JS and is recomputed by `/`, `/targets`,
+ * `/paid-posts` and `/analytics` on every request. On the Linode's single vCPU that is
+ * 5.3s cold / 2.0s warm PER PAGE (measured on the server, load 0.4 — the DB answered in
+ * milliseconds; the time is Prisma hydration and JS). A sidebar click therefore took 4-6
+ * seconds, which Tabish reported as "very slow to open that section".
+ *
+ * So the result is shared across requests for a short window. Ten seconds is well inside
+ * the staleness the pages already accept: `auto-refresh.tsx` re-renders every 30-45s. A
+ * plain module memo, NOT `unstable_cache`, because it keeps the Date objects the labels
+ * are built from (a serialising cache would hand them back as strings). One in-flight
+ * promise is shared, so a burst of tabs computes once. The autopilot toggle invalidates it
+ * explicitly, so ON/OFF never reads ten seconds stale. Off under vitest: tests mutate the
+ * database and rebuild the view in the same second.
+ */
+const CEO_VIEW_MEMO_MS = process.env.VITEST ? 0 : 10_000
+let ceoViewMemo: { at: number; value: Promise<CeoView> } | null = null
+
+export function invalidateCeoView(): void {
+  ceoViewMemo = null
+}
+
 export async function buildCeoView(): Promise<CeoView> {
+  const now = Date.now()
+  if (ceoViewMemo && now - ceoViewMemo.at < CEO_VIEW_MEMO_MS) return ceoViewMemo.value
+  const value = computeCeoView()
+  ceoViewMemo = { at: now, value }
+  // A failed computation must not be served for ten seconds; the next request recomputes.
+  value.catch(() => {
+    if (ceoViewMemo?.value === value) ceoViewMemo = null
+  })
+  return value
+}
+
+async function computeCeoView(): Promise<CeoView> {
   const dayStart = istDayStart()
   const weekStart = daysAgo(7)
   const settings = await getSettings()

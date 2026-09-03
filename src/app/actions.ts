@@ -1,5 +1,6 @@
 'use server'
 
+import { invalidateCeoView } from './view-model'
 import { revalidatePath } from 'next/cache'
 import { prisma } from '@/lib/db'
 import { env } from '@/lib/env'
@@ -706,6 +707,7 @@ export async function setAutopilot(on: boolean): Promise<{ ok: boolean; message:
    */
   await setSetting(SETTING_KEYS.autopilotEnabled, on ? 'true' : 'false')
   await audit(user.email, 'autopilot.set', 'Setting:autopilotEnabled', on ? 'ON' : 'OFF')
+  invalidateCeoView() // the landing page memo must not show the OLD switch for ten seconds
   revalidatePath('/')
   return {
     ok: true,
