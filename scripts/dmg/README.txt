@@ -16,13 +16,19 @@ Steps
 3. A Terminal window opens and walks you through it: paste the DATABASE_URL,
    point it at the key file, give this machine a name. It installs everything
    and keeps the agent running 24/7, surviving restarts.
-4. Sign in on the dashboard with the shared login, ask Tabish to add your
-   Instagram page as a sending account, then connect it once from this Mac:
+4. Sign in on the dashboard with the shared login. On the Senders page, add
+   your Instagram page as a sending account and press Connect: a Chrome window
+   opens ON THIS MAC (the dashboard relays the request to your machine) — sign
+   in to Instagram there once, then close it. The Senders page shows the
+   account as signed in within a minute.
 
+   If the window does not open, the fallback is the same act from a terminal:
      cd ~/ds-sales-agent && pnpm ig:login <yourhandle>
 
 That is the only manual act — the login writes this Mac's device identity,
-which is what keeps the account safe, and it cannot be done for you.
+which is what keeps the account safe, and it cannot be done for you. Each
+Instagram account should live on exactly ONE Mac: never connect the same
+account from two machines.
 
 What runs where
 ---------------

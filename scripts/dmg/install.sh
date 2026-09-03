@@ -138,9 +138,10 @@ bash scripts/install-watch.sh install
 echo
 bold "== Done. Three steps remain, all yours =="
 echo "1. Sign in at ${DASHBOARD_URL} with the shared login Tabish gave you (no sign-up needed)."
-echo "2. Ask Tabish to add your Instagram page as a sending account (it appears on the Senders page)."
-echo "3. Connect it once, by hand, from THIS Mac:"
-echo "     cd ~/ds-sales-agent && pnpm ig:login <yourhandle>"
+echo "2. On the Senders page, add your Instagram page as a sending account."
+echo "3. Press Connect beside it: a Chrome window opens on THIS Mac — sign in to Instagram there once."
+echo "   (Fallback if no window opens:  cd ~/ds-sales-agent && pnpm ig:login <yourhandle>)"
+echo "   Never connect the same Instagram account from two different Macs."
 echo
 echo "After that the agent runs by itself, 24/7, as long as this Mac is awake with the lid open."
 echo "Everything it does is visible on the dashboard."
