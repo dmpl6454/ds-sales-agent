@@ -376,20 +376,29 @@ export async function collectMessages(
           const s = getComputedStyle(c)
           if ((s.overflowY !== 'auto' && s.overflowY !== 'scroll') || c.scrollHeight <= c.clientHeight + 4) continue
           if (c.querySelectorAll(sel!).length === 0) continue
+          /**
+           * STEP, do not jump. MEASURED 2026-09-03 on @bollywoodsocietyy → @amazonmgmstudiosin:
+           * the pane mounts ONLY the bubbles in view — one bubble at scrollTop 0 (the newest),
+           * one at −1102 (the oldest), nothing in between in the DOM at either position. A
+           * jump to the top skips every message in the middle. So each round moves one
+           * viewport toward the older end and the caller sweeps again; the observer collects
+           * whatever mounts at each stop, and `assemble` merges it all.
+           */
+          const reversed = getComputedStyle(c).flexDirection === 'column-reverse'
           const before = c.scrollTop
-          c.scrollTop = -c.scrollHeight
-          if (c.scrollTop === before) {
-            c.scrollTop = 0
-            if (c.scrollTop === before) return false
-          }
-          return true
+          const olderLimit = reversed ? -(c.scrollHeight - c.clientHeight) : 0
+          const step = Math.max(120, Math.floor(c.clientHeight * 0.8))
+          const next = Math.max(olderLimit, before - step)
+          if (next === before) return false
+          c.scrollTop = next
+          return c.scrollTop !== before
         }
         return false
       },
       [SEL] as const,
     )
     if (!scrolled) break
-    await page.waitForTimeout(1200)
+    await page.waitForTimeout(700)
     const again = await sweepOnce()
     if (again === null) break
     swept = again
@@ -399,8 +408,12 @@ export async function collectMessages(
   return read
 }
 
-/** Upward scrolls attempted when the first sweep did not see every message we sent. */
-const HISTORY_SCROLL_ROUNDS = 4
+/**
+ * Viewport-sized steps toward the older end when the first sweep did not see every message
+ * we sent. 25 steps × ~80% of a 386px viewport covers ~7,700px of thread — dozens of messages —
+ * and stops early at the top; a longer thread still reports incomplete and holds.
+ */
+const HISTORY_SCROLL_ROUNDS = 25
 
 /**
  * Did this read cover the whole conversation? PURE, so it can be driven both ways.
