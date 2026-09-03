@@ -22,6 +22,8 @@ prisma/dev.db*
 # ── GENERATED ─────────────────────────────────────────────────────────────────
 src/generated/
 .next/
+.next-*
+.active-dist
 out/
 build/
 dist/
