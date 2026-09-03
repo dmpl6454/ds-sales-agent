@@ -110,19 +110,21 @@ export default async function SendersPage({ searchParams }: { searchParams: Prom
             <p>
               Sending runs on a Mac with the accounts signed in on it — never on this server, so{' '}
               <strong>no account can send until a Mac is set up</strong>. Three steps:{' '}
-              <strong>1.</strong> download the installer below. <strong>2.</strong> get the three secrets
-              (the database URL, the tunnel key and a login) from whoever runs this. <strong>3.</strong> on the
-              Mac that will send, open the .dmg and double-click the app — it is signed and notarised by Apple,
-              so it opens with no security warnings. Once its agent is running, that Mac shows up here and you
-              press <strong>Connect</strong> on each account — the sign-in window opens on that Mac, and it
-              sends from that person&rsquo;s home internet.
+              <strong>1.</strong> download the installer below and open it on the Mac that will send —
+              double-click the app; it is signed and notarised by Apple, so nothing is blocked.{' '}
+              <strong>2.</strong> a browser tab opens on this dashboard: check the code and key match the
+              Mac&rsquo;s dialog and click <strong>Approve this Mac</strong>. No database details or key files
+              change hands — the Mac makes its own key and is handed what it needs, once.{' '}
+              <strong>3.</strong> when its agent is running it shows up here; press <strong>Connect</strong> on
+              each account — the Instagram sign-in opens on that Mac, and it sends from that person&rsquo;s home
+              internet.
             </p>
           ) : (
             <p className="muted">
               Sending runs on a Mac with the accounts signed in on it — not here. To add another sender&rsquo;s
-              Mac, give them the installer plus the database URL, the tunnel key and a login; the app is signed
-              and notarised, so it opens with a double-click. Once their agent is running, press{' '}
-              <strong>Connect</strong> on its accounts below — the sign-in opens on their Mac.
+              Mac, give them the installer and a dashboard login — nothing else. They double-click it, a browser tab
+              asks you (or them) to <strong>Approve this Mac</strong> here, and it pairs itself. Once its agent is
+              running, press <strong>Connect</strong> on its accounts below — the sign-in opens on their Mac.
             </p>
           )}
           <a className="btn" href="/api/download/agent" download>
