@@ -83,6 +83,16 @@ const REPLY_CHECK_MIN_HOURS = 10
 /** Ceiling on browser sessions opened by one sweep. A backlog must not become a burst. */
 const MAX_REPLY_CHECKS_PER_RUN = 4
 
+/** Inbox rows older than this are never opened to learn their thread id (see the scan). */
+const OPEN_ROW_MAX_AGE_MS = 14 * 24 * 60 * 60 * 1000
+
+/**
+ * Thread ids learned by opening inbox rows, per sender and row title, for this process's
+ * lifetime. A row carries no id in the DOM, so without this every sweep would click the same
+ * unplaced strangers again. Bounded; an agent restart costs one relearning sweep.
+ */
+const resolvedRowThreads = new Map<string, string>()
+
 /**
  * How recently a conversation must have been read for a follow-up into it to be allowed
  * without reading it again.
@@ -266,7 +276,28 @@ export async function checkConversation(args: {
     return { status: 'unreadable', detail: message.slice(0, 160) }
   }
 
-  if (!result.ok) {
+  /**
+   * A PARTIAL READ MAY NOT VOUCH FOR SILENCE, BUT A REPLY IT SAW IS A FACT (2026-09-03).
+   *
+   * `incomplete` used to return here with everything it had seen discarded. @maybelline_ind
+   * answered the 1 Sept first touch; three pre-send reads on 2-3 Sept came back "saw 0 of 1"
+   * and each threw away the reply bubble in hand, and the follow-up went into the answered
+   * conversation at 12:45 on 3 Sept. So THEIR bubbles from an incomplete read flow into the
+   * recording logic below; only the "nothing new → verified silence" stamp stays refused.
+   */
+  const partialTheirs =
+    !result.ok && result.reason === 'incomplete' ? (result.messages ?? []).filter((m) => !m.ours) : []
+  const partial = !result.ok
+  const partialDetail = !result.ok ? result.detail : undefined
+  if (partial && partialTheirs.length > 0) {
+    log.step('partial read, but it saw a reply — recording that, vouching for nothing else', {
+      sender: senderHandle,
+      target: targetHandle,
+      detail: partialDetail,
+    })
+  }
+
+  if (!result.ok && partialTheirs.length === 0) {
     /**
      * NOT recorded as checked. Stamping `replyCheckedAt` after an unreadable thread would
      * convert a failure into an assertion of silence, and the dashboard would then show a
@@ -300,7 +331,7 @@ export async function checkConversation(args: {
    * capture. Pair-scoped (a thread belongs to one sender-target pair), only where the
    * column is empty, and never allowed to fail the check it rides on.
    */
-  if (result.url.includes('/direct/t/')) {
+  if (result.ok && result.url.includes('/direct/t/')) {
     await prisma.outreachAttempt
       .updateMany({
         where: { senderId, targetId, status: { in: [...DELIVERED_STATUSES] }, threadUrl: null },
@@ -309,7 +340,7 @@ export async function checkConversation(args: {
       .catch(() => undefined)
   }
 
-  const theirs = result.messages.filter((m) => !m.ours)
+  const theirs = result.ok ? result.messages.filter((m) => !m.ours) : partialTheirs
 
   /**
    * Only messages we have NOT already recorded count as a new reply.
@@ -351,12 +382,15 @@ export async function checkConversation(args: {
       target: targetHandle,
       attemptId: textless[0]!.id,
     })
+    if (partial) return { status: 'incomplete', detail: `${partialDetail ?? 'partial read'} — backfilled text on an existing reply` }
     return { status: 'no-reply', detail: 'backfilled text on an existing reply' }
   }
 
   const fresh = theirs.filter((m) => !knownReplies.includes(normalise(m.text)))
 
   if (fresh.length === 0) {
+    /* A partial read that saw only already-recorded replies still cannot vouch for silence. */
+    if (partial) return { status: 'incomplete', detail: `${partialDetail ?? 'partial read'} — the reply it saw was already recorded` }
     await prisma.outreachAttempt.update({
       where: { id: fallbackAttemptId },
       data: { replyCheckedAt: now },
@@ -540,9 +574,25 @@ async function inboxPhase(
      * which `matchInboxRow` resolves against this sender's own delivered threads.
      */
     const scan = await scanInbox(sender.handle, {
-      needsThread: (row) =>
-        triageInboxRow(row, ourBodies) === 'theirs-last' && matchInboxRowToTarget(row.displayName, targets) === null,
+      needsThread: (row) => {
+        if (row.threadUrl) return false
+        /* Opened on an earlier sweep: reuse the id instead of clicking the row again. */
+        const remembered = resolvedRowThreads.get(`${sender.handle}|${row.displayName}`)
+        if (remembered) {
+          row.threadUrl = remembered
+          return false
+        }
+        /* Only recent rows: a 13-week-old unplaced stranger is not about to become a prospect,
+           and opening it every half hour would hold the fleet lock for nothing. */
+        const written = row.ageText ? parseInboxAge(row.ageText) : null
+        if (!written || written.getTime() < Date.now() - OPEN_ROW_MAX_AGE_MS) return false
+        return triageInboxRow(row, ourBodies) === 'theirs-last' && matchInboxRowToTarget(row.displayName, targets) === null
+      },
     })
+    if (scan.ok) {
+      if (resolvedRowThreads.size > 5000) resolvedRowThreads.clear()
+      for (const row of scan.rows) if (row.threadUrl) resolvedRowThreads.set(`${sender.handle}|${row.displayName}`, row.threadUrl)
+    }
     if (!scan.ok) {
       if (scan.reason === 'checkpoint') {
         await markChallenged({
