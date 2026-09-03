@@ -71,6 +71,50 @@ properly rather than kept on a handle we could never confirm.
 
 ---
 
+## 3 SEPTEMBER, LATE NIGHT — A NEW MAC PAIRS ITSELF: NO SECRETS, NO TERMINAL
+
+**Tabish: *"no need for the hassle of private key, production database url, etc? We want a
+seamless experience just download on their machine and run, no terminal hassle."*** The honest
+answer at the time was no — the notarised app still opened a Terminal that asked for the
+database URL and a key file. It is yes now, and the mechanism is a device-authorisation flow
+(`src/lib/deviceEnrol.ts`), not a secret baked into the image:
+
+1. The installer (run DETACHED by the app icon with dialogs and notifications, log in
+   `~/Library/Logs/ds-sales-agent-install.log`) generates **this Mac's own ed25519 key** and
+   POSTs the public key plus a pre-filled name to `/api/device/enrol/start` — one of exactly
+   two public API routes, named in `PUBLIC_PATHS`, because the Mac has no session yet.
+2. It opens `/devices/enrol?code=…`. The operator, signed in, sees the Mac's name and the
+   `SHA256:` fingerprint the Mac's dialog is also showing, and clicks **Approve this Mac**.
+   That appends the key to the server's `authorized_keys` under the SAME forward-only
+   restrictions the shared key carried — `restrict,port-forwarding,permitopen=…5432,
+   command="/usr/bin/false"`: no shell, no files, one port.
+3. Polling `/api/device/enrol/poll` with its 32-byte device code, the installer is handed
+   `DEVICE_DATABASE_URL` (the tunnel-side URL) and the SSH endpoint **once**; the row is
+   deleted. It writes `.env` and `~/.ssh/config`, installs, and shows a "ready" dialog.
+
+**Bounds on the public start:** 8-char unambiguous user code, 32-byte device code, 15-minute
+expiry, at most 20 pending, exactly one ed25519 key (decoded and length-checked — a newline
+in the payload would be a second `authorized_keys` line), approval only by a signed-in
+operator and only where `SEND_ENABLED=false`. **Better than before, not merely easier:** every
+Mac has its own key, so `/senders` → Paired Macs lists them with a **Revoke** button; the
+shared key made per-machine revocation impossible.
+
+**VERIFIED LIVE, end to end, with a scratch key from this Mac:** start → `pending` → a bad key
+refused 400 → the approve page 307s without a session → approved on the REAL page in a real
+browser (code and fingerprint both shown) → redirected to `/senders` listing it → poll
+returned the secrets → the next poll returned `unknown` → the restricted line was on the
+server → **a tunnel forwarded with that key alone, and `id` over it returned nothing** →
+Revoke on the real page → line count 0. Tests: exactly one ed25519 key, the restriction
+string byte for byte, fingerprint equal to `ssh-keygen -lf`, list/revoke against a real
+file. The first test version read the default `/root/.ssh` path because `env.ts` parses
+`process.env` on the first import — the path must be set before any dynamic import.
+
+**Still to do:** revoke the old shared key (`ds-agent-tunnel-distributed`) once the Mac that
+received it by WhatsApp has re-paired. `install.sh --manual` keeps the paste-the-secrets flow
+for a machine that cannot reach the dashboard.
+
+---
+
 ## 3 SEPTEMBER, NIGHT — THE DMG IS SIGNED AND NOTARISED; A DOUBLE-CLICK JUST WORKS
 
 **Tabish: *"apple developer account is ready lets create notorized dmg"*** — the account is
