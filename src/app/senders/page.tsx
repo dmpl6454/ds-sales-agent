@@ -108,26 +108,32 @@ export default async function SendersPage() {
               <strong>no account can send until a Mac is set up</strong>. Three steps:{' '}
               <strong>1.</strong> download the installer below. <strong>2.</strong> get the three secrets
               (the database URL, the tunnel key and a login) from whoever runs this. <strong>3.</strong> on the
-              Mac that will send, open the .dmg, then open Terminal and paste the one line below — macOS 15
-              blocks a double-click on the unsigned app (&ldquo;Apple could not verify&hellip;&rdquo;), and the
-              old right-click → Open trick is gone; Terminal is not gated. Once its agent is running, that Mac
-              shows up here and you press <strong>Connect</strong> on each account — the sign-in window opens on
-              that Mac, and it sends from that person&rsquo;s home internet.
+              Mac that will send, open the .dmg and double-click the app — it is signed and notarised by Apple,
+              so it opens with no security warnings. Once its agent is running, that Mac shows up here and you
+              press <strong>Connect</strong> on each account — the sign-in window opens on that Mac, and it
+              sends from that person&rsquo;s home internet.
             </p>
           ) : (
             <p className="muted">
               Sending runs on a Mac with the accounts signed in on it — not here. To add another sender&rsquo;s
-              Mac, give them the installer plus the database URL, the tunnel key and a login; they run the
-              Terminal line below (macOS 15 blocks a double-click on the unsigned app). Once their agent is
-              running, press <strong>Connect</strong> on its accounts below — the sign-in opens on their Mac.
+              Mac, give them the installer plus the database URL, the tunnel key and a login; the app is signed
+              and notarised, so it opens with a double-click. Once their agent is running, press{' '}
+              <strong>Connect</strong> on its accounts below — the sign-in opens on their Mac.
             </p>
           )}
           <a className="btn" href="/api/download/agent" download>
             Download the installer (.dmg)
           </a>{' '}
-          <code className="muted" style={{ display: 'block', margin: '0.5rem 0', userSelect: 'all' }}>
-            bash &quot;/Volumes/DS Sales Agent/DS Sales Agent.app/Contents/Resources/install.sh&quot;
-          </code>
+          <details className="muted" style={{ margin: '0.5rem 0' }}>
+            <summary>If the app is blocked on their Mac</summary>
+            <p>
+              Only happens with an old unsigned copy of the image or a managed security policy. The identical
+              installer runs from Terminal:
+            </p>
+            <code style={{ display: 'block', userSelect: 'all' }}>
+              bash &quot;/Volumes/DS Sales Agent/DS Sales Agent.app/Contents/Resources/install.sh&quot;
+            </code>
+          </details>
           <span className="muted">
             {devices.length > 0 ? `Online now: ${devices.join(', ')}.` : 'No sending Mac is online yet.'}
           </span>
