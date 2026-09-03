@@ -78,7 +78,18 @@ export type ReadThreadResult =
    * the causes and the fixes differ — a DOM change versus a race we lost — and because
    * collapsing them would hide which one is happening.
    */
-  | { ok: false; reason: 'unreadable' | 'incomplete' | 'no-message-button' | 'checkpoint'; detail?: string }
+  | {
+      ok: false
+      reason: 'unreadable' | 'incomplete' | 'no-message-button' | 'checkpoint'
+      detail?: string
+      /**
+       * What an INCOMPLETE read did see. A partial read may never vouch for silence, but a
+       * reply it has in hand is a fact:  answered the 1 Sept first touch,
+       * three reads on 2-3 Sept came back "saw 0 of 1" and each discarded the bubble they
+       * had seen, and a follow-up went into the answered conversation on 3 Sept (2026-09-03).
+       */
+      messages?: ThreadMessage[]
+    }
 
 /**
  * `jitter` and `firstVisible` moved to `messageEntry.ts` (2026-08-19) so that module —
@@ -573,6 +584,7 @@ export async function openAndReadThread(
         ok: false,
         reason: 'incomplete',
         detail: `saw ${read.foundOurs} of ${read.expectedOurs} messages we sent — cannot vouch for silence`,
+        messages: read.messages,
       }
     }
 
