@@ -71,6 +71,95 @@ properly rather than kept on a handle we could never confirm.
 
 ---
 
+## 2-3 SEPTEMBER — THE HOSTED URL TOLD THE TRUTH LAST; FIVE FIXES, EVERY ONE MEASURED FIRST
+
+**Tabish, from the live hosted page: autopilot showed OFF and could not be turned on, every
+sender read "not signed in", the site 502'd "but works on a refresh", tabs took seconds, the
+download button was unfindable, a paid post naming Levi's was detected but Levi's never
+messaged, and "I highly doubt the targets that are resting… dig deeper".** Everything below was
+measured against the live system before it was changed, deployed, and re-measured after.
+
+### AUTOPILOT WAS ON THE WHOLE TIME. THE HOSTED PAGE WAS SHOWING THE LINODE'S FLOOR
+
+`settings.ts` computes effective autopilot as `env.AUTOPILOT_ENABLED && Setting`; the Linode
+carries `AUTOPILOT_ENABLED=false`, so the hosted headline read OFF and `setAutopilot` refused
+`on` — about a fleet delivering 9/hour from the Mac. **Tabish's decision, recorded as his:** the
+switch is fleet-wide and writable from any dashboard (`autopilotFleetWide` drives the display;
+enforcement stays env-floored, `SEND_ENABLED=false` inside `withSendLock` still means the server
+cannot send), and **every user is an operator** ("chuck operator, viewer") — `team@` promoted,
+sign-ups arrive as operators, the invite code is now the whole gate. And the landing page,
+sidebar badge and `/targets` read session state from **local disk** (`profileStatus`) with no
+host branch — on the Linode that is "7 not signed in" about 7 signed-in, sending accounts. One
+shared host-aware rule now: `src/app/view-model/session-view.ts`.
+
+### THE 502s WERE OOM KILLS; DETECTION HAS ITS OWN PROCESS
+
+`dmesg`: *Out of memory: Killed process (next-server)*, anon-rss ~1 GB, on a 2 GB Linode shared
+with six other pm2 apps. Detection + RapidOCR ran INSIDE the web server. It runs as
+`ds-sales-worker` now (`EMBEDDED_SCHEDULER=false` on the web, `pnpm worker`,
+`--max-memory-restart 700M`, reniced 15 / ionice idle — **the box has ONE vCPU**, load hit 49);
+`deploy.sh` restarts and re-nices it. Web ~100 MB, available memory 387 → 865 MB, edge 12/12
+then 6/6 clean. Do not merge detection back into the web process.
+
+### `/cost` DID NOT LOAD, AND THE OTHER TABS TOOK 4-6 SECONDS
+
+`buildCostView` and both cost charts pulled **all 51,766 ModelCall rows into JS** (twice) —
+Cloudflare 524 at 100s; SQL aggregation now (413 ms). And `buildCeoView` (55 queries + heavy
+JS) was recomputed by four pages per request: **5.3s cold / 2.0s warm on the server with load
+0.4** — hydration on one core, not the DB (EXPLAIN: every scan < 22 ms). It is memoised across
+requests for 10 s (inside the 30-45 s auto-refresh; Dates kept; invalidated by the toggle; off
+under vitest). `/` 5.6 → 2.1 s warm. The honest remainder is a single vCPU.
+
+### LEVI'S, AND WHY POPULATION IS SLOW: 68% OF PAID POSTS NAME NOBODY BY HANDLE
+
+**423 of 621 CAMPAIGN posts (7d) assert no handle** — the advertiser is a caption STRING. Those
+depend on `officialDiscovery`, which ranked names by FREQUENCY, and the most frequent names are
+film titles (Toxic 50, Daayra 33, Mahakali 27) that can never resolve: `looked=40 created=0`
+every pass while `@levis` (verified, answers from the home IP, **0 429s in 12 probes**) waited
+behind hundreds of them. **Recency first now** (day of newest post, then caption, then
+frequency), budget 40 → 60; the fresh set is ~32 names/day, so a new advertiser is reached in a
+pass or two. `nameMatches` accepts "Jio Star" ↔ "JioStar" (squash-equality only; @philips
+still refused). The We-message column is HONEST — 160/621 posts show a brand and "—" because
+the advertiser was never minted; the column dropped no live prospect.
+
+**THE RESTING TABLE IS LEGITIMATE AND THE RING WORKS — measured, since Tabish doubted both:**
+15/15 sampled resting companies correctly rested; only 1/789 never messaged; 626/634
+multi-touch recipients heard from several pages (next-sender spread 180/173/158/140/131);
+**detected→sent p50 0.6 h, p90 20.8 h, 1 in 400 over 7 days** — "a message a week later" was
+prospect-MINTING latency. The ring chooses WHICH page writes the next material-earned message;
+it does not create material. The 7-day/claim/material logic is not over-restricting (a loose
+re-match found 8/336 candidates, all false positives). Mornings are quiet by content: 08-10 IST
+today 0 paid of 40 judged; paid posting climbs from 11:00 (yesterday 11h 2/41, 13h 13/51).
+
+### AND FOUR HEALTHY PAIRS HAD BEEN RETIRED BY A READ THAT COULD NOT SEE THE WHOLE THREAD
+
+A follow-up's pre-send read of a deep thread returns `incomplete` ("saw 1 of 3" — Instagram
+renders only recent bubbles); after 3 tries it parked as `failureCode: 'navigation'`, which
+satisfies the parked-failure stop at BOTH ends and permanently retired the pair. Its own code
+now, **`unreadable`**, excluded from that stop; the draft still parks with re-queue/discard. The
+4 read-parks and 2 stale identity parks were released (audited). **The 86 `not-in-thread` parks
+stay parked for a person** — `discardAttempt` refuses them by design, the settle UI was removed
+2026-08-24, and exactly one (wowmomos) is plausibly lost. Failure rate 0.9%, breaker quiet.
+Reply detection sampled clean: genuine inbound text, no own-template or presence noise,
+written→seen mostly under 2 h.
+
+### THE DMG, AND THE OTHER MAC
+
+The shipped image carried the **locked** connect pass (the fix was uncommitted; HEAD/DMG
+starved connect requests). Committed, rebuilt (`0a94ee2`, 2,576,150 bytes), uploaded; the hosted
+download serves it. The installer PROMPTS for a machine name — another operator's Mac is not
+`tabish-mac`. `readPresence` filters to devices beating within 2 minutes (a 22-hour-dead test
+install had been listed "Online now"). "Check sign-in" on the hosted URL reports the device's
+recorded state instead of the Linode's empty disk. Download + three-step onboarding moved to the
+TOP of `/senders`.
+
+| | |
+|---|---|
+| tests / typecheck | **2,155 / 123 files** green |
+| autopilot | ON; device `tabish-mac` beating; worker `linode-detect` beating; 108 delivered/24h, 94 paid/24h, 0 unjudged |
+
+---
+
 ## 2 SEPTEMBER, AFTERNOON — THE HOSTED WEBSITE IS THE WHOLE PRODUCT: CONNECT VIA A DEVICE RELAY
 
 **Tabish's goal, stated plainly: hand the DMG to another person, they run the agent and sign
