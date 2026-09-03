@@ -22,7 +22,8 @@
 # So: the file list comes from `git ls-files`, stale files are removed explicitly, the
 # build's own exit code is checked, and pm2 is restarted ONLY on success.
 #
-# `.env` is never shipped. It is the most important exclusion here: the server's
+# The build runs WHILE the old build serves and the workers reload without a gap — see the
+# BUILD WHILE SERVING block. `.env` is never shipped. It is the most important exclusion here: the server's
 # SEND_ENABLED=false and AUTOPILOT_ENABLED=false hard floors, its DATABASE_URL and its
 # DS_DEVICE_NAME all differ from a laptop's, and overwriting them once put the developer's
 # environment on the server.
@@ -110,25 +111,43 @@ echo "==> Installing and generating the Postgres client"
 pnpm install --silent
 pnpm exec prisma generate --config prisma.postgres.config.ts >/dev/null
 
-# ── STOP, BUILD, CHECK, THEN START ────────────────────────────────────────
-# Never build while pm2 is serving: \`next start\` reads the manifest at boot and a rebuild
-# underneath it serves HTML referencing replaced chunks. And the build's status is read
-# DIRECTLY — no pipe, no tail — so a failure cannot start a server with no build.
-echo "==> Stopping, building, then starting"
-pm2 stop ds-sales-agent >/dev/null
-
-if ! pnpm build > /tmp/ds-build.log 2>&1; then
+# ── BUILD WHILE SERVING, THEN SWITCH WITHOUT A GAP (2026-09-03) ────────────
+# The old shape was pm2 stop → build (~2 min on this one-vCPU box) → pm2 start, and every 5xx
+# the hosted dashboard served today was one of those windows. Now: the build goes into the
+# OTHER of .next-a / .next-b (\`NEXT_DIST_DIR\`, read by next.config.ts) while the current one
+# keeps serving; only when it has SUCCEEDED do the cluster workers reload onto it, one at a time,
+# so a request always has a worker to land on. A failed build leaves the running site untouched.
+# The build is niced: on one vCPU it would otherwise starve the page renders it is meant to
+# replace.
+ACTIVE=\$(cat .active-dist 2>/dev/null || echo .next)
+if [[ "\$ACTIVE" == ".next-a" ]]; then TARGET=.next-b; else TARGET=.next-a; fi
+echo "==> Building into \$TARGET while \$ACTIVE keeps serving"
+rm -rf "\$TARGET"
+if ! NEXT_DIST_DIR="\$TARGET" nice -n 15 ionice -c 3 pnpm build > /tmp/ds-build.log 2>&1; then
   echo
-  echo "BUILD FAILED. The server is stopped and NOT restarted — a running old build is"
-  echo "safer than a started new one with nothing behind it. The tail of the log:"
+  echo "BUILD FAILED. The running build (\$ACTIVE) was never touched and is still serving."
+  echo "The tail of the log:"
   echo
   tail -30 /tmp/ds-build.log
   echo
   echo "Fix it, then run this script again. Full log on the server: /tmp/ds-build.log"
   exit 1
 fi
+echo "\$TARGET" > .active-dist
 
-pm2 start ds-sales-agent >/dev/null
+# The web process runs as a pm2 CLUSTER of two workers so \`pm2 reload\` can replace them one
+# at a time. A legacy fork-mode process (\`pnpm start\`) is converted here once — the only
+# deploy that still costs a few seconds.
+MODE=\$(pm2 jlist | node -e 'const l=JSON.parse(require("fs").readFileSync(0));const p=l.find(p=>p.name==="ds-sales-agent");console.log(p?p.pm2_env.exec_mode:"absent")')
+if [[ "\$MODE" == "cluster_mode" ]]; then
+  echo "==> Reloading the web workers onto \$TARGET (no gap)"
+  NEXT_DIST_DIR="\$TARGET" pm2 reload ds-sales-agent --update-env >/dev/null
+else
+  echo "==> Converting ds-sales-agent to a two-worker cluster (one-time; a few seconds)"
+  pm2 delete ds-sales-agent >/dev/null 2>&1 || true
+  NEXT_DIST_DIR="\$TARGET" pm2 start node_modules/next/dist/bin/next --name ds-sales-agent -i 2 --cwd "$DIR" -- start -H 127.0.0.1 -p 3100 >/dev/null
+fi
+pm2 save >/dev/null 2>&1 || true
 # Detection runs in its OWN process (ds-sales-worker) so a heavy pass cannot OOM the web
 # server and 502 the dashboard (2026-09-02). It reads source via tsx, so it must be
 # restarted too or it keeps running the code from before this deploy. Restart if present;
@@ -141,12 +160,13 @@ sleep 8
 for p in \$(pgrep -f 'src/worker/index'); do renice -n 15 -p \$p >/dev/null 2>&1; ionice -c 3 -p \$p 2>/dev/null; done
 
 CODE=\$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:3100/sign-in || echo 000)
-echo "    dashboard answered HTTP \$CODE"
+echo "    dashboard answered HTTP \$CODE from \$TARGET"
 [[ "\$CODE" == "200" ]] || { echo "    the dashboard is NOT serving — check pm2 logs"; exit 1; }
 
-# The scheduler is embedded in this process, so "did it come back" includes "is the watch
-# running": a silent detection outage is the one failure here that loses data permanently.
-tail -3 /root/.pm2/logs/ds-sales-agent-out.log
+# The previous build is removed only once the new one answers, so a rollback is one
+# \`NEXT_DIST_DIR=<old> pm2 reload ds-sales-agent --update-env\` away until this line.
+if [[ "\$ACTIVE" != "\$TARGET" && -d "\$ACTIVE" ]]; then rm -rf "\$ACTIVE"; fi
+pm2 jlist | node -e 'const l=JSON.parse(require("fs").readFileSync(0));for(const p of l.filter(p=>p.name.startsWith("ds-sales")))console.log("    "+p.name+" "+p.pm2_env.status+" mode="+p.pm2_env.exec_mode+" pid="+p.pid)'
 REMOTE
 
 echo
