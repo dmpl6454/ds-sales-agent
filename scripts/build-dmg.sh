@@ -20,7 +20,11 @@
 # operator needs (DATABASE_URL, the tunnel key at ~/Downloads/ds_tunnel_key, the
 # shared dashboard login) are handed over person to person, never shipped.
 #
-# The app is UNSIGNED (no Apple Developer ID): first launch is right-click → Open.
+# The app is UNSIGNED (no Apple Developer ID). On macOS 15+ Gatekeeper blocks a double-click
+# outright (the right-click → Open bypass is gone), so the README leads with a Terminal
+# one-liner that runs install.sh straight off the mounted image — an interpreter reading a
+# file is not a Gatekeeper launch. Signing + notarising (Developer ID, notarytool) is the
+# permanent fix and needs Tabish's Apple account.
 #
 set -euo pipefail
 

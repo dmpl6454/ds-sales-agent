@@ -107,21 +107,27 @@ export default async function SendersPage() {
               Sending runs on a Mac with the accounts signed in on it — never on this server, so{' '}
               <strong>no account can send until a Mac is set up</strong>. Three steps:{' '}
               <strong>1.</strong> download the installer below. <strong>2.</strong> get the three secrets
-              (the database URL, the tunnel key and a login) from whoever runs this. <strong>3.</strong> open
-              the installer on the Mac that will send and follow its README. Once its agent is running, that
-              Mac shows up here and you press <strong>Connect</strong> on each account — the sign-in window
-              opens on that Mac, and it sends from that person&rsquo;s home internet.
+              (the database URL, the tunnel key and a login) from whoever runs this. <strong>3.</strong> on the
+              Mac that will send, open the .dmg, then open Terminal and paste the one line below — macOS 15
+              blocks a double-click on the unsigned app (&ldquo;Apple could not verify&hellip;&rdquo;), and the
+              old right-click → Open trick is gone; Terminal is not gated. Once its agent is running, that Mac
+              shows up here and you press <strong>Connect</strong> on each account — the sign-in window opens on
+              that Mac, and it sends from that person&rsquo;s home internet.
             </p>
           ) : (
             <p className="muted">
               Sending runs on a Mac with the accounts signed in on it — not here. To add another sender&rsquo;s
-              Mac, give them the installer plus the database URL, the tunnel key and a login. Once their agent
-              is running, press <strong>Connect</strong> on its accounts below — the sign-in opens on their Mac.
+              Mac, give them the installer plus the database URL, the tunnel key and a login; they run the
+              Terminal line below (macOS 15 blocks a double-click on the unsigned app). Once their agent is
+              running, press <strong>Connect</strong> on its accounts below — the sign-in opens on their Mac.
             </p>
           )}
           <a className="btn" href="/api/download/agent" download>
             Download the installer (.dmg)
           </a>{' '}
+          <code className="muted" style={{ display: 'block', margin: '0.5rem 0', userSelect: 'all' }}>
+            bash &quot;/Volumes/DS Sales Agent/DS Sales Agent.app/Contents/Resources/install.sh&quot;
+          </code>
           <span className="muted">
             {devices.length > 0 ? `Online now: ${devices.join(', ')}.` : 'No sending Mac is online yet.'}
           </span>
