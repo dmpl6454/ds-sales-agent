@@ -204,9 +204,9 @@ async function resolveThreads(
      * guessed at.
      */
     for (let round = 0; round < 10 && (await el.count()) === 0; round++) {
-      const moved = await page.evaluate(() => {
+      const moved = await page.evaluate((r) => {
         const all = [...document.querySelectorAll('div[role="button"][tabindex]')]
-        let p: Element | null = all.find((r) => r.querySelector('span[title]')) ?? null
+        let p: Element | null = all.find((rw) => rw.querySelector('span[title]')) ?? null
         while (p && p !== document.body) {
           const s = getComputedStyle(p)
           if ((s.overflowY === 'auto' || s.overflowY === 'scroll') && p.scrollHeight > p.clientHeight) break
@@ -214,10 +214,14 @@ async function resolveThreads(
         }
         if (!p || p === document.body) return false
         const before = p.scrollTop
-        p.scrollTop = Math.min(p.scrollTop + p.clientHeight, p.scrollHeight)
+        /* `collectRows` has just scrolled the list to its END, and Instagram unmounts the rows
+           that left the viewport — MEASURED 2026-09-03: every recent unplaced row (Maybelline,
+           Sleepwell, Hershey) was "not rendered" while a fresh page found it at once. So the
+           first round returns to the TOP, where the recent rows live; later rounds step down. */
+        p.scrollTop = r === 0 ? 0 : Math.min(p.scrollTop + p.clientHeight, p.scrollHeight)
         return p.scrollTop !== before
-      })
-      if (!moved) break
+      }, round)
+      if (!moved && round > 0) break
       await page.waitForTimeout(900)
     }
     if ((await el.count()) === 0) {
