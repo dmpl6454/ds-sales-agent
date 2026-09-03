@@ -2,7 +2,7 @@ import type { Page } from 'patchright'
 import { log } from '@/lib/logger'
 import { launchProfile, assertLoggedInAs, assertNoCheckpoint, CheckpointError } from './session'
 import { browseBriefly } from './readThread'
-import { firstVisible, jitter, dismissBlockingDialog } from './messageEntry'
+import { firstVisible, jitter, dismissBlockingDialog, clickPastDialogs } from './messageEntry'
 
 /**
  * READ THE INBOX LIST — one browser drive that answers "who wrote last, and when?"
@@ -155,7 +155,65 @@ async function collectRows(page: Page, folder: InboxRow['folder']): Promise<Inbo
  */
 export const SCAN_DEADLINE_MS = 6 * 60 * 1000
 
-export async function scanInbox(senderHandle: string): Promise<InboxScanResult> {
+export interface ScanOptions {
+  /**
+   * Which rows are worth OPENING to learn which conversation they are. MEASURED 2026-09-03
+   * on a live inbox: a row is a `div[role=button]` with a `span[title]`, an avatar whose alt
+   * is the literal "user-profile-picture", and NO anchor anywhere in or around it — so the
+   * row itself carries no identity at all. Opening it does: the page lands on
+   * `/direct/t/<id>`, and that id is what every delivered message stores as `threadUrl`.
+   * The caller names the rows that need this (the ones the name rules could not place
+   * and where THEY wrote last); everything else is never clicked.
+   */
+  needsThread?: (row: InboxRow) => boolean
+}
+
+/**
+ * Rows opened per sender per scan. Each open is a trusted click, a ~2s dwell and a back
+ * navigation on a revenue account — bounded so a backlog of unplaced rows is worked down
+ * over several sweeps rather than in one long drive.
+ */
+export const MAX_THREAD_OPENS = 8
+
+async function resolveThreads(
+  page: Page,
+  rows: InboxRow[],
+  needs: (row: InboxRow) => boolean,
+  senderHandle: string,
+): Promise<number> {
+  const listUrl = page.url()
+  let opened = 0
+  for (const row of rows) {
+    if (opened >= MAX_THREAD_OPENS) break
+    if (row.threadUrl || !needs(row)) continue
+    await dismissBlockingDialog(page)
+    // The row titled exactly this name. `getByTitle(..., exact)` needs no CSS escaping of
+    // whatever punctuation a display name carries.
+    const el = page
+      .locator('div[role="button"][tabindex]')
+      .filter({ has: page.getByTitle(row.displayName, { exact: true }) })
+      .first()
+    if ((await el.count()) === 0) continue
+    await el.scrollIntoViewIfNeeded().catch(() => {})
+    await jitter(400, 900)
+    opened += 1
+    if (!(await clickPastDialogs(page, el, `the conversation with "${row.displayName}"`))) continue
+    await page.waitForURL(/\/direct\/t\/\d+/, { timeout: 8_000 }).catch(() => {})
+    assertNoCheckpoint(page, senderHandle)
+    if (/\/direct\/t\/\d+/.test(page.url())) row.threadUrl = page.url()
+    await jitter(1200, 2200)
+    // Back to the list we were reading. goBack keeps the folder; the list URL is the fallback.
+    const back = await page.goBack({ waitUntil: 'domcontentloaded', timeout: 30_000 }).catch(() => null)
+    if (!back || !page.url().startsWith(listUrl.split('?')[0]!)) {
+      await page.goto(listUrl, { waitUntil: 'domcontentloaded', timeout: 60_000 }).catch(() => {})
+    }
+    await jitter(1500, 2500)
+    await dismissBlockingDialog(page)
+  }
+  return opened
+}
+
+export async function scanInbox(senderHandle: string, opts: ScanOptions = {}): Promise<InboxScanResult> {
   const context = await launchProfile(senderHandle)
   let deadlineFired = false
   const deadline = setTimeout(() => {
@@ -183,6 +241,8 @@ export async function scanInbox(senderHandle: string): Promise<InboxScanResult> 
     await dismissBlockingDialog(page)
 
     const rows = await collectRows(page, 'primary')
+    let opened = 0
+    if (opts.needsThread) opened += await resolveThreads(page, rows, opts.needsThread, senderHandle)
 
     /* The partnership folder, when the account has one. Its absence is ordinary. */
     const folder = page.locator('div[role="button"]', { hasText: /partnership messages/i }).first()
@@ -193,9 +253,14 @@ export async function scanInbox(senderHandle: string): Promise<InboxScanResult> 
       await jitter(2500, 4000)
       assertNoCheckpoint(page, senderHandle)
       if (page.url().includes('/direct/partnerships')) {
-        rows.push(...(await collectRows(page, 'partnership')))
+        const partnership = await collectRows(page, 'partnership')
+        if (opts.needsThread && opened < MAX_THREAD_OPENS) {
+          opened += await resolveThreads(page, partnership, opts.needsThread, senderHandle)
+        }
+        rows.push(...partnership)
       }
     }
+    if (opened > 0) log.step('opened unplaced inbox rows to learn their thread ids', { sender: senderHandle, opened })
 
     if (rows.length === 0) {
       /* An empty inbox and an unreadable one are different facts; a sender with 600
