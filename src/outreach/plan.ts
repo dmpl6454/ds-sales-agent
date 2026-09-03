@@ -464,7 +464,7 @@ export async function runOutreach(): Promise<PlanSummary> {
        * "they may already have it" is the graver fact and deserves the sentence.
        */
       prisma.outreachAttempt.findFirst({
-        where: { pairId: pair.id, status: 'FAILED', failureCode: { not: null } },
+        where: { pairId: pair.id, status: 'FAILED', failureCode: { not: null, notIn: ['unreadable'] } },
         orderBy: [{ failureCode: 'asc' }, { queuedAt: 'desc' }],
         select: { failureCode: true },
       }),

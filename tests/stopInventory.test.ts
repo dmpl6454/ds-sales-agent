@@ -689,7 +689,10 @@ describe('every failure code is documented for a person', () => {
    */
   it('is a closed set, and not-in-thread is in it', () => {
     expect(FAILURE_CODES).toContain('not-in-thread')
-    expect(FAILURE_CODES.length).toBe(10)
+    // 'unreadable' (2026-09-02): a pre-send READ that could not vouch for the thread — no send
+    // attempted — so it must not wear a send-failure code or retire the pair. 10 → 11.
+    expect(FAILURE_CODES).toContain('unreadable')
+    expect(FAILURE_CODES.length).toBe(11)
     for (const c of FAILURE_CODES) expect(c).toMatch(/^[a-z][a-z0-9-]+$/)
   })
 

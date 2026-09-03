@@ -24,6 +24,7 @@ const post = (over: Partial<HarvestPost>): HarvestPost => ({
   rawPayload: null,
   brands: '[]',
   frameText: null,
+  postedAt: new Date('2026-09-01T00:00:00Z'),
   target: { handle: 'naughtyworld' },
   ...over,
 })
@@ -79,5 +80,21 @@ describe('harvestBrandNames', () => {
     const h = harvestBrandNames([post({ brands: '["KitKat","Vibe"]' })], new Set<string>())
     expect(h.anonymousPosts).toBe(1)
     expect(h.names.has('kitkat')).toBe(true)
+  })
+
+  it('records the NEWEST post date per name, which is what the recency ranking sorts on', () => {
+    // A name on two posts keeps the later date, regardless of the order they arrive in — the
+    // discovery query feeds newest-first, but the harvest must not depend on that to be right.
+    const older = new Date('2026-09-01T06:00:00Z')
+    const newer = new Date('2026-09-02T18:00:00Z')
+    const h = harvestBrandNames(
+      [
+        post({ id: 'a', shortcode: 's1', brands: '["Levi\'s"]', postedAt: older }),
+        post({ id: 'b', shortcode: 's2', brands: '["Levi\'s"]', postedAt: newer }),
+      ],
+      new Set<string>(),
+    )
+    expect(h.names.get('levi\'s')?.posts).toBe(2)
+    expect(h.names.get('levi\'s')?.newestAt.getTime()).toBe(newer.getTime())
   })
 })

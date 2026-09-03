@@ -766,7 +766,9 @@ export async function recheckBeforeSend(
       where: {
         pair: { senderId, targetId },
         status: 'FAILED',
-        failureCode: { not: null },
+        // 'unreadable' is a READ that could not vouch for the thread, not a failed send — it
+        // parks its own draft and must not retire the pair (2026-09-02, four live pairs).
+        failureCode: { not: null, notIn: ['unreadable'] },
         id: { not: attempt.id },
       },
       orderBy: [{ failureCode: 'asc' }, { queuedAt: 'desc' }],

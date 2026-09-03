@@ -268,7 +268,9 @@ export async function deliverWaiting(opts: DeliverOptions = {}): Promise<Deliver
             data: {
               status: park ? 'FAILED' : 'READY',
               error: conversation.detail,
-              failureCode: 'navigation',
+              // Its own code, not 'navigation': a read that could not see the thread is not a
+              // failed SEND, and must not retire the pair (see FAILURE_CODES.unreadable).
+              failureCode: 'unreadable',
               attempts: { increment: 1 },
               ...(park ? {} : { queuedAt: new Date() }),
             },

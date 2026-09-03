@@ -48,6 +48,7 @@ const POSTS = [
     // not consume the budget twice.
     brands: JSON.stringify(['Prime Video']),
     frameText: null,
+    postedAt: new Date('2026-09-01T10:00:00Z'),
     target: { handle: 'naughtyworld' },
   },
   {
@@ -58,6 +59,7 @@ const POSTS = [
     rawPayload: null,
     brands: JSON.stringify(['Kit Kat']),
     frameText: null,
+    postedAt: new Date('2026-09-01T09:00:00Z'),
     target: { handle: 'naughtyworld' },
   },
 ]

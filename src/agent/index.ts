@@ -160,7 +160,15 @@ const BRAND_LOOKUPS_PER_PASS = 25
   it rather than just louder: a name on 56 paid posts is looked up before one named once, so
   the budget buys the best leads first however long the tail is.
 */
-const OFFICIAL_LOOKUPS_PER_PASS = 40
+/**
+ * 40 → 60 (2026-09-02). The fresh-name backlog is small (~32 distinct new brand strings a
+ * day, measured) and the anonymous feed endpoint answered 12/12 with ZERO 429s from the home
+ * IP at 3s spacing, so the budget was not the binding constraint — the FREQUENCY ranking was
+ * (fixed in officialDiscovery). A modest raise, at 6s spacing that is ~6 minutes of a
+ * 30-minute pass, drains the fresh set plus a slice of the old film-title backlog each pass.
+ * A real 429 still HALTS the pass, so this cannot escalate into an IP block.
+ */
+const OFFICIAL_LOOKUPS_PER_PASS = 60
 /** Badge checks per brand pass — the FEED endpoint, 6s spacing inside the pass. */
 const BADGE_ENRICHMENTS_PER_PASS = 10
 
