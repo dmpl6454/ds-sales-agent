@@ -451,9 +451,25 @@ const HISTORY_SCROLL_ROUNDS = 25
  * `complete` is a guard reporting silence it never verified.
  */
 export function assessRead(messages: ThreadMessage[], ourBodies: readonly string[]): ThreadRead {
+  /**
+   * ── THE BAR IS OVER DISTINCT BODIES (2026-09-03) ────────────────────────────────────
+   *
+   * Two things make a second byte-identical body unclaimable in principle, not merely
+   * unlucky: `collectMessages` de-duplicates bubbles on raw text, so two identical messages
+   * can only ever surface as ONE bubble here; and Instagram silently drops a verbatim repeat
+   * (measured 26 Aug: touch 2 identical to touch 1 failed 83% of the time), so the second
+   * copy is usually not in the thread at all. MEASURED: 11 of 82 multi-touch pairs carry
+   * identical delivered bodies — every one of them read "saw 1 of 2" on every read forever,
+   * and @bollywoodchronicle → @kumartaurani parked three times today on exactly that.
+   *
+   * The 2026-08-17 rule below — each body claims its own bubble — stands for DISTINCT bodies,
+   * which is what the follow-up template guarantees since 1 Sept. Demanding two bubbles for
+   * one text was a bar nothing could clear: a blindfold wearing a seatbelt.
+   */
+  const distinct = [...new Set(ourBodies)]
   const claimed = new Set<number>()
   let foundOurs = 0
-  for (const body of ourBodies) {
+  for (const body of distinct) {
     const idx = messages.findIndex((m, i) => !claimed.has(i) && isOneOfOurs(m.text, [body]))
     if (idx === -1) continue
     claimed.add(idx)
@@ -462,8 +478,8 @@ export function assessRead(messages: ThreadMessage[], ourBodies: readonly string
   return {
     messages,
     foundOurs,
-    expectedOurs: ourBodies.length,
-    complete: foundOurs >= ourBodies.length,
+    expectedOurs: distinct.length,
+    complete: foundOurs >= distinct.length,
   }
 }
 

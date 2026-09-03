@@ -120,41 +120,47 @@ describe('assessRead', () => {
   })
 
   /**
-   * ── THE SINGLE-TEMPLATE CASE, WHICH USED TO PASS FROM ONE BUBBLE ──────────
+   * ── THE SINGLE-TEMPLATE CASE, REVISITED (2026-08-17 → 2026-09-03) ──────────
    *
-   * Every message is now the SAME standard template, so a pair's bodies are byte-identical.
-   * The old check asked `messages.some(...)` per body — membership, which is a property of
-   * the whole thread — so ONE visible bubble answered for all three, `complete` came back
-   * true, and the caller stamped verified silence over a conversation it had not seen.
+   * On 2026-08-17 this test demanded one bubble PER identical body, because the old check
+   * asked `messages.some(...)` per body — membership — and one visible bubble answered for
+   * three. The bar is now over DISTINCT bodies (see `assessRead`): two byte-identical
+   * deliveries can only ever surface as ONE bubble — `collectMessages` de-duplicates on raw
+   * text and Instagram drops a verbatim repeat — so "three bubbles for one text" was a bar
+   * nothing could clear. MEASURED: 11 of 82 multi-touch pairs read "saw 1 of 2" forever.
    *
-   * This is the assertion that fails if the claim is ever relaxed back to membership. It is
-   * mutation-tested: replacing the body of `assessRead` with the old
-   * `ourBodies.filter((b) => messages.some((m) => isOneOfOurs(m.text, [b]))).length`
-   * makes the first expectation read 3 and the test fails.
+   * What the 2026-08-17 fix actually protected — occurrence counting, so one bubble cannot
+   * vouch for two DIFFERENT messages — is kept and mutation-tested below with two distinct
+   * bodies that share a long prefix: a single truncated bubble is a prefix of both, membership
+   * would count 2, the claim counts 1.
    */
-  it('does not let one bubble vouch for three identical messages', () => {
+  it('one bubble vouches for one distinct body however many times it was sent', () => {
     const ours = [OURS_A, OURS_A, OURS_A]
     const oneVisible = assessRead([bubble(OURS_A, ours)], ours)
+    expect(oneVisible.expectedOurs).toBe(1)
     expect(oneVisible.foundOurs).toBe(1)
-    expect(oneVisible.complete).toBe(false)
+    expect(oneVisible.complete).toBe(true)
+  })
 
-    const twoVisible = assessRead([bubble(OURS_A, ours), bubble(OURS_A, ours)], ours)
-    expect(twoVisible.foundOurs).toBe(2)
-    expect(twoVisible.complete).toBe(false)
-
-    // And the honest positive direction: all three present reads as complete.
-    const allVisible = assessRead([bubble(OURS_A, ours), bubble(OURS_A, ours), bubble(OURS_A, ours)], ours)
-    expect(allVisible.foundOurs).toBe(3)
-    expect(allVisible.complete).toBe(true)
+  it('does not let one truncated bubble vouch for two DIFFERENT messages (the claim, not membership)', () => {
+    const shared = 'Hi Bollywood Chronicle,\n\nI run a network of two hundred entertainment pages with sixty million followers combined.'
+    const a = shared + '\n\nLooking forward to connecting.'
+    const c = shared + '\n\nCould we set up a call this week?'
+    const ours = [a, c]
+    const truncated = shared.slice(0, 80) // a "… see more" bubble: a prefix of BOTH bodies
+    const r = assessRead([bubble(truncated, ours)], ours)
+    expect(r.expectedOurs).toBe(2)
+    expect(r.foundOurs).toBe(1) // membership would say 2
+    expect(r.complete).toBe(false)
   })
 
   /**
-   * The failure this guard exists for, with identical bodies: a partial read that also
-   * hides a reply must not report complete. If it did, `replyCheckedAt` would be stamped
-   * and the next follow-up would fire into a live conversation.
+   * The failure this guard exists for, with DISTINCT bodies: a partial read that also hides
+   * a reply must not report complete. If it did, `replyCheckedAt` would be stamped and the
+   * next follow-up would fire into a live conversation.
    */
-  it('holds when identical messages are partly visible and a reply is present', () => {
-    const ours = [OURS_A, OURS_A]
+  it('holds when distinct messages are partly visible and a reply is present', () => {
+    const ours = [OURS_A, OURS_B]
     const r = assessRead([bubble(OURS_A, ours), bubble(THEIRS, ours)], ours)
     expect(r.foundOurs).toBe(1)
     expect(r.complete).toBe(false)
@@ -197,16 +203,23 @@ describe('completeness on a fanned-out recipient', () => {
     const read = assessRead(messages, [TEMPLATE])
     expect(read.complete).toBe(true)
     expect(read.foundOurs).toBe(1)
-    /* The old bar, for contrast: fleet-wide expectations can never be met in one thread. */
-    const oldBar = assessRead(messages, [TEMPLATE, TEMPLATE, TEMPLATE, TEMPLATE, TEMPLATE])
-    expect(oldBar.complete).toBe(false)
+    /* Five fleet-wide copies of ONE text are one distinct body (2026-09-03), so the fleet-wide
+       set no longer wedges this thread by itself — the pair scope still matters the moment
+       another page's FOLLOW-UP (a different text) is in the set, which the next test pins. */
+    const fleetWide = assessRead(messages, [TEMPLATE, TEMPLATE, TEMPLATE, TEMPLATE, TEMPLATE])
+    expect(fleetWide.expectedOurs).toBe(1)
+    expect(fleetWide.complete).toBe(true)
+    const withAnotherPagesFollowUp = assessRead(messages, [TEMPLATE, OURS_B])
+    expect(withAnotherPagesFollowUp.complete).toBe(false)
   })
 
-  /** The direction the 17 Aug fix exists for is UNCHANGED: two sends by THIS pair need two bubbles. */
-  it('a pair that delivered twice is still incomplete when only one bubble is visible', () => {
-    const read = assessRead([{ text: TEMPLATE, ours: true, approxAt: null }], [TEMPLATE, TEMPLATE])
+  /** Two DIFFERENT sends by THIS pair need two bubbles; a repeat of one text needs one (2026-09-03). */
+  it('a pair that delivered two different messages is incomplete when only one bubble is visible', () => {
+    const read = assessRead([{ text: TEMPLATE, ours: true, approxAt: null }], [TEMPLATE, OURS_B])
     expect(read.complete).toBe(false)
     expect(read.foundOurs).toBe(1)
+    const repeat = assessRead([{ text: TEMPLATE, ours: true, approxAt: null }], [TEMPLATE, TEMPLATE])
+    expect(repeat.complete).toBe(true)
   })
 })
 
@@ -225,5 +238,30 @@ describe('the two body sets cannot be silently conflated again', () => {
   it('the sweep builds expected from THIS pair and allOurs from the fleet', () => {
     expect(check).toMatch(/a\.senderId === senderId/)
     expect(check).toMatch(/\{ expected, allOurs \}/)
+  })
+})
+
+/**
+ * THE BAR IS OVER DISTINCT BODIES (2026-09-03). Two byte-identical deliveries can only ever
+ * surface as ONE bubble — `collectMessages` de-duplicates on raw text and Instagram drops a
+ * verbatim repeat — so demanding two was a bar nothing could clear. MEASURED: 11 of 82
+ * multi-touch pairs carry identical delivered bodies and every one read "saw 1 of 2" forever;
+ * @bollywoodchronicle → @kumartaurani parked three times in one day on it.
+ */
+describe('assessRead — identical delivered bodies', () => {
+  it('is complete when the one distinct body we sent twice is visible once', () => {
+    const ours = [OURS_A, OURS_A]
+    const r = assessRead([bubble(OURS_A, ours)], ours)
+    expect(r.expectedOurs).toBe(1)
+    expect(r.foundOurs).toBe(1)
+    expect(r.complete).toBe(true)
+  })
+
+  it('still needs every DISTINCT body — a repeat does not excuse a missing different message', () => {
+    const ours = [OURS_A, OURS_A, OURS_B]
+    const r = assessRead([bubble(OURS_A, ours)], ours)
+    expect(r.expectedOurs).toBe(2)
+    expect(r.foundOurs).toBe(1)
+    expect(r.complete).toBe(false)
   })
 })
