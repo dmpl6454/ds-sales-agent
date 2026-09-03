@@ -1,52 +1,45 @@
 DS SALES AGENT — SETUP
 ======================
 
-What you need before starting (all three come from Tabish):
-  1. The DATABASE_URL           (one line, starts with postgresql://)
-  2. The tunnel key file        (a small file called ds_tunnel_key)
-  3. The shared dashboard login (an email and password — no sign-up needed)
-
-Also install Google Chrome if this Mac does not have it.
+You need: a Mac with Google Chrome installed, and the dashboard login (an email and
+password; ask whoever runs this). Nothing else — no keys, no database details.
 
 Steps
 -----
-1. Double-click "DS Sales Agent.app". It is signed with an Apple Developer ID and
-   notarised by Apple, so it opens normally — no security warnings, nothing to
-   allow in System Settings.
+1. Double-click "DS Sales Agent.app". It is signed and notarised by Apple, so it opens
+   with no security warnings. A small dialog asks you to confirm a name for this Mac
+   (it is pre-filled). Click Continue.
 
-   A Terminal window opens and walks you through the setup: paste the
-   DATABASE_URL, point it at the key file, give this machine a name. It installs
-   everything and keeps the agent running 24/7, surviving restarts.
+2. A browser tab opens on the dashboard. Sign in if asked, check that the page shows
+   the same code and key as the dialog on your Mac, and click "Approve this Mac".
+   That is the whole hand-over: this Mac now has its own, forward-only access to the
+   shared database — no shell, no files, one port — and it can be revoked on the
+   Senders page at any time.
 
-2. The dashboard is the website: https://e035e4d46c.digitalsukoon.com — bookmark
-   it. Drag the app into Applications if you like; once an install exists, opening
-   it just opens that URL.
+3. Wait for the "ready" dialog (2-4 minutes on the first run; the setup installs a
+   private Node runtime and the code, and starts the agent so it runs 24/7 and
+   survives restarts). Click "Open dashboard".
 
-3. Only if something still blocks the app — an old unsigned copy of this image, or
-   a Mac under a managed security policy — the identical installer runs from
-   Terminal instead:
+4. On the Senders page, add your Instagram page as a sending account and press
+   Connect beside it: a Chrome window opens ON THIS MAC — sign in to Instagram there
+   once, then close it. That login is the one act nobody can do for you; it writes
+   this Mac's device identity, which is what keeps the account safe.
 
-     bash "/Volumes/DS Sales Agent/DS Sales Agent.app/Contents/Resources/install.sh"
-
-4. Sign in on the dashboard with the shared login. On the Senders page, add
-   your Instagram page as a sending account and press Connect: a Chrome window
-   opens ON THIS MAC (the dashboard relays the request to your machine) — sign
-   in to Instagram there once, then close it. The Senders page shows the
-   account as signed in within a minute.
-
-   If the window does not open, the fallback is the same act from a terminal:
-     cd ~/ds-sales-agent && pnpm ig:login <yourhandle>
-
-That is the only manual act — the login writes this Mac's device identity,
-which is what keeps the account safe, and it cannot be done for you. Each
-Instagram account should live on exactly ONE Mac: never connect the same
+Each Instagram account should live on exactly ONE Mac: never connect the same
 account from two machines.
 
 What runs where
 ---------------
-Paid-post detection, targets and message planning all run centrally — you
-inherit them as they are. This Mac only SENDS, from the account(s) you
-connected, from your own home IP, at the fleet's usual pace. Keep the lid
-open; a sleeping Mac sends nothing.
+Paid-post detection, targets and message planning run centrally — you inherit them.
+This Mac only SENDS, from the account(s) you connected, from your own home internet,
+at the fleet's usual pace. Keep the lid open; a sleeping Mac sends nothing.
+
+If something goes wrong
+-----------------------
+The setup writes a log at ~/Library/Logs/ds-sales-agent-install.log and shows any
+failure in a dialog. If the app itself will not open (an old copy of this image, or
+a Mac under a managed security policy), the identical setup runs from Terminal:
+
+  bash "/Volumes/DS Sales Agent/DS Sales Agent.app/Contents/Resources/install.sh"
 
 Nothing on this disk image contains credentials.
