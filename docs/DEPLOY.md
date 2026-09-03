@@ -38,7 +38,7 @@ channel binding, so it *works* — right up until enforcement lands silently.
 
 | | |
 |---|---|
-| `pm2` process | `ds-sales-agent` — the dashboard, which also runs the scheduler |
+| `pm2` processes | `ds-sales-agent` — the dashboard, a two-worker CLUSTER (`node_modules/next/dist/bin/next start`); `ds-sales-worker` — detection, its own process since 2 Sept |
 | port | 3100, bound to 127.0.0.1; nginx is the only thing in front |
 | nginx vhost | `/etc/nginx/sites-available/ds-sales-agent` |
 | TLS | the existing Cloudflare origin cert, shared with the other subdomains |
@@ -147,6 +147,15 @@ this repo's HTTPS remote wants credentials, so the current path is an archive:
 
 ```bash
 bash scripts/deploy.sh
+
+**Zero-downtime since 3 Sept.** The build goes into the other of `.next-a` / `.next-b`
+(`NEXT_DIST_DIR`, read by `next.config.ts`) while the current one keeps serving; only a
+successful build reloads the two cluster workers onto it, one at a time (`pm2 reload
+--update-env`). Measured through Cloudflare during a deploy: 55 polls, 55 × 200. Before this,
+every 5xx the hosted dashboard ever served was a deploy window (pm2 stop → ~2 min build → start).
+The old dist is removed only after the new one answers; until then rollback is
+`NEXT_DIST_DIR=<old> pm2 reload ds-sales-agent --update-env` on the server. Never reintroduce a
+`pm2 stop` before the build, and never build into the dist being served.
 ```
 
 **USE THE SCRIPT.** The hand-typed archive command below is kept only because it explains

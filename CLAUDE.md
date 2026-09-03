@@ -71,6 +71,40 @@ properly rather than kept on a handle we could never confirm.
 
 ---
 
+## 3 SEPTEMBER, LATE — EVERY HOSTED 5xx WAS A DEPLOY WINDOW; DEPLOYS BUILD WHILE SERVING NOW
+
+**Tabish, from Safari's "This page couldn't load" on the hosted URL: *"What is the health of
+production website, this must be future proof."*** MEASURED before changing anything: no OOM
+kill, 0 web restarts, origin 200 in 39 ms, edge 200 in 65-315 ms — and **every 5xx of the day
+sat inside a deploy**: Cloudflare 502s at 04:51Z and 07:31Z (10 requests), and an nginx
+*"upstream prematurely closed connection"* at 09:17Z, the truncated response Safari renders as
+its own error page rather than Cloudflare's. `deploy.sh` did pm2 stop → ~2-minute build on
+one vCPU → start, and I had run it five times today.
+
+**THE FIX IS STRUCTURAL.** `next.config.ts` takes `NEXT_DIST_DIR` (default `.next`, so
+laptops, `pnpm local` and the tests are untouched); the deploy builds into the OTHER of
+`.next-a` / `.next-b` while the current one keeps serving, niced so the build does not starve
+page renders; only a SUCCESSFUL build reloads the web process — now a **two-worker pm2 cluster**
+(`node_modules/next/dist/bin/next start`, `pm2 reload --update-env`) so a request always has a
+worker; the old dist is removed only after the new one answers (rollback until then is one
+`pm2 reload` with the old dir). A failed build leaves the running site untouched — there is no
+stop step left to leave it down. The legacy fork process is converted once by the script.
+
+| | |
+|---|---|
+| conversion deploy (one-time) | edge poller 1/s: 50 × 200, **2 × 502** — the documented few seconds |
+| next deploy, reload path | **55 × 200, 0 anything else** while the site rebuilt and reloaded |
+| served build | `BUILD_ID` of the active dist referenced by the served HTML; authenticated `/`, `/paid-posts`, `/senders`, `/cost` 200 under the cluster |
+| memory | two workers ~165 MB each; 874 MB available |
+
+Cluster mode is safe here because every piece of state that matters is in the shared
+database — sessions, the send lock, the connect relay, settings; the per-process memo of
+`buildCeoView` is per worker and that is fine. `instrumentation.ts` starts no scheduler on the
+web (`EMBEDDED_SCHEDULER=false`), and the server may never send, so nothing in the web
+process is single-instance by design. Do not put detection back in it and do not fork it.
+
+---
+
 ## 3 SEPTEMBER, AFTERNOON — THE READER SAW ONE BUBBLE, AND A FOLLOW-UP WENT INTO AN ANSWERED THREAD
 
 **Tabish, from three live threads: *"even though it can send a message it just does not
