@@ -6,7 +6,7 @@ import { profileStatus } from './browser/profile'
 import { openAndReadThread } from './browser/readThread'
 import { scanInbox } from './browser/inboxScan'
 import { parseInboxAge, plausibleReplyDate } from './browser/threadDates'
-import { triageInboxRow, snippetIsReplyText, matchInboxRow, shouldRecordInboxReply, threadIdFrom, type TargetRef } from './inboxTriage'
+import { triageInboxRow, snippetIsReplyText, matchInboxRow, matchInboxRowToTarget, shouldRecordInboxReply, threadIdFrom, type TargetRef } from './inboxTriage'
 import { normalise } from './matching'
 import { markChallenged } from './challenge'
 
@@ -517,7 +517,32 @@ async function inboxPhase(
   const unmatched: string[] = []
 
   for (const sender of local) {
-    const scan = await scanInbox(sender.handle)
+    /* Everything this sender ever delivered: the bodies for the ours/theirs snippet
+       insurance, and the thread URLs that identify each conversation exactly. Loaded
+       BEFORE the scan because the scan asks which rows are worth opening. */
+    const delivered = await prisma.outreachAttempt.findMany({
+      where: { senderId: sender.id, status: { in: [...DELIVERED_STATUSES] } },
+      select: { renderedBody: true, threadUrl: true, targetId: true },
+    })
+    const ourBodies = delivered.map((a) => a.renderedBody)
+    const targetById = new Map(targets.map((t) => [t.id, t]))
+    const byThreadId = new Map<string, TargetRef>()
+    for (const a of delivered) {
+      const id = threadIdFrom(a.threadUrl)
+      const t = targetById.get(a.targetId)
+      if (id && t) byThreadId.set(id, t)
+    }
+
+    /**
+     * A row is opened ONLY when the name rules cannot place it AND they wrote last — the
+     * rows that until now were reported for a person ("Nykaa", "Maybelline New York -
+     * India", both stored under their raw handle). The click reveals `/direct/t/<id>`,
+     * which `matchInboxRow` resolves against this sender's own delivered threads.
+     */
+    const scan = await scanInbox(sender.handle, {
+      needsThread: (row) =>
+        triageInboxRow(row, ourBodies) === 'theirs-last' && matchInboxRowToTarget(row.displayName, targets) === null,
+    })
     if (!scan.ok) {
       if (scan.reason === 'checkpoint') {
         await markChallenged({
@@ -536,23 +561,8 @@ async function inboxPhase(
       continue
     }
 
-    /* Everything this sender ever delivered: the bodies for the ours/theirs snippet
-       insurance, and the thread URLs that identify each conversation exactly. */
-    const delivered = await prisma.outreachAttempt.findMany({
-      where: { senderId: sender.id, status: { in: [...DELIVERED_STATUSES] } },
-      select: { renderedBody: true, threadUrl: true, targetId: true },
-    })
-    const ourBodies = delivered.map((a) => a.renderedBody)
-    const targetById = new Map(targets.map((t) => [t.id, t]))
-    const byThreadId = new Map<string, TargetRef>()
-    for (const a of delivered) {
-      const id = threadIdFrom(a.threadUrl)
-      const t = targetById.get(a.targetId)
-      if (id && t) byThreadId.set(id, t)
-    }
-    /* Logged so the next sweep PROVES the link capture is live rather than assumed:
-       0 linked rows on a busy inbox means the row DOM carries no anchor and the
-       name fallback is doing all the work again. */
+    /* Logged so the sweep PROVES the thread identification is live rather than assumed:
+       `withThreadLink` counts rows whose conversation id was learned by opening them. */
     log.info('inbox rows read', {
       sender: sender.handle,
       rows: scan.rows.length,
