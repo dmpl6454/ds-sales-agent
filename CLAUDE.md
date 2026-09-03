@@ -120,7 +120,7 @@ documents for `pnpm build`; exit codes are now read directly in every chain.
 
 | | |
 |---|---|
-| tests / typecheck | **2,160 / 123 files**, clean; new reader cases mutation-tested |
+| tests / typecheck | **2161 / 123 files**, clean; new reader cases mutation-tested |
 | autopilot | ON throughout; heartbeat fresh; `tabish-mac` beating; 29 delivered / 32 paid in 3h at the last snapshot; 0 parked |
 | DMG | rebuilt from the final commit and served by the hosted download, byte-identical |
 
