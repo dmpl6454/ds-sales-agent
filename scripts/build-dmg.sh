@@ -20,11 +20,21 @@
 # operator needs (DATABASE_URL, the tunnel key at ~/Downloads/ds_tunnel_key, the
 # shared dashboard login) are handed over person to person, never shipped.
 #
-# The app is UNSIGNED (no Apple Developer ID). On macOS 15+ Gatekeeper blocks a double-click
-# outright (the right-click → Open bypass is gone), so the README leads with a Terminal
-# one-liner that runs install.sh straight off the mounted image — an interpreter reading a
-# file is not a Gatekeeper launch. Signing + notarising (Developer ID, notarytool) is the
-# permanent fix and needs Tabish's Apple account.
+# ── SIGNED AND NOTARISED WHEN THE CERTIFICATE IS PRESENT (2026-09-03) ────────
+#
+# macOS 15 removed the right-click → Open bypass, so an unsigned build dead-ends at "Apple
+# could not verify …" with a single Done button — measured on another operator's Mac. With a
+# Developer ID Application certificate in the keychain this script signs the app with the
+# hardened runtime, notarises it, staples the ticket to BOTH the app and the image, and
+# verifies the result the way Gatekeeper will. A double-click then just works.
+#
+# WITHOUT the certificate it still builds, unsigned, and says so loudly: a laptop that cannot
+# sign must not lose the ability to produce an image, and a silent unsigned build is how a
+# blocked DMG reaches somebody's Mac again.
+#
+#   DS_SIGN_ID         override the identity (default: the first Developer ID Application)
+#   DS_NOTARY_PROFILE  notarytool keychain profile  (default: ds-notary)
+#   DS_SKIP_NOTARY=1   sign but do not notarise — for a quick local build
 #
 set -euo pipefail
 
@@ -32,7 +42,7 @@ REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 OUT="${DS_DMG_OUT:-$HOME/Downloads/DS-Sales-Agent.dmg}"
 STAGE="$(mktemp -d /tmp/ds-dmg-stage.XXXXXX)"
 APP="$STAGE/DS Sales Agent.app"
-trap 'rm -rf "$STAGE"' EXIT
+trap 'rm -rf "$STAGE"' EXIT   # widened to include $WORK once the signing section defines it
 
 cd "$REPO"
 
@@ -45,10 +55,17 @@ fi
 
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$REPO/scripts/dmg/Info.plist" "$APP/Contents/Info.plist"
-cp "$REPO/scripts/dmg/launcher.sh" "$APP/Contents/MacOS/ds-sales-agent"
 cp "$REPO/scripts/dmg/install.sh" "$APP/Contents/Resources/install.sh"
+cp "$REPO/scripts/dmg/launcher.sh" "$APP/Contents/Resources/launcher.sh"
 cp "$REPO/scripts/dmg/README.txt" "$STAGE/READ ME FIRST.txt"
-chmod +x "$APP/Contents/MacOS/ds-sales-agent" "$APP/Contents/Resources/install.sh"
+
+# THE EXECUTABLE IS A COMPILED UNIVERSAL BINARY, and the shell logic is a RESOURCE beside it.
+# Hardened runtime — which notarisation requires — is a Mach-O load command, so a bundle whose
+# CFBundleExecutable is a script cannot carry it. The stub is 20 lines and execs the script,
+# which stays sealed by the same signature. Both architectures, so an Intel Mac runs it too.
+clang -arch arm64 -arch x86_64 -O2 -Wall -Wextra -mmacosx-version-min=12.0 \
+  -o "$APP/Contents/MacOS/ds-sales-agent" "$REPO/scripts/dmg/launcher.c"
+chmod +x "$APP/Contents/MacOS/ds-sales-agent" "$APP/Contents/Resources/install.sh" "$APP/Contents/Resources/launcher.sh"
 
 git archive --format=tar.gz -o "$APP/Contents/Resources/ds-sales-agent.tar.gz" HEAD
 
@@ -58,9 +75,76 @@ if tar -tzf "$APP/Contents/Resources/ds-sales-agent.tar.gz" | grep -qE '(^|/)\.e
   exit 1
 fi
 
+# ── SIGN ──────────────────────────────────────────────────────────────────
+SIGN_ID="${DS_SIGN_ID:-$(security find-identity -v -p codesigning 2>/dev/null | awk -F'"' '/Developer ID Application/{print $2; exit}')}"
+NOTARY_PROFILE="${DS_NOTARY_PROFILE:-ds-notary}"
+WORK="$(mktemp -d /tmp/ds-dmg-work.XXXXXX)"
+trap 'rm -rf "$STAGE" "$WORK"' EXIT
+
+if [ -n "$SIGN_ID" ]; then
+  echo "signing as: $SIGN_ID"
+  # One codesign of the bundle seals the resources and signs the main executable. There is no
+  # nested code to sign first — the scripts are resources, not Mach-O.  --timestamp is required
+  # for notarisation, and a signature without it silently expires with the certificate.
+  codesign --force --options runtime --timestamp --sign "$SIGN_ID" "$APP"
+  codesign --verify --strict --verbose=2 "$APP" 2>&1 | sed 's/^/  /'
+else
+  echo
+  echo "WARNING: no Developer ID Application certificate found — building an UNSIGNED image."
+  echo "         On macOS 15 a double-click on it is refused outright; the README's Terminal"
+  echo "         line is the only way in. Install the certificate to fix this properly."
+  echo
+fi
+
+# ── NOTARISE THE APP, so the ticket travels with it out of the image ──────
+NOTARISED=no
+if [ -n "$SIGN_ID" ] && [ "${DS_SKIP_NOTARY:-0}" != "1" ]; then
+  if xcrun notarytool history --keychain-profile "$NOTARY_PROFILE" >/dev/null 2>&1; then
+    echo "notarising the app (this takes a few minutes)…"
+    ditto -c -k --keepParent "$APP" "$WORK/app.zip"
+    xcrun notarytool submit "$WORK/app.zip" --keychain-profile "$NOTARY_PROFILE" --wait 2>&1 | sed 's/^/  /'
+    # Stapling the APP as well as the image is deliberate: a stapled image proves nothing
+    # about the app once it has been dragged to /Applications, and Gatekeeper would then have
+    # to ask Apple online — which fails on a Mac that is offline at first launch.
+    xcrun stapler staple "$APP" 2>&1 | sed 's/^/  /'
+    NOTARISED=yes
+  else
+    echo
+    echo "WARNING: no notarytool profile '$NOTARY_PROFILE' — signed but NOT notarised."
+    echo "         Create it once:  xcrun notarytool store-credentials $NOTARY_PROFILE \\"
+    echo "                            --apple-id <appleid> --team-id <TEAMID> --password <app-specific-password>"
+    echo
+  fi
+fi
+
 rm -f "$OUT"
 hdiutil create -volname "DS Sales Agent" -srcfolder "$STAGE" -ov -format UDZO "$OUT" >/dev/null
 
+# ── SIGN AND NOTARISE THE IMAGE ITSELF ────────────────────────────────────
+if [ -n "$SIGN_ID" ]; then
+  codesign --force --timestamp --sign "$SIGN_ID" "$OUT"
+  if [ "$NOTARISED" = yes ]; then
+    echo "notarising the image…"
+    xcrun notarytool submit "$OUT" --keychain-profile "$NOTARY_PROFILE" --wait 2>&1 | sed 's/^/  /'
+    xcrun stapler staple "$OUT" 2>&1 | sed 's/^/  /'
+  fi
+fi
+
+# ── VERIFY THE WAY GATEKEEPER WILL, on the FINAL image ────────────────────
+# Not on the staging copy: what a person receives is this file, and every earlier step is a
+# claim about it. Mount it and ask spctl, which is the assessment a double-click performs.
+if [ -n "$SIGN_ID" ]; then
+  MNT="$(hdiutil attach -readonly -nobrowse "$OUT" | grep -o '/Volumes/.*$' | tail -1)"
+  if [ -n "$MNT" ]; then
+    echo "gatekeeper assessment of the shipped app:"
+    spctl -a -vvv "$MNT/DS Sales Agent.app" 2>&1 | sed 's/^/  /' || true
+    xcrun stapler validate "$MNT/DS Sales Agent.app" 2>&1 | sed 's/^/  /' || true
+    hdiutil detach "$MNT" -quiet || true
+  fi
+fi
+
 echo "built:  $OUT  ($(du -h "$OUT" | cut -f1 | tr -d ' '))  from $(git rev-parse --short HEAD)"
+echo "signed: ${SIGN_ID:-NO — unsigned, macOS 15 will refuse a double-click}"
+echo "ticket: $NOTARISED"
 echo "key:    ~/Downloads/ds_tunnel_key (send privately, per person)"
 echo "login:  the shared viewer account + the DATABASE_URL from .env — hand over person to person"
