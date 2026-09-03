@@ -71,6 +71,61 @@ properly rather than kept on a handle we could never confirm.
 
 ---
 
+## 3 SEPTEMBER, AFTERNOON — THE READER SAW ONE BUBBLE, AND A FOLLOW-UP WENT INTO AN ANSWERED THREAD
+
+**Tabish, from three live threads: *"even though it can send a message it just does not
+message them for no reason whatsoever… Is it not able to identify old replies and old
+messages? … Are the failures truly valid?"*** The answer was measured on the threads he
+photographed, and it is the worst class of defect this file records: **@maybelline_ind
+answered the 1 Sept first touch, three pre-send reads on 2-3 Sept came back "saw 0 of 1" and
+each DISCARDED the reply bubble it had in hand, and the follow-up went into the answered
+conversation at 12:45 on 3 Sept.** @mynykaa's 27 Aug reply was recorded only at 12:40 today —
+seven days late — so the halt had already lapsed and a follow-up went out two minutes later.
+
+### FOUR DEFECTS, EACH MEASURED ON A LIVE DOM BEFORE IT WAS FIXED
+
+1. **The inbox scan could not name 84 live prospects.** They store the RAW HANDLE as
+   `displayName`, while the row is titled "Nykaa" / "Maybelline New York - India". A row
+   carries NO identity — `div[role=button]`, `span[title]`, avatar alt "user-profile-picture",
+   no anchor (the first fix matched an href that does not exist; `withThreadLink=0` on every
+   inbox was the count logged to catch exactly that). **A trusted click lands on
+   `/direct/t/<id>`, and every delivered message stores that id.** `scanInbox` now opens only
+   rows the name rules cannot place, where THEY wrote last, ≤14 days old, ≤8 per sender,
+   remembering learned ids; it must return to the TOP of the list first, because `collectRows`
+   scrolls to the end and Instagram unmounts rows that left the viewport. **Verified live:
+   Maybelline's reply recorded 14:01, pair halted 7 days; Hershey's 3-day-old reply likewise.**
+2. **The message pane is `column-reverse` and mounts only the bubbles in view** — measured:
+   scrollHeight 1740 / viewport 386, ONE bubble at scrollTop 0 (newest), ONE at −1102
+   (oldest), nothing between. That is the 5 Aug "scrollTop is already 0". The reader now STEPS
+   one viewport toward the older end per round (25 max) and the observer collects at each stop.
+3. **Completeness is over DISTINCT bodies.** The reader de-duplicates on raw text and Instagram
+   drops a verbatim repeat, so two identical deliveries can only ever be one bubble; **11 of 82
+   multi-touch pairs read "saw 1 of 2" forever** (@kumartaurani parked three times today).
+   Occurrence counting stays for different bodies, mutation-tested with a truncated bubble.
+4. **A partial read records the reply it saw**; only the verified-silence stamp stays refused.
+
+**Verified with the production reader under the send lock:** chronicle→kumartaurani
+COMPLETE 1/1; societyy→amazonmgmstudiosin **COMPLETE 4/4**, all four bubbles loaded, no reply.
+The deep-read sweep went `incomplete=4 of 4` → 1 → the pre-send reads pass.
+
+**STATED, NOT CHANGED — Tabish's call:** a reply discovered late gets NO halt, because the
+window counts from the WRITTEN date (his 21 Aug rule). Nykaa's week-old autoreply was found
+and the follow-up went two minutes later, within the rule's letter. A floor of ~24h from
+DISCOVERY would close it and is one line in `replyHalt.ts`.
+
+**Also today:** the website's 502s were my deploy windows (pm2 stop → build → start, ~2 min at
+07:31Z), not crashes — no OOM, 0 web restarts; deploys were then batched to one. A typecheck
+piped into `tail` masked a failure and shipped for four minutes — the exact trap this file
+documents for `pnpm build`; exit codes are now read directly in every chain.
+
+| | |
+|---|---|
+| tests / typecheck | **2,160 / 123 files**, clean; new reader cases mutation-tested |
+| autopilot | ON throughout; heartbeat fresh; `tabish-mac` beating; 29 delivered / 32 paid in 3h at the last snapshot; 0 parked |
+| DMG | rebuilt from the final commit and served by the hosted download, byte-identical |
+
+---
+
 ## 3 SEPTEMBER, MIDDAY — THE "MESSAGE SENT" COLUMN IS A PARTITION, AND TWO MACS SHARE ONE FLEET
 
 **Tabish, from `/paid-posts`: why is "Message sent" empty on posts that name a recipient, how
