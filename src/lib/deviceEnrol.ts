@@ -23,7 +23,8 @@ import { env } from '@/lib/env'
  *      `authorized_keys` under the SAME forward-only restrictions the shared key carried
  *      (`restrict,port-forwarding,permitopen=…5432,command=/usr/bin/false`: no shell, no
  *      files, one port);
- *   3. the installer, polling `/api/device/enrol/poll` with the device code, receives the
+ *   3. the installer, POSTing the device code to `/api/device/enrol/poll` (in the body, never the URL — a
+ *      query string is written to access logs), receives the
  *      database URL and the SSH endpoint ONCE, writes its .env and ssh config, and the row
  *      is deleted.
  *
