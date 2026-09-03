@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { parseThreadTimestamp, parseInboxAge, plausibleReplyDate } from '@/outreach/browser/threadDates'
-import { triageInboxRow, snippetIsReplyText, matchInboxRowToTarget, shouldRecordInboxReply } from '@/outreach/inboxTriage'
+import { triageInboxRow, snippetIsReplyText, matchInboxRowToTarget, matchInboxRow, threadIdFrom, shouldRecordInboxReply } from '@/outreach/inboxTriage'
 import type { InboxRow } from '@/outreach/browser/inboxScan'
 
 /**
@@ -122,6 +122,7 @@ const TEMPLATE =
 const row = (displayName: string, snippet: string, ageText: string | null, unread = false): InboxRow => ({
   displayName,
   snippet,
+  threadUrl: null,
   ageText,
   unread,
   folder: 'primary',
@@ -345,5 +346,33 @@ describe('both reply write sites clamp', () => {
     /* And neither may write a raw parse straight into the column. */
     expect(src).not.toMatch(/replyPostedAt: newest\.approxAt/)
     expect(src).not.toMatch(/replyPostedAt: parseInboxAge/)
+  })
+})
+
+describe('matchInboxRow — the thread link is the identity, the name is the fallback', () => {
+  const targets = [
+    { id: 'n', handle: 'mynykaa', displayName: 'mynykaa' },
+    { id: 'm', handle: 'maybelline_ind', displayName: 'maybelline_ind' },
+    { id: 'g', handle: 'indiagatefoods', displayName: 'India Gate Foods' },
+  ]
+  const byThread = new Map([['111634473567083', targets[0]!]])
+
+  it('reads the id out of every spelling a thread URL arrives in', () => {
+    expect(threadIdFrom('/direct/t/111634473567083/')).toBe('111634473567083')
+    expect(threadIdFrom('https://www.instagram.com/direct/t/111634473567083')).toBe('111634473567083')
+    expect(threadIdFrom('/direct/inbox/')).toBeNull()
+    expect(threadIdFrom(null)).toBeNull()
+  })
+
+  it("matches @mynykaa's row titled \"Nykaa\" by its link — the name could never match (MEASURED: a week unrecorded)", () => {
+    expect(matchInboxRowToTarget('Nykaa', targets)).toBeNull()
+    expect(matchInboxRow({ displayName: 'Nykaa', threadUrl: '/direct/t/111634473567083/' }, targets, byThread)?.handle).toBe('mynykaa')
+  })
+
+  it('falls back to the name rules when the row has no link, or a link we never wrote to', () => {
+    expect(matchInboxRow({ displayName: 'India Gate Foods', threadUrl: null }, targets, byThread)?.handle).toBe('indiagatefoods')
+    expect(matchInboxRow({ displayName: 'India Gate Foods', threadUrl: '/direct/t/999/' }, targets, byThread)?.handle).toBe('indiagatefoods')
+    // A stranger's inbound row: unknown thread, unmatchable name — reported for a person, never guessed.
+    expect(matchInboxRow({ displayName: 'Maybelline New York - India', threadUrl: '/direct/t/999/' }, targets, byThread)).toBeNull()
   })
 })
