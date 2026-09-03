@@ -71,6 +71,40 @@ properly rather than kept on a handle we could never confirm.
 
 ---
 
+## 3 SEPTEMBER, NIGHT — THE DMG IS SIGNED AND NOTARISED; A DOUBLE-CLICK JUST WORKS
+
+**Tabish: *"apple developer account is ready lets create notorized dmg"*** — the account is
+sudhanshu@digitalsukoon.com, team **DYA37GDBH3**. Result, on the shipped file, by the check a
+double-click performs: **`spctl: accepted — source=Notarized Developer ID`**, where the same
+command had said `rejected — Unnotarized Developer ID` an hour earlier. `bash scripts/build-dmg.sh`
+now signs (hardened runtime, secure timestamp), notarises the app AND the image through the
+`ds-notary` keychain profile, staples both, mounts the result and runs `spctl` + `stapler
+validate`; without the identity it still builds and warns loudly.
+
+**Four things were wrong on the way, each found by running it:**
+
+1. **The first certificate could not sign here.** It was issued 1 Sept from a request made on
+   Sudhanshu's Mac — public-key hash mismatch against our private key, caught before import.
+   A second Developer ID Application certificate was issued from THIS Mac's request (Apple
+   allows five per team). `security find-identity -v` said "0 valid identities" throughout;
+   **drop the `-v` and it names the identity and the reason** — that is how the next two surfaced.
+2. **OpenSSL 3.6's default PKCS#12 is unreadable by `security import`** ("MAC verification
+   failed (wrong password?)" — it is not the password). Legacy algorithms:
+   `-keypbe PBE-SHA1-3DES -certpbe PBE-SHA1-3DES -macalg sha1`.
+3. **`CSSMERR_TP_NOT_TRUSTED` with a chain that `verify-cert` passed** — Apple's Developer ID
+   G2 intermediate was missing from the login keychain (the link on the certificates page).
+4. **The app's executable was a bash script**, and hardened runtime is a Mach-O load command:
+   the classic notarisation rejection. `scripts/dmg/launcher.c` is a 20-line universal stub
+   that execs `Resources/launcher.sh`, which stays sealed by the signature. Verified to resolve
+   its bundle through spaces and symlinks before anything was signed.
+
+`security export -t privKeys` raised a GUI password dialog on Tabish's screen from an
+automated shell — killed; never run it non-interactively. The certificate is valid to Sept 2031;
+renewal means a new CSR from this Mac. README and `/senders` lead with double-click again; the
+Terminal line survives behind a disclosure for an old image or a managed Mac.
+
+---
+
 ## 3 SEPTEMBER, EVENING — macOS 15 BLOCKS THE UNSIGNED APP OUTRIGHT; THE INSTALLER STARTS FROM TERMINAL
 
 **Tabish, with a photo of another operator's Mac: *"Another individual attempted opening the
