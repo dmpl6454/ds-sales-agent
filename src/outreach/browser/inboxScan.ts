@@ -193,6 +193,31 @@ async function resolveThreads(
       .locator('div[role="button"][tabindex]')
       .filter({ has: page.getByTitle(row.displayName, { exact: true }) })
       .first()
+    /**
+     * A row collected while the list was scrolled is not necessarily rendered now — the
+     * list re-renders from the top after every back-navigation, and Instagram keeps only a
+     * window of rows in the DOM. MEASURED on the first live run (2026-09-03): 6 rows opened
+     * against 36 unplaced, all of them near the top. So scroll the list down, a bounded number
+     * of times, until the titled row is present; a row that never appears is skipped, not
+     * guessed at.
+     */
+    for (let round = 0; round < 10 && (await el.count()) === 0; round++) {
+      const moved = await page.evaluate(() => {
+        const all = [...document.querySelectorAll('div[role="button"][tabindex]')]
+        let p: Element | null = all.find((r) => r.querySelector('span[title]')) ?? null
+        while (p && p !== document.body) {
+          const s = getComputedStyle(p)
+          if ((s.overflowY === 'auto' || s.overflowY === 'scroll') && p.scrollHeight > p.clientHeight) break
+          p = p.parentElement
+        }
+        if (!p || p === document.body) return false
+        const before = p.scrollTop
+        p.scrollTop = Math.min(p.scrollTop + p.clientHeight, p.scrollHeight)
+        return p.scrollTop !== before
+      })
+      if (!moved) break
+      await page.waitForTimeout(900)
+    }
     if ((await el.count()) === 0) continue
     await el.scrollIntoViewIfNeeded().catch(() => {})
     await jitter(400, 900)
