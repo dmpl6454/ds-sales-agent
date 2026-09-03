@@ -183,6 +183,8 @@ async function resolveThreads(
 ): Promise<number> {
   const listUrl = page.url()
   let opened = 0
+  const wanted = rows.filter((r) => !r.threadUrl && needs(r)).length
+  if (wanted > 0) log.step('unplaced inbox rows worth opening', { sender: senderHandle, wanted, cap: MAX_THREAD_OPENS })
   for (const row of rows) {
     if (opened >= MAX_THREAD_OPENS) break
     if (row.threadUrl || !needs(row)) continue
@@ -218,7 +220,10 @@ async function resolveThreads(
       if (!moved) break
       await page.waitForTimeout(900)
     }
-    if ((await el.count()) === 0) continue
+    if ((await el.count()) === 0) {
+      log.step('unplaced inbox row is not rendered — skipped, not guessed at', { sender: senderHandle, title: row.displayName })
+      continue
+    }
     await el.scrollIntoViewIfNeeded().catch(() => {})
     await jitter(400, 900)
     opened += 1

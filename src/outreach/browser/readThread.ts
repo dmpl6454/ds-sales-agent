@@ -359,13 +359,28 @@ export async function collectMessages(
           if (panel.querySelectorAll(sel!).length > 0) break
           panel = panel.parentElement
         }
-        if (!panel) return false
-        for (const c of [panel, ...panel.querySelectorAll('div')]) {
+        /**
+         * MEASURED 2026-09-03 on the profile-panel view the reader actually uses: the ONLY
+         * scrollable on the page is the message list — scrollHeight 1740 against a 386px
+         * viewport, ONE bubble mounted, and scrollTop 0. Instagram lays the list out
+         * column-reverse, so scrollTop 0 is the NEWEST message and older ones live at
+         * NEGATIVE scroll. That is what the 5 August note ("scrollTop is already 0") was
+         * seeing, and why a "scroll to 0" could never load anything. Drive it negative;
+         * a plain top-down list clamps the same write to 0, its own top. It is also NOT an
+         * ancestor of the composer, so the search is page-wide: any scrollable that holds a
+         * bubble, not only the composer's own panel.
+         */
+        const candidates = [panel, ...document.querySelectorAll('div')]
+        for (const c of candidates) {
           const s = getComputedStyle(c)
           if ((s.overflowY !== 'auto' && s.overflowY !== 'scroll') || c.scrollHeight <= c.clientHeight + 4) continue
           if (c.querySelectorAll(sel!).length === 0) continue
-          if (c.scrollTop <= 0) return false
-          c.scrollTop = 0
+          const before = c.scrollTop
+          c.scrollTop = -c.scrollHeight
+          if (c.scrollTop === before) {
+            c.scrollTop = 0
+            if (c.scrollTop === before) return false
+          }
           return true
         }
         return false
