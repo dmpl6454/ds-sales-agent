@@ -71,6 +71,65 @@ properly rather than kept on a handle we could never confirm.
 
 ---
 
+## 3 SEPTEMBER, MIDDAY — THE "MESSAGE SENT" COLUMN IS A PARTITION, AND TWO MACS SHARE ONE FLEET
+
+**Tabish, from `/paid-posts`: why is "Message sent" empty on posts that name a recipient, how
+often does it populate, is it a UI defect? And: does a new operator get everything they need,
+what if the Mac has no Chrome, what if two people both install the agent?** All measured or
+read from the code before answering.
+
+### THE COLUMN IS NOT A DEFECT. EACH MESSAGE APPEARS UNDER EXACTLY ONE POST
+
+MEASURED over 7 days: **623 CAMPAIGN posts · 287 with an asserted live recipient · 194 carry an
+attribution.** Of the 111 posts with a recipient and no attribution (87 recipients): **61
+recipients had been messaged in-window under ANOTHER post** (syndicated copies — the Toxic cast
+sits on three copies and the message claimed one), 25 were messaged before the window and are
+held by the follow-up rules, 1 has a draft waiting, **0 were never messaged.** The attribution
+is `OutreachAttempt.campaignId` (the post the draft CLAIMED) else `discoveredFromCampaignId`,
+computed at render from columns written the moment the draft is created — there is no batch
+job to wait for, and the page refreshes every 30-45 s. **Do not "fill in" the siblings:** that
+would count one message against several posts, and the column's whole value is that it adds up.
+
+### TWO MACS, ONE FLEET — SAFE BY CONSTRUCTION, WITH ONE UNGUARDED CASE
+
+Verified in code, not assumed: `withSendLock` is a DATABASE row, so browser drives serialise
+across machines; `deliver.ts` holds a draft for free (`no-session`, no browser, no counter) on
+a Mac whose disk lacks that sender's profile, so **each Mac sends only for the accounts
+connected ON it**; the reply sweep reads only local sessions; discovery and the badge door run
+on both Macs from two home IPs (double the lookup throughput) and `createBrandTarget` is
+idempotent on the unique handle; presence is per device name, which the installer prompts for.
+
+**UNGUARDED:** `SenderAccount` has no device column, so the same Instagram account connected on
+two Macs makes both eligible — serialised, but two device identities for one account is
+exactly the ban signal this design exists to avoid. The hosted Connect relay targets one
+device; `pnpm ig:login` does not. The rule *one account lives on exactly one Mac* is PRINTED by
+the installer and README now (`289b8a8`), not enforced; enforcing it means recording the
+connecting device on the sender row and refusing a profile whose recorded device is not this one.
+
+### THE ONBOARDING TEXT CAUGHT UP WITH THE PRODUCT
+
+README and the installer's closing steps still said *"ask Tabish to add your Instagram page"*
+and `pnpm ig:login` — written before every user was an operator and before the relay. Now: sign
+in with the shared login, add the page on `/senders`, press Connect (Chrome opens on THIS Mac),
+terminal command as the fallback. **No Chrome:** the installer refuses at step 0 with the
+download URL, before anything is installed. DMG rebuilt (**2,581,451 bytes**), deployed, the
+hosted copy byte-identical to the local build.
+
+### RENAMING THE HOSTNAME IS SMALL, AND NOT DONE
+
+The origin cert is a Cloudflare Origin CA cert for **`*.digitalsukoon.com`** (valid to 2041),
+so `dssalesagent.digitalsukoon.com` needs no certificate work: a proxied A record (Tabish),
+`server_name` in `/etc/nginx/sites-available/ds-sales-agent` plus a 301 from the old name so
+installed DMGs keep working, `DASHBOARD_URL` in `install.sh` / `launcher.sh` / `DEPLOY.md`, and
+a DMG rebuild. Awaiting his go.
+
+| | |
+|---|---|
+| tests / typecheck | unchanged — scripts and docs only |
+| autopilot | ON; worker heartbeat 1 min after the deploy; `tabish-mac` 0 min; 13 delivered / 11 paid in 3h; 0 unjudged |
+
+---
+
 ## 2-3 SEPTEMBER — THE HOSTED URL TOLD THE TRUTH LAST; FIVE FIXES, EVERY ONE MEASURED FIRST
 
 **Tabish, from the live hosted page: autopilot showed OFF and could not be turned on, every
