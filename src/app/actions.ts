@@ -2,6 +2,8 @@
 
 import { invalidateCeoView } from './view-model'
 import { revalidatePath } from 'next/cache'
+import { approveEnrolment, revokePairedDevice } from '@/lib/deviceEnrol'
+import { redirect } from 'next/navigation'
 import { prisma } from '@/lib/db'
 import { env } from '@/lib/env'
 import { runSlot } from '@/worker/runSlot'
@@ -2524,4 +2526,30 @@ export async function setTargetCategory(handle: string, categoryName: string): P
     ok: true,
     message: `@${handle} is in ${name}. Only that group's ${ringSize} account${ringSize === 1 ? '' : 's'} will write to them now.`,
   }
+}
+
+
+// ── PAIRING A MAC (2026-09-03) ────────────────────────────────────────────────
+
+/**
+ * The operator's click on /devices/enrol. Appends the Mac's own public key to the server's
+ * authorized_keys under forward-only restrictions and releases the connection string to the
+ * installer's next poll. Form action, so the approval page is a plain server component.
+ */
+export async function approveDevice(formData: FormData): Promise<void> {
+  const user = await requireOperator()
+  const code = String(formData.get('code') ?? '').trim().toUpperCase()
+  const r = await approveEnrolment(code, user.email)
+  if (!r.ok) return redirect(`/devices/enrol?code=${encodeURIComponent(code)}&error=${encodeURIComponent(r.reason)}`)
+  await audit(user.email, 'device.paired', `Device:${r.deviceName}`, `key ${r.fingerprint} authorised for the database tunnel only`)
+  redirect(`/senders?paired=${encodeURIComponent(r.deviceName)}`)
+}
+
+/** Removes one Mac's tunnel key. Its agent loses the database on the next reconnect; nothing else changes. */
+export async function revokeDevice(formData: FormData): Promise<void> {
+  const user = await requireOperator()
+  const name = String(formData.get('name') ?? '')
+  const removed = revokePairedDevice(name)
+  await audit(user.email, 'device.revoked', `Device:${name}`, removed > 0 ? `${removed} tunnel key line(s) removed` : 'no key found under that name')
+  revalidatePath('/senders')
 }

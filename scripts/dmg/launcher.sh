@@ -1,14 +1,10 @@
 #!/bin/bash
-# The .app's executable — what a click on the Dock icon does.
+# The .app's behaviour — run by the compiled stub in Contents/MacOS (see launcher.c).
 #
-# ALREADY INSTALLED → open the dashboard. That is what a person clicking an app called
-# "DS Sales Agent" is asking for (Tabish, 2026-09-01: "I need the application file visible
-# on my dock — why is it not running with dashboard?"). The agent itself is a headless
-# LaunchAgent with no window; the dashboard is where the data is. The dev Mac serves its
-# own copy on :3100 and is preferred when it answers; every other Mac gets the hosted one.
-#
-# NOT YET INSTALLED → open Terminal running the interactive installer, exactly as before.
-RES="$(cd "$(dirname "$0")/../Resources" && pwd)"
+# FIRST LAUNCH: run the installer in GUI mode, detached, and get out of the way. The person
+# sees dialogs and notifications, never a Terminal window; the log is in ~/Library/Logs.
+# EVERY LATER LAUNCH: an install exists, so the icon is a dashboard shortcut.
+RES="$(cd "$(dirname "$0")" && pwd)"
 
 if [ -d "$HOME/ds-sales-agent" ] || [ -d "$HOME/Desktop/AI Sales Agent" ]; then
   if nc -z 127.0.0.1 3100 2>/dev/null; then
@@ -19,6 +15,6 @@ if [ -d "$HOME/ds-sales-agent" ] || [ -d "$HOME/Desktop/AI Sales Agent" ]; then
   exit 0
 fi
 
-osascript \
-  -e 'tell application "Terminal" to activate' \
-  -e "tell application \"Terminal\" to do script \"bash '$RES/install.sh'\""
+osascript -e 'display notification "Setting up this Mac — a dialog will appear in a moment." with title "DS Sales Agent"' >/dev/null 2>&1 || true
+nohup bash "$RES/install.sh" --gui >/dev/null 2>&1 &
+exit 0

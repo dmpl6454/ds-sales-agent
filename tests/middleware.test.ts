@@ -111,6 +111,12 @@ describe('isPublic', () => {
     expect(isPublic('/sign-up')).toBe(true)
     expect(isPublic('/_next/static/chunks/x.js')).toBe(true)
     expect(isPublic('/favicon.ico')).toBe(true)
+    // The Mac that pairs itself has no session yet — exactly these two, and nothing beside them.
+    expect(isPublic('/api/device/enrol/start')).toBe(true)
+    expect(isPublic('/api/device/enrol/poll')).toBe(true)
+    expect(isPublic('/api/device/enrol/approve')).toBe(false)
+    expect(isPublic('/api/device/enrol')).toBe(false)
+    expect(isPublic('/devices/enrol')).toBe(false)
   })
 
   it('is false for everything else, including near-misses', () => {

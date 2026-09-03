@@ -53,7 +53,13 @@ import { SESSION_COOKIE } from '@/lib/session-cookie'
  *                        and a login page that renders unstyled looks broken enough
  *                        that people assume the app is down.
  */
-export const PUBLIC_PATHS = ['/sign-in', '/sign-up'] as const
+/**
+ * The two device-pairing routes are public because the caller is a Mac that has no session
+ * yet — that is what pairing is for. They carry no secret in either direction until a
+ * signed-in operator has approved on /devices/enrol (which IS protected); see
+ * src/lib/deviceEnrol.ts for the bounds. `start` and `poll` only — never `approve`.
+ */
+export const PUBLIC_PATHS = ['/sign-in', '/sign-up', '/api/device/enrol/start', '/api/device/enrol/poll'] as const
 const PUBLIC_PREFIXES = ['/_next/', '/favicon.ico'] as const
 
 export function isPublic(pathname: string): boolean {
@@ -164,8 +170,8 @@ export function middleware(request: NextRequest): NextResponse {
  *
  * The negative lookahead is the matcher equivalent of the deny-by-default rule above:
  * it names what to SKIP, so a new route is covered automatically. `api` is deliberately
- * absent from the skip list — there are no public API routes, and an unprotected one
- * added later must not be exempt by default.
+ * absent from the skip list — the only public API routes are the two device-pairing ones
+ * listed by name above, and an unprotected one added later must not be exempt by default.
  */
 export const config = {
   matcher: ['/((?!_next/static|_next/image|favicon.ico).*)'],

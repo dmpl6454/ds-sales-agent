@@ -109,6 +109,18 @@ const schema = z.object({
    */
   AGENT_DMG_PATH: z.string().optional(),
 
+  /**
+   * ── PAIRING A MAC FROM THE DASHBOARD (2026-09-03) ───────────────────────────────
+   * A new Mac's installer pairs itself: it POSTs its own public key, the operator approves
+   * on /devices/enrol, and the installer is handed the tunnel-side connection string and the
+   * SSH endpoint once. These are what it is handed and where the key is written. Hosted
+   * server only — approval refuses on a machine with SEND_ENABLED=true.
+   */
+  DEVICE_DATABASE_URL: z.string().optional(),
+  DEVICE_AUTHORIZED_KEYS: z.string().optional().transform((v) => v ?? '/root/.ssh/authorized_keys'),
+  DEVICE_SSH_HOST: z.string().optional().transform((v) => v ?? '172.105.53.101'),
+  DEVICE_SSH_USER: z.string().optional().transform((v) => v ?? 'root'),
+
   OPERATOR_NAME: z.string().optional().transform((v) => v ?? 'operator'),
 
   /**

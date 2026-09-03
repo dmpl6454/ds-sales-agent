@@ -10,7 +10,8 @@ import { LoginQueue } from '../accounts/login/queue'
 import { AddSenderForm } from './add-form'
 import { RemoveSenderForm } from './remove-form'
 import { TeamPanel } from './team-panel'
-import { listTeam } from '../actions'
+import { listTeam, revokeDevice } from '../actions'
+import { listPairedDevices } from '@/lib/deviceEnrol'
 
 export const dynamic = 'force-dynamic'
 
@@ -26,7 +27,8 @@ export const dynamic = 'force-dynamic'
  * lived here — device identity, why logins are by hand, the group ladder's reasoning —
  * is on /rules.
  */
-export default async function SendersPage() {
+export default async function SendersPage({ searchParams }: { searchParams: Promise<{ paired?: string }> }) {
+  const sp = await searchParams
   const user = await currentUser()
   if (!user) redirect('/sign-in')
 
@@ -56,6 +58,8 @@ export default async function SendersPage() {
     listCategories(),
   ])
   const total = q.done + q.remaining
+  /* The Macs whose own tunnel keys this server holds; empty on a laptop, where there is no authorized_keys to read. */
+  const paired = listPairedDevices()
 
   return (
     <>
@@ -137,6 +141,54 @@ export default async function SendersPage() {
           <span className="muted">
             {devices.length > 0 ? `Online now: ${devices.join(', ')}.` : 'No sending Mac is online yet.'}
           </span>
+        </section>
+
+        <section className="group">
+          <h2>Paired Macs</h2>
+          {sp.paired && (
+            <p>
+              <strong>{sp.paired}</strong> is approved. Its installer is finishing on its own; it appears under
+              &ldquo;Online now&rdquo; above once the agent is running, usually within a few minutes.
+            </p>
+          )}
+          {paired.length === 0 ? (
+            <p className="muted">
+              No Mac has paired itself yet. Pairing happens when someone double-clicks the installer and approves
+              it in the browser tab it opens — no secrets change hands.
+            </p>
+          ) : (
+            <div className="table-wrap">
+              <table className="table">
+                <thead>
+                  <tr>
+                    <th>Mac</th>
+                    <th>Tunnel key</th>
+                    <th>Now</th>
+                    <th></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {paired.map((d) => (
+                    <tr key={d.name + d.fingerprint}>
+                      <td>{d.name}</td>
+                      <td>
+                        <code>{d.fingerprint}</code>
+                      </td>
+                      <td>{devices.includes(d.name) ? 'online' : 'not beating'}</td>
+                      <td>
+                        <form action={revokeDevice}>
+                          <input type="hidden" name="name" value={d.name} />
+                          <button className="btn btn-quiet" type="submit">
+                            Revoke
+                          </button>
+                        </form>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
         </section>
 
         {q.remaining > 0 && (
