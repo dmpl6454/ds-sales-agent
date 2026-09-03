@@ -58,7 +58,17 @@ export function nameMatches(brandName: string, profileFullName: string | null): 
   const want = tokens(brandName)
   if (want.size === 0) return false
   const have = tokens(profileFullName)
-  return [...want].every((t) => have.has(t))
+  if ([...want].every((t) => have.has(t))) return true
+  /**
+   * THE SAME NAME WITH AND WITHOUT A SPACE (2026-09-02). "Jio Star" tokenises to {jio, star}
+   * and the verified page is named "JioStar" — one token — so the subset test refused the
+   * correct, verified advertiser (measured live). Accept EQUALITY of the squashed strings
+   * only: never containment, or "Star" would pass for JioStar and "Tips" for anything
+   * beginning with it. The @philips trap holds: "philipsindia" !== "philips".
+   */
+  const squash = (s: string): string => s.toLowerCase().replace(/[^a-z0-9]/g, '')
+  const sb = squash(brandName)
+  return sb.length >= 3 && sb === squash(profileFullName)
 }
 
 /**

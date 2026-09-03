@@ -1,4 +1,5 @@
 import { prisma } from '@/lib/db'
+import { env } from '@/lib/env'
 import { daysAgo, istDateKey } from '@/lib/time'
 import { detectionCutoff } from '@/lib/cutoff'
 import { visibleChannelFilter } from '@/detection/visibleChannels'
@@ -109,28 +110,53 @@ export interface SpendChart {
  * rising failure rate is exactly what a cost table hides by leaving it out — and a failed
  * call is never recorded as a verdict, so the two facts have to be visible separately.
  */
-export async function buildSpendChart(days = 30): Promise<SpendChart> {
-  const rows = await prisma.modelCall.findMany({
-    where: { at: { gte: daysAgo(days) } },
-    select: { at: true, purpose: true, costUsd: true },
-  })
+/**
+ * ── AGGREGATE IN THE DATABASE ON POSTGRES (2026-09-02) ───────────────────────
+ *
+ * Both charts below pulled EVERY ModelCall row in the window into JS and grouped there —
+ * 51,766 rows, twice, on every /cost render. The database answered in 14ms; materialising
+ * 100k Prisma objects on the Linode's single core is what pushed /cost past Cloudflare's
+ * origin ceiling even after `buildCostView` was fixed (found live: /cost still 502/524).
+ * The IST day key is computed in SQL (`at` holds UTC instants; IST is a fixed +05:30, no
+ * DST) so one row per (day, purpose) comes back. The JS path is KEPT for SQLite — the
+ * date-function dialects differ, and `pnpm local offline` and the suite run there; the
+ * two-provider trap is real, so the branch is on the URL, never on a guess.
+ */
+const onPostgres = (): boolean => env.DATABASE_URL.startsWith('postgres')
 
+export async function buildSpendChart(days = 30): Promise<SpendChart> {
   const order = ['classify', 'resolve', 'generate']
   const byDay = new Map<string, number[]>()
-  for (const r of rows) {
-    const key = istDateKey(r.at)
-    const slot = order.indexOf(r.purpose)
+  const fold = (key: string, purpose: string, usd: number): void => {
+    const slot = order.indexOf(purpose)
     const arr = byDay.get(key) ?? [0, 0, 0]
     // An unrecognised purpose is folded into the first bucket rather than dropped: money
     // that was spent must appear somewhere, and a silently missing column is worse than a
     // slightly wrong one.
     const at = slot < 0 ? 0 : slot
-    arr[at] = (arr[at] ?? 0) + r.costUsd
+    arr[at] = (arr[at] ?? 0) + usd
     byDay.set(key, arr)
   }
 
+  let any = false
+  if (onPostgres()) {
+    const rows = await prisma.$queryRaw<Array<{ day: string; purpose: string; usd: number }>>`
+      SELECT to_char("at" + interval '330 minutes', 'YYYY-MM-DD') AS day, "purpose", SUM("costUsd") AS usd
+      FROM "ModelCall" WHERE "at" >= ${daysAgo(days)}
+      GROUP BY 1, 2`
+    any = rows.length > 0
+    for (const r of rows) fold(r.day, r.purpose, Number(r.usd))
+  } else {
+    const rows = await prisma.modelCall.findMany({
+      where: { at: { gte: daysAgo(days) } },
+      select: { at: true, purpose: true, costUsd: true },
+    })
+    any = rows.length > 0
+    for (const r of rows) fold(istDateKey(r.at), r.purpose, r.costUsd)
+  }
+
   return {
-    any: rows.length > 0,
+    any,
     buckets: emptyDays(days).map((d) => ({
       key: d.key,
       label: d.label,
@@ -325,18 +351,29 @@ export const CACHE_BAND_LOW = 0.95
 export const CACHE_BAND_HIGH = 0.98
 
 export async function buildCacheChart(days = 30): Promise<CacheChart> {
-  const rows = await prisma.modelCall.findMany({
-    where: { at: { gte: daysAgo(days) }, ok: true },
-    select: { at: true, inputTokens: true, cachedInputTokens: true },
-  })
-
   const byDay = new Map<string, { input: number; cached: number }>()
-  for (const r of rows) {
-    const key = istDateKey(r.at)
-    const acc = byDay.get(key) ?? { input: 0, cached: 0 }
-    acc.input += r.inputTokens
-    acc.cached += r.cachedInputTokens
-    byDay.set(key, acc)
+  let any = false
+  if (onPostgres()) {
+    const rows = await prisma.$queryRaw<Array<{ day: string; input: bigint | number; cached: bigint | number }>>`
+      SELECT to_char("at" + interval '330 minutes', 'YYYY-MM-DD') AS day,
+             SUM("inputTokens") AS input, SUM("cachedInputTokens") AS cached
+      FROM "ModelCall" WHERE "at" >= ${daysAgo(days)} AND "ok" = true
+      GROUP BY 1`
+    any = rows.length > 0
+    for (const r of rows) byDay.set(r.day, { input: Number(r.input), cached: Number(r.cached) })
+  } else {
+    const rows = await prisma.modelCall.findMany({
+      where: { at: { gte: daysAgo(days) }, ok: true },
+      select: { at: true, inputTokens: true, cachedInputTokens: true },
+    })
+    any = rows.length > 0
+    for (const r of rows) {
+      const key = istDateKey(r.at)
+      const acc = byDay.get(key) ?? { input: 0, cached: 0 }
+      acc.input += r.inputTokens
+      acc.cached += r.cachedInputTokens
+      byDay.set(key, acc)
+    }
   }
 
   let outOfBand = 0
@@ -348,7 +385,7 @@ export async function buildCacheChart(days = 30): Promise<CacheChart> {
     return { key: d.key, label: d.label, value }
   })
 
-  return { points, any: rows.length > 0, outOfBand, bandLow: CACHE_BAND_LOW, bandHigh: CACHE_BAND_HIGH }
+  return { points, any, outOfBand, bandLow: CACHE_BAND_LOW, bandHigh: CACHE_BAND_HIGH }
 }
 
 /** Everything `/cost` charts, in one round of parallel queries. */

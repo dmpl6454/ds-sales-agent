@@ -135,6 +135,10 @@ pm2 start ds-sales-agent >/dev/null
 # do not create it here — its first creation and memory cap are a one-time setup step.
 pm2 describe ds-sales-worker >/dev/null 2>&1 && pm2 restart ds-sales-worker >/dev/null || true
 sleep 8
+# The Linode has ONE vCPU. Detection/OCR in the worker competed with page renders for it and
+# the dashboard took 3-12s per page (load average hit 49, measured 2026-09-02). The web is what
+# a person is waiting on; detection is background — so the worker yields CPU and disk to it.
+for p in \$(pgrep -f 'src/worker/index'); do renice -n 15 -p \$p >/dev/null 2>&1; ionice -c 3 -p \$p 2>/dev/null; done
 
 CODE=\$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:3100/sign-in || echo 000)
 echo "    dashboard answered HTTP \$CODE"

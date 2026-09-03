@@ -126,3 +126,17 @@ describe('duplicatesExistingProspect — we already own this brand', () => {
     expect(duplicatesExistingProspect('TIPS', 'tips_india', [{ handle: 'q', displayName: null }])).toBeNull()
   })
 })
+
+describe('nameMatches — the same name with and without a space (2026-09-02)', () => {
+  it('accepts a verified page whose full name is the brand name squashed into one token', () => {
+    // Measured live: "Jio Star" was the brand string, the verified page is named "JioStar";
+    // the token-subset test refused the correct advertiser.
+    expect(nameMatches('Jio Star', 'JioStar')).toBe(true)
+    expect(nameMatches('JioHotstar', 'Jio Hotstar')).toBe(true)
+  })
+  it('is EQUALITY of squashed names, never containment — the @philips trap still holds', () => {
+    expect(nameMatches('Philips India', 'Philips')).toBe(false)
+    expect(nameMatches('Star', 'JioStar')).toBe(false)
+    expect(nameMatches('Tips', 'Tips India')).toBe(true) // subset rule, unchanged
+  })
+})

@@ -119,11 +119,15 @@ export interface HarvestPost {
   rawPayload: string | null
   brands: string
   frameText: string | null
+  postedAt: Date
   target: { handle: string }
 }
 
 export interface BrandNameHarvest {
-  names: Map<string, { source: 'caption' | 'frame'; shortcode: string; campaignId: string; posts: number }>
+  names: Map<
+    string,
+    { source: 'caption' | 'frame'; shortcode: string; campaignId: string; posts: number; newestAt: Date }
+  >
   anonymousPosts: number
   postsWithNames: number
 }
@@ -214,8 +218,12 @@ export function harvestBrandNames(
     for (const { name, source } of list) {
       const key = name.toLowerCase()
       const seen = names.get(key)
-      if (seen) seen.posts += 1
-      else names.set(key, { source, shortcode: p.shortcode, campaignId: p.id, posts: 1 })
+      if (seen) {
+        seen.posts += 1
+        if (p.postedAt > seen.newestAt) seen.newestAt = p.postedAt
+      } else {
+        names.set(key, { source, shortcode: p.shortcode, campaignId: p.id, posts: 1, newestAt: p.postedAt })
+      }
     }
   }
 
@@ -265,6 +273,7 @@ export async function discoverOfficialPages(
         rawPayload: true,
         brands: true,
         frameText: true,
+        postedAt: true,
         target: { select: { handle: true } },
       },
       orderBy: { postedAt: 'desc' },
@@ -298,10 +307,30 @@ export async function discoverOfficialPages(
   out.postsWithNames = harvest.postsWithNames
 
   /**
-   * Caption names before OCR tokens — the trustworthy source spends the budget first — and
-   * within each source, the name asserted on the MOST paid posts first.
+   * ── RECENCY FIRST, 2026-09-02 ────────────────────────────────────────────────
+   *
+   * This ranked FREQUENCY-first (most paid posts first), and it starved exactly the leads
+   * Tabish asked about. MEASURED: the highest-frequency names are FILM/SHOW TITLES — Toxic
+   * (50 posts), Daayra (33), Mahakali (27), Pen Studios (26) — which have no verified
+   * advertiser handle and can never resolve, so they consumed the whole budget every pass
+   * (looked=40 created=0) while a freshly-detected, verifiable advertiser like Levi's (2
+   * posts, @levis is verified and resolves from the home IP) sat behind hundreds of them for
+   * days. And "a message a week after the post" is precisely what Tabish does NOT want.
+   *
+   * So the newest advertiser is looked up FIRST. A name from a post an hour ago beats one
+   * from last week; caption beats frame and frequency break ties within the same day. Bucketed
+   * by day rather than raw timestamp, so within "today" the trustworthy/frequent names still
+   * lead — a raw millisecond sort would interleave today's names by posting minute. The old
+   * backlog still drains, on whatever budget the fresh names leave — which is most of it,
+   * because the fresh set is small (~32 distinct new names a day, measured).
    */
+  // A row without a usable date sorts LAST rather than throwing: a caller that omits it
+  // degrades to the old caption/frequency order, never to a dead pass.
+  const dayOf = (d: Date | undefined): number =>
+    d instanceof Date && !Number.isNaN(d.getTime()) ? Math.floor(d.getTime() / (24 * 60 * 60 * 1000)) : -1
   const ordered = [...names.entries()].sort((a, b) => {
+    const dd = dayOf(b[1].newestAt) - dayOf(a[1].newestAt)
+    if (dd !== 0) return dd
     if (a[1].source !== b[1].source) return a[1].source === 'caption' ? -1 : 1
     return b[1].posts - a[1].posts
   })

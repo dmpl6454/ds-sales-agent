@@ -143,6 +143,16 @@ export const FAILURE_CODES = [
   'logged-out',
   'two-factor',
   'navigation',
+  /**
+   * A FOLLOW-UP'S PRE-SEND THREAD READ could not vouch for the conversation (unreadable, or a
+   * deep thread whose older bubbles Instagram no longer renders — 'saw 1 of 3'). NO SEND WAS
+   * ATTEMPTED. Its own code since 2026-09-02: filed under 'navigation' it satisfied the
+   * parked-failure stop and permanently RETIRED a healthy (sender, recipient) pair on a DOM
+   * read-subset — measured on four live pairs, all with the recipient verified and delivered
+   * to. The gate and governor exclude this code from that stop; the draft still parks FAILED
+   * with re-queue/discard, which is what stops the browser-drive loop.
+   */
+  'unreadable',
   'unknown',
 ] as const
 export type FailureCode = (typeof FAILURE_CODES)[number]
