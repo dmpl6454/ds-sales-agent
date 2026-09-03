@@ -71,6 +71,29 @@ properly rather than kept on a handle we could never confirm.
 
 ---
 
+## 3 SEPTEMBER, EVENING — macOS 15 BLOCKS THE UNSIGNED APP OUTRIGHT; THE INSTALLER STARTS FROM TERMINAL
+
+**Tabish, with a photo of another operator's Mac: *"Another individual attempted opening the
+dmg and was unable to do so."*** The dialog reads *"Apple could not verify 'DS Sales Agent' is
+free of malware"* with a single **Done** button — macOS 15 (Sequoia) Gatekeeper. **Root cause:
+Sequoia removed the right-click → Open bypass**, and the README ("RIGHT-CLICK the app and
+choose Open"), `build-dmg.sh`'s comment and the Senders page all still described it. The
+onboarding dead-ended at its second step, on the one machine we most need to run.
+
+**THE FIX WITHOUT AN APPLE DEVELOPER ID:** Gatekeeper gates LaunchServices launches of
+quarantined executables, not an interpreter reading a file — so the README and `/senders` now
+lead with one Terminal line, `bash "/Volumes/DS Sales Agent/DS Sales Agent.app/Contents/
+Resources/install.sh"` (`install.sh` resolves its payload via `${BASH_SOURCE[0]}`, so the
+mounted-volume path works; verified the file parses from the image), and give the exact
+alternative: Done → System Settings → Privacy & Security → Security → **Open Anyway** → open
+again. The app icon is optional; it only opens the dashboard URL and is itself gated once.
+**The permanent fix is signing + notarising** (Developer ID, `codesign --options runtime`,
+`notarytool`, `stapler`) and needs Tabish's Apple account — wire it into `build-dmg.sh` behind
+env vars when he has one. DMG rebuilt and served by the hosted download; the deploy was the
+zero-downtime path.
+
+---
+
 ## 3 SEPTEMBER, LATE — EVERY HOSTED 5xx WAS A DEPLOY WINDOW; DEPLOYS BUILD WHILE SERVING NOW
 
 **Tabish, from Safari's "This page couldn't load" on the hosted URL: *"What is the health of
