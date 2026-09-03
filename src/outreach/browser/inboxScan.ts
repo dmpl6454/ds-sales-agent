@@ -39,6 +39,15 @@ export interface InboxRow {
   ageText: string | null
   unread: boolean
   folder: 'primary' | 'partnership'
+  /**
+   * The row's own `/direct/t/<id>/` link when it carries one, else null. This is the
+   * IDENTITY of the conversation, and it is what `replyCheck` matches first: 84 live
+   * prospects store the raw handle as their display name (2026-09-03), so @mynykaa's row
+   * titled "Nykaa" and @maybelline_ind's titled "Maybelline New York - India" could never
+   * match by name — Nykaa's reply of 27 Aug went unrecorded for a week. Every delivered
+   * message to those 84 carries a `threadUrl`, so the link resolves them exactly.
+   */
+  threadUrl: string | null
 }
 
 export type InboxScanResult =
@@ -52,7 +61,7 @@ export type InboxScanResult =
  */
 async function collectRows(page: Page, folder: InboxRow['folder']): Promise<InboxRow[]> {
   const raw = await page.evaluate(async () => {
-    const out: { title: string; texts: string[] }[] = []
+    const out: { title: string; texts: string[]; href: string | null }[] = []
     const seen = new Set<string>()
     let scroller: Element | null = null
     {
@@ -78,7 +87,10 @@ async function collectRows(page: Page, folder: InboxRow['folder']): Promise<Inbo
         const key = title + '|' + texts.join('|')
         if (seen.has(key)) continue
         seen.add(key)
-        out.push({ title, texts })
+        // The conversation link, on the row itself, an ancestor, or a descendant — read,
+        // never followed. Absent when Instagram renders the row without an anchor.
+        const a = r.closest('a[href*="/direct/t/"]') ?? r.querySelector('a[href*="/direct/t/"]')
+        out.push({ title, texts, href: a ? a.getAttribute('href') : null })
       }
       if (!scroller) break
       scroller.scrollTop = scroller.scrollHeight
@@ -113,7 +125,7 @@ async function collectRows(page: Page, folder: InboxRow['folder']): Promise<Inbo
           !/^active\b/i.test(t) &&
           t.length > 0,
       ) ?? ''
-    rows.push({ displayName: r.title, snippet, ageText, unread, folder })
+    rows.push({ displayName: r.title, snippet, ageText, unread, folder, threadUrl: r.href })
   }
   return rows
 }

@@ -6,7 +6,7 @@ import { profileStatus } from './browser/profile'
 import { openAndReadThread } from './browser/readThread'
 import { scanInbox } from './browser/inboxScan'
 import { parseInboxAge, plausibleReplyDate } from './browser/threadDates'
-import { triageInboxRow, snippetIsReplyText, matchInboxRowToTarget, shouldRecordInboxReply } from './inboxTriage'
+import { triageInboxRow, snippetIsReplyText, matchInboxRow, shouldRecordInboxReply, threadIdFrom, type TargetRef } from './inboxTriage'
 import { normalise } from './matching'
 import { markChallenged } from './challenge'
 
@@ -536,17 +536,34 @@ async function inboxPhase(
       continue
     }
 
-    /* Everything this sender ever delivered, for the ours/theirs snippet insurance. */
+    /* Everything this sender ever delivered: the bodies for the ours/theirs snippet
+       insurance, and the thread URLs that identify each conversation exactly. */
     const delivered = await prisma.outreachAttempt.findMany({
       where: { senderId: sender.id, status: { in: [...DELIVERED_STATUSES] } },
-      select: { renderedBody: true },
+      select: { renderedBody: true, threadUrl: true, targetId: true },
     })
     const ourBodies = delivered.map((a) => a.renderedBody)
+    const targetById = new Map(targets.map((t) => [t.id, t]))
+    const byThreadId = new Map<string, TargetRef>()
+    for (const a of delivered) {
+      const id = threadIdFrom(a.threadUrl)
+      const t = targetById.get(a.targetId)
+      if (id && t) byThreadId.set(id, t)
+    }
+    /* Logged so the next sweep PROVES the link capture is live rather than assumed:
+       0 linked rows on a busy inbox means the row DOM carries no anchor and the
+       name fallback is doing all the work again. */
+    log.info('inbox rows read', {
+      sender: sender.handle,
+      rows: scan.rows.length,
+      withThreadLink: scan.rows.filter((r) => threadIdFrom(r.threadUrl) !== null).length,
+      knownThreads: byThreadId.size,
+    })
 
     for (const row of scan.rows) {
       if (triageInboxRow(row, ourBodies) !== 'theirs-last') continue
 
-      const target = matchInboxRowToTarget(row.displayName, targets)
+      const target = matchInboxRow(row, targets, byThreadId)
       if (!target) {
         unmatched.push(`${row.displayName} (${row.folder}, ${row.ageText ?? 'no age'}) via @${sender.handle}`)
         continue

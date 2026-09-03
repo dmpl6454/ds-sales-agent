@@ -235,7 +235,7 @@ export async function collectMessages(
   // bubble selector never matches them, which is why replies were never falsely minted
   // from them. `querySelectorAll` returns document order, which is what makes the
   // nearest-preceding association sound.
-  const swept = await page.evaluate(
+  const sweepOnce = () => page.evaluate(
     ([sel, key]) => {
       const w = window as unknown as Record<string, unknown>
       const collected = (w[key!] as string[] | undefined) ?? []
@@ -272,50 +272,108 @@ export async function collectMessages(
     [SEL, KEY] as const,
   )
 
+  let swept = await sweepOnce()
   if (swept === null) return null
 
-  /** Nearest parseable separator ABOVE each bubble, keyed by the bubble's raw text. */
-  const approx = new Map<string, Date | null>()
-  {
-    let current: Date | null = null
-    for (const e of swept.ordered) {
-      if (e.b === 0) {
-        const ts = parseThreadTimestamp(e.t)
-        if (ts) current = ts
-      } else if (!approx.has(e.t)) {
-        approx.set(e.t, current)
+  /** One sweep → one read: date, de-duplicate, classify, judge completeness. */
+  const assemble = (s: NonNullable<typeof swept>): ThreadRead => {
+    /** Nearest parseable separator ABOVE each bubble, keyed by the bubble's raw text. */
+    const approx = new Map<string, Date | null>()
+    {
+      let current: Date | null = null
+      for (const e of s.ordered) {
+        if (e.b === 0) {
+          const ts = parseThreadTimestamp(e.t)
+          if (ts) current = ts
+        } else if (!approx.has(e.t)) {
+          approx.set(e.t, current)
+        }
       }
     }
+
+    const texts = [...s.collected, ...s.ordered.filter((e) => e.b === 1).map((e) => e.t)]
+
+    /**
+     * De-duplicate on RAW text, not normalised text, preserving first-seen order.
+     *
+     * The observer sees the same bubble on several mutations, and those repeats are
+     * byte-identical, so raw comparison removes exactly them. Normalising instead ALSO merges
+     * genuinely distinct messages that differ only in case or spacing — measured on the live
+     * thread, a reply of "Hi" and a later one of "hi" collapsed into a single bubble, so the
+     * read returned 5 messages where 6 were sent.
+     *
+     * The halt fires either way (any reply halts every sender), so this is not a safety
+     * regression; it is silent information loss in the guard whose whole job is to notice
+     * what the other side said, which is not a trade worth making for tidier output.
+     * `normalise` is still used for the emptiness test, where merging is exactly what is wanted.
+     */
+    const seen = new Set<string>()
+    const messages: ThreadMessage[] = []
+    for (const text of texts) {
+      const raw = text.trim()
+      if (normalise(raw).length === 0 || seen.has(raw)) continue
+      seen.add(raw)
+      messages.push({ text, ours: isOneOfOurs(text, bodies.allOurs), approxAt: approx.get(raw) ?? null })
+    }
+
+    /* Completeness is judged against THIS PAIR's deliveries — see ThreadBodies. */
+    return assessRead(messages, bodies.expected)
   }
 
-  const texts = [...swept.collected, ...swept.ordered.filter((e) => e.b === 1).map((e) => e.t)]
+  let read = assemble(swept)
 
   /**
-   * De-duplicate on RAW text, not normalised text, preserving first-seen order.
+   * ── LOAD THE HISTORY BEFORE CALLING A READ INCOMPLETE (2026-09-03) ──────────────────
    *
-   * The observer sees the same bubble on several mutations, and those repeats are
-   * byte-identical, so raw comparison removes exactly them. Normalising instead ALSO merges
-   * genuinely distinct messages that differ only in case or spacing — measured on the live
-   * thread, a reply of "Hi" and a later one of "hi" collapsed into a single bubble, so the
-   * read returned 5 messages where 6 were sent.
+   * Instagram renders only the most recent stretch of a thread; older bubbles load when the
+   * message pane is scrolled to its top. Every pair with three deliveries read *"saw 1 of 3
+   * messages we sent"* on EVERY read — the sweep logged `incomplete=4 of 4` all morning, four
+   * such pairs were parked as failed, and a reply sitting above the fold could never be seen.
    *
-   * The halt fires either way (any reply halts every sender), so this is not a safety
-   * regression; it is silent information loss in the guard whose whole job is to notice what
-   * the other side said, which is not a trade worth making for tidier output. `normalise` is
-   * still used for the emptiness test, where merging is exactly what is wanted.
+   * So an incomplete first sweep scrolls the pane to its top and sweeps again, a bounded
+   * number of times; the observer keeps collecting through each load. It stops early when the
+   * pane is already at its top (nothing more will load) and never abandons the bar: a thread
+   * Instagram genuinely stops loading still reports INCOMPLETE and holds, exactly as before.
+   * Setting `scrollTop` is a DOM read/write like `inboxScan`'s, not a synthesised input event.
    */
-  const seen = new Set<string>()
-  const messages: ThreadMessage[] = []
-  for (const text of texts) {
-    const raw = text.trim()
-    if (normalise(raw).length === 0 || seen.has(raw)) continue
-    seen.add(raw)
-    messages.push({ text, ours: isOneOfOurs(text, bodies.allOurs), approxAt: approx.get(raw) ?? null })
+  for (let round = 0; round < HISTORY_SCROLL_ROUNDS && !read.complete && bodies.expected.length > 0; round++) {
+    const scrolled = await page.evaluate(
+      ([sel]) => {
+        const box =
+          document.querySelector('div[contenteditable="true"][role="textbox"]') ??
+          document.querySelector('div[role="textbox"]')
+        if (!box) return false
+        let panel: Element | null = box.parentElement
+        for (let i = 0; i < 12 && panel; i++) {
+          if (panel.querySelectorAll(sel!).length > 0) break
+          panel = panel.parentElement
+        }
+        if (!panel) return false
+        for (const c of [panel, ...panel.querySelectorAll('div')]) {
+          const s = getComputedStyle(c)
+          if ((s.overflowY !== 'auto' && s.overflowY !== 'scroll') || c.scrollHeight <= c.clientHeight + 4) continue
+          if (c.querySelectorAll(sel!).length === 0) continue
+          if (c.scrollTop <= 0) return false
+          c.scrollTop = 0
+          return true
+        }
+        return false
+      },
+      [SEL] as const,
+    )
+    if (!scrolled) break
+    await page.waitForTimeout(1200)
+    const again = await sweepOnce()
+    if (again === null) break
+    swept = again
+    read = assemble(again)
   }
 
-  /* Completeness is judged against THIS PAIR's deliveries — see ThreadBodies. */
-  return assessRead(messages, bodies.expected)
+  return read
 }
+
+/** Upward scrolls attempted when the first sweep did not see every message we sent. */
+const HISTORY_SCROLL_ROUNDS = 4
 
 /**
  * Did this read cover the whole conversation? PURE, so it can be driven both ways.

@@ -145,3 +145,40 @@ export function matchInboxRowToTarget(displayName: string, targets: readonly Tar
   }
   return null
 }
+
+/**
+ * The thread id inside any `/direct/t/<id>` URL — relative (`/direct/t/123/`) or absolute
+ * (`https://www.instagram.com/direct/t/123`), trailing slash or not. `sendDm` stores
+ * `page.url()` and the inbox row carries an href, so the two spellings differ and only the
+ * id is comparable. Null for anything that is not a thread URL.
+ */
+export function threadIdFrom(url: string | null | undefined): string | null {
+  if (!url) return null
+  const m = /\/direct\/t\/(\d+)/.exec(url)
+  return m ? m[1]! : null
+}
+
+/**
+ * Which target is this row's conversation with — BY THE THREAD FIRST, then by name.
+ *
+ * The thread id is the conversation's identity: `byThreadId` is built from this sender's
+ * own delivered messages (`OutreachAttempt.threadUrl`), so a hit is the exact pair we wrote
+ * to, whatever the row is titled. MEASURED 2026-09-03: 84 live prospects store the raw
+ * handle as `displayName`, so "Nykaa" (@mynykaa) and "Maybelline New York - India"
+ * (@maybelline_ind) failed every name test above while their replies sat unread for a week;
+ * all 172 messages delivered to those 84 carry a threadUrl. A row with no link, or a link we
+ * never wrote to, falls back to the name rules — a stranger's inbound row is still reported
+ * for a person rather than guessed at.
+ */
+export function matchInboxRow(
+  row: { displayName: string; threadUrl: string | null },
+  targets: readonly TargetRef[],
+  byThreadId: ReadonlyMap<string, TargetRef>,
+): TargetRef | null {
+  const id = threadIdFrom(row.threadUrl)
+  if (id) {
+    const hit = byThreadId.get(id)
+    if (hit) return hit
+  }
+  return matchInboxRowToTarget(row.displayName, targets)
+}
