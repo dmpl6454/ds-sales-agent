@@ -370,6 +370,7 @@ export async function collectMessages(
          * ancestor of the composer, so the search is page-wide: any scrollable that holds a
          * bubble, not only the composer's own panel.
          */
+        if (!panel) return false
         const candidates = [panel, ...document.querySelectorAll('div')]
         for (const c of candidates) {
           const s = getComputedStyle(c)
