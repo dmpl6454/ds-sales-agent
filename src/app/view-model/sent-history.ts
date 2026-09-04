@@ -1,4 +1,5 @@
 import { prisma } from '@/lib/db'
+import { memoView, viewKey } from '@/lib/viewMemo'
 import { DELIVERED_STATUSES } from '@/lib/constants'
 import { istDateKey } from '@/lib/time'
 import { postUrl } from '@/lib/urls'
@@ -48,10 +49,21 @@ export interface SentHistory {
   senderHandle: string | null
 }
 
-export async function buildSentHistory(input: {
+export interface SentHistoryInput {
   page?: number
   senderHandle?: string | null
-}): Promise<SentHistory> {
+}
+
+/**
+ * Memoised on BOTH inputs (page and sender filter) — each page of the history is its own
+ * answer, and one memo key for all of them would hand page 3 to a reader who asked for page
+ * 12. See `src/lib/viewMemo.ts` for why every page builder is memoised at all.
+ */
+export async function buildSentHistory(input: SentHistoryInput): Promise<SentHistory> {
+  return memoView(viewKey('sentHistory', input), () => computeSentHistory(input))
+}
+
+async function computeSentHistory(input: SentHistoryInput): Promise<SentHistory> {
   const senderHandle = input.senderHandle?.trim() || null
   const where = {
     status: { in: [...DELIVERED_STATUSES] },
