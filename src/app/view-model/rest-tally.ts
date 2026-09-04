@@ -365,7 +365,7 @@ async function computeRestTally(now: Date): Promise<RestTally> {
   /* Preload from the EARLIER of the two floors: the stub narrows per caller, it cannot widen. */
   const preloadFloor = allowanceFloor < materialFloor ? allowanceFloor : materialFloor
 
-  const [targetRows, posts, deliveries, replies, inFlightAndParked, pairs, eligibleSenderIds, unavailable, campaignUsage, memberships] =
+  const [targetRows, posts, attempts, pairs, eligibleSenderIds, unavailable, campaignUsage, memberships] =
     await Promise.all([
       /**
        * EVERY target row in ONE query, partitioned in JS.
@@ -402,30 +402,46 @@ async function computeRestTally(now: Date): Promise<RestTally> {
         // eslint-disable-next-line prettier/prettier
         select: { id: true, postedAt: true, caption: true, taggedAccounts: true, brands: true, target: { select: { handle: true, displayName: true } } },
       }),
-      /* ALL delivered messages, not a window: rotation's `lastSenderTo` is all-time, and the
-         ring rule wants each sender's most recent delivery "at any age". Ascending, so the last
-         write per (target, sender) wins the map. */
+      /**
+       * ONE READ OF `OutreachAttempt` FOR THE WHOLE BUILDER (2026-09-04).
+       *
+       * This was THREE queries over one table — delivered, replied, in-flight-and-parked —
+       * each with its own `where`. Three round trips over an SSH tunnel to partition rows by
+       * columns already in the select is the trade this builder's own docblock refuses for
+       * `targetAccount`, and `/` measured **161 against a ceiling of 160** the day two more
+       * facts were needed. A budget is a ceiling over a bounded design; the answer is fewer
+       * queries, never a bigger number.
+       *
+       * Four different facts come out of it and they want four different filters, all applied
+       * in JS below:
+       *   delivered        `status in DELIVERED && sentAt` — ALL-TIME, because rotation's
+       *                    `lastSenderTo` is all-time and the ring rule wants each sender's
+       *                    most recent delivery at any age.
+       *   ever replied     `replyPostedAt` — never expires; retires the standard message.
+       *   the active halt  that, windowed and unhandled — the gate's own `replyHaltWhere`.
+       *   pending / parked `status in QUEUED|READY|SENDING`, and FAILED with a code.
+       *
+       * Ascending by `sentAt`, so the last write per (target, sender) still wins the map. A
+       * reply row with no `sentAt` sorts first and the delivery loop skips it on `!sentAt`.
+       */
       prisma.outreachAttempt.findMany({
-        where: { status: { in: [...DELIVERED_STATUSES] }, sentAt: { not: null } },
+        where: {
+          OR: [
+            { status: { in: [...DELIVERED_STATUSES] }, sentAt: { not: null } },
+            { replyPostedAt: { not: null } },
+            { status: { in: ['QUEUED', 'READY', 'SENDING'] } },
+            { status: 'FAILED', failureCode: { not: null } },
+          ],
+        },
         select: {
+          status: true,
           sentAt: true,
+          replyPostedAt: true,
+          replyHandledAt: true,
+          failureCode: true,
           pair: { select: { targetId: true, senderId: true, sender: { select: { handle: true } } } },
         },
         orderBy: { sentAt: 'asc' },
-      }),
-      prisma.outreachAttempt.findMany({
-        where: { replyPostedAt: { gte: replyHaltFloor(settings.replyResumeHours, now) }, replyHandledAt: null },
-        /* `senderId` since 2026-09-01 — the halt is PAIR-scoped by default, so this tally
-           must attribute a reply to the conversation it actually holds. */
-        select: { replyPostedAt: true, pair: { select: { targetId: true, senderId: true } } },
-      }),
-      /* Drafts in flight AND parked routes in one read, partitioned below on `status`: two
-         filters over one table is two round trips for no reason. Same budget argument. */
-      prisma.outreachAttempt.findMany({
-        where: {
-          OR: [{ status: { in: ['QUEUED', 'READY', 'SENDING'] } }, { status: 'FAILED', failureCode: { not: null } }],
-        },
-        select: { status: true, pair: { select: { targetId: true, senderId: true } } },
       }),
       prisma.outreachPair.findMany({
         where: { sender: { fleetMember: true } },
@@ -511,14 +527,27 @@ async function computeRestTally(now: Date): Promise<RestTally> {
    * The panel must read the same fact the planner does or it will predict a first touch the
    * planner will refuse to write.
    */
-  const everRepliedTargetIds = new Set(
-    (
-      await prisma.outreachAttempt.findMany({
-        where: { targetId: { in: prospects.map((p) => p.id) }, replyPostedAt: { not: null } },
-        select: { targetId: true },
-        distinct: ['targetId'],
-      })
-    ).map((r) => r.targetId),
+  /* The four partitions of the one read above. Plain JS over rows already in memory. */
+  const deliveries = attempts.filter(
+    (a) => a.sentAt !== null && (DELIVERED_STATUSES as readonly string[]).includes(a.status),
+  )
+  const inFlightAndParked = attempts.filter(
+    (a) =>
+      ['QUEUED', 'READY', 'SENDING'].includes(a.status) || (a.status === 'FAILED' && a.failureCode !== null),
+  )
+  const allReplies = attempts.filter((a) => a.replyPostedAt !== null)
+
+  const everRepliedTargetIds = new Set(allReplies.map((r) => r.pair.targetId))
+
+  /**
+   * The ACTIVE halts — the windowed, unhandled subset of the same read. The filter is the one
+   * `replyHaltWhere` builds for the gate, applied here in JS so the two cannot drift.
+   */
+  const replies = allReplies.filter(
+    (r) =>
+      r.replyHandledAt === null &&
+      r.replyPostedAt !== null &&
+      r.replyPostedAt >= replyHaltFloor(settings.replyResumeHours, now),
   )
   const pending = inFlightAndParked.filter((a) => a.status !== 'FAILED')
   const parked = inFlightAndParked.filter((a) => a.status === 'FAILED')
