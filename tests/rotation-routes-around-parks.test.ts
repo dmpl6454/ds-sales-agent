@@ -119,11 +119,22 @@ describe('the plumbing', () => {
     expect(cat).toMatch(/export async function readBlockedRoutes/)
     // Both loaders — the single-target one and the batch one — must merge it.
     const single = cat.slice(cat.indexOf('export async function whoseTurn('), cat.indexOf('function decideTurn'))
-    expect(single).toMatch(/readBlockedRoutes\(\[args\.targetId\]\)/)
+    expect(single).toMatch(/readBlockedRoutes\(\{ targetIds: \[args\.targetId\] \}\)/)
     expect(single).toMatch(/unavailableForTarget\(args\.unavailable, blocked, args\.targetId\)/)
     const many = cat.slice(cat.indexOf('export async function whoseTurnForMany'))
-    expect(many).toMatch(/readBlockedRoutes\(ids\)/)
+    expect(many).toMatch(/readBlockedRoutes\(\{ targetIds: ids \}\)/)
     expect(many).toMatch(/unavailableForTarget\(unavailable, blocked, targetId\)/)
+  })
+
+  it('routes around a REPLY as well as a park, and honours the scope', () => {
+    // The parked half has been here since 2026-08-24; the reply half is 2026-09-04. Both are
+    // per-(target, sender) facts that stop ONE page delivering, and neither is a reason to
+    // make the recipient wait. The scope check is what keeps a fleet-wide halt fleet-wide.
+    const cat = readFileSync(join(repo, 'src/outreach/categories.ts'), 'utf8')
+    const fn = cat.slice(cat.indexOf('export async function readBlockedRoutes'), cat.indexOf('export function unavailableForTarget'))
+    expect(fn).toMatch(/replyPostedAt: \{ gte: replyHaltFloor\(/)
+    expect(fn).toMatch(/replyHandledAt: null/)
+    expect(fn).toMatch(/replyHalt\.scope === 'pair'/)
   })
 
   it('does not weaken either enforcer', () => {
@@ -141,5 +152,8 @@ describe('the plumbing', () => {
     expect(tally).toMatch(/unavailableForTarget\(unavailable, blockedRoutes, p\.id\)/)
     // And it no longer counts a parked route as a per-recipient hold, because it is not one.
     expect(tally).not.toMatch(/bump\(\s*SKIP_REASONS\.UNCERTAIN_DELIVERY/)
+    // And it routes around a reply the same way, or the panel names a page the planner skips.
+    expect(tally).toMatch(/settings\.replyHaltScope === 'pair'/)
+    expect(tally).toMatch(/they replied to this page, so it is holding for a week/)
   })
 })

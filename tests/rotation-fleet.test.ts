@@ -128,6 +128,15 @@ bootstrap.exec(`
     "replyHandledBy" TEXT
   );
 
+  /* readBlockedRoutes reads the reply halt's scope and window from settings, so a temp
+     database without this table throws before any assertion runs. Left EMPTY: every setting
+     takes its default, and the default scope is 'pair' — the shipping configuration. */
+  CREATE TABLE "Setting" (
+    "key" TEXT NOT NULL PRIMARY KEY,
+    "value" TEXT NOT NULL,
+    "updatedAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+  );
+
   CREATE TABLE "Category" (
     "id" TEXT NOT NULL PRIMARY KEY,
     "name" TEXT NOT NULL,
@@ -212,6 +221,7 @@ async function addDelivered(handle: string, sentAt: Date, status = 'SENT') {
 }
 
 beforeEach(async () => {
+  await prisma.setting.deleteMany()
   await prisma.categoryTarget.deleteMany()
   await prisma.categorySender.deleteMany()
   await prisma.category.deleteMany()
@@ -221,6 +231,116 @@ beforeEach(async () => {
   await prisma.targetAccount.deleteMany()
   await prisma.targetAccount.create({
     data: { id: TARGET, handle: 'crocsindia', displayName: 'Crocs India', kind: 'BRAND' },
+  })
+})
+
+/**
+ * ── THE TURN PASSES TO THE NEXT PAGE WHOSE ROUTE IS CLEAR (2026-09-04, Tabish) ──
+ *
+ * Until now the turn advanced only on a DELIVERY, so a page that COULD not deliver held the
+ * recipient: a reply from them halts that page for seven days and the other pages sat idle for
+ * the whole of it. MEASURED 2026-09-04: 116 recipients have replied to some page.
+ *
+ * These drive the REAL `whoseTurn` against a real database, because the fact being asserted is
+ * that `readBlockedRoutes` actually queries the reply — a grep proves the name is mentioned,
+ * only running it proves it gates.
+ *
+ * The exposure is stated plainly and is the intended trade, not a side effect: a recipient
+ * mid-conversation with page A now hears from page B in the same week. That is the logical
+ * content of scoping the reply halt to the PAIR (1 Sept), which this only makes reachable.
+ */
+describe('a reply halts one page, and the ring moves past it', () => {
+  /** A reply on THIS page's pair, written `hoursAgo` ago and not yet handled. */
+  async function addReply(handle: string, hoursAgo: number, handled: Date | null = null) {
+    await prisma.outreachAttempt.create({
+      data: {
+        id: `r_${handle}_${hoursAgo}`,
+        pairId: `p_${handle}`,
+        senderId: `s_${handle}`,
+        targetId: TARGET,
+        variantId: 'v_1',
+        touchNumber: 1,
+        renderedBody: 'body',
+        status: 'REPLIED',
+        sentAt: new Date(Date.now() - (hoursAgo + 1) * 3_600_000),
+        replyPostedAt: new Date(Date.now() - hoursAgo * 3_600_000),
+        replyHandledAt: handled,
+      },
+    })
+  }
+
+  it('elects the NEXT page when the one whose turn it is has been replied to', async () => {
+    await addSender('alpha')
+    await addSender('bravo')
+    await addSender('charlie')
+    /* charlie wrote last, so the walk starts at alpha — and alpha has been replied to. */
+    await addDelivered('charlie', new Date(Date.now() - 2 * 3_600_000))
+    await addReply('alpha', 2)
+
+    const turn = await whoseTurn({ targetId: TARGET })
+
+    expect(turn.choice.ok).toBe(true)
+    if (turn.choice.ok) expect(turn.choice.handle).toBe('bravo')
+  })
+
+  it('elects the replied-to page again once the halt has been handled', async () => {
+    await addSender('alpha')
+    await addSender('bravo')
+    await addSender('charlie')
+    await addDelivered('charlie', new Date(Date.now() - 2 * 3_600_000))
+    await addReply('alpha', 2, new Date())
+
+    const turn = await whoseTurn({ targetId: TARGET })
+
+    expect(turn.choice.ok).toBe(true)
+    if (turn.choice.ok) expect(turn.choice.handle).toBe('alpha')
+  })
+
+  it('elects the replied-to page again once the window has expired', async () => {
+    await addSender('alpha')
+    await addSender('bravo')
+    await addSender('charlie')
+    await addDelivered('charlie', new Date(Date.now() - 200 * 3_600_000))
+    /* REPLY_RESUME_HOURS_DEFAULT is 168; 200 hours ago is outside it. */
+    await addReply('alpha', 200)
+
+    const turn = await whoseTurn({ targetId: TARGET })
+
+    expect(turn.choice.ok).toBe(true)
+    if (turn.choice.ok) expect(turn.choice.handle).toBe('alpha')
+  })
+
+  it('holds the WHOLE ring under replyHaltScope=target, where no page is clear', async () => {
+    /* The fleet-wide halt is one Setting row, and under it there is no clear page to pass the
+       turn to — skipping to another page would be exactly the widening that scope refuses. */
+    await prisma.setting.create({ data: { key: 'replyHaltScope', value: 'target' } })
+    await addSender('alpha')
+    await addSender('bravo')
+    await addSender('charlie')
+    await addDelivered('charlie', new Date(Date.now() - 2 * 3_600_000))
+    await addReply('alpha', 2)
+
+    const turn = await whoseTurn({ targetId: TARGET })
+
+    /* alpha is still elected: rotation does not route around a halt that covers everyone, and
+       the GATE is what refuses the send. */
+    expect(turn.choice.ok).toBe(true)
+    if (turn.choice.ok) expect(turn.choice.handle).toBe('alpha')
+  })
+
+  it('refuses with a named reason when EVERY page has been replied to', async () => {
+    await addSender('alpha')
+    await addSender('bravo')
+    await addReply('alpha', 2)
+    await addReply('bravo', 3)
+
+    const turn = await whoseTurn({ targetId: TARGET })
+
+    expect(turn.choice.ok).toBe(false)
+    if (!turn.choice.ok) {
+      expect(turn.choice.reason).toBe('all-unavailable')
+      expect(turn.choice.detail).toContain('replied')
+    }
   })
 })
 

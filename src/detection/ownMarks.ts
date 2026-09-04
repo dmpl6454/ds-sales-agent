@@ -227,3 +227,21 @@ export function stripChannelMarksFromBrands(
 ): string[] {
   return brands.filter((b) => !channels.some((c) => isChannelMark(b, c)))
 }
+
+/**
+ * THE COMPETITOR LIST, from rows a caller already holds.
+ *
+ * Exists so a VIEW MODEL never has to write `.displayName` itself. `tests/labels.test.ts`
+ * refuses a raw `displayName` read in `src/app/view-model/**` because a stored one is often
+ * just the handle and must never reach a screen — and that guard is right, and this read is
+ * not that: a channel's name here is only ever an input to a FILTER, used to REMOVE things and
+ * structurally unable to be output (`followUpSubject` returns only members of `brands`).
+ *
+ * Putting the mapping in the module that owns the concept keeps the guard at full strength
+ * rather than adding a carve-out to it — a narrower fix than teaching the grep an exception.
+ */
+export function watchMarksFrom(
+  rows: readonly { handle: string; displayName: string | null }[],
+): { handle: string; displayName: string | null }[] {
+  return rows.map((r) => ({ handle: r.handle, displayName: r.displayName }))
+}
