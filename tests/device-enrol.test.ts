@@ -126,3 +126,43 @@ describe('listPairedDevices / revokePairedDevice — against a real authorized_k
     expect(revokePairedDevice('Nobody')).toBe(0)
   })
 })
+
+/**
+ * ── A WAITING MAC MUST BE VISIBLE WITHOUT A URL (2026-09-04) ──────────────────
+ *
+ * A second operator ran the installer and NOTHING appeared anywhere. MEASURED afterwards: 0
+ * paired devices and 0 pending rows — the request had expired unseen. `findByUserCode` was the
+ * ONLY reader and it needs the exact code out of the URL the installer opened, while
+ * `listPairedDevices` reads `authorized_keys` and can only ever show devices already approved.
+ * Between them a pairing that was waiting appeared on no screen at all.
+ */
+describe('the approve link survives signing in, and a waiting Mac is listed', () => {
+  const repo = join(__dirname, '..')
+
+  it('carries the code through the sign-in redirect', () => {
+    /* A bare redirect('/sign-in') dropped it, and that is the COMMON path: the installer opens
+       this URL in the operator's browser and a NEW operator is by definition not signed in. */
+    const page = readFileSync(join(repo, 'src/app/devices/enrol/page.tsx'), 'utf8')
+    expect(page).toMatch(/next=\$\{encodeURIComponent\(`\/devices\/enrol\?code=\$\{code\}`\)\}/)
+    expect(page, 'a bare redirect drops the code').not.toMatch(/if \(!user\) redirect\('\/sign-in'\)/)
+  })
+
+  it('reads the code BEFORE deciding to redirect, or there is nothing to carry', () => {
+    const page = readFileSync(join(repo, 'src/app/devices/enrol/page.tsx'), 'utf8')
+    expect(page.indexOf('const code =')).toBeLessThan(page.indexOf('const user = await currentUser()'))
+  })
+
+  it('lists pending pairings on /senders, not only approved ones', () => {
+    /* The load-bearing half: approving must need no URL and no remembered code. */
+    const senders = readFileSync(join(repo, 'src/app/senders/page.tsx'), 'utf8')
+    expect(senders).toMatch(/listPendingEnrolments/)
+    expect(senders).toMatch(/Macs waiting to be approved/)
+    expect(senders).toMatch(/action=\{approveDevice\}/)
+  })
+
+  it('records that a Mac asked, so an unapproved install is distinguishable from one that never phoned home', () => {
+    const lib = readFileSync(join(repo, 'src/lib/deviceEnrol.ts'), 'utf8')
+    const fn = lib.slice(lib.indexOf('export async function startEnrolment'))
+    expect(fn).toMatch(/device\.enrol\.requested/)
+  })
+})

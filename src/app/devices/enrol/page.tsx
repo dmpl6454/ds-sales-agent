@@ -18,10 +18,28 @@ export default async function EnrolPage({
 }: {
   searchParams: Promise<{ code?: string; error?: string }>
 }) {
-  const user = await currentUser()
-  if (!user) redirect('/sign-in')
   const sp = await searchParams
   const code = (sp.code ?? '').trim().toUpperCase()
+
+  /**
+   * ── SIGNING IN MUST NOT LOSE THE CODE (2026-09-04) ────────────────────────
+   *
+   * This used to be a bare `redirect('/sign-in')`, and the code went with it. That is the
+   * common path rather than an edge case: the installer opens this URL in the operator's
+   * browser, and a NEW operator — the whole reason the DMG exists — is by definition not
+   * signed in yet. They signed in, landed on `/`, and the Mac waiting to be approved was
+   * reachable from nowhere, because nothing else has ever listed a pending pairing.
+   *
+   * MEASURED after a second operator installed the agent: 0 devices paired, 0 rows pending
+   * (they expire after fifteen minutes), and no trace on any screen.
+   *
+   * `?next=` is carried, and the sign-in page already honours it through `safe-next.ts`,
+   * which refuses an off-site target.
+   */
+  const user = await currentUser()
+  if (!user) {
+    redirect(code ? `/sign-in?next=${encodeURIComponent(`/devices/enrol?code=${code}`)}` : '/sign-in')
+  }
   const e = code ? await findByUserCode(code) : null
 
   let body
