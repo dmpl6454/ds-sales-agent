@@ -169,7 +169,63 @@ export async function startEnrolment(input: {
     createdAt: new Date().toISOString(),
   }
   await save(enrolment)
+  /**
+   * A MAC ASKING LEAVES A TRACE (2026-09-04). This wrote nothing at all, so when a second
+   * operator's install went unapproved there was no way to tell "the installer never phoned
+   * home" from "it did, and nobody approved inside fifteen minutes" — two problems with
+   * completely different remedies, indistinguishable from the server afterwards. The actor is
+   * the DEVICE, because this path is public by necessity: the Mac has no session yet.
+   *
+   * Never allowed to fail the enrolment: a missing audit row is worth less than a pairing.
+   */
+  await prisma.auditLog
+    .create({
+      data: {
+        actor: `device:${enrolment.deviceName}`,
+        action: 'device.enrol.requested',
+        entity: `Device:${enrolment.deviceName}`,
+        detail: `waiting for an operator to approve ${keyFingerprint(enrolment.publicKey)} — expires in 15 minutes`,
+      },
+    })
+    .catch(() => undefined)
   return { ok: true, enrolment }
+}
+
+/**
+ * EVERY MAC CURRENTLY WAITING FOR APPROVAL — the list that did not exist (2026-09-04).
+ *
+ * ── WHY THIS IS THE LOAD-BEARING HALF OF THE FIX ────────────────────────────
+ *
+ * A second operator ran the installer and **nothing appeared anywhere.** MEASURED afterwards:
+ * 0 pending rows, and 0 `device.paired` audit rows other than the 3 September tests. The
+ * installer was fine. The pairing was INVISIBLE.
+ *
+ * `findByUserCode` was the ONLY reader, and it needs the exact code out of the URL the
+ * installer opened. `/senders` → Paired Macs reads `authorized_keys`, so it lists devices that
+ * are ALREADY approved and can never show one that is waiting. So the moment that URL was lost
+ * — and it was lost for everyone, see the `next` fix in `devices/enrol/page.tsx` — the request
+ * existed, expired after fifteen minutes and left no trace on any screen.
+ *
+ * That is this project's most expensive recurring failure, in the one flow a new operator meets
+ * first: *nothing renders an absence*. A pending pairing is now on `/senders` beside the paired
+ * ones, so approving it needs no URL, no code and nothing remembered.
+ *
+ * Expired rows are filtered rather than shown: a person cannot act on one, and the installer's
+ * own message already says to run it again.
+ */
+export async function listPendingEnrolments(): Promise<
+  { userCode: string; deviceName: string; fingerprint: string; createdAt: string }[]
+> {
+  const live = await listEnrolments()
+  return live
+    .filter((e) => !e.approvedAt && !enrolmentExpired(e.createdAt))
+    .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
+    .map((e) => ({
+      userCode: e.userCode,
+      deviceName: e.deviceName,
+      fingerprint: keyFingerprint(e.publicKey),
+      createdAt: e.createdAt,
+    }))
 }
 
 export async function findByUserCode(userCode: string): Promise<Enrolment | null> {

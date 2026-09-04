@@ -10,8 +10,8 @@ import { LoginQueue } from '../accounts/login/queue'
 import { AddSenderForm } from './add-form'
 import { RemoveSenderForm } from './remove-form'
 import { TeamPanel } from './team-panel'
-import { listTeam, revokeDevice } from '../actions'
-import { listPairedDevices } from '@/lib/deviceEnrol'
+import { listTeam, revokeDevice, approveDevice } from '../actions'
+import { listPairedDevices, listPendingEnrolments } from '@/lib/deviceEnrol'
 
 export const dynamic = 'force-dynamic'
 
@@ -60,6 +60,7 @@ export default async function SendersPage({ searchParams }: { searchParams: Prom
   const total = q.done + q.remaining
   /* The Macs whose own tunnel keys this server holds; empty on a laptop, where there is no authorized_keys to read. */
   const paired = listPairedDevices()
+  const waiting = await listPendingEnrolments()
 
   return (
     <>
@@ -144,6 +145,58 @@ export default async function SendersPage({ searchParams }: { searchParams: Prom
             {devices.length > 0 ? `Online now: ${devices.join(', ')}.` : 'No sending Mac is online yet.'}
           </span>
         </section>
+
+        {/*
+          ── A MAC WAITING TO BE APPROVED IS ON SCREEN NOW (2026-09-04) ──────
+          A second operator ran the installer and NOTHING appeared anywhere. The request was
+          real; it was simply invisible. `findByUserCode` was the only reader and it needs the
+          exact code out of the URL the installer opened — and that URL was lost the moment
+          they were bounced to sign-in. Fifteen minutes later the row expired and no screen
+          had ever mentioned it. Approving needs no URL and no code now.
+        */}
+        {waiting.length > 0 && (
+          <section className="group">
+            <h2>Macs waiting to be approved</h2>
+            <p>
+              Someone has run the installer on {waiting.length === 1 ? 'this Mac' : 'these Macs'}. Check the
+              fingerprint matches the one shown on that Mac, then approve it. Requests expire fifteen minutes
+              after the installer starts.
+            </p>
+            <div className="table-wrap">
+              <table className="table">
+                <thead>
+                  <tr>
+                    <th>Mac</th>
+                    <th>Tunnel key</th>
+                    <th>Code</th>
+                    <th></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {waiting.map((w) => (
+                    <tr key={w.userCode}>
+                      <td>{w.deviceName}</td>
+                      <td>
+                        <code>{w.fingerprint}</code>
+                      </td>
+                      <td>
+                        <code>{w.userCode}</code>
+                      </td>
+                      <td>
+                        <form action={approveDevice}>
+                          <input type="hidden" name="code" value={w.userCode} />
+                          <button className="btn" type="submit">
+                            Approve this Mac
+                          </button>
+                        </form>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </section>
+        )}
 
         <section className="group">
           <h2>Paired Macs</h2>
