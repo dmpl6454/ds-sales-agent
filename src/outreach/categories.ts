@@ -3,6 +3,8 @@ import { prisma } from '@/lib/db'
 import { DELIVERED_STATUSES } from '@/lib/constants'
 import { fleetRingOrder, nextSender, type RingMember, type RotationChoice } from './rotation'
 import { sameCategory } from './senderCategories'
+import { replyHaltFloor, type ReplyHaltScope } from './replyHalt'
+import { getSettings } from '@/lib/settings'
 
 /**
  * The database half of rotation: read the ring and the history, then ask the pure
@@ -210,27 +212,101 @@ export function ringMembersFor<T extends { id: string; handle: string; cohort: n
  * their turn. If every page is parked, `nextSender` returns `all-unavailable` and says so —
  * fail-closed, and named, rather than a silent skip.
  */
-export async function readBlockedRoutes(
-  targetIds?: readonly string[],
-): Promise<Map<string, Map<string, string>>> {
-  const rows = await prisma.outreachAttempt.findMany({
-    where: {
-      status: 'FAILED',
-      failureCode: { not: null },
-      ...(targetIds ? { targetId: { in: [...new Set(targetIds)] } } : {}),
-    },
-    select: { failureCode: true, pair: { select: { targetId: true, senderId: true, sender: { select: { handle: true } } } } },
-  })
+/**
+ * THE REPLY HALT'S OWN TWO FACTS, so a route blocker cannot be computed by a different rule
+ * than the gate enforces. Read from settings by `readBlockedRoutes` itself rather than passed
+ * by callers — the same discipline that already loads the parked routes there, "so no caller
+ * can forget it".
+ */
+export interface ReplyHaltFacts {
+  scope: ReplyHaltScope
+  resumeHours: number
+  now?: Date
+}
+
+/**
+ * ROUTES A RECIPIENT'S PAGES CANNOT USE, per (target, sender).
+ *
+ * ── WHAT THIS WIDENS, AND IT IS THE POINT (2026-09-04, Tabish) ────────────
+ *
+ * Until now the turn advanced only on a DELIVERY, so a page that could not deliver HELD the
+ * recipient. Two things stop a page delivering to one recipient and neither is about the page
+ * being unwell: a reply from them halts that page for seven days, and an uncertain send parks
+ * that route. Rotation went on electing the stuck page while every other page in the ring sat
+ * idle, for up to a week. MEASURED 2026-09-04: 116 recipients have replied to some page.
+ *
+ * The parked half has been here since 2026-08-24. **The reply halt is the half added now**, and
+ * with it the turn passes to the next page in the ring whose route to THIS recipient is clear.
+ *
+ * **So a recipient mid-conversation with page A will hear from page B inside the same week.**
+ * That is the trade Tabish chose and it is stated rather than smoothed over. It is also the
+ * logical content of the 1 September decision to scope the reply halt to the PAIR: the whole
+ * point of a pair-scoped halt is that the fleet's other pages keep writing, and all that
+ * changes here is that they no longer queue behind the halted one to do it. The risk is
+ * unchanged in kind and is recorded as his: every page signs with the same phone number, so
+ * "a different page" is transparent to the person who replied.
+ *
+ * **`replyHaltScope=target` restores the fleet-wide halt in one Setting row, and under it this
+ * function writes NO reply blocker at all** — when the halt covers every page there is no clear
+ * page to pass the turn to, and skipping to one would be exactly the widening that scope
+ * refuses. The asymmetry is deliberate and is why the scope is read here rather than assumed.
+ */
+export async function readBlockedRoutes(args: {
+  targetIds?: readonly string[]
+  /** Omit to read the live settings — the values the gate itself enforces. */
+  replyHalt?: ReplyHaltFacts
+}): Promise<Map<string, Map<string, string>>> {
+  const targetIds = args.targetIds
+  const scopeFilter = targetIds ? { targetId: { in: [...new Set(targetIds)] } } : {}
+
+  const replyHalt =
+    args.replyHalt ??
+    (await (async (): Promise<ReplyHaltFacts> => {
+      const s = await getSettings()
+      return { scope: s.replyHaltScope, resumeHours: s.replyResumeHours }
+    })())
+
+  const [parkedRows, repliedRows] = await Promise.all([
+    prisma.outreachAttempt.findMany({
+      where: { status: 'FAILED', failureCode: { not: null }, ...scopeFilter },
+      select: {
+        failureCode: true,
+        pair: { select: { targetId: true, senderId: true, sender: { select: { handle: true } } } },
+      },
+    }),
+    /* A halt that covers every page is not a route blocker — see the docblock. */
+    replyHalt.scope === 'pair'
+      ? prisma.outreachAttempt.findMany({
+          where: {
+            replyPostedAt: { gte: replyHaltFloor(replyHalt.resumeHours, replyHalt.now) },
+            replyHandledAt: null,
+            ...scopeFilter,
+          },
+          select: { pair: { select: { targetId: true, senderId: true } } },
+        })
+      : Promise.resolve([] as { pair: { targetId: string; senderId: string } }[]),
+  ])
+
   const out = new Map<string, Map<string, string>>()
-  for (const r of rows) {
-    const m = out.get(r.pair.targetId) ?? new Map<string, string>()
-    m.set(
+  const put = (targetId: string, senderId: string, why: string) => {
+    const m = out.get(targetId) ?? new Map<string, string>()
+    m.set(senderId, why)
+    out.set(targetId, m)
+  }
+
+  for (const r of parkedRows) {
+    put(
+      r.pair.targetId,
       r.pair.senderId,
       r.failureCode === 'not-in-thread'
         ? 'an earlier message from this page may already have reached them'
         : `an earlier message from this page is parked (${r.failureCode})`,
     )
-    out.set(r.pair.targetId, m)
+  }
+  /* Written AFTER the parked rows so a reply wins where both apply: "they replied to this page"
+     is the more specific fact about this recipient, and it is the one with a release date. */
+  for (const r of repliedRows) {
+    put(r.pair.targetId, r.pair.senderId, 'they replied to this page, so it is holding for a week')
   }
   return out
 }
@@ -298,7 +374,7 @@ export async function whoseTurn(args: {
       : (args.fleet ?? (await fleetRingFor(args.targetId))),
     lastSenderTo(args.targetId),
     /* Loaded here so no caller can forget it — see `readBlockedRoutes`. */
-    readBlockedRoutes([args.targetId]),
+    readBlockedRoutes({ targetIds: [args.targetId] }),
   ])
 
   return decideTurn({
@@ -392,7 +468,7 @@ export async function whoseTurnForMany(
       select: { targetId: true, senderId: true },
     }),
     /* ONE batched query for the whole page, not one per target. */
-    readBlockedRoutes(ids),
+    readBlockedRoutes({ targetIds: ids }),
     /* Cached per request; see readCategoryMemberships. Needed so the ring cannot name a
        sender the gate refuses — see ringMembersFor. */
     readCategoryMemberships(),

@@ -12,6 +12,7 @@ import { eligibleFleetSenderIds, readSenderAvailability } from '@/outreach/avail
 import { fleetRingOrder, nextSender } from '@/outreach/rotation'
 import { categoriesFor, readCategoryMemberships, unavailableForTarget } from '@/outreach/categories'
 import { readPersonHandles } from '@/outreach/compose'
+import { watchMarksFrom } from '@/detection/ownMarks'
 import { followUpForSettings, followUpSubject } from '@/outreach/followUpTemplate'
 import { readStringArray } from '@/lib/json'
 
@@ -487,7 +488,7 @@ async function computeRestTally(now: Date): Promise<RestTally> {
    * This panel PREDICTS what the governor refuses, so it must read the same two facts the
    * planner reads or it will promise a follow-up the planner will not write.
    */
-  const watchChannels = watchRows.map((t) => ({ handle: t.handle, displayName: t.displayName }))
+  const watchChannels = watchMarksFrom(watchRows)
   const personHandles = await readPersonHandles(prospects.map((p) => p.handle))
   const pending = inFlightAndParked.filter((a) => a.status !== 'FAILED')
   const parked = inFlightAndParked.filter((a) => a.status === 'FAILED')
@@ -559,10 +560,33 @@ async function computeRestTally(now: Date): Promise<RestTally> {
    * `all-unavailable` and it lands in the rotation-stuck bucket, named rather than silent.
    */
   const blockedRoutes = new Map<string, Map<string, string>>()
+  const blockRoute = (targetId: string, senderId: string, why: string) => {
+    const m = blockedRoutes.get(targetId) ?? new Map<string, string>()
+    m.set(senderId, why)
+    blockedRoutes.set(targetId, m)
+  }
   for (const p of parked) {
-    const m = blockedRoutes.get(p.pair.targetId) ?? new Map<string, string>()
-    m.set(p.pair.senderId, 'an earlier message from this page may already have reached them')
-    blockedRoutes.set(p.pair.targetId, m)
+    blockRoute(p.pair.targetId, p.pair.senderId, 'an earlier message from this page may already have reached them')
+  }
+  /**
+   * ── AND A REPLY HALTS ONE PAGE, NOT THE RECIPIENT (2026-09-04) ────────────
+   *
+   * The same widening `readBlockedRoutes` makes for the planner, mirrored here from rows this
+   * builder already holds. Without it this panel would name the halted page as "next" while the
+   * planner elected a different one — a page reporting a rule by a different rule than the one
+   * enforcing it, which is the drift this whole file exists to prevent.
+   *
+   * Only under the PAIR scope: when the halt is fleet-wide there is no clear page to pass to,
+   * and the tally must not invent one. `haltUntil` above is keyed by `replyHaltKey`, which is
+   * the target id under the target scope, so the pair check is the scope check.
+   */
+  if (settings.replyHaltScope === 'pair') {
+    /* Every row in `replies` is already an ACTIVE halt — the query filters on the floor and on
+       `replyHandledAt: null`, which is the same `where` the gate builds from `replyHaltWhere`. */
+    for (const r of replies) {
+      if (!r.replyPostedAt) continue
+      blockRoute(r.pair.targetId, r.pair.senderId, 'they replied to this page, so it is holding for a week')
+    }
   }
 
   const ringByTarget = new Map<string, { id: string; handle: string; cohort: number }[]>()
