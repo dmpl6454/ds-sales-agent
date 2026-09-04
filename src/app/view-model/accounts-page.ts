@@ -80,7 +80,16 @@ export interface AccountsPageView {
   summary: { ready: number; needsLogin: number; broken: number; outOfFleet: number }
 }
 
+/**
+ * Memoised (single-flight, 10 s) on the connecting set — see `src/lib/viewMemo.ts`.
+ * `buildLoginQueue` below is deliberately NOT memoised: it is what the Connect flow polls
+ * while a person is signing in, and it moves second to second.
+ */
 export async function buildAccountsPage(connectingHandles: readonly string[] = []): Promise<AccountsPageView> {
+  return memoView(viewKey('accountsPage', [...connectingHandles]), () => computeAccountsPage(connectingHandles))
+}
+
+async function computeAccountsPage(connectingHandles: readonly string[]): Promise<AccountsPageView> {
   const weekStart = daysAgo(7)
   const today = istDateKey()
   const settings = await getSettings()

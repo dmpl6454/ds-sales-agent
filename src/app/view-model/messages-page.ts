@@ -240,7 +240,12 @@ export interface MessagesPageView {
 }
 
 
+/** Memoised (single-flight, 10 s) — see `src/lib/viewMemo.ts` for the pile-up this closes. */
 export async function buildMessagesPage(): Promise<MessagesPageView> {
+  return memoView(viewKey('messagesPage'), computeMessagesPage)
+}
+
+async function computeMessagesPage(): Promise<MessagesPageView> {
   const weekStart = daysAgo(7)
 
   const [

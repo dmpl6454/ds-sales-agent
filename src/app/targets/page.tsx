@@ -24,18 +24,26 @@ export const dynamic = 'force-dynamic'
  * working", which is about the watch and never about outreach: detection never stops a
  * message being prepared. Rationale prose (watch cost, rotation) is on /rules.
  */
-export default async function TargetsPage() {
+export default async function TargetsPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ page?: string; q?: string }>
+}) {
   const user = await currentUser()
   if (!user) redirect('/sign-in')
+  /* Both are strings anyone can type; the builder clamps the page and bounds the term. */
+  const { page, q } = await searchParams
+  const pageNumber = Number.parseInt(page ?? '1', 10)
 
   const [v, ch, rest, fleets] = await Promise.all([
-    buildProspectsPage(),
+    buildProspectsPage({ page: Number.isFinite(pageNumber) ? pageNumber : 1, query: q ?? null }),
     buildChannelsView(),
     buildRestTally(),
     /* Read on the SERVER: `ChannelsPanel` is a client component, and a query reachable from
        the browser bundle is the waiting.tsx -> gate.ts -> better-sqlite3 trap. */
     listCategories(),
   ])
+  const hrefForPage = (n: number) => `/targets?${v.query ? `q=${encodeURIComponent(v.query)}&` : ''}page=${n}#prospects`
 
   return (
     <>
@@ -43,7 +51,7 @@ export default async function TargetsPage() {
       <div className="page">
         <PageHead
           title="Targets"
-          sub={`${v.prospects.length} in the list · ${v.watched} whose posts we read`}
+          sub={`${v.paging.total} we message · ${v.watched} whose posts we read`}
         />
 
         {/*
@@ -116,7 +124,44 @@ export default async function TargetsPage() {
           Prisma — importing either from a client module pulls `better-sqlite3` into the browser
           bundle and returns HTTP 500 on every route, with typecheck passing throughout.
         */}
-        <ProspectList prospects={v.prospects} sendersAble={v.sendersAble} />
+        {/*
+          SEARCH AND PAGE (2026-09-04): ~900 companies is not a list a person scrolls; it is a
+          list a person searches. A GET form with state in the URL — same shape as /paid-posts —
+          so a position survives a refresh and can be pasted. No hidden page: a new question
+          starts at the first page.
+        */}
+        <form method="get" action="/targets" className="channel-filter" id="prospects">
+          <label htmlFor="prospect-search" className="muted">
+            Find a company
+          </label>{' '}
+          <input id="prospect-search" name="q" type="search" defaultValue={v.query ?? ''} placeholder="handle or name" />{' '}
+          <button type="submit" className="muted">
+            Show
+          </button>
+          {v.query ? (
+            <span className="muted">
+              {' '}
+              {v.paging.total} matching &ldquo;{v.query}&rdquo; &middot; <a href="/targets#prospects">clear</a>
+            </span>
+          ) : null}
+        </form>
+        <ProspectList prospects={v.prospects} sendersAble={v.sendersAble} messagedTotal={v.paging.total} />
+        {v.paging.pageCount > 1 ? (
+          <p className="muted">
+            Showing {v.paging.from}&ndash;{v.paging.to} of {v.paging.total} &middot; page {v.paging.page} of{' '}
+            {v.paging.pageCount}{' '}
+            {v.paging.page > 1 ? (
+              <>
+                &middot; <a href={hrefForPage(1)}>&laquo; First</a> <a href={hrefForPage(v.paging.page - 1)}>&lsaquo; Previous</a>{' '}
+              </>
+            ) : null}
+            {v.paging.page < v.paging.pageCount ? (
+              <>
+                &middot; <a href={hrefForPage(v.paging.page + 1)}>Next &rsaquo;</a> <a href={hrefForPage(v.paging.pageCount)}>Last &raquo;</a>
+              </>
+            ) : null}
+          </p>
+        ) : null}
 
         <section>
           <h2>Reading their feeds</h2>

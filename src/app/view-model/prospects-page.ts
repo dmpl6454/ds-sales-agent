@@ -1,5 +1,6 @@
 import { prisma } from '@/lib/db'
 import { memoView, viewKey } from '@/lib/viewMemo'
+import { normaliseSearch, targetNameClauses } from '@/lib/searchTerms'
 import { DELIVERED_STATUSES } from '@/lib/constants'
 import { getSettings } from '@/lib/settings'
 import { replyHaltFloor } from '@/outreach/replyHalt'
@@ -140,8 +141,23 @@ export interface ProspectRow {
   legitimacy: string | null
 }
 
+/** 50 a page — the same bound as /paid-posts and the sent history, so one pagination idea. */
+export const PROSPECTS_PAGE_SIZE = 50
+
+export interface ProspectsInput {
+  /** `?page=` — a string anyone can type; clamped into range, never trusted. */
+  page?: number
+  /** `?q=` — handle or name; normalised and bounded by `lib/searchTerms.ts`. */
+  query?: string | null
+}
+
 export interface ProspectsPageView {
+  /** The WATCH rows (all of them — a dozen) followed by ONE PAGE of the companies we message. */
   prospects: ProspectRow[]
+  /** The messaged group's paging. `total` is the FILTERED total, counted by its own query. */
+  paging: { page: number; pageCount: number; total: number; from: number; to: number }
+  /** The search in force, echoed back so the box keeps what was typed. */
+  query: string | null
   categories: { name: string; senders: number; targets: number }[]
   /**
    * How many fleet accounts can ACTUALLY send right now — ACTIVE, and holding a session
@@ -180,10 +196,51 @@ export interface ProspectsPageView {
 /** Pages the detection pipeline reads per channel per slot. Mirrors `MAX_PAGES` there. */
 const PAGES_PER_CHANNEL = 4
 
-export async function buildProspectsPage(): Promise<ProspectsPageView> {
+/**
+ * Memoised on BOTH inputs — each page and each search is its own answer. See
+ * `src/lib/viewMemo.ts` for why every page builder is memoised at all.
+ */
+export async function buildProspectsPage(input?: ProspectsInput): Promise<ProspectsPageView> {
+  return memoView(viewKey('prospectsPage', input ?? {}), () => computeProspectsPage(input))
+}
+
+async function computeProspectsPage(input?: ProspectsInput): Promise<ProspectsPageView> {
   // The "they replied" chip means "halted NOW", so it needs the halt's own window.
   const settings = await getSettings()
-  const [targets, categoryRows, fleetSenders] = await Promise.all([
+
+  /**
+   * ── PAGED, AND WHY (2026-09-04) ─────────────────────────────────────────────
+   *
+   * This page rendered every live prospect in one table — ~900 rows by 4 Sept, up from 91 in
+   * mid-August — and for every one of them asked rotation whose turn it is
+   * (`whoseTurnForMany`) and hydrated a row a person would never scroll to. On the hosted
+   * 1-vCPU Linode that was measured at +13 MB heap and a multi-second render, on the day the
+   * web process was OOM-killed twice by a pile-up of exactly such renders. So the messaged
+   * group is 50 a page with a `?q=` search — the same GET-form shape as /paid-posts, state in
+   * the URL — while the WATCH rows (a dozen, a different group with its own heading) are
+   * always shown in full so "whose posts we read" never lands on page 18.
+   *
+   * COUNTED BEFORE THE ROWS, sequentially and on purpose: `skip` cannot be clamped without
+   * the range, and an unclamped `?page=999` renders an empty table over a list that is not
+   * empty. `handle` then `id` — an unstable sort silently repeats or drops a row across a
+   * page boundary.
+   */
+  const query = normaliseSearch(input?.query)
+  const nameWhere = query ? { OR: targetNameClauses(query) } : {}
+  const messagedWhere = { optedOut: false, role: { not: 'WATCH' }, ...nameWhere }
+  const total = await prisma.targetAccount.count({ where: messagedWhere })
+  const pageCount = Math.max(1, Math.ceil(total / PROSPECTS_PAGE_SIZE))
+  const page = Math.min(Math.max(1, Math.floor(input?.page ?? 1)), pageCount)
+
+  const targetInclude = {
+    // The joined `pairs` (one row per sender, with its display name) went with the chips —
+    // one switch, 2026-08-08. Nothing renders a sender name per prospect any more, and at
+    // 65×60 that include was the page's largest query for a figure nobody could act on.
+    _count: { select: { attempts: true } },
+    categories: { include: { category: { select: { name: true } } } },
+  } as const
+
+  const [watchRows, pageRows, watched, categoryRows, fleetSenders] = await Promise.all([
     prisma.targetAccount.findMany({
       /**
        * RETIRED ROWS ARE NOT SHOWN AT ALL (2026-08-25, Tabish): *"also what does retired even
@@ -196,16 +253,20 @@ export async function buildProspectsPage(): Promise<ProspectsPageView> {
        * were listed under a heading about companies we message, every one carrying a chip
        * saying it is never messaged. A list whose rows contradict its own heading is noise.
        */
-      where: { optedOut: false },
-      orderBy: [{ role: 'asc' }, { handle: 'asc' }],
-      include: {
-        // The joined `pairs` (one row per sender, with its display name) went with the chips —
-        // one switch, 2026-08-08. Nothing renders a sender name per prospect any more, and at
-        // 65×60 that include was the page's largest query for a figure nobody could act on.
-        _count: { select: { attempts: true } },
-        categories: { include: { category: { select: { name: true } } } },
-      },
+      where: { optedOut: false, role: 'WATCH', ...nameWhere },
+      orderBy: [{ handle: 'asc' }, { id: 'asc' }],
+      include: targetInclude,
     }),
+    prisma.targetAccount.findMany({
+      where: messagedWhere,
+      orderBy: [{ handle: 'asc' }, { id: 'asc' }],
+      skip: (page - 1) * PROSPECTS_PAGE_SIZE,
+      take: PROSPECTS_PAGE_SIZE,
+      include: targetInclude,
+    }),
+    /* Page-independent, so a COUNT rather than a filter over the rows in hand: the figure
+       feeds the requests-per-day line, which is about the whole watch, not this page. */
+    prisma.targetAccount.count({ where: { optedOut: false, kind: 'CHANNEL', watchEnabled: true } }),
     prisma.category.findMany({
       orderBy: { name: 'asc' },
       include: { _count: { select: { senders: true, targets: true } } },
@@ -252,6 +313,7 @@ export async function buildProspectsPage(): Promise<ProspectsPageView> {
       distinct: ['targetId'],
     }),
   ])
+  const targets = [...watchRows, ...pageRows]
   const deliveredBy = new Map(deliveredRows.map((r) => [r.targetId, r._count._all]))
   const repliedSet = new Set(repliedRows.map((r) => r.targetId))
 
@@ -415,10 +477,16 @@ export async function buildProspectsPage(): Promise<ProspectsPageView> {
     }
   })
 
-  const watched = prospects.filter((p) => p.watchEnabled && p.kind === 'CHANNEL' && !p.retired).length
-
   return {
     prospects,
+    paging: {
+      page,
+      pageCount,
+      total,
+      from: total === 0 ? 0 : (page - 1) * PROSPECTS_PAGE_SIZE + 1,
+      to: Math.min(page * PROSPECTS_PAGE_SIZE, total),
+    },
+    query,
     categories: categoryRows.map((c) => ({
       name: c.name,
       senders: c._count.senders,

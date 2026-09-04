@@ -52,7 +52,10 @@ export function normaliseSearch(raw: string | null | undefined): string | null {
 
 /** The same words with the separators a handle uses: "arshad warsi" → "arshad_warsi", "arshadwarsi". */
 function separatorVariants(t: string): string[] {
-  return /\s/.test(t) ? [t.replace(/\s+/g, '_'), t.replace(/\s+/g, '.'), t.replace(/\s+/g, '')] : [t]
+  /* The SPACED form stays in the list (2026-09-04). The 26 Aug fan-out replaced it with the
+     handle spellings, so "arshad warsi" matched `@arshad_warsi` and never a caption that wrote
+     the name with a space — found by the first test written for this module. */
+  return /\s/.test(t) ? [t, t.replace(/\s+/g, '_'), t.replace(/\s+/g, '.'), t.replace(/\s+/g, '')] : [t]
 }
 
 /**

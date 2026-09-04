@@ -1,4 +1,5 @@
 import { prisma } from '@/lib/db'
+import { memoView, viewKey } from '@/lib/viewMemo'
 import { DEFAULT_CATEGORY_SLUG } from '@/outreach/senderCategories'
 import type { TemplateSettings } from '@/outreach/fleetTemplate'
 
@@ -38,7 +39,12 @@ export interface FleetTemplateRow {
   senderCount: number
 }
 
+/** Memoised (single-flight, 10 s) on its inputs — see `src/lib/viewMemo.ts`. */
 export async function buildFleetTemplates(settings: TemplateSettings): Promise<FleetTemplateRow[]> {
+  return memoView(viewKey('FleetTemplates', [settings]), () => computeFleetTemplates(settings))
+}
+
+async function computeFleetTemplates(settings: TemplateSettings): Promise<FleetTemplateRow[]> {
   const categories = await prisma.category.findMany({
     orderBy: { name: 'asc' },
     select: { id: true, slug: true, name: true, _count: { select: { senders: true } } },

@@ -1,6 +1,7 @@
 'use server'
 
 import { invalidateCeoView } from './view-model'
+import { invalidateViews } from '@/lib/viewMemo'
 import { revalidatePath } from 'next/cache'
 import { approveEnrolment, revokePairedDevice } from '@/lib/deviceEnrol'
 import { redirect } from 'next/navigation'
@@ -52,6 +53,20 @@ import { DEFAULT_CATEGORY_SLUG } from '@/outreach/senderCategories'
 import { requireOperator } from '@/lib/session'
 import { MESSAGE_VARIANTS } from '../../prisma/variants'
 import { BRAND_MESSAGE_VARIANTS } from '../../prisma/brandVariants'
+
+/**
+ * ONE CALL, TWO CACHES (2026-09-04). `revalidatePath` tells Next the next render of that
+ * path must be fresh; since the same day every page builder is also memoised in-process for
+ * ten seconds (`src/lib/viewMemo.ts`, the pile-up fix), and a memo that survived the
+ * revalidation would hand the next render the OLD rows — the switch just flipped, the draft
+ * just discarded, the sender just added — for up to ten seconds, on the one request where a
+ * person is looking to see their own change land. So every action goes through this helper
+ * and none calls `revalidatePath` directly; `tests/view-memo.test.ts` greps for a bare call.
+ */
+function refreshPath(path: string): void {
+  invalidateViews()
+  revalidatePath(path)
+}
 
 /**
  * Everything the dashboard can do.
@@ -112,7 +127,7 @@ export async function syncNow() {
   const user = await requireOperator()
   const result = await runSlot('manual')
   await audit(user.email, 'sync.now', 'ScrapeRun', `status=${result.status} detected=${result.detected}`)
-  revalidatePath('/')
+  refreshPath('/')
   return result
 }
 
@@ -311,7 +326,7 @@ export async function sendNow(attemptId: string, overrides?: readonly string[]):
     // A delivered send is PROOF the session works — the one sanctioned clearing besides
     // an identity-verified hand login. A no-op when nothing was marked.
     await clearSessionInvalid(sender.id, `a send to @${target.handle} delivered`)
-    revalidatePath('/')
+    refreshPath('/')
     return { ok: true, message: `Sent to @${target.handle} from @${sender.handle}.` }
   }
 
@@ -327,7 +342,7 @@ export async function sendNow(attemptId: string, overrides?: readonly string[]):
       where: { id: attemptId },
       data: { status: 'READY', error, failureCode, attempts: { increment: 1 } },
     })
-    revalidatePath('/')
+    refreshPath('/')
     return {
       ok: false,
       challenged: true,
@@ -347,7 +362,7 @@ export async function sendNow(attemptId: string, overrides?: readonly string[]):
       where: { id: attemptId },
       data: { status: 'READY', error, failureCode, attempts: { increment: 1 } },
     })
-    revalidatePath('/')
+    refreshPath('/')
     return {
       ok: false,
       message:
@@ -377,7 +392,7 @@ export async function sendNow(attemptId: string, overrides?: readonly string[]):
       check: `pnpm ig:thread ${sender.handle} ${target.handle}`,
     })
     await audit(user.email, 'attempt.send.uncertain', `OutreachAttempt:${attemptId}`, error)
-    revalidatePath('/')
+    refreshPath('/')
     return {
       ok: false,
       message:
@@ -397,7 +412,7 @@ export async function sendNow(attemptId: string, overrides?: readonly string[]):
     data: { status: 'READY', error, failureCode, attempts: { increment: 1 } },
   })
   await audit(user.email, 'attempt.send.failed', `OutreachAttempt:${attemptId}`, error)
-  revalidatePath('/')
+  refreshPath('/')
   return { ok: false, message: error }
 }
 
@@ -432,7 +447,7 @@ export async function prepareOnDemandSend(
           : ''
         : ` — blocked: ${preview.blocks.map((b) => b.reason).join(', ')}`),
   )
-  if (preview.ok) revalidatePath('/')
+  if (preview.ok) refreshPath('/')
   return preview
 }
 
@@ -551,8 +566,8 @@ export async function labelPost(shortcode: string, wasPaid: boolean): Promise<Mu
   }
 
   await audit(user.email, 'post.labelled', `DetectedCampaign:${shortcode}`, `paid=${wasPaid} @${post.target.handle}`)
-  revalidatePath('/paid-posts')
-  revalidatePath('/targets')
+  refreshPath('/paid-posts')
+  refreshPath('/targets')
   return {
     ok: true,
     message: wasPaid
@@ -599,7 +614,7 @@ export async function markSent(attemptId: string): Promise<MutationResult> {
     `OutreachAttempt:${attemptId}`,
     `@${attempt.pair.sender.handle} → @${attempt.pair.target.handle}`,
   )
-  revalidatePath('/')
+  refreshPath('/')
   return { ok: true, message: `Recorded as sent to @${attempt.pair.target.handle}.` }
 }
 
@@ -679,7 +694,7 @@ export async function editAttemptBody(attemptId: string, body: string): Promise<
     `OutreachAttempt:${attemptId}`,
     `@${attempt.pair.sender.handle} → @${attempt.pair.target.handle}, ${attempt.renderedBody.length} → ${next.length} chars`,
   )
-  revalidatePath('/')
+  refreshPath('/')
   return { ok: true, message: `Saved. ${next.length} characters.` }
 }
 
@@ -710,7 +725,7 @@ export async function setAutopilot(on: boolean): Promise<{ ok: boolean; message:
   await setSetting(SETTING_KEYS.autopilotEnabled, on ? 'true' : 'false')
   await audit(user.email, 'autopilot.set', 'Setting:autopilotEnabled', on ? 'ON' : 'OFF')
   invalidateCeoView() // the landing page memo must not show the OLD switch for ten seconds
-  revalidatePath('/')
+  refreshPath('/')
   return {
     ok: true,
     message: on
@@ -744,7 +759,7 @@ export async function requeueParkedAttempt(attemptId: string): Promise<MutationR
     }
   }
   await audit(user.email, 'attempt.requeued', `OutreachAttempt:${attemptId}`, 'parked draft returned to the queue by an operator')
-  revalidatePath('/')
+  refreshPath('/')
   return { ok: true, message: 'Back in the queue. The next tick will try it again from the start.' }
 }
 
@@ -772,7 +787,7 @@ export async function setSingleTemplateBody(body: string | null): Promise<{ ok: 
   if (body === null || body.trim().length === 0) {
     await prisma.setting.deleteMany({ where: { key: SETTING_KEYS.singleTemplateBody } })
     await audit(user.email, 'setting.changed', 'Setting:singleTemplateBody', 'reset to the shipped standard message')
-    revalidatePath('/')
+    refreshPath('/')
     return { ok: true, message: 'Back to the standard message. New drafts use the shipped copy.' }
   }
 
@@ -786,7 +801,7 @@ export async function setSingleTemplateBody(body: string | null): Promise<{ ok: 
     'Setting:singleTemplateBody',
     `standard message edited (${body.trim().length} chars)`,
   )
-  revalidatePath('/')
+  refreshPath('/')
   return {
     ok: true,
     message:
@@ -900,7 +915,7 @@ export async function acknowledgeFleetBreaker(reason: string): Promise<MutationR
     }
   }
   await acknowledgeBreaker(user.email, text)
-  revalidatePath('/')
+  refreshPath('/')
   return {
     ok: true,
     message:
@@ -966,7 +981,7 @@ export async function checkSignIn(handleRaw: string): Promise<MutationResult> {
   if (outcome.kind === 'logged-in' && outcome.username.toLowerCase() === handle) {
     await clearSessionInvalid(sender.id, `identity check by ${user.email}: Instagram says @${outcome.username}`)
     await audit(user.email, 'sender.signin.checked', `SenderAccount:${handle}`, `signed in as @${outcome.username}`)
-    revalidatePath('/senders')
+    refreshPath('/senders')
     return { ok: true, message: `Signed in, and it is the right account — Instagram says @${outcome.username}.` }
   }
 
@@ -977,7 +992,7 @@ export async function checkSignIn(handleRaw: string): Promise<MutationResult> {
       detail: `the browser profile is signed in as @${outcome.username}, not @${handle}`,
       actor: user.email,
     })
-    revalidatePath('/senders')
+    refreshPath('/senders')
     return {
       ok: false,
       message:
@@ -993,7 +1008,7 @@ export async function checkSignIn(handleRaw: string): Promise<MutationResult> {
       detail: `identity check by ${user.email}: Instagram treated the session as signed out`,
       actor: user.email,
     })
-    revalidatePath('/senders')
+    refreshPath('/senders')
     return { ok: false, message: `@${handle} is signed out — its Connect button is back, sign in again.` }
   }
 
@@ -1122,9 +1137,9 @@ export async function rejoinFleet(
       (restoreActive ? '; status PAUSED -> ACTIVE' : '') +
       (sender.status === 'CHALLENGED' ? '; still CHALLENGED and cannot send until that is cleared' : ''),
   )
-  revalidatePath('/senders')
-  revalidatePath('/targets')
-  revalidatePath('/')
+  refreshPath('/senders')
+  refreshPath('/targets')
+  refreshPath('/')
   return {
     ok: true,
     message:
@@ -1163,7 +1178,7 @@ export async function setFleetTemplateBody(
   if (body === null || body.trim().length === 0) {
     await prisma.setting.deleteMany({ where: { key } })
     await audit(user.email, 'setting.changed', `Setting:${key}`, `${category.name} standard message cleared`)
-    revalidatePath('/')
+    refreshPath('/')
     return {
       ok: true,
       message: `Cleared. Nothing is sent to ${category.name} companies until a message is written here.`,
@@ -1180,7 +1195,7 @@ export async function setFleetTemplateBody(
     `Setting:${key}`,
     `${category.name} standard message set (${body.trim().length} chars)`,
   )
-  revalidatePath('/')
+  refreshPath('/')
   return {
     ok: true,
     message: `Saved. New drafts for ${category.name} companies use this text, and any that were held for want of a message can now go out.`,
@@ -1229,7 +1244,7 @@ export async function setFollowUpBody(
   if (body === null || body.trim().length === 0) {
     await prisma.setting.deleteMany({ where: { key } })
     await audit(user.email, 'setting.changed', `Setting:${key}`, `${name} follow-up message cleared`)
-    revalidatePath('/')
+    refreshPath('/')
     return {
       ok: true,
       message:
@@ -1248,7 +1263,7 @@ export async function setFollowUpBody(
     `Setting:${key}`,
     `${name} follow-up message set (${body.trim().length} chars)`,
   )
-  revalidatePath('/')
+  refreshPath('/')
   return {
     ok: true,
     message:
@@ -1336,7 +1351,7 @@ export async function checkConnect(handle: string): Promise<ConnectState> {
   // Hosted: the device recorded the session itself when it reached 'connected'; the server
   // only reads the relayed status and refreshes the page once it lands.
   const state = requestToConnectState(await readConnectRequest(handle), handle)
-  if (state.state === 'connected') revalidatePath('/')
+  if (state.state === 'connected') refreshPath('/')
   return state
 }
 
@@ -1380,7 +1395,7 @@ async function recordConnected(handle: string, userEmail: string, verified: bool
   })
   if (verified) await clearSessionInvalid(sender.id, 'hand login via the dashboard, identity verified against Instagram')
   await audit(userEmail, 'sender.login', `SenderAccount:${handle}`, `connected via dashboard into ${st.dir}`)
-  revalidatePath('/')
+  refreshPath('/')
 }
 
 /**
@@ -1416,7 +1431,7 @@ export async function clearChallenge(handle: string): Promise<MutationResult> {
    */
   await clearChallenged(sender.id)
   await audit(user.email, 'sender.challenge.cleared', `SenderAccount:${handle}`, 'operator confirmed they checked the account')
-  revalidatePath('/')
+  refreshPath('/')
   return {
     ok: true,
     message:
@@ -1467,7 +1482,7 @@ export async function setUserRole(email: string, role: Role): Promise<MutationRe
     `User:${normalised}`,
     `role set to ${next}`,
   )
-  revalidatePath('/senders')
+  refreshPath('/senders')
   return {
     ok: true,
     message:
@@ -1487,7 +1502,7 @@ export async function abortConnect(handle: string): Promise<{ ok: true }> {
     await deleteConnectRequest(handle)
   }
   await audit(user.email, 'sender.connect.cancel', `SenderAccount:${handle}`)
-  revalidatePath('/')
+  refreshPath('/')
   return { ok: true }
 }
 
@@ -1723,7 +1738,7 @@ export async function addSender(
     `${allowed.length} of ${targets.length} channels routed` +
       (allowed.length < targets.length ? ' (the rest are our own pages, retired, or itself)' : ''),
   )
-  revalidatePath('/')
+  refreshPath('/')
   return {
     ok: true,
     message:
@@ -1795,7 +1810,7 @@ export async function removeSender(handle: string): Promise<MutationResult> {
       `SenderAccount:${handle}`,
       `no send history; hand-off: ${handOff.transferred} moved, ${handOff.discarded} discarded, ${handOff.kept} kept`,
     )
-    revalidatePath('/')
+    refreshPath('/')
     return { ok: true, message: `Removed @${handle}. Its Chrome profile is left on disk in case you re-add it.${movedNote}` }
   }
 
@@ -1809,7 +1824,7 @@ export async function removeSender(handle: string): Promise<MutationResult> {
     `SenderAccount:${handle}`,
     `${sentCount} sent messages kept; hand-off: ${handOff.transferred} moved, ${handOff.discarded} discarded, ${handOff.kept} kept`,
   )
-  revalidatePath('/')
+  refreshPath('/')
   return {
     ok: true,
     message:
@@ -2040,10 +2055,10 @@ export async function addTarget(
     `${allowed.length} of ${senders.length} accounts routed` +
       (allowed.length < senders.length ? ' (the rest are our own pages, or itself)' : ''),
   )
-  revalidatePath('/')
+  refreshPath('/')
   // The form lives on /targets; revalidating only '/' left the list beside it stale, so a
   // successful add read as "nothing happened" until the next auto-refresh.
-  revalidatePath('/targets')
+  refreshPath('/targets')
   return {
     ok: true,
     /**
@@ -2083,7 +2098,7 @@ export async function removeTarget(handle: string): Promise<MutationResult> {
   if (sentCount === 0) {
     await prisma.targetAccount.delete({ where: { handle } })
     await audit(user.email, 'target.deleted', `TargetAccount:${handle}`, 'never contacted')
-    revalidatePath('/')
+    refreshPath('/')
     return { ok: true, message: `Stopped watching @${handle} and removed it.` }
   }
 
@@ -2092,7 +2107,7 @@ export async function removeTarget(handle: string): Promise<MutationResult> {
     prisma.outreachPair.updateMany({ where: { targetId: target.id }, data: { enabled: false } }),
   ])
   await audit(user.email, 'target.retired', `TargetAccount:${handle}`, `${sentCount} sent messages kept`)
-  revalidatePath('/')
+  refreshPath('/')
   return {
     ok: true,
     message: `Stopped messaging @${handle}. ${sentCount} sent message${sentCount === 1 ? '' : 's'} kept, so it can never be contacted again by accident.`,
@@ -2136,7 +2151,7 @@ export async function skipAttempt(attemptId: string, reason: string): Promise<Mu
     actor: user.email,
   })
   if (!result.ok) return result
-  revalidatePath('/')
+  refreshPath('/')
   return result
 }
 
@@ -2191,7 +2206,7 @@ export async function setPersona(
     `SenderAccount:${handle}`,
     `${candidate.personaName}, ${candidate.personaRole}, ${candidate.personaBrand}`,
   )
-  revalidatePath('/')
+  refreshPath('/')
   return { ok: true, message: 'Saved.' }
 }
 
@@ -2243,7 +2258,7 @@ export async function dispatchNow(): Promise<MutationResult> {
     'Dispatcher',
     `${result.verdict.action} — ${result.verdict.action === 'hold' ? result.verdict.reason : `${result.delivered?.sent ?? 0} sent`}`,
   )
-  revalidatePath('/')
+  refreshPath('/')
 
   if (result.verdict.action === 'hold') {
     return { ok: false, message: `Nothing sent — ${result.verdict.detail}.` }
@@ -2279,7 +2294,7 @@ export async function pauseDispatch(reason: string): Promise<MutationResult> {
   })
   await setSetting(DISPATCH_PAUSE_KEY, value)
   await audit(user.email, 'dispatch.paused', 'Dispatcher', reason.trim() || 'no reason given')
-  revalidatePath('/')
+  refreshPath('/')
   return { ok: true, message: 'Unattended sending is paused. Waiting messages keep their Send button.' }
 }
 
@@ -2298,7 +2313,7 @@ export async function resumeDispatch(): Promise<MutationResult> {
 
   await prisma.setting.deleteMany({ where: { key: DISPATCH_PAUSE_KEY } })
   await audit(user.email, 'dispatch.resumed', 'Dispatcher', 'operator released the pause')
-  revalidatePath('/')
+  refreshPath('/')
   return { ok: true, message: 'Unattended sending is released. The next tick is within 15 minutes.' }
 }
 
@@ -2373,7 +2388,7 @@ export async function resolveUncertainSend(
         detail: `@${sender.handle} → @${target.handle}: operator read the thread and confirmed delivery`,
       },
     })
-    revalidatePath('/')
+    refreshPath('/')
     return { ok: true, message: `Recorded as delivered to @${target.handle}.` }
   }
 
@@ -2398,7 +2413,7 @@ export async function resolveUncertainSend(
     `OutreachAttempt:${attemptId}`,
     `@${sender.handle} → @${target.handle}: operator read the thread, nothing arrived — re-queued`,
   )
-  revalidatePath('/')
+  refreshPath('/')
   return {
     ok: true,
     message: `@${target.handle} never received it. The message is waiting again with its Send button.`,
@@ -2434,7 +2449,7 @@ export async function importProspectList(text: string, commit: boolean): Promise
       `${outcome.created} created from ${outcome.parsed.prospects.length} row(s); ` +
         `${outcome.parsed.rejected.length} rejected; all routes disabled, none watched`,
     )
-    revalidatePath('/prospects')
+    refreshPath('/prospects')
   }
   return outcome
 }
@@ -2453,7 +2468,7 @@ export async function setTargetWatch(handle: string, on: boolean): Promise<Mutat
 
   await prisma.targetAccount.update({ where: { handle }, data: { watchEnabled: on } })
   await audit(user.email, on ? 'target.watch.on' : 'target.watch.off', `TargetAccount:${handle}`)
-  revalidatePath('/prospects')
+  refreshPath('/prospects')
   return {
     ok: true,
     message: on
@@ -2478,7 +2493,7 @@ export async function setTargetCategory(handle: string, categoryName: string): P
   if (name === '') {
     await prisma.categoryTarget.deleteMany({ where: { targetId: target.id } })
     await audit(user.email, 'target.category.cleared', `TargetAccount:${handle}`)
-    revalidatePath('/targets')
+    refreshPath('/targets')
     return {
       ok: true,
       message: `@${handle} is no longer in a rotation group — the whole fleet takes turns writing to them again.`,
@@ -2521,7 +2536,7 @@ export async function setTargetCategory(handle: string, categoryName: string): P
   await prisma.categoryTarget.deleteMany({ where: { targetId: target.id } })
   await addTargetToCategory(cat.id, target.id)
   await audit(user.email, 'target.category.set', `TargetAccount:${handle}`, name)
-  revalidatePath('/targets')
+  refreshPath('/targets')
   return {
     ok: true,
     message: `@${handle} is in ${name}. Only that group's ${ringSize} account${ringSize === 1 ? '' : 's'} will write to them now.`,
@@ -2551,5 +2566,5 @@ export async function revokeDevice(formData: FormData): Promise<void> {
   const name = String(formData.get('name') ?? '')
   const removed = revokePairedDevice(name)
   await audit(user.email, 'device.revoked', `Device:${name}`, removed > 0 ? `${removed} tunnel key line(s) removed` : 'no key found under that name')
-  revalidatePath('/senders')
+  refreshPath('/senders')
 }

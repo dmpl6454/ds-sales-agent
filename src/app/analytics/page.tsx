@@ -60,12 +60,12 @@ const VERDICT_SERIES: Series[] = [
 export default async function AnalyticsPage({
   searchParams,
 }: {
-  searchParams: Promise<{ range?: string; sent?: string; from?: string }>
+  searchParams: Promise<{ range?: string; sent?: string; from?: string; to?: string }>
 }) {
   const user = await currentUser()
   if (!user) redirect('/sign-in')
 
-  const { range, sent, from } = await searchParams
+  const { range, sent, from, to } = await searchParams
   const picked = RANGES.find((r) => r.key === range) ?? RANGES[1]
 
   /**
@@ -96,7 +96,9 @@ export default async function AnalyticsPage({
      */
     fleetUsage(),
     /* The whole delivered history, a page at a time — see view-model/sent-history.ts. */
-    buildSentHistory({ page: Number.isFinite(sentPage) ? sentPage : 1, senderHandle: senderFilter }),
+    /* `?to=` is the recipient filter (2026-09-04) — normalised and bounded inside the builder,
+       like `?from=` above; a term too short to mean anything becomes no filter, never an error. */
+    buildSentHistory({ page: Number.isFinite(sentPage) ? sentPage : 1, senderHandle: senderFilter, targetQuery: to ?? null }),
     prisma.senderAccount.findMany({ orderBy: { handle: 'asc' }, select: { id: true, handle: true } }),
     /**
      * PER-ACCOUNT SENT AND REPLIED (2026-08-19, Tabish: "clearly see the amount of messages
@@ -447,6 +449,38 @@ export default async function AnalyticsPage({
 
         {/* `id` so the pager's `#history` lands the reader back on the table, not the page top. */}
         <section id="history">
+          {/*
+            WHO DID WE MESSAGE, AND FOR WHAT — BY RECIPIENT (2026-09-04, Tabish). The list had a
+            sender filter and no way to find a RECIPIENT; "which paid post was Celina messaged
+            for" meant paging through hundreds of rows by hand. A GET form, state in the URL,
+            same shape as the /paid-posts search: the range survives, the page deliberately does
+            NOT (a new question starts at the newest row — see the channel-filter comment there).
+            The "Why" column beside each row already links the paid post it was sent for.
+          */}
+          <form method="get" action="/analytics" className="channel-filter">
+            <input type="hidden" name="range" value={picked.key} />
+            {history.senderHandle ? <input type="hidden" name="from" value={history.senderHandle} /> : null}
+            <label htmlFor="sent-to" className="muted">
+              Recipient
+            </label>{' '}
+            <input
+              id="sent-to"
+              name="to"
+              type="search"
+              defaultValue={history.targetQuery ?? ''}
+              placeholder="handle or name — who was messaged"
+            />{' '}
+            <button type="submit" className="muted">
+              Show
+            </button>
+            {history.targetQuery ? (
+              <span className="muted">
+                {' '}
+                {history.total} message{history.total === 1 ? '' : 's'} to recipients matching &ldquo;{history.targetQuery}&rdquo;
+                {' '}&middot; <a href={`/analytics?range=${picked.key}${history.senderHandle ? `&from=${history.senderHandle}` : ''}#history`}>clear</a>
+              </span>
+            ) : null}
+          </form>
           <SentList
             recent={history.rows}
             paging={{
@@ -457,7 +491,7 @@ export default async function AnalyticsPage({
               to: history.to,
               /* The range selector must survive paging, and vice versa. */
               hrefForPage: (n) =>
-                `/analytics?range=${picked.key}${history.senderHandle ? `&from=${history.senderHandle}` : ''}&sent=${n}#history`,
+                `/analytics?range=${picked.key}${history.senderHandle ? `&from=${history.senderHandle}` : ''}${history.targetQuery ? `&to=${encodeURIComponent(history.targetQuery)}` : ''}&sent=${n}#history`,
             }}
           />
         </section>
