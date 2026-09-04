@@ -174,3 +174,56 @@ export function stripOwnMarksFromBrands(
 ): string[] {
   return brands.filter((b) => !isOwnMark(b, publisher))
 }
+
+/**
+ * IS THIS TOKEN THE NAME OF A CHANNEL WE WATCH?
+ *
+ * `isOwnMark` answers that for the PUBLISHER of the post, and only in one direction — a token
+ * that CONTAINS the handle (`thefilmygyan`, `filmygyanofficial`). MEASURED on `DcyE65LPYMj`:
+ * the brand string `"Social Samosa"` squashes to `socialsamosa` while the handle is
+ * `officialsocialsamosa`, so the containment runs the OTHER way, the publisher's own name
+ * survived its own post, and it was spoken to a recipient as their placement.
+ *
+ * So this adds the REVERSE containment, bounded by the same slack: a token the handle or the
+ * display name CONTAINS, within `AFFIX_SLACK` characters, is that channel's own name wearing or
+ * missing an affix (`official`, `the`, `real`). It is bounded for the reason the forward branch
+ * is — an unbounded reverse containment would let a short token match almost any channel, and
+ * dropping a real advertiser is the expensive direction here.
+ */
+export function isChannelMark(
+  token: string,
+  channel: { handle: string; displayName: string | null },
+): boolean {
+  if (isOwnMark(token, channel)) return true
+
+  const t = normaliseMark(token)
+  /* Six is the same floor the forward affix branch uses: below it a token is too small to
+     identify a channel, and matching one would strip a real short brand name. */
+  if (t.length < 6) return false
+
+  const AFFIX_SLACK = 8
+  for (const raw of [channel.handle, channel.displayName ?? '']) {
+    const c = normaliseMark(raw)
+    if (c.length >= 6 && c.includes(t) && c.length <= t.length + AFFIX_SLACK) return true
+  }
+  return false
+}
+
+/**
+ * EVERY CHANNEL WE WATCH IS A COMPETITOR — not only the one that published this post.
+ *
+ * `stripOwnMarksFromBrands` removes the PUBLISHER's marks, which is right for a display column
+ * and not enough for a message: a round-up published by one watched page can name ANOTHER
+ * watched page, and a brand string is all it takes to become a subject. That is how
+ * *"your Social Samosa placement"* reached five companies on 2 September.
+ *
+ * The list passed here is every WATCH row, so a competitor's name can never become somebody's
+ * placement whichever of them posted it. Tabish's rule is about the pages we monitor and it is
+ * absolute: *"Never mention our competitors in this way never mention their names."*
+ */
+export function stripChannelMarksFromBrands(
+  brands: readonly string[],
+  channels: readonly { handle: string; displayName: string | null }[],
+): string[] {
+  return brands.filter((b) => !channels.some((c) => isChannelMark(b, c)))
+}

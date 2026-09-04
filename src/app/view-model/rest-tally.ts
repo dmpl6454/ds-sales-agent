@@ -11,6 +11,7 @@ import { replyHaltFloor, replyHaltKey } from '@/outreach/replyHalt'
 import { eligibleFleetSenderIds, readSenderAvailability } from '@/outreach/availability'
 import { fleetRingOrder, nextSender } from '@/outreach/rotation'
 import { categoriesFor, readCategoryMemberships, unavailableForTarget } from '@/outreach/categories'
+import { readPersonHandles } from '@/outreach/compose'
 import { followUpForSettings, followUpSubject } from '@/outreach/followUpTemplate'
 import { readStringArray } from '@/lib/json'
 
@@ -472,7 +473,22 @@ async function computeRestTally(now: Date): Promise<RestTally> {
 
   const prospects = targetRows.filter((t) => t.role === 'PROSPECT' && !t.optedOut)
   const retired = targetRows.filter((t) => t.role === 'PROSPECT' && t.optedOut).length
-  const watched = targetRows.filter((t) => t.role === 'WATCH').length
+  const watchRows = targetRows.filter((t) => t.role === 'WATCH')
+  const watched = watchRows.length
+
+  /**
+   * THE TWO FACTS `followUpSubject` NEEDS, and only one of them costs a query (2026-09-04).
+   *
+   * The competitor list is FREE: every target row is already in memory above, so the WATCH
+   * partition is the same JS filter the count uses. The PERSON verdicts are one batched
+   * `BrandLookup` read over the prospects on screen — a lookup per prospect would be the N+1
+   * this builder's own docblock records killing.
+   *
+   * This panel PREDICTS what the governor refuses, so it must read the same two facts the
+   * planner reads or it will promise a follow-up the planner will not write.
+   */
+  const watchChannels = watchRows.map((t) => ({ handle: t.handle, displayName: t.displayName }))
+  const personHandles = await readPersonHandles(prospects.map((p) => p.handle))
   const pending = inFlightAndParked.filter((a) => a.status !== 'FAILED')
   const parked = inFlightAndParked.filter((a) => a.status === 'FAILED')
 
@@ -711,11 +727,12 @@ async function computeRestTally(now: Date): Promise<RestTally> {
       const describable = unclaimed.some((r) => {
         const post = postById.get(r.id)
         return post
-          ? followUpSubject(readStringArray(post.brands), post.target, {
-              handle: p.handle,
-              displayName: p.displayName,
-              campaignTalent: p.campaignTalent,
-            }) !== null
+          ? followUpSubject(
+              readStringArray(post.brands),
+              post.target,
+              { handle: p.handle, displayName: p.displayName, isPerson: personHandles.has(p.handle) },
+              watchChannels,
+            ) !== null
           : false
       })
       if (!describable) {

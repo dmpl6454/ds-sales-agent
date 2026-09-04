@@ -169,20 +169,31 @@ describe('what the follow-up says about the post it is for', () => {
    * as a post's only subject, and `"@primevideoIN"` really sits in a brands list.
    */
   const PUBLISHER = { handle: 'filmygyan', displayName: 'F I L M Y G Y A N' }
-  const RECIPIENT = { handle: 'primevideoin', displayName: 'Prime Video IN', campaignTalent: false }
+  /**
+   * The pages we WATCH — every one a competitor, and a round-up by one can name another.
+   * Real rows: @officialsocialsamosa really is a watched channel and its display name really
+   * is its own handle, which is why "Social Samosa" needed the reverse containment.
+   */
+  const WATCH = [
+    PUBLISHER,
+    { handle: 'officialsocialsamosa', displayName: 'officialsocialsamosa' },
+    { handle: 'madovermarketing_mom', displayName: 'Mad Over Marketing (M.O.M)' },
+    { handle: 'viralbhayani', displayName: 'Viral Bhayani' },
+  ]
+  const RECIPIENT = { handle: 'primevideoin', displayName: 'Prime Video IN', isPerson: false }
   /** A person on a paid campaign post — the film IS what they were in. */
-  const TALENT = { handle: 'tarasutaria', displayName: 'Tara Sutaria', campaignTalent: true }
+  const TALENT = { handle: 'tarasutaria', displayName: 'Tara Sutaria', isPerson: true }
 
   it('names the one subject for TALENT — the film is what they were in', () => {
-    expect(followUpSubject(['Toxic'], PUBLISHER, TALENT)).toBe('Toxic')
-    expect(followUpSubject(['Toxic: A Fairy Tale for Grown-Ups'], PUBLISHER, TALENT)).toBe(
+    expect(followUpSubject(['Toxic'], PUBLISHER, TALENT, WATCH)).toBe('Toxic')
+    expect(followUpSubject(['Toxic: A Fairy Tale for Grown-Ups'], PUBLISHER, TALENT, WATCH)).toBe(
       'Toxic: A Fairy Tale for Grown-Ups',
     )
   })
 
   it('names a company’s own product line', () => {
-    const titan = { handle: 'titanwatchesindia', displayName: 'Titan', campaignTalent: false }
-    expect(followUpSubject(['Titan Raga'], PUBLISHER, titan)).toBe('Titan Raga')
+    const titan = { handle: 'titanwatchesindia', displayName: 'Titan', isPerson: false }
+    expect(followUpSubject(['Titan Raga'], PUBLISHER, titan, WATCH)).toBe('Titan Raga')
   })
 
   /**
@@ -193,10 +204,10 @@ describe('what the follow-up says about the post it is for', () => {
    * to a rival streaming platform. One SUBJECT is not one ADVERTISER.
    */
   it('never tells a company about somebody else’s campaign', () => {
-    const jio = { handle: 'jiohotstar', displayName: 'JioHotstar', campaignTalent: false }
-    expect(followUpSubject(['Amazon Prime'], PUBLISHER, jio)).toBeNull()
-    expect(followUpSubject(['TECNO'], PUBLISHER, RECIPIENT)).toBeNull()
-    expect(followUpSubject(['Green Soul'], PUBLISHER, RECIPIENT)).toBeNull()
+    const jio = { handle: 'jiohotstar', displayName: 'JioHotstar', isPerson: false }
+    expect(followUpSubject(['Amazon Prime'], PUBLISHER, jio, WATCH)).toBeNull()
+    expect(followUpSubject(['TECNO'], PUBLISHER, RECIPIENT, WATCH)).toBeNull()
+    expect(followUpSubject(['Green Soul'], PUBLISHER, RECIPIENT, WATCH)).toBeNull()
   })
 
   /**
@@ -211,24 +222,83 @@ describe('what the follow-up says about the post it is for', () => {
    * talent arm outright.
    */
   it('a co-advertiser on their own joint post is never given the other company’s name', () => {
-    const junglee = { handle: 'jungleepictures', displayName: 'Junglee Pictures', campaignTalent: true }
+    /* isPerson TRUE deliberately: the PARTITION is what must block this, not the person gate. */
+    const junglee = { handle: 'jungleepictures', displayName: 'Junglee Pictures', isPerson: true }
     expect(
-      followUpSubject(['Junglee Pictures', 'Pen Studios', '@kareenakapoorkhan'], PUBLISHER, junglee),
+      followUpSubject(['Junglee Pictures', 'Pen Studios', '@kareenakapoorkhan'], PUBLISHER, junglee, WATCH),
     ).toBeNull()
   })
 
   /** The other live catch: a box-office hashtag ("Onam") beside their own film's name. */
   it('a hashtag beside their own exact name is not their subject either', () => {
-    const toxic = { handle: 'toxic_themovie', displayName: 'TOXIC', campaignTalent: true }
-    expect(followUpSubject(['Toxic', 'Onam'], PUBLISHER, toxic)).toBeNull()
+    const toxic = { handle: 'toxic_themovie', displayName: 'TOXIC', isPerson: true }
+    expect(followUpSubject(['Toxic', 'Onam'], PUBLISHER, toxic, WATCH)).toBeNull()
   })
 
   /** A stem-match is theirs by construction, so it survives other names on the post. */
   it('their own product line is nameable even beside another advertiser', () => {
-    const titan = { handle: 'titanwatchesindia', displayName: 'Titan', campaignTalent: false }
-    expect(followUpSubject(['Titan Raga', 'Tanishq'], PUBLISHER, titan)).toBe('Titan Raga')
+    const titan = { handle: 'titanwatchesindia', displayName: 'Titan', isPerson: false }
+    expect(followUpSubject(['Titan Raga', 'Tanishq'], PUBLISHER, titan, WATCH)).toBe('Titan Raga')
     /* Two of their own lines is ambiguous — refusal, never a guess. */
-    expect(followUpSubject(['Titan Raga', 'Titan Eye+'], PUBLISHER, titan)).toBeNull()
+    expect(followUpSubject(['Titan Raga', 'Titan Eye+'], PUBLISHER, titan, WATCH)).toBeNull()
+  })
+
+  /**
+   * ── THE 2 SEPTEMBER DEFECT, ON THE POST THAT CAUSED IT ────────────────────
+   *
+   * `DcyE65LPYMj`, published by @officialsocialsamosa — a WATCHED channel, i.e. a competitor.
+   * Its real `brands` array is below verbatim. Fourteen follow-ups went to five companies
+   * saying *"your Social Samosa placement"*, *"your Festive Marketing Camp placement"* and
+   * *"your Realize placement"* — the publisher's own name, its own event, and that event's
+   * sponsor, each presented to a gifting partner as THEIR placement.
+   *
+   * Three independent causes, and each of the three cases below fails if its fix is reverted:
+   *   1. the all-lowercase filter ran BEFORE the partition and deleted the four bare handles,
+   *      so a five-advertiser round-up read as a one-subject post;
+   *   2. only the PUBLISHER's marks were stripped, and only in the containing direction, so
+   *      "Social Samosa" survived a post by @officialsocialsamosa;
+   *   3. `campaignTalent` was the talent gate, and it is TRUE on 189 live COMPANIES.
+   */
+  const SS_PUBLISHER = { handle: 'officialsocialsamosa', displayName: 'officialsocialsamosa' }
+  const SS_BRANDS = ['@socialsamosaevents', 'Realize', 'itsbevygood', 'plumbodylovin', 'supersox_india', 'farmleyin']
+
+  it('never gives a gifting partner the event sponsor’s name (DcyE65LPYMj, delivered 14×)', () => {
+    const farmley = { handle: 'farmleyin', displayName: 'Farmley', isPerson: false }
+    expect(followUpSubject(SS_BRANDS, SS_PUBLISHER, farmley, WATCH)).toBeNull()
+  })
+
+  it('counts a lowercase co-advertiser it can never speak', () => {
+    /* isPerson TRUE isolates cause 1: the post names @farmleyin as an advertiser through a
+       BARE HANDLE, and that entry must reach the partition even though it is unspeakable —
+       a co-advertiser's presence is what makes another advertiser's name not their subject. */
+    const farmley = { handle: 'farmleyin', displayName: 'Farmley', isPerson: true }
+    expect(followUpSubject(SS_BRANDS, SS_PUBLISHER, farmley, WATCH)).toBeNull()
+  })
+
+  it('a lowercase token is never SPOKEN, even when it is the only thing left', () => {
+    const someone = { handle: 'someone', displayName: 'Someone', isPerson: true }
+    expect(followUpSubject(['supersox_india'], PUBLISHER, someone, WATCH)).toBeNull()
+    expect(followUpSubject(['fyp'], PUBLISHER, someone, WATCH)).toBeNull()
+  })
+
+  it('never speaks a watched channel’s own name, whichever of them published the post', () => {
+    const titan = { handle: 'titanwatchesindia', displayName: 'Titan', isPerson: false }
+    const mom = { handle: 'madovermarketing_mom', displayName: 'Mad Over Marketing (M.O.M)' }
+    /* "Social Samosa" is @officialsocialsamosa's own name and the handle CONTAINS it, so the
+       containment runs the reverse way to the affix rule `isOwnMark` already had. Stripping it
+       must not cost the recipient their own product line, which is why this asserts a NAME and
+       not merely a refusal. */
+    expect(followUpSubject(['Social Samosa', 'Titan Raga'], mom, titan, WATCH)).toBe('Titan Raga')
+    const person = { handle: 'someactor', displayName: 'Some Actor', isPerson: true }
+    expect(followUpSubject(['Social Samosa'], mom, person, WATCH)).toBeNull()
+    expect(followUpSubject(['Mad Over Marketing'], SS_PUBLISHER, person, WATCH)).toBeNull()
+  })
+
+  it('a company carrying campaignTalent is not talent — 189 live rows do', () => {
+    /* @hkvitals is one of the five that received a wrong subject: campaignTalent true,
+       BrandLookup UNRESOLVED. "Not known" never admits. */
+    const hk = { handle: 'hkvitals', displayName: 'HK Vitals', isPerson: false }
+    expect(followUpSubject(['Toxic'], PUBLISHER, hk, WATCH)).toBeNull()
   })
 
   it('renders it into the reference', () => {
@@ -244,29 +314,29 @@ describe('what the follow-up says about the post it is for', () => {
    * this is the assertion that says never again.
    */
   it('the publisher cannot survive as a subject, by name or by series code', () => {
-    expect(followUpSubject(['Filmygyan'], PUBLISHER, TALENT)).toBeNull()
-    expect(followUpSubject(['fg6'], PUBLISHER, TALENT)).toBeNull()
-    expect(followUpSubject(['FG17'], PUBLISHER, TALENT)).toBeNull()
+    expect(followUpSubject(['Filmygyan'], PUBLISHER, TALENT, WATCH)).toBeNull()
+    expect(followUpSubject(['fg6'], PUBLISHER, TALENT, WATCH)).toBeNull()
+    expect(followUpSubject(['FG17'], PUBLISHER, TALENT, WATCH)).toBeNull()
     /* And with a real subject beside it, the real subject survives and the mark does not. */
-    expect(followUpSubject(['fg6', 'Toxic'], PUBLISHER, TALENT)).toBe('Toxic')
+    expect(followUpSubject(['fg6', 'Toxic'], PUBLISHER, TALENT, WATCH)).toBe('Toxic')
   })
 
   it('never lets a raw handle through — brands really contains them', () => {
-    expect(followUpSubject(['@primevideoIN'], PUBLISHER, RECIPIENT)).toBeNull()
-    expect(followUpSubject(['Prime Video', '@primevideoIN'], PUBLISHER, RECIPIENT)).toBe('Prime Video')
+    expect(followUpSubject(['@primevideoIN'], PUBLISHER, RECIPIENT, WATCH)).toBeNull()
+    expect(followUpSubject(['Prime Video', '@primevideoIN'], PUBLISHER, RECIPIENT, WATCH)).toBe('Prime Video')
     /* Kept because 'Prime Video' stems into 'Prime Video IN' — it is their own name for a
        product line, not a third party's. */
   })
 
   it('drops a hashtag artefact rather than putting it in a DM', () => {
     /* MEASURED: "fyp" came back as a whole post's only subject. */
-    expect(followUpSubject(['fyp'], PUBLISHER, TALENT)).toBeNull()
-    expect(followUpSubject(['ad'], PUBLISHER, TALENT)).toBeNull()
+    expect(followUpSubject(['fyp'], PUBLISHER, TALENT, WATCH)).toBeNull()
+    expect(followUpSubject(['ad'], PUBLISHER, TALENT, WATCH)).toBeNull()
   })
 
   it('does not read the recipient their own name', () => {
-    expect(followUpSubject(['Prime Video IN'], PUBLISHER, RECIPIENT)).toBeNull()
-    expect(followUpSubject(['primevideoin'], PUBLISHER, RECIPIENT)).toBeNull()
+    expect(followUpSubject(['Prime Video IN'], PUBLISHER, RECIPIENT, WATCH)).toBeNull()
+    expect(followUpSubject(['primevideoin'], PUBLISHER, RECIPIENT, WATCH)).toBeNull()
   })
 
   /**
@@ -276,12 +346,12 @@ describe('what the follow-up says about the post it is for', () => {
    * third party in a pitch. The date alone is the honest answer.
    */
   it('refuses to guess which of several subjects a post was about', () => {
-    expect(followUpSubject(['Google India', 'Kerala Tourism'], PUBLISHER, TALENT)).toBeNull()
-    expect(followUpSubject(['Pralay', 'Ranveer Singh', 'Birla Studios'], PUBLISHER, TALENT)).toBeNull()
+    expect(followUpSubject(['Google India', 'Kerala Tourism'], PUBLISHER, TALENT, WATCH)).toBeNull()
+    expect(followUpSubject(['Pralay', 'Ranveer Singh', 'Birla Studios'], PUBLISHER, TALENT, WATCH)).toBeNull()
   })
 
   it('an empty brands list is the date alone, not a crash', () => {
-    expect(followUpSubject([], PUBLISHER, TALENT)).toBeNull()
+    expect(followUpSubject([], PUBLISHER, TALENT, WATCH)).toBeNull()
   })
 
   /**
@@ -414,6 +484,14 @@ const variantFindMany = vi.fn()
 const usedCampaignRows = vi.fn<() => Array<{ campaignId: string | null }>>(() => [])
 const usedVariantRows = vi.fn<() => Array<{ variantId: string }>>(() => [])
 
+/**
+ * `BrandLookup` rows whose kind is PERSON, for the talent arm. Default: @dorothy IS a person —
+ * the delivered live example this fixture is built from (@akshay0beroi × "Love Lottery").
+ * A test that wants a COMPANY sets this to `[]`, which is the 2026-09-04 defect's shape.
+ */
+let personRows: () => { handle: string }[] = () => [{ handle: 'dorothy' }]
+const personFindMany = vi.fn(async (..._a: unknown[]) => personRows())
+
 vi.mock('@/lib/db', () => ({
   prisma: {
     detectedCampaign: {
@@ -427,6 +505,17 @@ vi.mock('@/lib/db', () => ({
       findMany: (args: { select?: Record<string, boolean> }) =>
         Promise.resolve(args?.select?.variantId ? usedVariantRows() : usedCampaignRows()),
     },
+    /* The WATCH rows `followUpSubject` strips, and the PERSON verdicts its talent arm reads
+       (2026-09-04). @dorothy is a real person on a campaign post, so the lookup says PERSON —
+       which is the fact that used to be `campaignTalent` and was true of 189 companies. */
+    targetAccount: {
+      findMany: () =>
+        Promise.resolve([
+          { handle: 'instantbollywood', displayName: 'Instant Bollywood' },
+          { handle: 'filmygyan', displayName: 'F I L M Y G Y A N' },
+        ]),
+    },
+    brandLookup: { findMany: (...a: unknown[]) => personFindMany(...a) },
     /* No Setting rows: every runtime setting takes its default, and `singleTemplate`
        defaults TRUE — this describes the shipping configuration. */
     setting: { findMany: () => Promise.resolve([]) },

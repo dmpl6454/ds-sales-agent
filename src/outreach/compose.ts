@@ -277,6 +277,42 @@ async function pickHook(args: { target: NamedRecipient; targetId: string; pairId
 }
 
 /**
+ * EVERY CHANNEL WE WATCH, for `followUpSubject` to strip.
+ *
+ * One reader, several callers — the composer, the planner and the rest tally all need the same
+ * competitor list, and three queries with three shapes is how they drift. WATCH rows are a
+ * product decision in the low tens (19 today), so this is one small unfiltered read rather than
+ * a per-post lookup.
+ */
+export async function readWatchChannels(): Promise<{ handle: string; displayName: string | null }[]> {
+  return prisma.targetAccount.findMany({
+    where: { role: 'WATCH' },
+    select: { handle: true, displayName: true },
+  })
+}
+
+/**
+ * WHICH OF THESE HANDLES ARE A PERSON — `BrandLookup.kind === 'PERSON'`, and nothing else.
+ *
+ * A SET of the handles that ARE, rather than a map of verdicts, so the calling code cannot
+ * accidentally treat UNKNOWN as anything but false: a handle absent from this set is a handle
+ * we cannot call a person, whether the row says UNKNOWN, UNRESOLVED, MISSING or does not exist.
+ * MEASURED 2026-09-04: of 812 live prospects, 423 are PERSON, 186 BRAND, 116 UNKNOWN, 56
+ * UNRESOLVED, 30 have no row at all — so "not known" is 200-odd rows, not an edge case.
+ *
+ * One batched query over the handles asked for; never a lookup per recipient.
+ */
+export async function readPersonHandles(handles: readonly string[]): Promise<Set<string>> {
+  const wanted = [...new Set(handles.filter((h) => h.length > 0))]
+  if (wanted.length === 0) return new Set()
+  const rows = await prisma.brandLookup.findMany({
+    where: { handle: { in: wanted }, kind: 'PERSON' },
+    select: { handle: true },
+  })
+  return new Set(rows.map((r) => r.handle))
+}
+
+/**
  * THE NEWEST UNCLAIMED PAID POST THIS RECIPIENT WOULD RECOGNISE — or null (2026-09-01).
  *
  * A follow-up must say what the post was ABOUT ("your Toxic placement on 29 Aug"), and the
@@ -296,10 +332,11 @@ async function pickHook(args: { target: NamedRecipient; targetId: string; pairId
  * campaign, the N+1 this file has killed four times.
  */
 export async function pickFollowUpHook(args: {
-  target: { handle: string; displayName: string | null; campaignTalent: boolean }
+  target: { handle: string; displayName: string | null; isPerson: boolean }
   targetId: string
   pairId: string
   now: Date
+  watchChannels: readonly { handle: string; displayName: string | null }[]
 }): Promise<{ id: string; postedAt: Date; subject: string } | null> {
   const fresh = (await freshCampaignsFor(args)).sort((a, b) => b.postedAt.getTime() - a.postedAt.getTime())
   if (fresh.length === 0) return null
@@ -311,7 +348,7 @@ export async function pickFollowUpHook(args: {
   for (const f of fresh) {
     const row = byId.get(f.id)
     if (!row) continue
-    const subject = followUpSubject(readStringArray(row.brands), row.target, args.target)
+    const subject = followUpSubject(readStringArray(row.brands), row.target, args.target, args.watchChannels)
     if (subject !== null) return { id: f.id, postedAt: f.postedAt, subject }
   }
   return null
@@ -325,10 +362,11 @@ export async function pickFollowUpHook(args: {
  * Both walk the same selector and the same subject rule; this one merely counts.
  */
 export async function describableCampaignCount(args: {
-  target: { handle: string; displayName: string | null; campaignTalent: boolean }
+  target: { handle: string; displayName: string | null; isPerson: boolean }
   targetId: string
   pairId: string
   now?: Date
+  watchChannels: readonly { handle: string; displayName: string | null }[]
 }): Promise<number> {
   const { now = new Date() } = args
   const fresh = await freshCampaignsFor({ ...args, now })
@@ -337,7 +375,7 @@ export async function describableCampaignCount(args: {
     where: { id: { in: fresh.map((f) => f.id) } },
     select: { id: true, brands: true, target: { select: { handle: true, displayName: true } } },
   })
-  return rows.filter((r) => followUpSubject(readStringArray(r.brands), r.target, args.target) !== null).length
+  return rows.filter((r) => followUpSubject(readStringArray(r.brands), r.target, args.target, args.watchChannels) !== null).length
 }
 
 /**
@@ -617,7 +655,25 @@ export async function composeForPair(args: {
          their product, the campaign they are talent on. The date-only fallback is deleted
          (Tabish, 2026-09-01: "an amateur message with no context to the paid posts"), so a
          recipient with nothing describable gets no follow-up at all. */
-      const named = await pickFollowUpHook({ target: pair.target, targetId: pair.targetId, pairId: pair.id, now })
+      /* `isPerson` is the account's OWN verdict and `watchChannels` the competitor list — both
+         read here rather than threaded through `composeForPair`'s signature, because this is
+         the draft-WRITING path (bounded by the queue depth), not a render with a query budget.
+         Absence is false: a handle with no PERSON row is not a person. */
+      const [watchChannels, personHandles] = await Promise.all([
+        readWatchChannels(),
+        readPersonHandles([pair.target.handle]),
+      ])
+      const named = await pickFollowUpHook({
+        target: {
+          handle: pair.target.handle,
+          displayName: pair.target.displayName,
+          isPerson: personHandles.has(pair.target.handle),
+        },
+        targetId: pair.targetId,
+        pairId: pair.id,
+        now,
+        watchChannels,
+      })
       if (!named) throw new NoMaterialForFollowUpError(pair.target.handle)
       const body = renderFollowUp(
         followUpTemplate.body,

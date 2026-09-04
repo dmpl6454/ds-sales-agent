@@ -1,5 +1,5 @@
 import { istDayMonth } from '@/lib/time'
-import { stripOwnMarksFromBrands } from '@/detection/ownMarks'
+import { stripChannelMarksFromBrands } from '@/detection/ownMarks'
 import { DEFAULT_CATEGORY_SLUG } from './senderCategories'
 import { routeFleets } from './fleetTemplate'
 
@@ -302,20 +302,40 @@ export function citesOnlyADate(body: string): boolean {
 export function followUpSubject(
   brands: readonly string[],
   publisher: { handle: string; displayName: string | null },
-  recipient: { handle: string; displayName: string | null; campaignTalent: boolean },
+  recipient: { handle: string; displayName: string | null; isPerson: boolean },
+  watchChannels: readonly { handle: string; displayName: string | null }[],
 ): string | null {
   const mineSquashed = [recipient.handle, recipient.displayName]
     .filter((s): s is string => typeof s === 'string')
     .map(squashName)
     .filter((s) => s.length > 0)
 
-  const usable = stripOwnMarksFromBrands(brands, publisher).filter((raw) => {
+  /**
+   * ── COUNT WHAT YOU CANNOT SPEAK (2026-09-04) ──────────────────────────────
+   *
+   * The all-lowercase filter used to run HERE, before the partition below, and it DELETED the
+   * bare handles a publisher's posts store as brand strings — `supersox_india`, `farmleyin`,
+   * `itsbevygood`, `plumbodylovin`. MEASURED on the real post `DcyE65LPYMj`, whose brands are
+   * `["@socialsamosaevents","Realize","itsbevygood","plumbodylovin","supersox_india","farmleyin"]`:
+   * the `@` entry dropped on the handle rule and the four lowercase entries dropped here, so a
+   * **five-advertiser round-up read as a one-subject post**, `exactMine` was empty because the
+   * recipient's own name had already been deleted, and the talent arm spoke *"your Realize
+   * placement"* — the sponsor of the PUBLISHER's own event — to a gifting partner. Fourteen such
+   * messages were delivered to five companies before the copy was cleared.
+   *
+   * A lowercase token is still never SPOKEN: it is a hashtag artefact (`fyp`) or a bare handle,
+   * not a title. But it is EVIDENCE that the post names another advertiser, and discarding
+   * evidence before the partition is exactly what made a crowded post look empty. So candidates
+   * are kept for COUNTING and `speakable` alone decides what may be named — the same distinction
+   * the partition below already makes for the recipient's own name, which is counted and never
+   * spoken.
+   */
+  const candidates = stripChannelMarksFromBrands(brands, [publisher, ...watchChannels]).filter((raw) => {
     const b = raw.trim()
     if (b.length < MIN_SUBJECT_LENGTH) return false
-    if (b.includes('@')) return false
-    /* All lower case is a hashtag artefact ("fyp"), never a title. */
-    return b !== b.toLowerCase()
+    return !b.includes('@')
   })
+  const speakable = (b: string): boolean => b.trim() !== b.trim().toLowerCase()
 
   /**
    * ── THE PARTITION, NOT A FILTER (2026-09-01, second pass) ─────────────────
@@ -336,19 +356,19 @@ export function followUpSubject(
    *                        beside it on the post.
    *   everything else      nameable only through the TALENT arm below.
    */
-  const exactMine = usable.filter((b) => mineSquashed.includes(squashName(b)))
-  const stemMine = usable.filter((b) => {
+  const exactMine = candidates.filter((b) => mineSquashed.includes(squashName(b)))
+  const stemMine = candidates.filter((b) => {
     const s = squashName(b)
     return (
       !mineSquashed.includes(s) &&
       mineSquashed.some((mine) => mine.length >= 4 && s.length >= 4 && (s.includes(mine) || mine.includes(s)))
     )
   })
-  const others = usable.filter((b) => !exactMine.includes(b) && !stemMine.includes(b))
+  const others = candidates.filter((b) => !exactMine.includes(b) && !stemMine.includes(b))
 
   /* Their own product line — a fact about them whatever else the post names. Two of their
      own lines on one post is ambiguous, and ambiguity falls to refusal, never to a guess. */
-  if (stemMine.length === 1) return stemMine[0]!.trim()
+  if (stemMine.length === 1) return speakable(stemMine[0]!) ? stemMine[0]!.trim() : null
   if (stemMine.length > 1) return null
 
   /**
@@ -372,14 +392,26 @@ export function followUpSubject(
    * @tarasutaria and "Toxic", @thenameisyash and "Toxic: A Fairy Tale for Grown-Ups", both
    * correct, both from the live corpus.
    *
-   * ── AND THE TALENT ARM IS NARROWER THAN THE FLAG (2026-09-01, second pass) ──
+   * ── AND THE TALENT ARM ASKS WHETHER THE ACCOUNT IS A PERSON (2026-09-04) ──
    *
-   * `campaignTalent` is TRUE on 555 of the live prospects — the badge door sets it on
-   * admission — so the flag alone is a vacuous test (the @tips lesson: a guard whose
-   * strength depends on its input's size must have that input measured). Companies carry it
-   * too, and a company on a co-branded post is NOT there because of the other company's
-   * product: rendering against live pairs caught "your Pen Studios placement" about to be
-   * said to @jungleepictures, the co-producer, on their JOINT #Daayra trailer.
+   * It used to read `campaignTalent`, and that flag is VACUOUS. MEASURED 2026-09-04 over 812
+   * live prospects: `campaignTalent` is TRUE on 612 of them — the badge door sets it on
+   * admission — and **only 423 of those carry a PERSON verdict. 189 are companies wearing the
+   * flag.** That is the @tips lesson (a guard whose strength depends on its input's size must
+   * have that input measured) arriving one field along, and it is what delivered
+   * *"your Realize placement"* to @farmleyin, @hkvitals, @itsbevygood, @plumbodylovin and
+   * @supersox_india — every one of them `campaignTalent: true`, every one of them a brand.
+   *
+   * The talent argument is an argument about A PERSON: someone appearing in a paid campaign
+   * post is there BECAUSE of the thing being promoted, so the film or product is what they were
+   * in. A company on a co-branded post is not — rendering against live pairs had already caught
+   * "your Pen Studios placement" about to be said to @jungleepictures, the co-producer, on
+   * their JOINT #Daayra trailer.
+   *
+   * So the arm reads the account's OWN verdict, `BrandLookup.kind === 'PERSON'`, and NOT-KNOWN
+   * never admits: UNKNOWN, UNRESOLVED, MISSING and a missing row are all `false`. Absence of
+   * data hardening into a positive verdict is this codebase's most repeated defect, and this is
+   * the arm that speaks a claim about somebody else's marketing.
    *
    * So the talent arm speaks only when the post names the recipient as NO advertiser at all
    * (`exactMine` empty — their name in the brands list means co-advertiser, and a
@@ -387,7 +419,9 @@ export function followUpSubject(
    * refusal here costs the follow-up entirely, never a wrong claim: that is the same
    * refusal-rather-than-guess this codebase applies to a handle it cannot verify.
    */
-  if (recipient.campaignTalent && exactMine.length === 0 && others.length === 1) return others[0]!.trim()
+  if (recipient.isPerson && exactMine.length === 0 && others.length === 1 && speakable(others[0]!)) {
+    return others[0]!.trim()
+  }
   return null
 }
 
