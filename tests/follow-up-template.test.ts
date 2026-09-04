@@ -462,7 +462,9 @@ describe('the follow-up rule is enforced at both ends, from one implementation',
 
   it('nothing falls back to the first-touch template for a second message', () => {
     const src = code(read('src/outreach/compose.ts'))
-    const at = src.indexOf('if (touchNumber > 1)')
+    /* `followUp` since 2026-09-04, not `touchNumber > 1`: a second message is now either this
+       pair's second OR a first to a recipient who has already replied to another page. */
+    const at = src.indexOf('if (followUp)')
     expect(at, 'the follow-up branch is gone — every second message is a verbatim repeat again').toBeGreaterThan(-1)
     const branch = src.slice(at, at + 700)
     expect(branch, 'a follow-up must throw rather than borrow the standard message').toMatch(
@@ -588,6 +590,7 @@ describe('composing the second message', () => {
       pair: PAIR,
       senderHandle: 'bollywoodsocietyy',
       touchNumber: 1,
+        targetHasEverReplied: false,
       fleetTemplate: FLEET_TEMPLATE,
       /* Unwritten, deliberately: a missing follow-up must leave first-touch sending
          byte-for-byte as it was. This is the whole "ships inert" claim, driven. */
@@ -602,6 +605,7 @@ describe('composing the second message', () => {
       pair: PAIR,
       senderHandle: 'bollywoodsocietyy',
       touchNumber: 2,
+        targetHasEverReplied: false,
       fleetTemplate: FLEET_TEMPLATE,
       followUpTemplate: WRITTEN,
       now: NOW,
@@ -629,6 +633,7 @@ describe('composing the second message', () => {
         pair: PAIR,
         senderHandle: 'bollywoodsocietyy',
         touchNumber: 2,
+        targetHasEverReplied: false,
         fleetTemplate: FLEET_TEMPLATE,
         followUpTemplate: UNWRITTEN,
         now: NOW,
@@ -643,6 +648,7 @@ describe('composing the second message', () => {
         pair: PAIR,
         senderHandle: 'bollywoodsocietyy',
         touchNumber: 2,
+        targetHasEverReplied: false,
         fleetTemplate: FLEET_TEMPLATE,
         followUpTemplate: WRITTEN,
         now: NOW,
@@ -677,6 +683,7 @@ describe('composing the second message', () => {
         pair: { ...PAIR, target: { ...PAIR.target, campaignTalent: false } },
         senderHandle: 'bollywoodsocietyy',
         touchNumber: 2,
+        targetHasEverReplied: false,
         fleetTemplate: FLEET_TEMPLATE,
         followUpTemplate: WRITTEN,
         now: NOW,

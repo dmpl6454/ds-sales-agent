@@ -52,6 +52,9 @@ function base(overrides: Partial<GovernorInput> = {}): GovernorInput {
     sender: { status: 'ACTIVE' },
     target: { optedOut: false, isVerified: true },
     touchesSoFar: 0,
+    /* Nobody has replied: the baseline is a first touch to a company that has never
+       answered us, which is what most of this file is about. */
+    targetHasEverReplied: false,
     targetRepliedAt: null,
     /* No parked failure on this pair — see the UNCERTAIN_DELIVERY tests for the other side. */
     parkedFailureCode: null,
@@ -389,5 +392,80 @@ describe('a parked failure on the pair', () => {
     expect(d.eligible).toBe(false)
     if (d.eligible) throw new Error('unreachable')
     expect(d.reason).toBe(SKIP_REASONS.TARGET_OPTED_OUT)
+  })
+})
+
+/**
+ * ── A SECOND MESSAGE FROM ONE PAGE WAITS FOR TOMORROW (2026-09-04, Tabish) ──
+ *
+ * *"follow up messages by the same sender are not sent the very same day for the target, they
+ * are instead sent the very next day."* MEASURED over 14 days before the rule: 16 pair-days
+ * carried more than one delivery and 5 carried three or more — @madaboutmarketingg wrote to
+ * @supersox_india at 14:26, 14:36 and 14:48 on 2 September.
+ */
+describe('a follow-up waits for the next day', () => {
+  it('refuses a second message from a page that already wrote today', () => {
+    const d = evaluatePair(base({ touchesSoFar: 1, pairSentTodayCount: 1, unusedCampaignCount: 2, describableCampaignCount: 2 }))
+    expect(d.eligible).toBe(false)
+    if (!d.eligible) expect(d.reason).toBe(SKIP_REASONS.FOLLOW_UP_SAME_DAY)
+  })
+
+  it('allows it the next day, when nothing has gone out today', () => {
+    const d = evaluatePair(base({ touchesSoFar: 1, pairSentTodayCount: 0, unusedCampaignCount: 2, describableCampaignCount: 2 }))
+    expect(d.eligible).toBe(true)
+  })
+
+  it('leaves a FIRST touch alone — it is the only message that pair has sent', () => {
+    const d = evaluatePair(base({ touchesSoFar: 0, pairSentTodayCount: 1 }))
+    expect(d.eligible).toBe(true)
+  })
+
+  it('binds below the pair cap, which is why it is checked first', () => {
+    /* One is under the limit of five: for a follow-up this is the tighter of the two rules,
+       and the sentence a person reads must name the rule actually binding. */
+    const d = evaluatePair(base({ touchesSoFar: 1, pairSentTodayCount: 1, maxPerPairPerDay: 5, unusedCampaignCount: 2, describableCampaignCount: 2 }))
+    expect(d.eligible).toBe(false)
+    if (!d.eligible) expect(d.reason).toBe(SKIP_REASONS.FOLLOW_UP_SAME_DAY)
+  })
+})
+
+/**
+ * ── ONCE THEY HAVE REPLIED, NOBODY SENDS THE STANDARD MESSAGE AGAIN (2026-09-04) ──
+ *
+ * Tabish: *"if the 7 day period has passed and they have replied then we don't need to ever
+ * send the normal message to them again ever, else if they never replied only follow up
+ * messages are sent."* A page whose OWN touch count is zero still writes a follow-up, which is
+ * what makes this reachable at all — and the same day's ring change means a second page now
+ * reaches a replying recipient inside the same week by design.
+ */
+describe('a recipient who has replied only ever gets follow-ups', () => {
+  it('holds a never-written pair on the follow-up copy, not the standard message', () => {
+    /* touchesSoFar 0 — this page has never written to them — but they answered another page.
+       With no follow-up copy written, the follow-up stop is what refuses, which proves the
+       message being considered is a follow-up rather than an introduction. */
+    const d = evaluatePair(
+      base({ touchesSoFar: 0, targetHasEverReplied: true, followUpTemplate: { ok: false, slug: 'bollywood', reason: 'not-set', detail: 'nobody wrote it' } }),
+    )
+    expect(d.eligible).toBe(false)
+    if (!d.eligible) expect(d.reason).toBe(SKIP_REASONS.NO_FOLLOW_UP_TEMPLATE)
+  })
+
+  it('holds it when no post of theirs can be described, rather than falling back', () => {
+    const d = evaluatePair(base({ touchesSoFar: 0, targetHasEverReplied: true, describableCampaignCount: 0 }))
+    expect(d.eligible).toBe(false)
+    if (!d.eligible) expect(d.reason).toBe(SKIP_REASONS.NO_DESCRIBABLE_POST)
+  })
+
+  it('sends the standard message to a company that has never answered anyone', () => {
+    const d = evaluatePair(
+      base({ touchesSoFar: 0, targetHasEverReplied: false, followUpTemplate: { ok: false, slug: 'bollywood', reason: 'not-set', detail: 'nobody wrote it' }, describableCampaignCount: 0 }),
+    )
+    expect(d.eligible).toBe(true)
+  })
+
+  it('makes the same-day rule apply to them too', () => {
+    const d = evaluatePair(base({ touchesSoFar: 0, targetHasEverReplied: true, pairSentTodayCount: 1, unusedCampaignCount: 2, describableCampaignCount: 2 }))
+    expect(d.eligible).toBe(false)
+    if (!d.eligible) expect(d.reason).toBe(SKIP_REASONS.FOLLOW_UP_SAME_DAY)
   })
 })

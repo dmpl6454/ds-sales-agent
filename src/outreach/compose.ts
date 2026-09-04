@@ -13,6 +13,7 @@ import {
   followUpPostReference,
   followUpSubject,
   renderFollowUp,
+  isFollowUp,
   type FollowUpTemplate,
 } from './followUpTemplate'
 
@@ -521,6 +522,16 @@ export async function composeForPair(args: {
   pair: ComposablePair
   senderHandle: string
   touchNumber: number
+
+  /**
+   * Has this RECIPIENT ever replied to any of our pages? (2026-09-04, Tabish.)
+   *
+   * REQUIRED with no default, so the compiler names every caller rather than one of them
+   * silently sending a fresh introduction to a company already in conversation with us.
+   * Combined with `touchNumber` through the shared `isFollowUp` rule — the SAME rule the gate
+   * asks, so the bytes written and the template checked can never disagree.
+   */
+  targetHasEverReplied: boolean
   /**
    * WHICH STANDARD MESSAGE THIS ROUTE SENDS — resolved by the caller from the same pure
    * rule the governor and the gate ask, and REQUIRED so the compiler names every call site.
@@ -541,7 +552,17 @@ export async function composeForPair(args: {
   followUpTemplate: FollowUpTemplate
   now?: Date
 }): Promise<Composed> {
-  const { pair, senderHandle, touchNumber, fleetTemplate, followUpTemplate, now = new Date() } = args
+  const { pair, senderHandle, touchNumber, targetHasEverReplied, fleetTemplate, followUpTemplate, now = new Date() } = args
+
+  /**
+   * A SECOND MESSAGE, by either of the two facts that make one — see `isFollowUp`.
+   *
+   * `touchNumber` still counts THIS PAIR's history and is stored on the attempt; it is not
+   * overloaded. What changed on 2026-09-04 is that a page writing to a recipient who has
+   * already answered ANOTHER page writes a follow-up too, because the standard message is an
+   * introduction and they have already met us.
+   */
+  const followUp = isFollowUp({ touchesSoFar: touchNumber - 1, targetHasEverReplied })
   const settings = await getSettings()
 
   /* A single-template FOLLOW-UP picks through `pickFollowUpHook` inside its own branch below
@@ -549,7 +570,7 @@ export async function composeForPair(args: {
      — so the plain pick is skipped for it rather than spent twice. The variants path and
      first touches are unchanged. */
   const hook =
-    settings.singleTemplate && touchNumber > 1
+    settings.singleTemplate && followUp
       ? null
       : await pickHook({ target: pair.target, targetId: pair.targetId, pairId: pair.id, now })
 
@@ -649,7 +670,7 @@ export async function composeForPair(args: {
      * Both refusals throw rather than fall back, and neither should ever be reached: the
      * governor refuses to write and the gate refuses to send, by name, before this.
      */
-    if (touchNumber > 1) {
+    if (followUp) {
       if (!followUpTemplate.ok) throw new FollowUpTemplateNotSetError(pair.target.handle, followUpTemplate.detail)
       /* The newest unclaimed post whose subject BELONGS to this recipient — their film,
          their product, the campaign they are talent on. The date-only fallback is deleted
@@ -715,9 +736,9 @@ export async function composeForPair(args: {
    * way a follow-up uses a fresh variant plus a campaign not referenced before: reusing
    * the bespoke body would be the exact repetition this guards against.
    */
-  const brandFirst = touchNumber === 1 && pair.target.kind === 'BRAND' ? await buildBrandFirstTouch(pair.target) : null
+  const brandFirst = !followUp && pair.target.kind === 'BRAND' ? await buildBrandFirstTouch(pair.target) : null
   const usedBespoke =
-    brandFirst !== null || (touchNumber === 1 && Boolean(pair.bespokeBody && pair.bespokeBody.trim().length > 0))
+    brandFirst !== null || (!followUp && Boolean(pair.bespokeBody && pair.bespokeBody.trim().length > 0))
 
   /**
    * ── PHASE 8: a model may write the FOLLOW-UP body ─────────────────────────

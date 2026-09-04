@@ -67,6 +67,8 @@ const STOP_LABELS: Record<(typeof RESEND_BLOCKS)[keyof typeof RESEND_BLOCKS], st
     'an earlier message to them was parked after repeated failures — re-queue or discard that one first',
   [RESEND_BLOCKS.NO_SESSION]: 'the account is not signed in',
   [RESEND_BLOCKS.PAIR_DAILY_CAP]: 'this account already sent this recipient five messages today',
+  [RESEND_BLOCKS.FOLLOW_UP_SAME_DAY]:
+    'this account already wrote to this recipient today, and a second message from the same page waits for tomorrow',
   [RESEND_BLOCKS.TARGET_RECENTLY_CONTACTED]:
     'every one of our pages has already written to this recipient this week — they rest until the oldest of those messages is seven days old',
   [RESEND_BLOCKS.COHORT_NOT_CLEARED]: 'the account’s onboarding group is not cleared yet',

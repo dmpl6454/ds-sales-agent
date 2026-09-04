@@ -92,7 +92,7 @@ function pairFor(args: { senderId?: string; persona?: typeof PERSONA; handle?: s
 }
 
 const compose = (p: ReturnType<typeof pairFor>, senderHandle = 'bollywoodchronicle') =>
-  composeForPair({ fleetTemplate: DEFAULT_FLEET_TEMPLATE, followUpTemplate: FOLLOW_UP_WRITTEN, pair: p, senderHandle, touchNumber: 1 })
+  composeForPair({ fleetTemplate: DEFAULT_FLEET_TEMPLATE, followUpTemplate: FOLLOW_UP_WRITTEN, pair: p, senderHandle, touchNumber: 1, targetHasEverReplied: false })
 
 beforeEach(() => {
   campaignFindFirst.mockReset().mockResolvedValue(null)

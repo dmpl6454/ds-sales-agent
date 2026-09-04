@@ -312,6 +312,26 @@ export async function runOutreach(): Promise<PlanSummary> {
   const personHandles = await readPersonHandles(pairs.map((p) => p.target.handle))
 
   /**
+   * WHICH RECIPIENTS HAVE EVER REPLIED TO ANY OF OUR PAGES (2026-09-04, Tabish).
+   *
+   * Once a company has answered us, nobody sends them the standard message again — see
+   * `isFollowUp`. This is the RECIPIENT's whole history, so it is deliberately unwindowed and
+   * unrelated to the seven-day halt: a reply from June still means they know who we are.
+   *
+   * One `findMany` with `distinct` over the recipients in this pass. A lookup per pair would be
+   * the N+1 this planner has killed four times.
+   */
+  const everRepliedTargetIds = new Set(
+    (
+      await prisma.outreachAttempt.findMany({
+        where: { targetId: { in: [...new Set(pairs.map((p) => p.targetId))] }, replyPostedAt: { not: null } },
+        select: { targetId: true },
+        distinct: ['targetId'],
+      })
+    ).map((r) => r.targetId),
+  )
+
+  /**
    * The fleet ring per recipient, from the routes that ALREADY EXIST.
    *
    * `pairs` is scoped to `fleetMember: true` above, so grouping it is exactly the set of
@@ -578,6 +598,7 @@ export async function runOutreach(): Promise<PlanSummary> {
       sender: { status: pair.sender.status },
       target: { optedOut: pair.target.optedOut, isVerified: pair.target.isVerified },
       touchesSoFar: touches,
+      targetHasEverReplied: everRepliedTargetIds.has(pair.targetId),
       targetRepliedAt: replied?.repliedAt ?? null,
       pairSentTodayCount: pairToday,
       maxPerPairPerDay: settings.maxPerPairPerDay,
@@ -816,6 +837,7 @@ export async function runOutreach(): Promise<PlanSummary> {
        * per-hour allowance, which apply across processes rather than only within one loop.
        */
       const result = await createAndDispatch({
+        targetHasEverReplied: everRepliedTargetIds.has(pair.targetId),
         pair,
         touchNumber: decision.touchNumber,
         autopilotEnabled: settings.autopilotEnabled,
@@ -891,6 +913,8 @@ export async function runOutreach(): Promise<PlanSummary> {
 type PairWithRelations = Awaited<ReturnType<typeof prisma.outreachPair.findMany>> extends (infer T)[] ? T : never
 
 async function createAndDispatch(args: {
+  /** Whether this recipient has ever replied to any page — see `isFollowUp`. */
+  targetHasEverReplied: boolean
   pair: Awaited<ReturnType<typeof prisma.outreachPair.findFirstOrThrow>> & {
     sender: Awaited<ReturnType<typeof prisma.senderAccount.findFirstOrThrow>>
     target: Awaited<ReturnType<typeof prisma.targetAccount.findFirstOrThrow>>
@@ -902,7 +926,7 @@ async function createAndDispatch(args: {
   /** ...and what it says on a SECOND message. See followUpTemplate.ts. */
   followUpTemplate: FollowUpTemplate
 }): Promise<Omit<PlanOutcome, 'pairKey' | 'eligible'>> {
-  const { pair, touchNumber, autopilotEnabled, fleetTemplate, followUpTemplate } = args
+  const { pair, touchNumber, targetHasEverReplied, autopilotEnabled, fleetTemplate, followUpTemplate } = args
 
   /**
    * WHAT to say — hook, variant pool, bespoke-or-follow-up — is decided in `compose.ts`,
@@ -913,6 +937,7 @@ async function createAndDispatch(args: {
     pair,
     senderHandle: pair.sender.handle,
     touchNumber,
+    targetHasEverReplied,
     fleetTemplate,
     followUpTemplate,
   })
