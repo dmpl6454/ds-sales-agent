@@ -363,12 +363,33 @@ export function followUpSubject(
    * the partition below already makes for the recipient's own name, which is counted and never
    * spoken.
    */
-  const candidates = stripChannelMarksFromBrands(brands, [publisher, ...watchChannels]).filter((raw) => {
+  const candidates = stripChannelMarksFromBrands(brands, [publisher, ...watchChannels]).filter(
+    (raw) => raw.trim().length >= MIN_SUBJECT_LENGTH,
+  )
+
+  /**
+   * MAY THIS TOKEN BE SAID TO A STRANGER? Two rules, and BOTH are about speech alone.
+   *
+   * A raw handle (`@socialsamosaevents`, `@primevideoIN`) and an all-lowercase token (`fyp`,
+   * `supersox_india`) are both real contents of `brands` and neither is a title, so neither is
+   * ever spoken. They are still EVIDENCE that the post names another party, which is the whole
+   * point of keeping them in `candidates`.
+   *
+   * FOUND BY RE-RENDERING AGAINST THE LIVE CORPUS after the lowercase half was fixed
+   * (2026-09-04): post `Dcxgro6MeQs` carries `["@socialsamosaevents","Festive Marketing Camp"]`
+   * — the publisher's own event account and the publisher's own event. Dropping the `@` entry
+   * left ONE survivor, so the talent arm named *"your Festive Marketing Camp placement"* for
+   * every person on the list. Counted, the post names two things and the arm refuses.
+   *
+   * The two filters had to be moved one at a time and the second was invisible until the first
+   * was fixed: while the lowercase entries were also being deleted, this post refused for the
+   * wrong reason. A filter that destroys the evidence a later rule needs is the shape of both.
+   */
+  const speakable = (raw: string): boolean => {
     const b = raw.trim()
-    if (b.length < MIN_SUBJECT_LENGTH) return false
-    return !b.includes('@')
-  })
-  const speakable = (b: string): boolean => b.trim() !== b.trim().toLowerCase()
+    if (b.includes('@')) return false
+    return b !== b.toLowerCase()
+  }
 
   /**
    * ── THE PARTITION, NOT A FILTER (2026-09-01, second pass) ─────────────────

@@ -294,6 +294,24 @@ describe('what the follow-up says about the post it is for', () => {
     expect(followUpSubject(['Mad Over Marketing'], SS_PUBLISHER, person, WATCH)).toBeNull()
   })
 
+  it('counts a raw HANDLE it can never speak — the publisher’s own event account', () => {
+    /* Post Dcxgro6MeQs, verbatim: the publisher's event account and the publisher's event.
+       FOUND BY RE-RENDERING against the live corpus AFTER the lowercase half was fixed —
+       dropping the @ entry left one survivor, so the talent arm named "your Festive Marketing
+       Camp placement" for every person on the list. Counted, the post names two things. */
+    const person = { handle: 'arjunrtanwar', displayName: 'Arjun Tanwar', isPerson: true }
+    expect(
+      followUpSubject(['@socialsamosaevents', 'Festive Marketing Camp'], SS_PUBLISHER, person, WATCH),
+    ).toBeNull()
+  })
+
+  it('still names the one subject when the handle beside it IS the recipient’s own', () => {
+    /* The partition's own rule: their name in the list means the post asserts them, and a
+       co-advertiser's name is not their subject — whether it is spelled as a name or a handle. */
+    const brand = { handle: 'primevideoin', displayName: 'Prime Video IN', isPerson: false }
+    expect(followUpSubject(['@primevideoIN', 'Some Other Film'], PUBLISHER, brand, WATCH)).toBeNull()
+  })
+
   it('a company carrying campaignTalent is not talent — 189 live rows do', () => {
     /* @hkvitals is one of the five that received a wrong subject: campaignTalent true,
        BrandLookup UNRESOLVED. "Not known" never admits. */
