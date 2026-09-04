@@ -5,6 +5,81 @@ changing anything that touches sending.
 
 ---
 
+## 4 SEPTEMBER — THE 502 WAS A PILE-UP ON A PAGING BOX, AND ONE OOM TOOK EVERY OTHER SITE DOWN WITH OURS
+
+**Tabish, with Cloudflare's "Bad gateway 502" at 06:21 UTC: *"The website crashes and is very
+slow … when I attempted to search for celina, the website crashed … the search should be present
+in the ui for users to search for who the individual was messaged."*** MEASURED before anything
+changed: the kernel OOM-killed `next-server` **twice** that morning (04:59 at 773 MB, 06:20 at
+607 MB anon-rss) *with the 450 MB pm2 ceiling live* — pm2 samples every ~30 s. The trigger was
+`GET /paid-posts?q=celina` timing out at nginx's 60 s (504), then `/analytics`. The search
+itself returns the right two rows in **478 ms** and peaks at **+22 MB heap**; the heaviest
+builder on the site peaks at +32 MB. So the memory was never one render — it was a **PILE-UP**:
+the box had **914 MB in swap** and was paging (PSI cpu 22 %), a render crawled past 60 s, the
+person retried, every open tab fired `router.refresh()` on its 30–45 s timer regardless, and
+ten-plus renders were alive at once.
+
+**AND THE BLAST RADIUS WAS EVERY APP ON THE BOX.** `pm2-root.service` carried systemd's default
+`OOMPolicy=stop`: killing ONE process stopped the WHOLE pm2 service, so HR, API, portal and
+five more restarted with ours — all nine showed the same 7.9-minute uptime. A drop-in now sets
+`OOMPolicy=continue` (one process dies alone; pm2 restarts just it). **The other teams' sites
+are strictly safer for it, and nothing else of theirs was touched.**
+
+### THREE LAYERS OF MEMORY DEFENCE, AND THE CARRIER THAT SILENTLY DID NOTHING
+
+V8's own cap is the deterministic layer (`--max-old-space-size=300` web, 512 worker), the pm2
+ceiling the RSS backstop, the systemd drop-in the blast-radius bound — all applied by
+`deploy.sh` now. **The first attempt set `NODE_OPTIONS` on the cluster and pm2 stored it while
+the workers ran uncapped**: in CLUSTER mode pm2 injects env into `process.env` from JavaScript
+*after* Node starts, so a V8 startup flag there is inert; it must be `node_args`
+(`pm2 reload --node-args`, verified in `pm2_env.node_args`). In FORK mode (the worker) env is the
+real environ and reaches the tsx child, so `NODE_OPTIONS` is right there. **Honest limit,
+measured after the deploy:** twelve cold pages in a row still took a worker to 760 MB RSS — a
+300 MB heap cap does not bound external memory or per-route module copies — and pm2 recycled it
+three times *while its sibling served 200s*. That is the design absorbing what it cannot prevent;
+the box (2 GB / 1 vCPU, MySQL 360 MB in swap, another team's app at 401 MB) is the real ceiling,
+and a larger Linode is the structural answer. Stated, not decided.
+
+### THE CODE-SIDE ANSWERS: RENDER ONCE PER CHANGE, ONCE PER QUESTION
+
+- **`src/lib/viewMemo.ts`** — every builder a page imports is single-flight per key for 10 s with
+  at most **two** distinct computations in flight per process; a burst of tabs computes once, a
+  burst of different pages computes two at a time. `actions.ts` drops the memo beside every
+  `revalidatePath` (`refreshPath`, the only caller). A grep DISCOVERS the builders pages import
+  — the first version of the change shipped four files with the import and no wrapper.
+  Mutation-tested both ways; the admission test's first version compared against the constant
+  it mutated and passed at 99.
+- **`/api/pulse` + `auto-refresh.tsx`** — nine cheap aggregates into one stamp; the page
+  re-renders only when it moves, never while a refresh is pending, and five hot `Setting` keys
+  (heartbeat, presence, lock…) are excluded or it would be the blind timer again.
+- **Recipient search** — `/paid-posts` finds the posts a recipient was messaged under by the
+  column's OWN attribution rule (`recipient-search.ts`), and a syndicated copy reads *"messaged
+  under Dck0gTgKMNs"* instead of a bare dash — a note, never a second count. `/analytics` gets
+  `?to=`; `/targets` is paged at 50 with a search box (WATCH rows always whole).
+  `lib/searchTerms.ts` is the one fan-out for all three, and its first test found that the
+  spaced form had been dropped since 26 Aug: *"arshad warsi"* could never match a caption
+  reading "Arshad Warsi".
+
+| | |
+|---|---|
+| layout | ALL PASSED; `/targets` 108→**45**, `/paid-posts` 93→**44**, `/analytics` 98→**35** queries |
+| deploy | 200 edge polls, **200 × 200**; 0 × 5xx since |
+| live, memo | `/` 5.8 s → **0.17 s**, `/targets` 3.3 s → 0.15 s on the second hit (per worker — two workers, two memos) |
+| tests / typecheck | **2225 / 127 files**, clean |
+| autopilot | ON; `tabish-mac` beating; 104 paid/24h, 0 unjudged; queue 2, both held by name |
+
+**NAMED, NOT FIXED — discovery is livelocked on the home IP.** Every brand-discovery pass on the
+Mac today read `looked=1 created=0 unreached=82 haltedEarly=true` — identical numbers, six
+passes, the documented livelock signature — halting on `nirali.n` each time after its cooldown
+expires, with no 429 logged. **Zero prospects were minted on 4 Sept.** Sends are material-bound
+and this is the material. It is the next thing to look at.
+
+The three agents that drafted the memo, the pulse and the search hit a session limit before
+committing; their worktrees held the work and it was finished by hand — including the four
+builders that had the import and no wrapper.
+
+---
+
 ## VERIFIED ONLY — THE ADMISSION RULE FOR EVERY RECIPIENT (2026-08-20, TABISH, PERMANENT)
 
 **Read this before adding any path that creates a target or sends a message. It is one
