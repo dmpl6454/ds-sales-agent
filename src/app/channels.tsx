@@ -227,7 +227,14 @@ function AddChannelForm({ onDone, fleets }: { onDone: () => void; fleets: { slug
           <label>
             <span>Which fleet?</span>
             <select value={fleet} onChange={(e) => setFleet(e.target.value)}>
-              <option value="">Bollywood (the original fleet)</option>
+              {/*
+                Hidden once a real `bollywood` Category row exists (2026-09-04), or this list
+                offers the same fleet twice under two names — the empty value means "no
+                explicit membership", which for a TARGET reads as bollywood either way.
+              */}
+              {!fleets.some((f) => f.slug === 'bollywood') && (
+                <option value="">Bollywood (the original fleet)</option>
+              )}
               {fleets.map((f) => (
                 <option key={f.slug} value={f.slug}>
                   {f.name}
