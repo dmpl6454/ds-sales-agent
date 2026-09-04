@@ -1,4 +1,5 @@
 import { prisma } from '@/lib/db'
+import { memoView, viewKey, invalidateViews } from '@/lib/viewMemo'
 import { env } from '@/lib/env'
 import { ACTIVE_FROM_HOUR, ACTIVE_TO_HOUR } from '@/outreach/pacing'
 import { readStringArray } from '@/lib/json'
@@ -446,29 +447,25 @@ function accuracyNoteFor(labels: number, stored: number): string {
  *
  * So the result is shared across requests for a short window. Ten seconds is well inside
  * the staleness the pages already accept: `auto-refresh.tsx` re-renders every 30-45s. A
- * plain module memo, NOT `unstable_cache`, because it keeps the Date objects the labels
+ * plain in-memory memo, NOT `unstable_cache`, because it keeps the Date objects the labels
  * are built from (a serialising cache would hand them back as strings). One in-flight
  * promise is shared, so a burst of tabs computes once. The autopilot toggle invalidates it
  * explicitly, so ON/OFF never reads ten seconds stale. Off under vitest: tests mutate the
  * database and rebuild the view in the same second.
+ *
+ * THE MECHANISM MOVED TO `src/lib/viewMemo.ts` ON 2026-09-04, when two OOM kills of the web
+ * process (773 MB and 607 MB anon-rss against a +22..32 MB per-render peak) showed that the
+ * PILE-UP of concurrent renders, not any one render, was what ate the heap. Every page
+ * builder shares that one memo and its two-at-a-time admission control now; this file keeps
+ * the reasoning and the key, and nothing else about caching.
  */
-const CEO_VIEW_MEMO_MS = process.env.VITEST ? 0 : 10_000
-let ceoViewMemo: { at: number; value: Promise<CeoView> } | null = null
-
 export function invalidateCeoView(): void {
-  ceoViewMemo = null
+  /* Kept under its old name for callers that know only this view; it now drops every view. */
+  invalidateViews()
 }
 
 export async function buildCeoView(): Promise<CeoView> {
-  const now = Date.now()
-  if (ceoViewMemo && now - ceoViewMemo.at < CEO_VIEW_MEMO_MS) return ceoViewMemo.value
-  const value = computeCeoView()
-  ceoViewMemo = { at: now, value }
-  // A failed computation must not be served for ten seconds; the next request recomputes.
-  value.catch(() => {
-    if (ceoViewMemo?.value === value) ceoViewMemo = null
-  })
-  return value
+  return memoView(viewKey('ceoView'), computeCeoView)
 }
 
 async function computeCeoView(): Promise<CeoView> {
@@ -1067,6 +1064,11 @@ export interface TodayView {
   waitingCount: number
 }
 
+/**
+ * NOT wrapped in `memoView` on purpose: this is a cheap projection of `buildCeoView`, which
+ * IS memoised, so wrapping it again would cache the same answer twice and let the two copies
+ * disagree for up to ten seconds. `tests/view-memo.test.ts` lists it as a projection.
+ */
 export async function buildTodayView(): Promise<TodayView> {
   const v = await buildCeoView()
   return {
@@ -1109,6 +1111,7 @@ export interface ChannelsView {
   degradedRuns: number
 }
 
+/** A projection of the memoised `buildCeoView` — deliberately not memoised twice (see `buildTodayView`). */
 export async function buildChannelsView(): Promise<ChannelsView> {
   const v = await buildCeoView()
   return {
@@ -1318,14 +1321,27 @@ export interface PaidPostRow {
 /** Rows per page of the posts table. Bounded so a page render stays a page render. */
 export const PAID_POSTS_PAGE_SIZE = 50
 
-export async function buildPaidPostsView(input?: {
+export interface PaidPostsInput {
   /** A watched channel's handle, from `?channel=`. Validated against the visible set. */
   channel?: string | null
   /** 1-based, from `?page=`. Clamped into range — `?page=999` shows the last page. */
   page?: number
   /** Free text from `?q=` — matched against the caption, the brand names and the shortcode. */
   query?: string | null
-}): Promise<PaidPostsView> {
+}
+
+/**
+ * Memoised on EVERY input (channel, page, query): this builder issues its own posts query
+ * and count on top of the shared CEO view, so it is not a free projection, and each distinct
+ * filter is its own answer. The key carries the RAW inputs, not the validated ones — an
+ * unknown `?channel=` falls back to no filter inside the computation, and two spellings of
+ * "no filter" costing two computations is cheaper than validating before the memo.
+ */
+export async function buildPaidPostsView(input?: PaidPostsInput): Promise<PaidPostsView> {
+  return memoView(viewKey('paidPostsView', input ?? {}), () => computePaidPostsView(input))
+}
+
+async function computePaidPostsView(input?: PaidPostsInput): Promise<PaidPostsView> {
   const v = await buildCeoView()
 
   /**
@@ -1801,6 +1817,10 @@ export interface CostView {
 }
 
 export async function buildCostView(): Promise<CostView> {
+  return memoView(viewKey('costView'), computeCostView)
+}
+
+async function computeCostView(): Promise<CostView> {
   /**
    * AGGREGATED IN THE DATABASE, 2026-09-02. This was a `findMany` over EVERY ModelCall row —
    * fine when the ledger was small, and at 50,753 rows it loaded the whole table into memory
