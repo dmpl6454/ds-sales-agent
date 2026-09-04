@@ -24,6 +24,8 @@ import { FOLLOWER_SNAPSHOT, DELIVERED_STATUSES, IN_FLIGHT_STATUSES } from '@/lib
 import { profileStatus } from '@/outreach/browser/profile'
 import { sessionUsable } from '@/outreach/sessionHealth'
 import { postUrl } from '@/lib/urls'
+import { normaliseSearch, searchTerms } from '@/lib/searchTerms'
+import { attributedPostIdsForRecipients, messagedUnderElsewhere } from './view-model/recipient-search'
 import { isConnecting } from '@/outreach/browser/connect'
 import { getSettings } from '@/lib/settings'
 import { visibleChannelFilter, ourOwnPageHandles } from '@/detection/visibleChannels'
@@ -1261,6 +1263,22 @@ export interface PaidPostRow {
     followUp: boolean
   }[]
   /**
+   * "MESSAGED UNDER <another post>" — the syndication note (2026-09-04).
+   *
+   * Set ONLY when this row names at least one recipient, carries NO attributed message, and
+   * one of those recipients was messaged under ANOTHER in-window post. MEASURED 2026-09-03:
+   * 61 of the 111 such rows over 7 days were exactly this — syndicated copies of one campaign
+   * where the message claimed a sibling. Without the note a reader cannot tell "never
+   * messaged" from "messaged under the copy next to this one", which is the question Tabish
+   * could not answer from the `celina` search.
+   *
+   * IT IS A NOTE, NOT A COUNT. The message stays attributed to the post it claimed and is
+   * never listed here — the partition is what lets `messagesSent` be added up, and filling
+   * in the siblings would count one message against several posts (CLAUDE.md, 2026-09-03:
+   * "do not fill in the siblings"). See `recipient-search.ts`.
+   */
+  messagedUnder: { shortcode: string; url: string } | null
+  /**
    * ── THERE IS NO "candidateNote" ANY MORE (2026-08-25, Tabish) ──────────────
    *
    * *"I don't want '1 name with no verified account yet', 'nobody named', etc type of
@@ -1392,21 +1410,29 @@ export async function buildPaidPostsView(input?: {
    * below are a handful more `contains` terms over a window that is already bounded, and
    * they are portable across both providers, which `mode: 'insensitive'` is not.
    */
-  const rawQuery = input?.query?.trim() ?? ''
-  const searchQuery = rawQuery.length >= 2 ? rawQuery : null
-  /** The same words with the separators a handle uses: "arshad warsi" -> "arshad_warsi", "arshadwarsi". */
-  const separatorVariants = (t: string): string[] =>
-    /\s/.test(t) ? [t.replace(/\s+/g, '_'), t.replace(/\s+/g, '.'), t.replace(/\s+/g, '')] : [t]
-  const terms = searchQuery
-    ? [...new Set(
-        [
-          searchQuery,
-          searchQuery.toLowerCase(),
-          searchQuery.toUpperCase(),
-          searchQuery.replace(/\b[a-z]/g, (c) => c.toUpperCase()),
-        ].flatMap(separatorVariants),
-      )]
-    : []
+  /**
+   * THE FAN-OUT LIVES IN `lib/searchTerms.ts` NOW (2026-09-04) — shared with `/analytics`'s
+   * recipient filter and `/targets`' search, so the three screens agree on what a typed term
+   * matches. Behaviour here is byte-for-byte what it was; only the home moved.
+   */
+  const searchQuery = normaliseSearch(input?.query)
+  const terms = searchQuery ? searchTerms(searchQuery) : []
+  /**
+   * ── AND THE SEARCH FINDS WHO WAS MESSAGED (2026-09-04) ────────────────────
+   *
+   * Tabish searched `celina` and could not tell from the result who had been messaged for
+   * what. Every clause below is about the POST — caption, brands, tags, shortcode — and
+   * @celinajaitlyofficial's name is in none of them, so the two posts her messages were
+   * attributed to were unreachable from the one box built for the question.
+   *
+   * `attributedPostIdsForRecipients` resolves the term against `TargetAccount.handle` /
+   * `displayName` and returns the posts those recipients' delivered messages are ATTRIBUTED
+   * to — by the SAME partition rule the "Message sent" column uses (claimed post, else the
+   * discovery post), over the SAME status set. So a search hit here is exactly a row whose
+   * "Message sent" cell names that person; never a row where it reads an em-dash. Two
+   * bounded queries, only when a term is present, zero per row.
+   */
+  const attributedIds = searchQuery ? await attributedPostIdsForRecipients(searchQuery) : []
   const searchWhere = searchQuery
     ? {
         OR: [
@@ -1420,6 +1446,9 @@ export async function buildPaidPostsView(input?: {
           /* A shortcode is an exact identifier, so it is matched as one — pasting a post's
              own code is the fastest way to find the row somebody is asking about. */
           { shortcode: searchQuery },
+          /* The posts a matching RECIPIENT was messaged under — the column's own attribution
+             rule, so "who was messaged for what" is answerable from the box (2026-09-04). */
+          ...(attributedIds.length > 0 ? [{ id: { in: attributedIds } }] : []),
         ],
       }
     : null
@@ -1569,7 +1598,7 @@ export async function buildPaidPostsView(input?: {
    */
   const prospectRefs = await prisma.targetAccount.findMany({
     where: { role: 'PROSPECT' },
-    select: { handle: true, displayName: true, optedOut: true, discoveredFromCampaignId: true },
+    select: { id: true, handle: true, displayName: true, optedOut: true, discoveredFromCampaignId: true },
   })
 
   /*
@@ -1628,6 +1657,40 @@ export async function buildPaidPostsView(input?: {
     causedByPost.set(postId, list)
   }
 
+  /**
+   * WHO EACH POST EARNS A MESSAGE TO — computed ONCE here rather than inside the row map,
+   * because the syndication note below needs the same answer for the same rows and two
+   * copies of a linkage are how a column and its note come to disagree. The rule is
+   * unchanged from the day the column shipped; see the `recipients` docblock on the row.
+   */
+  const recipientsByPost = new Map(
+    paidRows.map((p) => [
+      p.id,
+      prospectRefs.filter(
+        (t) =>
+          !t.optedOut &&
+          (t.discoveredFromCampaignId === p.id ||
+            mentionsHandleExactly({ caption: p.caption, taggedAccounts: p.taggedAccounts }, t.handle) ||
+            /* A brand STRING that IS a verified prospect's name links too (2026-08-21) —
+               the same arm campaignsNamingHandle counts, so column and enforcer agree. */
+            brandStringsNameProspect(p.brands, { handle: t.handle, displayName: t.displayName })),
+      ),
+    ]),
+  )
+
+  /**
+   * THE SYNDICATION NOTE, for the rows that need one: recipients named, no message attributed.
+   * ONE attempt read for the page plus one post lookup, joined in JS; zero queries when no
+   * row qualifies. The note never re-counts the message — see `recipient-search.ts`.
+   */
+  const messagedUnder = await messagedUnderElsewhere({
+    rows: paidRows
+      .filter((p) => (recipientsByPost.get(p.id)?.length ?? 0) > 0 && !causedByPost.has(p.id))
+      .map((p) => ({ postId: p.id, recipientIds: (recipientsByPost.get(p.id) ?? []).map((t) => t.id) })),
+    since,
+    visibleChannelHandles: new Set(channelOptions.map((c) => c.handle)),
+  })
+
   return {
     weekDetected: v.week.detected,
     totalDetected,
@@ -1676,18 +1739,12 @@ export async function buildPaidPostsView(input?: {
        * cannot act on. `optedOut` is still enforced at the governor, the gate and
        * `routes.ts`; only the screen stops mentioning it.
        */
-      recipients: prospectRefs
-        .filter(
-          (t) =>
-            !t.optedOut &&
-            (t.discoveredFromCampaignId === p.id ||
-              mentionsHandleExactly({ caption: p.caption, taggedAccounts: p.taggedAccounts }, t.handle) ||
-              /* A brand STRING that IS a verified prospect's name links too (2026-08-21) —
-                 the same arm campaignsNamingHandle counts, so column and enforcer agree. */
-              brandStringsNameProspect(p.brands, { handle: t.handle, displayName: t.displayName })),
-        )
-        .map((t) => ({ handle: t.handle })),
+      recipients: (recipientsByPost.get(p.id) ?? []).map((t) => ({ handle: t.handle })),
       messagesSent: causedByPost.get(p.id) ?? [],
+      messagedUnder: (() => {
+        const under = messagedUnder.get(p.id)
+        return under ? { shortcode: under.shortcode, url: postUrl(under.shortcode) } : null
+      })(),
       shortcode: p.shortcode,
       url: postUrl(p.shortcode),
       dayLabel: istDateKey(p.postedAt),
