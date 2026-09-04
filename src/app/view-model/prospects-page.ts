@@ -1,4 +1,5 @@
 import { prisma } from '@/lib/db'
+import { memoView, viewKey } from '@/lib/viewMemo'
 import { DELIVERED_STATUSES } from '@/lib/constants'
 import { getSettings } from '@/lib/settings'
 import { replyHaltFloor } from '@/outreach/replyHalt'
