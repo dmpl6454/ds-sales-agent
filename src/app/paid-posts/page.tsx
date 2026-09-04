@@ -407,7 +407,25 @@ export default async function PaidPostsPage({
                             <span className="muted">{m.whenLabel}</span>
                           </div>
                         ))}
-                        {p.messagesSent.length === 0 ? <span className="muted">&mdash;</span> : null}
+                        {/*
+                          THE SYNDICATION NOTE (2026-09-04). A row that names a recipient and
+                          shows an em-dash here is ambiguous in the one way that matters:
+                          "never messaged" and "messaged under the syndicated copy of this
+                          campaign" look identical. MEASURED: 61 of 111 such rows over 7 days
+                          were the second. The note names the post that carries the message and
+                          links to it — muted, because it is context and not a count. The
+                          message is NOT listed again here: the column is a partition and must
+                          stay one, or it stops adding up (CLAUDE.md, 2026-09-03).
+                        */}
+                        {p.messagesSent.length === 0 && p.messagedUnder ? (
+                          <span className="muted">
+                            messaged under{' '}
+                            <a href={p.messagedUnder.url} target="_blank" rel="noreferrer">
+                              {p.messagedUnder.shortcode}
+                            </a>
+                          </span>
+                        ) : null}
+                        {p.messagesSent.length === 0 && !p.messagedUnder ? <span className="muted">&mdash;</span> : null}
                       </td>
                       <td>
                         <DismissButton shortcode={p.shortcode} dismissed={p.dismissed} />
