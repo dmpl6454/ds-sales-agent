@@ -62,6 +62,12 @@ export interface AccountRow {
    * category (see `senderCategories.ts`), not "sends to anyone".
    */
   categories: string[]
+  /**
+   * The same memberships by SLUG, for the fleet control. Names are what a person reads and
+   * slugs are what the enforcers key on, so the row carries both rather than the control
+   * guessing one from the other.
+   */
+  categorySlugs: string[]
   /** One sentence naming the single next thing a person must do, or null. */
   todo: string | null
 }
@@ -97,7 +103,7 @@ async function computeAccountsPage(connectingHandles: readonly string[]): Promis
   const [senders, weekCounts, todayCounts] = await Promise.all([
     prisma.senderAccount.findMany({
       orderBy: { handle: 'asc' },
-      include: { categories: { include: { category: { select: { name: true } } } } },
+      include: { categories: { include: { category: { select: { name: true, slug: true } } } } },
     }),
     prisma.outreachAttempt.groupBy({
       by: ['senderId'],
@@ -184,6 +190,7 @@ async function computeAccountsPage(connectingHandles: readonly string[]): Promis
       sentToday: todayUsed.get(s.id) ?? 0,
       dailyCap: s.dailyCap,
       categories: s.categories.filter((c) => c.enabled).map((c) => c.category.name),
+      categorySlugs: s.categories.filter((c) => c.enabled).map((c) => c.category.slug),
       todo,
     }
   })

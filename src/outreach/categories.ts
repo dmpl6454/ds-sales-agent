@@ -59,7 +59,23 @@ export async function listCategories(): Promise<CategorySummary[]> {
  */
 export async function ringFor(categoryId: string): Promise<RingMember[]> {
   const rows = await prisma.categorySender.findMany({
-    where: { categoryId },
+    /**
+     * ── A GROUP RING MAY NOT NAME A PAGE OUTSIDE THE ROTATION (2026-09-04) ──
+     *
+     * `fleetRingFor` has filtered on `fleetMember` since it was written; this loader never
+     * did, and the difference was invisible while the only `CategorySender` row belonged to
+     * an account that was in the rotation. It stops being invisible now: the marketing ring
+     * goes from one page to five, and `removeSender` writes `fleetMember: false` WITHOUT
+     * disabling the membership row — so a retired page would stay a ring member, rotation
+     * would elect it, and the turn only advances on a delivery it can never make.
+     *
+     * That is the exact self-locking stall of 26 August, when @madaboutmarketingg's leftover
+     * cross-fleet routes made it a ring member for 15 bollywood companies and every one of
+     * them waited on a page the gate refuses. `fleetRingFor`'s own docblock makes the
+     * argument: a ring that can name a sender with no usable route writes nothing while the
+     * log claims a turn was taken.
+     */
+    where: { categoryId, sender: { fleetMember: true } },
     orderBy: { position: 'asc' },
     include: { sender: { select: { id: true, handle: true } } },
   })

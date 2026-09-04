@@ -2,7 +2,7 @@
 
 import { useState } from 'react'
 import { useRouter } from 'next/navigation'
-import { clearChallenge, rejoinFleet, checkSignIn } from '../actions'
+import { clearChallenge, rejoinFleet, setSenderFleets, checkSignIn } from '../actions'
 import { useConnect } from './use-connect'
 import type { AccountGroup, AccountRow } from '../view-model/accounts-page'
 
@@ -129,6 +129,22 @@ function AccountRowView({
         {!row.fleetMember && <RejoinControl handle={row.handle} fleets={fleets} onDone={() => router.refresh()} />}
 
         {/*
+          ── WHICH FLEETS THIS PAGE SENDS FOR — A SET (2026-09-04, Tabish) ────
+          Checkboxes rather than a dropdown, because a dropdown cannot express "both" and
+          cannot express "none", and Tabish asked for all four states. Rendered only for a
+          page IN the rotation: for one that has left it, the fleet is chosen as part of
+          rejoining above, where the ordering is not in the operator's hands.
+        */}
+        {row.fleetMember && fleets.length > 0 && (
+          <FleetControl
+            handle={row.handle}
+            fleets={fleets}
+            current={row.categorySlugs}
+            onDone={() => router.refresh()}
+          />
+        )}
+
+        {/*
           ── VERIFY, AND SIGN IN AGAIN, ON AN ACCOUNT THAT LOOKS FINE (2026-08-26) ──
           `connected` is a cookie on disk plus the absence of a mark, so a session Instagram
           revoked server-side reads as connected and offered NO control — the row simply said
@@ -251,6 +267,85 @@ function AccountRowView({
 
 
 /**
+ * WHICH FLEETS A PAGE SENDS FOR — a SET, and any of the four states (2026-09-04, Tabish).
+ *
+ * *"a sender can be a part of either Bollywood or marketing or both or none."*
+ *
+ * CHECKBOXES, NOT A DROPDOWN, and that is the whole reason this is not `RejoinControl` with
+ * one more option: a select expresses exactly one choice, so "both" and "none" are both
+ * unsayable in it. The four states a person actually has are the four states this renders.
+ *
+ * PREVIEW THEN CONFIRM, like every other control on this page that creates routes: the first
+ * press writes nothing and the server answers with the exact number of routes the selection
+ * would create. Changing a box DISARMS it, because the count is a function of the selection
+ * and confirming a number computed for a different one is the failure being prevented — the
+ * 26 August one-click button put the burner in the rotation with 514 routes.
+ *
+ * Unchecking everything is allowed and is the "none" state: the page keeps its history and
+ * its session and writes to nobody. Nothing is deleted — the membership is DISABLED, because
+ * the send history rotation reads is interpreted against it.
+ */
+function FleetControl({
+  handle,
+  fleets,
+  current,
+  onDone,
+}: {
+  handle: string
+  fleets: readonly { slug: string; name: string }[]
+  current: readonly string[]
+  onDone: () => void
+}) {
+  const [chosen, setChosen] = useState<string[]>([...current])
+  const [busy, setBusy] = useState(false)
+  const [armed, setArmed] = useState(false)
+  const [outcome, setOutcome] = useState<{ ok: boolean; message: string } | null>(null)
+
+  const toggle = (slug: string) => {
+    setChosen((xs) => (xs.includes(slug) ? xs.filter((x) => x !== slug) : [...xs, slug]))
+    setArmed(false)
+    setOutcome(null)
+  }
+  const changed =
+    chosen.length !== current.length || chosen.some((c) => !current.includes(c))
+
+  return (
+    <div className="fleet-control">
+      <span className="fleet-control-label">Sends for</span>
+      {fleets.map((f) => (
+        <label key={f.slug} className="fleet-control-option">
+          <input type="checkbox" checked={chosen.includes(f.slug)} onChange={() => toggle(f.slug)} />{' '}
+          {f.name}
+        </label>
+      ))}
+      {changed && (
+        <button
+          disabled={busy}
+          onClick={async () => {
+            setBusy(true)
+            const r = await setSenderFleets(handle, chosen, armed)
+            setOutcome(r)
+            setBusy(false)
+            /* A refused PREVIEW arms the second press; a real refusal must not. */
+            if (!armed && !r.ok) setArmed(true)
+            else {
+              setArmed(false)
+              onDone()
+            }
+          }}
+        >
+          {busy ? 'Saving…' : armed ? 'Confirm — change the fleets' : 'Save fleets'}
+        </button>
+      )}
+      {chosen.length === 0 && changed ? (
+        <p className="settingrow-argument">With no fleet ticked this page writes to nobody.</p>
+      ) : null}
+      {outcome ? <p className={outcome.ok ? 'account-todo' : 'settingrow-argument'}>{outcome.message}</p> : null}
+    </div>
+  )
+}
+
+/**
  * "Put it back in the rotation", with the fleet chosen at the same moment.
  *
  * THE FLEET IS PART OF THE SAME ACT, deliberately. `rejoinFleet` writes the membership
@@ -293,7 +388,15 @@ function RejoinControl({
           }}
           aria-label={`Which fleet @${handle} sends for`}
         >
-          <option value="">Bollywood (the original fleet)</option>
+          {/*
+            The empty option is "no explicit membership", which `effectiveCategories` reads as
+            bollywood. It is HIDDEN once a real `bollywood` Category row exists (2026-09-04),
+            or the list would offer the same fleet twice under two names and the operator
+            would have to guess which one the enforcers read.
+          */}
+          {!fleets.some((f) => f.slug === 'bollywood') && (
+            <option value="">Bollywood (the original fleet)</option>
+          )}
           {fleets.map((f) => (
             <option key={f.slug} value={f.slug}>
               {f.name}

@@ -689,3 +689,72 @@ describe('availability fed to rotation is machine-independent', () => {
     }
   })
 })
+
+/**
+ * ── THE GROUP RING, WHICH THE MARKETING FLEET ACTUALLY USES ──────────────────
+ *
+ * A recipient carrying a `CategoryTarget` row rotates through that CATEGORY's ring
+ * (`ringFor`), not the fleet ring — so every one of the 145 live marketing prospects takes
+ * this path. `fleetRingFor` has filtered on `fleetMember` since it was written and `ringFor`
+ * never did, and the difference was invisible while the only `CategorySender` row belonged to
+ * an account in the rotation. The 2026-09-04 migration takes that ring from one page to five.
+ */
+describe('whoseTurn on a group ring', () => {
+  async function addToCategory(handle: string, categoryId: string, position: number) {
+    await prisma.categorySender.create({
+      data: { categoryId, senderId: `s_${handle}`, position, enabled: true },
+    })
+  }
+
+  async function marketingCategory() {
+    const c = await prisma.category.create({
+      data: { id: 'c_marketing', slug: 'marketing', name: 'Marketing & advertising trade' },
+    })
+    await prisma.categoryTarget.create({ data: { categoryId: c.id, targetId: TARGET, enabled: true } })
+    return c
+  }
+
+  it('rotates through the CATEGORY ring, not the fleet ring', async () => {
+    const c = await marketingCategory()
+    await addSender('alpha')
+    await addSender('bravo')
+    await addToCategory('alpha', c.id, 0)
+    await addToCategory('bravo', c.id, 1)
+    await addDelivered('alpha', new Date(Date.now() - 3_600_000))
+
+    const turn = await whoseTurn({ targetId: TARGET })
+
+    expect(turn.ring).toBe('group')
+    expect(turn.choice.ok).toBe(true)
+    if (turn.choice.ok) expect(turn.choice.handle).toBe('bravo')
+  })
+
+  it('NEVER elects a page outside the rotation, even with a live membership row', async () => {
+    /* `removeSender` writes `fleetMember: false` and does NOT disable the membership, so a
+       retired page keeps its `CategorySender` row. Electing it would stall the recipient
+       forever: the turn only advances on a delivery it can never make. That is the 26 August
+       self-locking stall, and this is the assertion that makes the filter real rather than a
+       line nothing can fail for. */
+    const c = await marketingCategory()
+    await addSender('retired', { fleetMember: false })
+    await addSender('bravo')
+    await addToCategory('retired', c.id, 0)
+    await addToCategory('bravo', c.id, 1)
+
+    const turn = await whoseTurn({ targetId: TARGET })
+
+    expect(turn.choice.ok).toBe(true)
+    if (turn.choice.ok) expect(turn.choice.handle).toBe('bravo')
+  })
+
+  it('answers empty-ring when every member of the group has left the rotation', async () => {
+    const c = await marketingCategory()
+    await addSender('retired', { fleetMember: false })
+    await addToCategory('retired', c.id, 0)
+
+    const turn = await whoseTurn({ targetId: TARGET })
+
+    expect(turn.choice.ok).toBe(false)
+    if (!turn.choice.ok) expect(turn.choice.reason).toBe('empty-ring')
+  })
+})
