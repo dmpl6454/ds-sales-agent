@@ -34,6 +34,24 @@ describe('decideRoute — protected pages', () => {
     }
   })
 
+  /**
+   * ── /api/pulse IS PROTECTED, AND THAT IS THE DEFAULT WORKING (2026-09-04) ─────────
+   *
+   * `auto-refresh.tsx` polls this route every 30-45 s from every open tab to decide whether
+   * a page needs re-rendering. It reads five aggregates over the outreach, detection and
+   * settings tables — nothing a stranger may see, and nothing a stranger should be able to
+   * make the server compute on a loop. It is deliberately NOT in `PUBLIC_PATHS`; an
+   * anonymous poll gets the sign-in redirect, which the client treats as "do nothing". If
+   * this ever fails, somebody added it to the public list to make an expired-session tab
+   * quieter, and that is the wrong fix.
+   */
+  it('protects /api/pulse — the change-detection poll is behind the front door', () => {
+    expect(isPublic('/api/pulse')).toBe(false)
+    expect((PUBLIC_PATHS as readonly string[]).includes('/api/pulse')).toBe(false)
+    expect(decideRoute({ ...anon, pathname: '/api/pulse' })).toEqual({ kind: 'redirect-signin', next: '/api/pulse' })
+    expect(decideRoute({ ...authed, pathname: '/api/pulse' })).toEqual({ kind: 'allow' })
+  })
+
   it('carries the intended destination, including its query string', () => {
     expect(decideRoute({ ...anon, pathname: '/brands', search: '?sort=oldest' })).toEqual({
       kind: 'redirect-signin',
