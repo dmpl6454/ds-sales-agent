@@ -5,7 +5,7 @@ import { mayArmAccount } from './cohorts'
 import { replyHaltWhere } from './replyHalt'
 import { sameCategory, crossCategoryDetail } from './senderCategories'
 import { templateForSettings, type FleetTemplate } from './fleetTemplate'
-import { citesOnlyADate, followUpForSettings, type FollowUpTemplate } from './followUpTemplate'
+import { citesOnlyADate, followUpForSettings, isFollowUp, type FollowUpTemplate } from './followUpTemplate'
 import { readCategoryMemberships, categoriesFor } from './categories'
 import { profileStatus } from './browser/profile'
 import { sessionUsable } from './sessionHealth'
@@ -304,6 +304,15 @@ export const RESEND_BLOCKS = {
    * caps, they are conversation and account safety.
    */
   PAIR_DAILY_CAP: 'pair-daily-cap',
+  /**
+   * A second message from ONE page to ONE recipient on the same IST day (2026-09-04, Tabish).
+   *
+   * ABSOLUTE, and deliberately absent from `OVERRIDABLE_BLOCKS` for the reason `PAIR_DAILY_CAP`
+   * is: crossing a spacing rule sends one extra message, crossing a DAILY rule has no bound at
+   * all. Its remedy is the clock, so the landing page offers no button — a control that implies
+   * a fault where there is none is this dashboard's own documented failure.
+   */
+  FOLLOW_UP_SAME_DAY: 'follow-up-waits-for-tomorrow',
   /**
    * ── ONE RECIPIENT, ONE OF OUR PAGES (restored 2026-08-18 evening) ─────────
    *
@@ -613,6 +622,17 @@ export function evaluateResend(input: ResendInput): ResendResult {
     }
   }
 
+  /* The same rule the governor refuses to WRITE under, catching a draft written before it —
+     see SKIP_REASONS.FOLLOW_UP_SAME_DAY. Checked before the pair cap so a follow-up names the
+     rule actually binding it: the cap is five a day and this is one. */
+  if (input.isFollowUp && input.pairSentTodayCount > 0) {
+    return {
+      ok: false,
+      reason: RESEND_BLOCKS.FOLLOW_UP_SAME_DAY,
+      detail: `this account already wrote to this recipient today — a second message from the same page waits for tomorrow`,
+    }
+  }
+
   if (input.pairSentTodayCount >= input.maxPerPairPerDay) {
     return {
       ok: false,
@@ -689,7 +709,7 @@ export async function recheckBeforeSend(
   const { sender, target, senderId, targetId } = attempt.pair
 
   const materialWindowFloor = new Date(Date.now() - settings.defaultCooldownDays * 86_400_000)
-  const [replied, pairToday, ringDeliveries, eligibleSenderIds, ladder, senderRow, parked, targetCampaigns, targetDelivered, memberships, thisDraft, deliveredRows] =
+  const [replied, pairToday, ringDeliveries, eligibleSenderIds, ladder, senderRow, parked, targetCampaigns, targetDelivered, memberships, thisDraft, deliveredRows, everRepliedCount] =
     await Promise.all([
     prisma.outreachAttempt.findFirst({
       /**
@@ -808,8 +828,13 @@ export async function recheckBeforeSend(
       where: { senderId, targetId, status: { in: [...DELIVERED_STATUSES] }, id: { not: attempt.id } },
       select: { renderedBody: true },
     }),
+    /* Has this RECIPIENT ever replied to ANY of our pages? Unwindowed on purpose — this is not
+       the seven-day halt (that is `TARGET_REPLIED` above), it is the permanent fact that they
+       know who we are, which is what retires the standard message for them. See `isFollowUp`. */
+    prisma.outreachAttempt.count({ where: { targetId, replyPostedAt: { not: null } } }),
   ])
 
+  const targetEverReplied = everRepliedCount > 0
   const deliveredBodies = deliveredRows.map((r) => r.renderedBody.trim())
   const thisBody = thisDraft?.renderedBody.trim() ?? null
 
@@ -845,7 +870,16 @@ export async function recheckBeforeSend(
        touch here — `NOT_WAITING` and the null-body rule below already handle a row that
        vanished, and inventing a follow-up out of missing data is the direction this file
        refuses in every other place. */
-    isFollowUp: (thisDraft?.touchNumber ?? 1) > 1,
+    /* TWO facts, the same two the composer chose the bytes with — see `isFollowUp`. A
+       recipient who has EVER replied receives only follow-ups, from every page, so a page
+       whose own touch count is zero still writes a second message rather than an
+       introduction. Computed here from live rows rather than read off the draft, because a
+       draft written the hour before a reply would carry a stale answer and catching what has
+       changed since the draft was written is this function's whole job. */
+    isFollowUp: isFollowUp({
+      touchesSoFar: (thisDraft?.touchNumber ?? 1) - 1,
+      targetHasEverReplied: targetEverReplied,
+    }),
     followUpTemplate: followUpForSettings(
       settings,
       categoriesFor(memberships.bySenderHandle, sender.handle),

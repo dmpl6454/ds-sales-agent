@@ -397,6 +397,11 @@ export async function prepareOnDemand(senderHandle: string, targetHandle: string
       pair: { ...pair, sender, target },
       senderHandle: sender.handle,
       touchNumber: touches + 1,
+      /* The same fact the planner and the gate read: a recipient who has ever answered any of
+         our pages receives a follow-up, never the introduction. Queried here rather than
+         inferred from `touches`, which counts THIS pair only. */
+      targetHasEverReplied:
+        (await prisma.outreachAttempt.count({ where: { targetId: target.id, replyPostedAt: { not: null } } })) > 0,
       fleetTemplate: templateForSettings(
         settings,
         categoriesFor(memberships.bySenderHandle, sender.handle),

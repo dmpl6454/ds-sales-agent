@@ -269,6 +269,7 @@ async function composeClaimFor(page: string): Promise<string | null> {
     pair,
     senderHandle: page,
     touchNumber: 1,
+    targetHasEverReplied: false,
     fleetTemplate: FLEET_TEMPLATE,
     followUpTemplate: FOLLOW_UP,
     now: NOW,

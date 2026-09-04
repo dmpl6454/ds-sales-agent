@@ -183,6 +183,39 @@ export function followUpForSettings(
 }
 
 /**
+ * IS THIS MESSAGE A FOLLOW-UP? TWO FACTS, AND THE SECOND IS ABOUT THE RECIPIENT (2026-09-04).
+ *
+ * The pair's own history is the obvious one: a page that has written to this company before
+ * writes a second message, not an introduction.
+ *
+ * The other is Tabish's, and it is new: *"if the 7 day period has passed and they have replied
+ * then we don't need to ever send the normal message to them again ever, else if they never
+ * replied only follow up messages are sent."* A company that has ANSWERED any of our pages is
+ * in a conversation with us. The standard message is an INTRODUCTION — *"We're an Entertainment
+ * & Pop Culture Media Network…"* — and introducing ourselves to someone already talking to us
+ * reads as a machine rather than a network. It matters more now than it did yesterday, because
+ * the ring change of the same day means a second page reaches a replying recipient inside the
+ * same week BY DESIGN, and that second page has never written to them, so by touch count alone
+ * its message would be a first touch.
+ *
+ * MEASURED 2026-09-04: 116 recipients have replied to some page.
+ *
+ * So a recipient who has EVER replied receives only follow-ups, from every page, forever. The
+ * cost is real and is the intended half of the same instruction: a page with no post it can
+ * describe to them writes NOTHING rather than falling back to the introduction.
+ *
+ * COMPUTED, NEVER STORED. The composer asks it to choose which bytes to write and the gate asks
+ * it to choose which template to check, both from database facts both can read. Storing the
+ * answer on the draft would let a draft written the hour before a reply carry a stale one, and
+ * the gate exists precisely to catch what has changed since the draft was written.
+ *
+ * PURE.
+ */
+export function isFollowUp(args: { touchesSoFar: number; targetHasEverReplied: boolean }): boolean {
+  return args.touchesSoFar > 0 || args.targetHasEverReplied
+}
+
+/**
  * HOW A FOLLOW-UP NAMES THE POST IT IS FOR — "your placement on 30 Aug", and NOTHING ELSE.
  *
  * ── WE NEVER NAME THE PUBLISHER. THIS FUNCTION CANNOT (2026-09-01, Tabish) ────

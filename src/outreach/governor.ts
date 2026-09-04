@@ -36,7 +36,7 @@
 
 import { crossSpacingDetail, type CrossSpacingVerdict } from './crossSpacing'
 import type { FleetTemplate } from './fleetTemplate'
-import type { FollowUpTemplate } from './followUpTemplate'
+import { isFollowUp, type FollowUpTemplate } from './followUpTemplate'
 import { materialAllowanceDetail, type MaterialVerdict } from './materialAllowance'
 
 export interface GovernorInput {
@@ -59,6 +59,18 @@ export interface GovernorInput {
    * How many times this pair has been contacted.
    */
   touchesSoFar: number
+
+  /**
+   * Has this recipient EVER replied to ANY of our pages? (2026-09-04, Tabish.)
+   *
+   * REQUIRED, with no default, for the reason `fleetTemplate` is: a caller that forgot it would
+   * send a company already in conversation with us a fresh introduction, and having the
+   * compiler name every call site is cheaper than finding that in a delivered thread.
+   *
+   * DISTINCT from `targetRepliedAt`, which is the ACTIVE halt and expires after a week. This
+   * one never expires: the fact that someone answered us does not stop being true.
+   */
+  targetHasEverReplied: boolean
 
   /** Any reply from this target, to ANY of our senders. Halts everything. */
   targetRepliedAt: Date | null
@@ -237,6 +249,7 @@ export const SKIP_REASONS = {
   /** Every paid post we have seen naming this recipient has already been written about. */
   MATERIAL_EXHAUSTED: 'material-exhausted',
   PAIR_DAILY_CAP: 'pair-daily-cap',
+  FOLLOW_UP_SAME_DAY: 'follow-up-waits-for-tomorrow',
   TARGET_RECENTLY_CONTACTED: 'target-recently-contacted',
   TARGET_NOT_VERIFIED: 'target-not-verified',
   /**
@@ -489,7 +502,7 @@ export function evaluatePair(input: GovernorInput): GovernorDecision {
   // about before for this pair. Without this, a second message is a byte-identical
   // repeat of the standard template, drafted again every day forever, and
   // repetition is precisely what lowers the enforcement threshold.
-  if (input.touchesSoFar > 0 && input.unusedCampaignCount === 0) {
+  if (isFollowUp(input) && input.unusedCampaignCount === 0) {
     return {
       eligible: false,
       reason: SKIP_REASONS.NO_NEW_MATERIAL,
@@ -505,7 +518,7 @@ export function evaluatePair(input: GovernorInput): GovernorDecision {
    * a new paid post — not a textarea, which is why it does not join the two follow-up
    * stops checked last.
    */
-  if (input.touchesSoFar > 0 && input.describableCampaignCount === 0) {
+  if (isFollowUp(input) && input.describableCampaignCount === 0) {
     return {
       eligible: false,
       reason: SKIP_REASONS.NO_DESCRIBABLE_POST,
@@ -529,6 +542,35 @@ export function evaluatePair(input: GovernorInput): GovernorDecision {
   }
 
   // Five per day from one account to one recipient (2026-08-18, Tabish).
+  /**
+   * ── A SECOND MESSAGE FROM ONE PAGE WAITS FOR TOMORROW (2026-09-04, Tabish) ──
+   *
+   * *"follow up messages by the same sender are not sent the very same day for the target,
+   * they are instead sent the very next day … madabout (if it is sole or others in the ring
+   * are exhausted) sends the follow up message the very next day (not the same day)."*
+   *
+   * MEASURED over 14 days: 16 pair-days carried more than one delivery and 5 carried three or
+   * more — @madaboutmarketingg wrote to @supersox_india at 14:26, 14:36 and 14:48 on 2
+   * September. With one page in the marketing ring, a second paid post detected the same
+   * afternoon becomes a second message the same afternoon, and from the recipient's side that
+   * is one page writing three times in twenty minutes.
+   *
+   * A FIRST touch is untouched: it is the only message that pair has ever sent, and the pair
+   * cap below is what bounds it.
+   *
+   * Checked BEFORE the pair cap so a follow-up names the rule actually binding it — the cap is
+   * five a day and this is one, so for a follow-up this is always the tighter of the two.
+   * The day boundary is the same IST one `pairSentTodayCount` is counted against, so the two
+   * cannot name different days across midnight.
+   */
+  if (isFollowUp(input) && input.pairSentTodayCount > 0) {
+    return {
+      eligible: false,
+      reason: SKIP_REASONS.FOLLOW_UP_SAME_DAY,
+      detail: `this account already wrote to this recipient today — a second message from the same page waits for tomorrow`,
+    }
+  }
+
   if (input.pairSentTodayCount >= input.maxPerPairPerDay) {
     return {
       eligible: false,
@@ -546,7 +588,7 @@ export function evaluatePair(input: GovernorInput): GovernorDecision {
    * A FIRST touch never reaches this — `touchesSoFar` is 0 — so writing no follow-up copy
    * leaves first-touch outreach byte-for-byte as it was.
    */
-  if (input.touchesSoFar > 0 && !input.followUpTemplate.ok) {
+  if (isFollowUp(input) && !input.followUpTemplate.ok) {
     return {
       eligible: false,
       reason: SKIP_REASONS.NO_FOLLOW_UP_TEMPLATE,

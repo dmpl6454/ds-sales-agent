@@ -177,6 +177,9 @@ export const REMEDIES = {
 
   // Clears by waiting — five a day from one account to one recipient.
   [RESEND_BLOCKS.PAIR_DAILY_CAP]: { href: null, label: 'The allowance resets at midnight IST.' },
+  /* Nothing a person can press releases this — the remedy is the clock, and offering a button
+     would imply a fault where there is none. */
+  [RESEND_BLOCKS.FOLLOW_UP_SAME_DAY]: { href: null, label: 'It goes out tomorrow.' },
 
   /**
    * No control, deliberately. The remedy for "another of our pages already wrote to this

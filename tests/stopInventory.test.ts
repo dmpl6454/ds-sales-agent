@@ -199,6 +199,9 @@ const GOVERNOR_CASES: Array<[string, Record<string, unknown>]> = [
   [SKIP_REASONS.NO_FOLLOW_UP_TEMPLATE, { touchesSoFar: 1, followUpTemplate: FOLLOW_UP_UNWRITTEN }],
   // Five per day from one account to one recipient (2026-08-18).
   [SKIP_REASONS.PAIR_DAILY_CAP, { pairSentTodayCount: 5, maxPerPairPerDay: 5 }],
+  /* A follow-up (touchesSoFar > 0) from a page that already wrote today. One is under the cap
+     of five, which is the point: for a follow-up this is the tighter of the two rules. */
+  [SKIP_REASONS.FOLLOW_UP_SAME_DAY, { touchesSoFar: 1, pairSentTodayCount: 1, maxPerPairPerDay: 5 }],
   /**
    * The RING RULE (2026-08-19): the stop stays REACHABLE only when every eligible page
    * has written inside the window — built by the real predicate so this case cannot go
@@ -319,6 +322,7 @@ const GATE_CASES: Array<[string, Record<string, unknown>]> = [
   [RESEND_BLOCKS.NO_SESSION, { senderHasSession: false }],
   // Five per day from one account to one recipient (2026-08-18).
   [RESEND_BLOCKS.PAIR_DAILY_CAP, { pairSentTodayCount: 5, maxPerPairPerDay: 5 }],
+  [RESEND_BLOCKS.FOLLOW_UP_SAME_DAY, { isFollowUp: true, pairSentTodayCount: 1, maxPerPairPerDay: 5 }],
   // The ring rule (2026-08-19): reachable only when every page has written in-window.
   [RESEND_BLOCKS.TARGET_RECENTLY_CONTACTED, { crossSpacing: RING_HOLD }],
   /**
@@ -532,6 +536,9 @@ describe('every gate stop is reachable and explains itself', () => {
       RESEND_BLOCKS.NO_SESSION,
       // The last bound on volume: crossing it has no bound at all.
       RESEND_BLOCKS.PAIR_DAILY_CAP,
+      /* Same reasoning one rule tighter: crossing a spacing rule sends one extra message,
+         crossing a DAILY rule has no bound. Its remedy is the clock, not a judgement call. */
+      RESEND_BLOCKS.FOLLOW_UP_SAME_DAY,
       /**
        * Crossing this would put a second of our pages in an inbox the first one reached
        * hours ago — the cross-account fingerprint the fleet design exists to avoid, and

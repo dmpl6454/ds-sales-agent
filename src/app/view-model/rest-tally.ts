@@ -2,6 +2,7 @@ import { prisma } from '@/lib/db'
 import { memoView, viewKey } from '@/lib/viewMemo'
 import { getSettings } from '@/lib/settings'
 import { DELIVERED_STATUSES, IN_FLIGHT_STATUSES } from '@/lib/constants'
+import { istDayStart } from '@/lib/time'
 import { newMaterialFloor } from '@/lib/cutoff'
 import { SKIP_REASONS } from '@/outreach/governor'
 import { BRAND_BLOCKS, checkRecipientIsNotAPerson } from '@/outreach/brandGuards'
@@ -175,6 +176,17 @@ const REST_RULES: Record<string, { label: string; needsAPerson: boolean; clock?:
     label:
       'no paid post of theirs in the last 7 days — they have already been written to, so the next message waits until a channel we watch posts about them again',
     needsAPerson: false,
+  },
+  [SKIP_REASONS.FOLLOW_UP_SAME_DAY]: {
+    /**
+     * The clock is the only remedy, so `clock` carries it and no control is offered — see
+     * `REMEDIES`, where this is deliberately `href: null`. A button here would imply a fault
+     * where there is none, which is the defect this dashboard's own design keeps correcting.
+     */
+    label:
+      'the page whose turn it is already wrote to them today — a second message from the same page waits for tomorrow',
+    needsAPerson: false,
+    clock: 'tomorrow',
   },
   [SKIP_REASONS.TARGET_REPLIED]: {
     label: 'they replied — every one of our pages pauses for seven days from the date they wrote, then resumes on its own',
@@ -490,6 +502,24 @@ async function computeRestTally(now: Date): Promise<RestTally> {
    */
   const watchChannels = watchMarksFrom(watchRows)
   const personHandles = await readPersonHandles(prospects.map((p) => p.handle))
+
+  /**
+   * WHICH RECIPIENTS HAVE EVER REPLIED — the second half of `isFollowUp` (2026-09-04).
+   *
+   * UNWINDOWED on purpose: this is not the seven-day halt above, it is the permanent fact that
+   * a company has answered us, and once it has, no page sends them the standard message again.
+   * The panel must read the same fact the planner does or it will predict a first touch the
+   * planner will refuse to write.
+   */
+  const everRepliedTargetIds = new Set(
+    (
+      await prisma.outreachAttempt.findMany({
+        where: { targetId: { in: prospects.map((p) => p.id) }, replyPostedAt: { not: null } },
+        select: { targetId: true },
+        distinct: ['targetId'],
+      })
+    ).map((r) => r.targetId),
+  )
   const pending = inFlightAndParked.filter((a) => a.status !== 'FAILED')
   const parked = inFlightAndParked.filter((a) => a.status === 'FAILED')
 
@@ -526,6 +556,7 @@ async function computeRestTally(now: Date): Promise<RestTally> {
   const allDeliveriesPerTarget = new Map<string, Date[]>()
   const lastSenderPerTarget = new Map<string, string>()
   const deliveredPairKeys = new Set<string>()
+  const sentTodayPairKeys = new Set<string>()
   for (const d of deliveries) {
     if (!d.sentAt) continue
     const list = allDeliveriesPerTarget.get(d.pair.targetId)
@@ -536,6 +567,9 @@ async function computeRestTally(now: Date): Promise<RestTally> {
     lastBySenderPerTarget.set(d.pair.targetId, m)
     lastSenderPerTarget.set(d.pair.targetId, d.pair.senderId)
     deliveredPairKeys.add(`${d.pair.targetId}:${d.pair.senderId}`)
+    /* A delivery from THIS page to THIS recipient today (IST) — the same boundary the pair cap
+       is counted against, so the two cannot name different days across midnight. */
+    if (d.sentAt >= istDayStart(now)) sentTodayPairKeys.add(`${d.pair.targetId}:${d.pair.senderId}`)
   }
 
   /** Keyed by `replyHaltKey`, so this tally groups replies the way the gate scopes them. */
@@ -719,7 +753,7 @@ async function computeRestTally(now: Date): Promise<RestTally> {
      */
     const key = `${p.id}:${electedId}`
     const electedPairId = pairIdByKey.get(key)
-    if (electedPairId && deliveredPairKeys.has(key)) {
+    if (electedPairId && (deliveredPairKeys.has(key) || everRepliedTargetIds.has(p.id))) {
       /**
        * NO LONGER CAPPED, because it no longer costs a query. `PAIR_PRECISION_LIMIT` existed
        * only to bound the round trips; with the usage preloaded above this is a map lookup,
@@ -786,7 +820,16 @@ async function computeRestTally(now: Date): Promise<RestTally> {
      * waiting on the follow-up copy. `deliveredPairKeys` is `touchesSoFar > 0` for the
      * ELECTED pair, which is exactly the condition the governor applies.
      */
-    if (deliveredPairKeys.has(`${p.id}:${electedId}`)) {
+    /* `isFollowUp`'s two facts, mirrored: this pair's own history OR a reply from this
+       recipient to ANY page. A page that has never written to a company that has already
+       answered us still writes a follow-up, never the introduction. */
+    if (deliveredPairKeys.has(`${p.id}:${electedId}`) || everRepliedTargetIds.has(p.id)) {
+      /* And a second message from ONE page waits for tomorrow — the governor's own arm, in the
+         governor's own position, ahead of the template check for the same reason. */
+      if (sentTodayPairKeys.has(`${p.id}:${electedId}`)) {
+        bump(SKIP_REASONS.FOLLOW_UP_SAME_DAY, null)
+        continue
+      }
       const followUp = followUpForSettings(
         settings,
         /* The elected page's handle, from the ring already in hand — memberships are keyed by
