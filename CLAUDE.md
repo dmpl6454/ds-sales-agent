@@ -5,6 +5,60 @@ changing anything that touches sending.
 
 ---
 
+## 4 SEPTEMBER, EVENING — ANOTHER OPERATOR PAIRED A MAC AND IT WAS INVISIBLE
+
+**Tabish: *"Another user has installed the agent (opened the dmg via double click), we cannot
+see any paired devices whatsoever."*** MEASURED before touching anything: **0 paired devices, 0
+pending enrolment rows, and no `device.paired` audit row other than the 3 September tests.**
+
+**THE INSTALLER WAS FINE. THE PAIRING WAS INVISIBLE.** Two things had to be true at once and
+both were:
+
+1. **`/devices/enrol?code=…` redirected to `/sign-in` with NO `?next=`, so the code went with
+   it.** That is the COMMON path rather than an edge case: the installer opens that URL in the
+   operator's browser, and a NEW operator — the entire reason the DMG exists — is by definition
+   not signed in yet. They sign in, land on `/`, and the code is gone.
+2. **NOTHING ELSE HAS EVER LISTED A PENDING PAIRING.** `findByUserCode` was the only reader and
+   it needs the exact code from that URL; `/senders` → Paired Macs reads `authorized_keys`, so
+   it can only ever show devices ALREADY approved. Between them a request that was waiting
+   appeared on no screen at all, and fifteen minutes later it expired leaving nothing behind.
+
+That is this project's most expensive recurring failure — *nothing renders an absence* — in the
+one flow a new operator meets first. Three hypotheses were refuted on the way and are recorded
+so nobody re-chases them: the installer sends the right field names (`deviceName`/`publicKey`);
+`node` is installed at line 78, well before the enrolment POST at line 176, so a Mac with no
+node is not the cause; and **both** accounts are operators, `team@digitalsukoon.com` included,
+so the shared login could always have approved.
+
+- The redirect carries `?next=`, honoured through `safe-next.ts`, which refuses an off-site
+  target. **The code is read BEFORE the redirect decision**, or there would be nothing to carry.
+- **`listPendingEnrolments` + a "Macs waiting to be approved" section on `/senders`**, with the
+  fingerprint to check against the Mac's own dialog, the code, and an Approve button. Approving
+  needs no URL and nothing remembered. Expired rows are filtered rather than shown, because a
+  person cannot act on one.
+- **`startEnrolment` now writes a `device.enrol.requested` audit row.** It wrote nothing, so
+  *"the installer never phoned home"* and *"it did, and nobody approved inside fifteen minutes"*
+  were indistinguishable from the server — two problems with completely different remedies. It
+  can never fail the enrolment: a missing audit row is worth less than a pairing.
+
+**VERIFIED LIVE against production with a real enrolment**, not by reading: the unauthenticated
+approve link answered `307 → /sign-in?next=%2Fdevices%2Fenrol%3Fcode%3DTBMJ98NA`, and `/senders`
+rendered *"pairing visibility probe · SHA256:NuUY0/PO… · TBMJ98NA · Approve this Mac"*. The
+audit row appeared. The probe row and its session were then deleted; **0 pending enrolments and
+0 stray keys remain.**
+
+**WHAT THE OTHER OPERATOR MUST DO: run the installer again.** Their first request expired
+unapproved and nothing can revive it — the row is gone by design. The second attempt shows up
+on `/senders` for anyone signed in, with no link to keep.
+
+| | |
+|---|---|
+| tests / typecheck | **2,261 / 127 files**, clean; both halves mutation-tested |
+| deploy | zero-gap reload, dashboard 200 throughout |
+| DMG | rebuilt from `6af53a0`, notarised, and byte-identical on the server |
+
+---
+
 ## 4 SEPTEMBER, LATE — A FOLLOW-UP NAMED THE PUBLISHER'S OWN EVENT, AND THE RING NOW PASSES THE TURN
 
 **Tabish, from the delivered threads and with four instructions in one message: fix
