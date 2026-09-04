@@ -100,7 +100,15 @@ export function AddSenderForm({ fleets }: { fleets: { slug: string; name: string
             <label>
               <span>Sends for</span>
               <select value={fleet} onChange={(e) => setFleet(e.target.value)}>
-                <option value="">Bollywood (the original fleet)</option>
+                {/*
+                  The empty option means "no explicit membership", which `effectiveCategories`
+                  reads as bollywood. It is HIDDEN once a real `bollywood` Category row exists
+                  (2026-09-04) — otherwise this list offers the SAME fleet twice under two
+                  names and the operator has to guess which one the enforcers read.
+                */}
+                {!fleets.some((f) => f.slug === 'bollywood') && (
+                  <option value="">Bollywood (the original fleet)</option>
+                )}
                 {fleets.map((f) => (
                   <option key={f.slug} value={f.slug}>
                     {f.name}
