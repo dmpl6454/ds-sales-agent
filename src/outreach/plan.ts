@@ -12,7 +12,7 @@ import { materialAllowance, campaignsNamingHandle, campaignsNamingHandleRows } f
 import { eligibleFleetSenderIds } from './availability'
 import { routeAllowed } from './routes'
 import { readCategoryMemberships, categoriesFor } from './categories'
-import { composeForPair, freshCampaignsFor } from './compose'
+import { composeForPair, freshCampaignsFor, readPersonHandles, readWatchChannels } from './compose'
 import {
   followUpForSettings,
   followUpPostReference,
@@ -300,6 +300,18 @@ export async function runOutreach(): Promise<PlanSummary> {
   const unavailableSenders = await readSenderAvailability()
 
   /**
+   * THE COMPETITOR LIST AND THE PERSON VERDICTS — once per pass, never per pair (2026-09-04).
+   *
+   * `followUpSubject` strips every channel we WATCH (a round-up by one watched page can name
+   * another, and a brand string is enough to make it a subject) and speaks a third party's name
+   * only when the recipient is a PERSON by `BrandLookup`'s own verdict. Both are batched reads
+   * here beside the other preloads, for the reason every other preload in this file exists: a
+   * lookup per pair is the N+1 this planner has killed four times.
+   */
+  const watchChannels = await readWatchChannels()
+  const personHandles = await readPersonHandles(pairs.map((p) => p.target.handle))
+
+  /**
    * The fleet ring per recipient, from the routes that ALREADY EXIST.
    *
    * `pairs` is scoped to `fleetMember: true` above, so grouping it is exactly the set of
@@ -546,7 +558,18 @@ export async function runOutreach(): Promise<PlanSummary> {
       .sort((a, b) => b.postedAt.getTime() - a.postedAt.getTime())
       .flatMap((c) => {
         const about = campaignSubjectById.get(c.id)
-        const subject = about ? followUpSubject(readStringArray(about.brands), about.publisher, pair.target) : null
+        const subject = about
+          ? followUpSubject(
+              readStringArray(about.brands),
+              about.publisher,
+              {
+                handle: pair.target.handle,
+                displayName: pair.target.displayName,
+                isPerson: personHandles.has(pair.target.handle),
+              },
+              watchChannels,
+            )
+          : null
         return subject === null ? [] : [{ id: c.id, postedAt: c.postedAt, subject }]
       })
 
