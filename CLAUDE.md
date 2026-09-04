@@ -5,6 +5,183 @@ changing anything that touches sending.
 
 ---
 
+## 4 SEPTEMBER, LATE — A FOLLOW-UP NAMED THE PUBLISHER'S OWN EVENT, AND THE RING NOW PASSES THE TURN
+
+**Tabish, from the delivered threads and with four instructions in one message: fix
+`followUpSubject` first; let a sender hold Bollywood, marketing, both or none, and put every
+Bollywood page in the marketing fleet too; stop a page sending a follow-up to the same target
+twice in one day; and make the ring hand the turn to the next page whose route is clear.** All
+four are live. Every number below was measured against production before anything changed.
+
+### THE 14 WRONG MESSAGES WERE THREE DEFECTS, AND A FOURTH WAS ONLY VISIBLE ONCE THE FIRST WAS FIXED
+
+On 2 September @madaboutmarketingg delivered **14 follow-ups to five companies** reading *"your
+Social Samosa placement"*, *"your Festive Marketing Camp placement"* and *"your Realize
+placement"* — a WATCHED competitor's own name, that competitor's own event, and the event's
+sponsor, each presented to a gifting partner as THEIR placement. The copy was cleared on 4 Sept
+to stop it. Walked through on the post that caused it, `DcyE65LPYMj` by @officialsocialsamosa,
+whose real `brands` array is
+`["@socialsamosaevents","Realize","itsbevygood","plumbodylovin","supersox_india","farmleyin"]`:
+
+1. **THE ALL-LOWERCASE FILTER RAN BEFORE THE CO-ADVERTISER PARTITION.** It deleted the four bare
+   handles a publisher stores as brand strings, so a **five-advertiser round-up read as a
+   one-subject post** and the recipient's own name was gone before the partition could count it.
+   A lowercase token is still never SPOKEN — it is a hashtag artefact or a bare handle, not a
+   title — but it is EVIDENCE that the post names another advertiser. `candidates` now counts
+   what `speakable` refuses to say.
+2. **ONLY THE PUBLISHER'S MARKS WERE STRIPPED, AND ONLY IN ONE DIRECTION.** `isOwnMark` tests a
+   token that CONTAINS the handle (`thefilmygyan`); `"Social Samosa"` squashes to
+   `socialsamosa` while the handle is `officialsocialsamosa`, so the containment runs the OTHER
+   way and the publisher's own name survived its own post. `isChannelMark` adds the bounded
+   REVERSE containment and `stripChannelMarksFromBrands` runs it over **every WATCH row** — a
+   round-up by one competitor can name another.
+3. **`campaignTalent` WAS THE TALENT GATE AND IT IS VACUOUS.** MEASURED over 812 live prospects:
+   it is TRUE on **612**, of which only **423 carry a PERSON verdict — 189 are companies wearing
+   the flag.** All five wrong recipients were `campaignTalent` brands. The arm now reads
+   `BrandLookup.kind === 'PERSON'`; UNKNOWN, UNRESOLVED, MISSING and a missing row are all
+   `false`, because absence of data must never become a positive verdict. That is the @tips
+   vacuous-test lesson arriving one field along.
+
+**AND THE FOURTH WAS FOUND BY RE-RENDERING THE FIXED RULE AGAINST THE LIVE CORPUS BEFORE
+RESTORING THE COPY — which is the only reason it was caught.** With the lowercase half fixed,
+"Social Samosa" and "Realize" were gone and **"Festive Marketing Camp" survived**: post
+`Dcxgro6MeQs` carries exactly `["@socialsamosaevents","Festive Marketing Camp"]`, and the `@`
+entry was dropped before the partition, leaving ONE candidate for the talent arm to name to
+every person on the list. **It is the same defect one filter along** — both were SPEAKABILITY
+rules doing duty as CANDIDACY rules, and both destroyed the evidence the partition needs. *The
+second was invisible until the first was fixed*, because while the lowercase entries were also
+being deleted that post refused for the wrong reason.
+
+| re-rendered over 574 in-window paid posts × 812 live prospects | |
+|---|---|
+| subjects naming a watched channel | **0** |
+| "Social Samosa" / "Festive Marketing Camp" / "Realize" | **never produced** |
+| the founding post `DcyE65LPYMj` | **refused for all five** recipients it wrongly named |
+| Maybelline, Nykaa, Taneira, Sebamed, Mirzapur The Movie | **still named** |
+
+**THE BACKUP THE AUDIT ROW PROMISED DOES NOT EXIST.** The `setting.cleared` row says *"Body
+backed up; restore with the same key"* and there is no backup — not in a Setting, not in any
+audit detail. It was recovered from stronger evidence: **all 19 delivered marketing follow-ups
+reconstruct to ONE template, byte-identical to the default `followUpBody`.** The restore script
+re-derives it and REFUSES if the delivered bodies do not agree. `followUpBody:marketing` is
+restored with an audit row naming that evidence. **An audit row claiming a backup is not a
+backup; the only backup that counts is one you can read back.**
+
+### EVERY BOLLYWOOD PAGE NOW SENDS FOR MARKETING TOO, AND THE RING GREW FROM ONE TO FIVE
+
+MEASURED before: **ONE `Category` row (`marketing`) and ONE `CategorySender` row**
+(@madaboutmarketingg). The four bollywood pages held none, because bollywood has always been
+the ABSENCE of a membership. So the set intersection already supported two fleets and nothing
+had ever exercised it.
+
+- **`setSenderFleets` is the control that was missing.** `rejoinFleet` takes ONE slug and only
+  works on an account that has LEFT the rotation, so there was no way to give a page a second
+  fleet or take one away. **Checkboxes, not a dropdown** — a select expresses exactly one
+  choice, so "both" and "none" are unsayable in it. Preview-then-confirm, because adding a
+  fleet wires the page to every live recipient of it; changing a box disarms the confirmation.
+- **`ringFor` now filters `sender.fleetMember`**, which `fleetRingFor` has always done. The
+  difference was invisible while the only membership belonged to an account in the rotation.
+  `removeSender` writes `fleetMember: false` WITHOUT disabling the membership, so a retired
+  page would stay a ring member, be elected, and stall the recipient forever — the 26 August
+  self-locking stall exactly.
+- **`pnpm ig:sender-fleets --run`** (DRY RUN BY DEFAULT) created the `bollywood` Category row,
+  gave every page in the rotation its explicit fleets, added marketing to the four bollywood
+  ones and created **432 routes**. It deliberately does NOT give @madaboutmarketingg bollywood
+  — that was not asked for and its copy names Mad About Marketing — and never touches an
+  account outside the rotation.
+
+**MEASURED LIVE, the pass after the deploy:** the planner went **`queued=0` → `queued=48`**,
+`different-category` **208 → 60**, `not-this-senders-turn` 41 → 237, the waiting queue 1 → 105.
+The marketing ring reads **5 members** and elected **@totalfilmii** — a bollywood page — for
+@amazondotin. Verified on the delivered bytes: 8 of 8 recent deliveries from @totalfilmii to
+marketing recipients carry the **MARKETING copy**, and in the last hour **0 bollywood
+recipients received the marketing copy and 0 marketing recipients received anything else.**
+
+**DELIBERATELY NOT CHANGED, AND THIS IS THE DECISION MOST WORTH RECORDING.** I began making an
+absent SENDER membership mean "no fleet" rather than bollywood, and reverted it. **The suite
+measured the blast radius at 168 failures** — every fixture has senders with no membership —
+and none of the three things asked for needs it: "both" needs two rows, "all bollywood pages
+also marketing" is the migration, and **"none" is already `fleetMember: false`**, enforced in
+three places and covered by tests. Shipping it would have risked a fleet-wide outage if the
+migration ordering slipped, for no requirement. **Absence still means bollywood at BOTH ends.**
+
+### THE TURN PASSES TO THE NEXT PAGE WHOSE ROUTE IS CLEAR
+
+Until now the turn advanced only on a DELIVERY, so a page that could not deliver HELD the
+recipient. `readBlockedRoutes` has routed around a PARKED route since 24 August; **the reply
+halt was the missing half**, and `nextSender` already walked past a blocked member — so this is
+one query, not a new mechanism.
+
+> **THE EXPOSURE, STATED RATHER THAN SMOOTHED OVER: a recipient mid-conversation with page A
+> will now hear from page B inside the same week.** That is the trade Tabish chose and it is
+> the logical content of scoping the reply halt to the PAIR on 1 September — the whole point of
+> a pair-scoped halt is that the other pages keep writing, and all that changes is that they no
+> longer queue behind the halted one. Every page signs with the same phone number, so "a
+> different page" is transparent to the person who replied. MEASURED: **116 recipients have
+> replied to some page.**
+
+**`replyHaltScope=target` restores the fleet-wide halt in one Setting row, and under it this
+writes NO reply blocker at all** — when the halt covers every page there is no clear page to
+pass to, and skipping to one would be exactly the widening that scope refuses. The scope is
+READ rather than assumed. Mirrored in `rest-tally` from rows it already holds, or the panel
+would name the halted page as next while the planner elected a different one.
+
+### TWO FOLLOW-UP RULES, ONE SHARED PREDICATE
+
+- **`FOLLOW_UP_SAME_DAY`** — a follow-up is refused when this page already delivered to this
+  recipient today (IST). MEASURED over 14 days: **16 pair-days carried more than one delivery
+  and 5 carried three or more** — @madaboutmarketingg wrote to @supersox_india at 14:26, 14:36
+  and **14:48 on 2 September**. Checked BEFORE the pair cap so a follow-up names the rule
+  actually binding it: the cap is five a day and this is one. NOT overridable, for the reason
+  `PAIR_DAILY_CAP` is not — crossing a spacing rule sends one extra message, crossing a daily
+  rule has no bound. Its remedy is the clock, so the landing page offers **no button**.
+- **`isFollowUp(touchesSoFar, targetHasEverReplied)`** — *"if the 7 day period has passed and
+  they have replied then we don't need to ever send the normal message to them again ever."* A
+  company that has answered ANY page is in a conversation, and the standard message is an
+  INTRODUCTION. It matters more after the ring change, which sends a second page to a replying
+  recipient inside the same week BY DESIGN — and that page's own touch count is zero, so by
+  touch alone its message would be a first touch. **COMPUTED, NEVER STORED**: the composer asks
+  it to choose the bytes and the gate asks it to choose the template, both from facts both can
+  read; storing it would let a draft written the hour before a reply carry a stale answer.
+
+`targetHasEverReplied` is REQUIRED on `GovernorInput` and on `composeForPair`, so the compiler
+named every call site. It is deliberately distinct from `targetRepliedAt`, which is the
+seven-day halt and expires; **this one never does.**
+
+### AND `/` WENT OVER ITS BUDGET, SO QUERIES CAME OUT RATHER THAN THE CEILING GOING UP
+
+The two facts the new rules need took `/` to **161 against 160**. `buildRestTally` was reading
+`OutreachAttempt` **three times** — delivered, replied, in-flight-and-parked — then partitioning
+by columns already in the select. It is **one read and four JS partitions** now, and the reply
+read widened to every reply ever because the seven-day halt and "has ever replied" are
+different windows over the same 162 rows. **`/` 161 → 156**, so four queries of headroom where
+there were two before any of this — and this file records two as *"a budget failure that has
+not happened yet."*
+
+| | |
+|---|---|
+| tests / typecheck | **2,257 / 127 files**, clean; every new guard mutation-tested in both directions |
+| `pnpm ig:layout` | **ALL PASSED** — `/` 156/160, `/targets` 47, `/paid-posts` 44, `/analytics` 35 |
+| deploy | zero-gap reload onto `.next-b`, dashboard 200 throughout |
+| autopilot | **ON**, delivering — 8 in the last 15 min, 66/24h, queue 105, 0 SENDING |
+| same-day | **0 pairs delivered more than once today** |
+| DMG | rebuilt from `ce5cd80`, **`spctl: accepted — source=Notarized Developer ID`**, and local, server and the hosted download are **byte-identical by SHA-256** |
+
+**FOUND BY READING THE SERVED PAGE, NOT BY A TEST:** every fleet dropdown carried a hardcoded
+*"Bollywood (the original fleet)"* option because bollywood had no `Category` row to list. The
+migration creates one, so all three lists started offering **the same fleet twice under two
+names**. Hidden whenever a real `bollywood` row exists; kept for a deployment that has not run
+the migration.
+
+**NAMED, NOT FIXED.** Brand discovery is still livelocked on the home IP —
+`looked=1 created=0 unreached=83 haltedEarly=true`, the documented signature, unchanged from
+the morning. Sends are material-bound and this is the material. And `FOLLOW_UP_SAME_DAY` has
+not yet appeared in a live planner tally: the queue was drained and refilled with first
+touches, so the rule is proven by its tests and its mutations rather than by production, and it
+will show in the tally as follow-ups resume.
+
+---
+
 ## 4 SEPTEMBER — THE 502 WAS A PILE-UP ON A PAGING BOX, AND ONE OOM TOOK EVERY OTHER SITE DOWN WITH OURS
 
 **Tabish, with Cloudflare's "Bad gateway 502" at 06:21 UTC: *"The website crashes and is very
