@@ -87,7 +87,12 @@ export interface ConversationsPageView {
   }[]
 }
 
+/** Memoised (single-flight, 10 s) — see `src/lib/viewMemo.ts`. */
 export async function buildConversationsPage(): Promise<ConversationsPageView> {
+  return memoView(viewKey('conversationsPage'), computeConversationsPage)
+}
+
+async function computeConversationsPage(): Promise<ConversationsPageView> {
   const settings = await getSettings()
   const [unhandled, delivered, coverage] = await Promise.all([
     /**

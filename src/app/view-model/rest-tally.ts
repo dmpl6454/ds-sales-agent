@@ -334,7 +334,17 @@ export interface RestTally {
  * `RestTally` does not move under its callers; nothing can make it non-zero any more.
  */
 
+/**
+ * Memoised (single-flight, 10 s) — see `src/lib/viewMemo.ts`. The key deliberately EXCLUDES
+ * `now`: it defaults to the current instant, so keying on it would make every call a miss
+ * and the memo decorative. Production callers pass nothing; a test that passes an explicit
+ * clock runs with the memo off (VITEST) and gets exactly the instant it asked for.
+ */
 export async function buildRestTally(now: Date = new Date()): Promise<RestTally> {
+  return memoView(viewKey('restTally'), () => computeRestTally(now))
+}
+
+async function computeRestTally(now: Date): Promise<RestTally> {
   const settings = await getSettings()
   const allowanceFloor = new Date(now.getTime() - settings.defaultCooldownDays * 86_400_000)
   const materialFloor = newMaterialFloor(now)

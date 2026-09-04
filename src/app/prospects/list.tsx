@@ -23,7 +23,16 @@ import type { ProspectRow } from '../view-model/prospects-page'
  * whether this recipient is retired. Both are facts about the world rather than settings, which
  * is the whole point of the one-switch change.
  */
-export function ProspectList({ prospects, sendersAble }: { prospects: ProspectRow[]; sendersAble: number }) {
+export function ProspectList({
+  prospects,
+  sendersAble,
+  messagedTotal,
+}: {
+  prospects: ProspectRow[]
+  sendersAble: number
+  /** The messaged group's FULL count — the rows in hand are one page of it (2026-09-04). */
+  messagedTotal: number
+}) {
   if (prospects.length === 0) {
     return (
       <section className="group">
@@ -74,6 +83,7 @@ export function ProspectList({ prospects, sendersAble }: { prospects: ProspectRo
         title="Companies we message"
         note="Found inside those paid posts, or added by hand. Their posts are not read; we only write to them."
         rows={messaged}
+        total={messagedTotal}
         sendersAble={sendersAble}
       />
     </>
@@ -84,20 +94,23 @@ function Group({
   title,
   note,
   rows,
+  total,
   sendersAble,
 }: {
   title: string
   note: string
   rows: ProspectRow[]
+  /** When the rows are ONE PAGE of a larger group, the heading names the group's total. */
+  total?: number
   sendersAble: number
 }) {
-  if (rows.length === 0) return null
+  if (rows.length === 0 && !total) return null
   /* Every row here is live: retired targets are excluded at the query (2026-08-25, Tabish),
      so the heading count and the rows below it cannot disagree. */
   return (
     <section className="group">
       <h2>
-        {title} ({rows.length})
+        {title} ({total ?? rows.length})
       </h2>
       {/* Which of the two kinds this is, said once per group rather than once per row. */}
       <p className="group-blurb">{note}</p>

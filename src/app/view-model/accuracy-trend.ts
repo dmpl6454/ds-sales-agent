@@ -1,4 +1,5 @@
 import { prisma } from '@/lib/db'
+import { memoView, viewKey } from '@/lib/viewMemo'
 
 /**
  * THE ACCURACY TREND, READ FROM THE RUNS THE HARNESS ALREADY STORED.
@@ -85,7 +86,12 @@ function span(lo: number | undefined, hi: number | undefined, mean: number): { l
   return { lo: Math.min(a, b), hi: Math.max(a, b) }
 }
 
+/** Memoised (single-flight, 10 s) on its inputs — see `src/lib/viewMemo.ts`. */
 export async function buildAccuracyTrend(limit = 8): Promise<AccuracyTrend | null> {
+  return memoView(viewKey('AccuracyTrend', [limit]), () => computeAccuracyTrend(limit))
+}
+
+async function computeAccuracyTrend(limit = 8): Promise<AccuracyTrend | null> {
   const row = await prisma.setting.findUnique({ where: { key: HISTORY_KEY } })
   if (!row) return null
 

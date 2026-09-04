@@ -1,4 +1,5 @@
 import { prisma } from '@/lib/db'
+import { memoView, viewKey } from '@/lib/viewMemo'
 import { env } from '@/lib/env'
 import { daysAgo, istDateKey } from '@/lib/time'
 import { detectionCutoff } from '@/lib/cutoff'
@@ -290,7 +291,12 @@ export interface WatchChart {
  * own way can disagree with the thing enforcing it, and this codebase has already paid for
  * that twice.
  */
+/** Memoised (single-flight, 10 s) on its inputs — see `src/lib/viewMemo.ts`. */
 export async function buildWatchChart(): Promise<WatchChart> {
+  return memoView(viewKey('WatchChart'), () => computeWatchChart())
+}
+
+async function computeWatchChart(): Promise<WatchChart> {
   const heartbeat = await readHeartbeat()
   const health = assessWatch({
     lastBeatAt: heartbeat ? new Date(heartbeat.beat.at) : null,
@@ -310,7 +316,12 @@ export async function buildWatchChart(): Promise<WatchChart> {
 }
 
 /** Everything the analytics page's charts need, in ONE round of parallel queries. */
+/** Memoised (single-flight, 10 s) on its inputs — see `src/lib/viewMemo.ts`. */
 export async function buildAnalyticsCharts(days = 30) {
+  return memoView(viewKey('AnalyticsCharts', [days]), () => computeAnalyticsCharts(days))
+}
+
+async function computeAnalyticsCharts(days = 30) {
   const [verdicts, runs, funnel, watch] = await Promise.all([
     buildVerdictChart(days),
     buildRunStrip(48),
@@ -389,7 +400,12 @@ export async function buildCacheChart(days = 30): Promise<CacheChart> {
 }
 
 /** Everything `/cost` charts, in one round of parallel queries. */
+/** Memoised (single-flight, 10 s) on its inputs — see `src/lib/viewMemo.ts`. */
 export async function buildCostCharts(days = 30) {
+  return memoView(viewKey('CostCharts', [days]), () => computeCostCharts(days))
+}
+
+async function computeCostCharts(days = 30) {
   const [spend, cache] = await Promise.all([buildSpendChart(days), buildCacheChart(days)])
   return { spend, cache, days }
 }
