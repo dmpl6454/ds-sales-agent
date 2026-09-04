@@ -2,6 +2,7 @@ import { prisma } from '@/lib/db'
 import { memoView, viewKey } from '@/lib/viewMemo'
 import { DELIVERED_STATUSES } from '@/lib/constants'
 import { istDateKey } from '@/lib/time'
+import { normaliseSearch, targetNameClauses } from '@/lib/searchTerms'
 import { postUrl } from '@/lib/urls'
 import { provenanceFor, provenanceLabel } from '@/outreach/messageProvenance'
 import { loadProvenancePosts } from './provenance-posts'
@@ -47,11 +48,32 @@ export interface SentHistory {
   to: number
   /** Filter in force, echoed back so the control can render its own state. */
   senderHandle: string | null
+  /**
+   * The recipient filter in force (2026-09-04), normalised — null when the box was empty or
+   * the term too short to mean anything. Echoed back so the box keeps what was typed and the
+   * heading can name what its total is a total OF.
+   */
+  targetQuery: string | null
 }
 
 export interface SentHistoryInput {
   page?: number
   senderHandle?: string | null
+  /**
+   * ── "WHO DID WE MESSAGE, AND FOR WHAT?" — BY RECIPIENT (2026-09-04) ──────
+   *
+   * Tabish's ask: the sent list had a sender filter (`?from=`) and no way at all to find a
+   * RECIPIENT, so "which paid post was Celina messaged for" meant paging through hundreds of
+   * rows by hand. The "Why" column already links each message to its paid post; this makes
+   * the rows reachable by the name a person actually has.
+   *
+   * Matched against `pair.target.handle` and `displayName` with the shared casing and
+   * separator fan-out (`lib/searchTerms.ts`) — never `mode: 'insensitive'`, which is
+   * Postgres-only and throws on the SQLite client the suite runs on. `total` is counted with
+   * the same `where` as the rows, so "Showing 1–50 of N" is the filtered N, never the
+   * unfiltered record wearing a filtered page's clothes.
+   */
+  targetQuery?: string | null
 }
 
 /**
@@ -65,9 +87,11 @@ export async function buildSentHistory(input: SentHistoryInput): Promise<SentHis
 
 async function computeSentHistory(input: SentHistoryInput): Promise<SentHistory> {
   const senderHandle = input.senderHandle?.trim() || null
+  const targetQuery = normaliseSearch(input.targetQuery)
   const where = {
     status: { in: [...DELIVERED_STATUSES] },
     ...(senderHandle ? { sender: { handle: senderHandle } } : {}),
+    ...(targetQuery ? { target: { OR: targetNameClauses(targetQuery) } } : {}),
   }
 
   const total = await prisma.outreachAttempt.count({ where })
@@ -132,5 +156,6 @@ async function computeSentHistory(input: SentHistoryInput): Promise<SentHistory>
     from: total === 0 ? 0 : (page - 1) * SENT_PAGE_SIZE + 1,
     to: Math.min(page * SENT_PAGE_SIZE, total),
     senderHandle,
+    targetQuery,
   }
 }

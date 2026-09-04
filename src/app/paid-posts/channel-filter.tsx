@@ -69,6 +69,11 @@ export function ChannelFilter({
         each other: submitting sends both `channel` and `q`, and a blank box clears the search
         rather than preserving a stale one. Still no hidden `page` — any change to what is
         being asked starts at the newest post.
+
+        Since 2026-09-04 the same box also finds the posts a RECIPIENT was messaged under
+        (Tabish searched `celina` and could not see who had been messaged for what) — the
+        placeholder says so, because a search that answers a question nobody knows to ask
+        it answers nothing.
       */}
       <label htmlFor="post-search" className="muted">
         Search
@@ -78,7 +83,7 @@ export function ChannelFilter({
         name="q"
         type="search"
         defaultValue={query ?? ''}
-        placeholder="caption, brand or shortcode"
+        placeholder="caption, brand, shortcode or who was messaged"
       />{' '}
       {/*
         The one control both paths need: it submits the typed search, and it is also what
