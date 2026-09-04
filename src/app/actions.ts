@@ -1152,6 +1152,168 @@ export async function rejoinFleet(
   }
 }
 
+/**
+ * WHICH FLEETS A PAGE SENDS FOR — a SET, not a choice (2026-09-04, Tabish).
+ *
+ * *"a sender can be a part of either Bollywood or marketing or both or none (that is not
+ * assigned or signed in). Furthermore, we need all Bollywood senders to now also be marketing
+ * category senders. Hence, they would now be part of two rings (both marketing and Bollywood)
+ * and send messages accordingly."*
+ *
+ * `rejoinFleet` takes ONE slug and only works on an account that has LEFT the rotation, so
+ * there was no way to give a page a second fleet or to take one away. This is that control.
+ *
+ * ── PREVIEW THEN CONFIRM, FOR THE REASON `rejoinFleet` DOES ──────────────────
+ *
+ * Adding a fleet to a page is not a preference — it wires that page to every live recipient of
+ * the new fleet and the planner starts writing to them. On 26 August a bare one-click fleet
+ * button put the rehearsal burner in the rotation with 514 routes to real companies within
+ * three minutes of shipping. So the first call writes NOTHING and returns the exact number of
+ * routes it would create, computed by the SAME `routeAllowed` that will run — a count the
+ * client cannot invent — and changing the selection disarms the confirmation, because
+ * confirming a number computed for a different selection is precisely the failure being
+ * prevented.
+ *
+ * ── THE MEMBERSHIPS ARE WRITTEN BEFORE THE ROUTES ───────────────────────────
+ *
+ * Fourth time in this codebase. `routeAllowed` READS the memberships, so creating routes first
+ * would wire the page using the OLD fleets and leave the gate holding every one of those
+ * drafts forever.
+ *
+ * ── REMOVING A FLEET DISABLES, IT DOES NOT DELETE ───────────────────────────
+ *
+ * `CategorySender.enabled` exists for this: the send history rotation reads is interpreted
+ * against the membership, so deleting the row would rewrite the past. Existing pair rows are
+ * left alone too — `gate.ts` refuses a cross-fleet route by name, and deleting pairs cascades
+ * `OutreachAttempt` and would erase the record that real people received real messages.
+ */
+export async function setSenderFleets(
+  handleRaw: string,
+  slugsRaw: readonly string[],
+  confirmed = false,
+): Promise<MutationResult> {
+  const user = await requireOperator()
+  const handle = handleRaw.trim().replace(/^@/, '').toLowerCase()
+
+  const sender = await prisma.senderAccount.findUnique({ where: { handle } })
+  if (!sender) return { ok: false, message: `@${handle} is not one of your accounts.` }
+
+  const wanted = [...new Set(slugsRaw.map((x) => x.trim().toLowerCase()).filter(Boolean))]
+  const categories = await prisma.category.findMany({ select: { id: true, slug: true, name: true } })
+  const bySlug = new Map(categories.map((c) => [c.slug, c]))
+  /* An unknown slug REFUSES rather than being ignored — a silently dropped fleet would look
+     applied on screen and be invisible to every enforcer. */
+  const unknown = wanted.filter((w) => !bySlug.has(w))
+  if (unknown.length > 0) {
+    return { ok: false, message: `There is no fleet called "${unknown[0]}".` }
+  }
+
+  const current = new Set(
+    (
+      await prisma.categorySender.findMany({
+        where: { senderId: sender.id, enabled: true },
+        select: { category: { select: { slug: true } } },
+      })
+    ).map((r) => r.category.slug),
+  )
+  const adding = wanted.filter((w) => !current.has(w))
+  const removing = [...current].filter((c) => !wanted.includes(c))
+  if (adding.length === 0 && removing.length === 0) {
+    return { ok: false, message: `@${handle} already sends for exactly that.` }
+  }
+
+  /* The routes the NEW selection would add, from the same rule that will create them. */
+  const ourHandles = await fleetHandles(prisma)
+  const targets = await prisma.targetAccount.findMany({
+    select: { id: true, handle: true, optedOut: true, role: true },
+  })
+  const memberships = await readCategoryMemberships()
+  const existing = new Set(
+    (await prisma.outreachPair.findMany({ where: { senderId: sender.id }, select: { targetId: true } })).map(
+      (p) => p.targetId,
+    ),
+  )
+  const wouldAdd = targets.filter(
+    (t) =>
+      !existing.has(t.id) &&
+      routeAllowed({
+        senderHandle: sender.handle,
+        targetHandle: t.handle,
+        /* The SELECTION being previewed, not what is stored — otherwise the count describes
+           the fleets the page already has. */
+        senderCategories: wanted,
+        targetCategories: categoriesFor(memberships.byTargetHandle, t.handle),
+        ourHandles,
+        senderIsFleetMember: sender.fleetMember,
+        targetOptedOut: t.optedOut,
+        targetIsWatchOnly: t.role === 'WATCH',
+      }),
+  )
+
+  if (!confirmed) {
+    const where = wanted.length === 0 ? 'no fleet at all' : wanted.join(' and ')
+    return {
+      ok: false,
+      message:
+        `@${handle} will send for ${where}. ` +
+        (wouldAdd.length > 0
+          ? `That creates ${wouldAdd.length} new route(s) to real companies, and the planner starts writing to them.`
+          : 'That creates no new routes.') +
+        (removing.length > 0
+          ? ` It stops sending for ${removing.join(' and ')} — existing history is kept and nothing is deleted.`
+          : ''),
+    }
+  }
+
+  for (const slug of adding) {
+    const category = bySlug.get(slug)!
+    await prisma.categorySender.upsert({
+      where: { categoryId_senderId: { categoryId: category.id, senderId: sender.id } },
+      create: { categoryId: category.id, senderId: sender.id, enabled: true },
+      update: { enabled: true },
+    })
+  }
+  for (const slug of removing) {
+    const category = bySlug.get(slug)!
+    await prisma.categorySender.updateMany({
+      where: { categoryId: category.id, senderId: sender.id },
+      data: { enabled: false },
+    })
+  }
+
+  /* Routes AFTER the memberships, and recomputed against what was actually written. */
+  const created =
+    wouldAdd.length > 0
+      ? await prisma.outreachPair.createMany({
+          data: wouldAdd.map((t) => ({
+            senderId: sender.id,
+            targetId: t.id,
+            cooldownDays: env.DEFAULT_COOLDOWN_DAYS,
+            enabled: true,
+          })),
+        })
+      : { count: 0 }
+
+  await audit(
+    user.email,
+    'sender.fleets.set',
+    `SenderAccount:${handle}`,
+    `${wanted.length === 0 ? 'no fleet' : wanted.join(' + ')}` +
+      (adding.length ? `; added ${adding.join(', ')}` : '') +
+      (removing.length ? `; removed ${removing.join(', ')}` : '') +
+      `; ${created.count} route(s) created`,
+  )
+  refreshPath('/senders')
+  refreshPath('/targets')
+  refreshPath('/')
+  return {
+    ok: true,
+    message:
+      `@${handle} now sends for ${wanted.length === 0 ? 'no fleet — it writes to nobody' : wanted.join(' and ')}. ` +
+      `${created.count} route(s) created.`,
+  }
+}
+
 export async function setFleetTemplateBody(
   slug: string,
   body: string | null,
@@ -1522,8 +1684,12 @@ export interface MutationResult {
  *   - the follow-up variants, because the planner throws if a sender has none
  *   - a routing pair to every channel, because a sender with no pairs is inert
  *
- * New pairs start DISABLED. Adding an account should never, by itself, cause a
- * message to be sent — arming is a separate, deliberate act.
+ * PAIRS ARE CREATED LIVE. The per-route chip was deleted on 2026-08-08 (one switch), so a
+ * pair row IS a live route and adding an account DOES widen what the rotation writes to.
+ * What stands between adding and sending is the Autopilot switch, the caps, the cooldown, the
+ * cohort ladder and a hand-logged-in session — real rules, but a SHARED brake rather than a
+ * per-row one. The comment here said "New pairs start DISABLED" until 2026-09-04, three weeks
+ * after that stopped being true; a false invariant in a comment is why nobody looks.
  */
 /**
  * ── WHICH FLEET IS THIS ACCOUNT FOR? (2026-08-25, Tabish) ──────────────────

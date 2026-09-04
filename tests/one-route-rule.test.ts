@@ -54,6 +54,13 @@ const PERMITTED = {
   /** A pasted sheet becomes prospects. */
   'src/outreach/importProspects.ts': 'uses-the-rule',
   /**
+   * Gives every page in the rotation its explicit fleets and adds marketing to the bollywood
+   * ones (2026-09-04, Tabish) — then creates the routes those memberships permit, through the
+   * real rule and with the memberships written FIRST. Dry run by default; it printed 432
+   * routes across four pages before any of them existed.
+   */
+  'src/scripts/sender-fleets.ts': 'uses-the-rule',
+  /**
    * ON-DEMAND IS EXEMPT, DELIBERATELY, AND THE REASONING IS NARROW.
    *
    * `prepareOnDemand` creates ONE pair for a sender and target A PERSON CHOSE, both ends,

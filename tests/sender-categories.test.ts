@@ -10,6 +10,7 @@ import {
   crossCategoryDetail,
 } from '@/outreach/senderCategories'
 import { mayRouteExist } from '@/outreach/routes'
+import { routeFleets, templateForRoute } from '@/outreach/fleetTemplate'
 import { ringMembersFor } from '@/outreach/categories'
 import { evaluateResend, RESEND_BLOCKS, OVERRIDABLE_BLOCKS } from '@/outreach/gate'
 import { templateForSettings } from '@/outreach/fleetTemplate'
@@ -350,5 +351,53 @@ describe('the ring never names a sender that may not write to this recipient', (
   it('returns an empty ring rather than falling back to everybody', () => {
     const noBollywoodPage = { bySenderHandle: memberships.bySenderHandle, byTargetHandle: memberships.byTargetHandle }
     expect(ringMembersFor([fleet[0]!], 'amazondotin', noBollywoodPage)).toEqual([])
+  })
+})
+
+/**
+ * ── A PAGE IN BOTH FLEETS (2026-09-04, Tabish) ────────────────────────────────
+ *
+ * *"a sender can be a part of either Bollywood or marketing or both or none … we need all
+ * Bollywood senders to now also be marketing category senders. Hence, they would now be part
+ * of two rings (both marketing and Bollywood) and send messages accordingly."*
+ *
+ * The set intersection already supported this and nothing had ever exercised it: MEASURED
+ * 2026-09-04, the live database held ONE CategorySender row. These pin the four states, and
+ * the one that matters is that a dual-fleet page reaches EACH fleet's recipients with THAT
+ * fleet's copy — the intersection stays single-valued because a recipient belongs to one
+ * fleet, which is what keeps `ambiguous` unreachable in practice (0 targets are in both).
+ */
+describe('a page that sends for both fleets', () => {
+  const BOTH = ['bollywood', 'marketing']
+
+  it('reaches a bollywood recipient, and the route resolves to the bollywood copy', () => {
+    expect(sameCategory(BOTH, [])).toBe(true)
+    expect(routeFleets(BOTH, [])).toEqual(['bollywood'])
+  })
+
+  it('reaches a marketing recipient, and the route resolves to the MARKETING copy', () => {
+    expect(sameCategory(BOTH, ['marketing'])).toBe(true)
+    expect(routeFleets(BOTH, ['marketing'])).toEqual(['marketing'])
+  })
+
+  it('is still refused a recipient in a fleet it does not hold', () => {
+    expect(sameCategory(BOTH, ['sports'])).toBe(false)
+    expect(routeFleets(BOTH, ['sports'])).toEqual([])
+  })
+
+  it('leaves the marketing-only page refused a bollywood recipient', () => {
+    /* @madaboutmarketingg is deliberately NOT given bollywood by the migration: Tabish asked
+       for the bollywood pages to also send for marketing, not the reverse. */
+    expect(sameCategory(['marketing'], [])).toBe(false)
+  })
+
+  it('refuses a recipient in BOTH fleets rather than guessing which pitch to send', () => {
+    /* Reachable only now that pages hold two fleets, and still a refusal: two fleets have two
+       different propositions and picking one silently is the fallback this codebase keeps
+       paying for. MEASURED: 0 recipients are in more than one category today. */
+    expect(routeFleets(BOTH, BOTH)).toEqual(BOTH)
+    expect(
+      templateForRoute({ senderCategories: BOTH, targetCategories: BOTH, defaultBody: 'x', bodies: new Map() }).ok,
+    ).toBe(false)
   })
 })
