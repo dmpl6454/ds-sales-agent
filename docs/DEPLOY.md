@@ -158,6 +158,35 @@ The old dist is removed only after the new one answers; until then rollback is
 `pm2 stop` before the build, and never build into the dist being served.
 ```
 
+**Memory on this shared box, and the three caps (4 Sept).** The Linode is 2 GB / 1 vCPU and
+hosts nine services plus Postgres, MySQL and php-fpm; measured 4 Sept it had **914 MB in swap**
+and was paging. That day the kernel OOM-killed `next-server` twice (773 MB and 607 MB anon-rss)
+*with the 450 MB pm2 ceiling live* — pm2 samples memory every ~30 s and a render pile-up on a
+paging box outran it. A single render peaks at only +22..32 MB heap; the memory came from
+ten-plus renders alive at once after one took >60 s and nginx returned 504. Worse, the unit
+carried systemd's default `OOMPolicy=stop`, so killing ONE process stopped the WHOLE pm2
+service — every app on the box (HR, API, portal…) went down with ours and was resurrected a
+minute later. Three layers now, all applied by `deploy.sh`:
+
+| layer | where | what it does |
+|---|---|---|
+| **V8 heap cap** | web: `--node-args="--max-old-space-size=300"` · worker: `NODE_OPTIONS=--max-old-space-size=512` | deterministic; a runaway worker throws inside the process and pm2 restarts just it while its sibling serves |
+| pm2 ceiling | `--max-memory-restart 450M` (web) / 700M (worker) | RSS backstop, ~30 s sampling |
+| **systemd drop-in** | `/etc/systemd/system/pm2-root.service.d/oom.conf` → `OOMPolicy=continue` | if the kernel ever acts, ONE process dies and pm2 restarts it — the other teams' apps stay up |
+
+**The carrier differs by pm2 mode and getting it wrong is silent.** In CLUSTER mode pm2 injects
+env into `process.env` from JavaScript *after* Node starts, so `NODE_OPTIONS` is inert for a
+V8 startup flag — it must be `node_args` (`pm2 reload --node-args` applies it with a rolling
+restart; verify with `pm2 jlist` → `pm2_env.node_args`). In FORK mode env is the real environ
+and is inherited down `pnpm → tsx → node`, so `NODE_OPTIONS` is right there. The first attempt
+set `NODE_OPTIONS` on the cluster and pm2 dutifully stored it while the workers ran uncapped.
+
+What the caps cannot do is make a paging machine crisp: at idle the box commits ~1.7 GB of
+2 GB before our web renders anything (dashmani-platform 401 MB, MySQL 360 MB in swap, three
+idle `dashmani_prod` Postgres backends at 86-123 MB each). The structural answer is a larger
+Linode; the code-side answers are the single-flight view memo, pulse-based refresh and paged
+lists shipped the same day.
+
 **USE THE SCRIPT.** The hand-typed archive command below is kept only because it explains
 what the script does; typing it sprang two traps in one command on 2026-08-18 and took the
 dashboard down for ten minutes:

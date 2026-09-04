@@ -138,21 +138,59 @@ echo "\$TARGET" > .active-dist
 # The web process runs as a pm2 CLUSTER of two workers so \`pm2 reload\` can replace them one
 # at a time. A legacy fork-mode process (\`pnpm start\`) is converted here once — the only
 # deploy that still costs a few seconds.
+# 450M x 2 workers = 900M worst case on a 2GB box shared with six other pm2 apps.
+WEB_MAX_MEM="\${DS_WEB_MAX_MEM:-450M}"
+# THREE LAYERS OF MEMORY DEFENCE, AND WHY THE pm2 CEILING ALONE WAS NOT ENOUGH (2026-09-04).
+# The kernel OOM-killed next-server TWICE that day (773MB and 607MB anon-rss) WITH the 450M pm2
+# ceiling live: pm2 samples memory every ~30s, and a render pile-up on a swapping 1-vCPU box
+# outran it. So:
+#   1. V8's own cap (--max-old-space-size) is the DETERMINISTIC layer — the heap physically
+#      cannot pass it; a runaway worker throws inside the process and pm2 restarts just that
+#      worker while its sibling keeps serving. A normal render peaks at +22..32MB heap
+#      (measured), so 300MB is ten renders of headroom, not a squeeze.
+#   2. the pm2 ceiling stays as the RSS backstop;
+#   3. /etc/systemd/system/pm2-root.service.d/oom.conf sets OOMPolicy=continue, so if the
+#      kernel ever does act, it kills ONE process instead of systemd stopping the WHOLE pm2
+#      service — which is what took every app on this shared box down with ours, twice.
+# HOW EACH CAP REACHES ITS PROCESS DIFFERS, and getting it wrong is silent: in CLUSTER mode
+# pm2 injects env into process.env from JavaScript AFTER Node has started, so a NODE_OPTIONS
+# env var is inert for a V8 startup flag — it must be node_args (pm2 --node-args), which
+# \`pm2 reload --node-args\` applies with a rolling restart (verified live). In FORK mode
+# (the worker) env IS the real environ and is inherited down pnpm -> tsx -> node, so
+# NODE_OPTIONS is the right carrier there and node_args would only reach the pnpm wrapper.
+WEB_HEAP_MB="\${DS_WEB_HEAP_MB:-300}"
+WORKER_HEAP_MB="\${DS_WORKER_HEAP_MB:-512}"
+WEB_NODE_ARGS="--max-old-space-size=\$WEB_HEAP_MB"
 MODE=\$(pm2 jlist | node -e 'const l=JSON.parse(require("fs").readFileSync(0));const p=l.find(p=>p.name==="ds-sales-agent");console.log(p?p.pm2_env.exec_mode:"absent")')
 if [[ "\$MODE" == "cluster_mode" ]]; then
   echo "==> Reloading the web workers onto \$TARGET (no gap)"
-  NEXT_DIST_DIR="\$TARGET" pm2 reload ds-sales-agent --update-env >/dev/null
+  NEXT_DIST_DIR="\$TARGET" pm2 reload ds-sales-agent --node-args="\$WEB_NODE_ARGS" --update-env >/dev/null
 else
   echo "==> Converting ds-sales-agent to a two-worker cluster (one-time; a few seconds)"
   pm2 delete ds-sales-agent >/dev/null 2>&1 || true
-  NEXT_DIST_DIR="\$TARGET" pm2 start node_modules/next/dist/bin/next --name ds-sales-agent -i 2 --cwd "$DIR" -- start -H 127.0.0.1 -p 3100 >/dev/null
+  NEXT_DIST_DIR="\$TARGET" pm2 start node_modules/next/dist/bin/next --name ds-sales-agent -i 2 --node-args="\$WEB_NODE_ARGS" --max-memory-restart "\$WEB_MAX_MEM" --cwd "$DIR" -- start -H 127.0.0.1 -p 3100 >/dev/null
+fi
+# The web workers MUST carry a memory ceiling, and this line is the only thing that keeps it
+# after a cluster is rebuilt. Without it \`next-server\` grows unbounded, the KERNEL picks the
+# victim, and systemd restarts the WHOLE pm2 service — every app on this shared box goes down
+# together (measured 2026-09-04 05:00 UTC: next-server killed at 773MB, all 8 apps restarted,
+# and 4 more the same way on 2 Sep). A pm2 ceiling turns that into ONE worker recycling while
+# its sibling keeps serving, which is the entire reason the cluster has two.
+# \`pm2 reload\` does NOT apply a changed ceiling to a running cluster, so set it on the live
+# process too — otherwise this only takes effect on the next cluster rebuild.
+CURRENT_MEM=\$(pm2 jlist | node -e 'const l=JSON.parse(require("fs").readFileSync(0));const p=l.find(p=>p.name==="ds-sales-agent");console.log(p&&p.pm2_env.max_memory_restart?p.pm2_env.max_memory_restart:0)')
+if [[ "\$CURRENT_MEM" == "0" ]]; then
+  echo "==> Web workers had NO memory ceiling — rebuilding the cluster with \$WEB_MAX_MEM"
+  pm2 delete ds-sales-agent >/dev/null 2>&1 || true
+  NEXT_DIST_DIR="\$TARGET" pm2 start node_modules/next/dist/bin/next --name ds-sales-agent -i 2 --node-args="\$WEB_NODE_ARGS" --max-memory-restart "\$WEB_MAX_MEM" --cwd "$DIR" -- start -H 127.0.0.1 -p 3100 >/dev/null
 fi
 pm2 save >/dev/null 2>&1 || true
 # Detection runs in its OWN process (ds-sales-worker) so a heavy pass cannot OOM the web
 # server and 502 the dashboard (2026-09-02). It reads source via tsx, so it must be
 # restarted too or it keeps running the code from before this deploy. Restart if present;
 # do not create it here — its first creation and memory cap are a one-time setup step.
-pm2 describe ds-sales-worker >/dev/null 2>&1 && pm2 restart ds-sales-worker >/dev/null || true
+# NODE_OPTIONS, not --node-args, for the worker: see the fork-mode note above.
+pm2 describe ds-sales-worker >/dev/null 2>&1 && NODE_OPTIONS="--max-old-space-size=\$WORKER_HEAP_MB" pm2 restart ds-sales-worker --update-env >/dev/null || true
 sleep 8
 # The Linode has ONE vCPU. Detection/OCR in the worker competed with page renders for it and
 # the dashboard took 3-12s per page (load average hit 49, measured 2026-09-02). The web is what

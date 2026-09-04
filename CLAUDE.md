@@ -71,6 +71,94 @@ properly rather than kept on a handle we could never confirm.
 
 ---
 
+## 4 SEPTEMBER, EARLY — THE BLANK PAGE WAS AN OOM KILL, AND THE WEB TIER HAD NO CEILING
+
+**Tabish, with a screenshot of a blank hosted page: *"The website isn't rendering."*** It was a
+real outage and it was over by the time it was measured — but the cause is a hole this file
+records fixing on 2 September and only half-fixed.
+
+**MEASURED, in this order, before anything was changed:** the edge returned **502 after 59.5
+seconds** (a timeout, not a refusal — a dead origin refuses instantly), while the ORIGIN
+answered `307` in **390 ms** with a complete 9,260-byte sign-in page and every asset 200. So
+the app was healthy and the failure sat in the Cloudflare→origin hop. `dmesg` named it:
+
+```
+Fri Sep  4 04:59:41  systemd invoked oom-killer
+Fri Sep  4 04:59:41  Out of memory: Killed process 3708566 (next-server (v1)  anon-rss:773640kB
+Fri Sep  4 05:00:33  pm2-root.service: Failed with result 'oom-kill'  restart counter is at 5
+```
+
+**ALL EIGHT pm2 APPS CAME BACK WITH AN ~82-SECOND UPTIME AND `↺ 0`.** That is the signature
+worth memorising: a per-app OOM restarts ONE app and increments ITS counter, so a uniform
+uptime with zero restarts across every app means **the kernel killed a process and systemd
+restarted the WHOLE pm2 service** — the HR app, the API, the client and the jobs runner all
+went down with the dashboard. `NRestarts=5`, and the other four were **2 September** (09:58,
+10:04, 11:00, 17:45), i.e. the day this file describes fixing exactly this.
+
+### THE 2 SEPTEMBER FIX MOVED THE BIGGEST CONSUMER AND LEFT THE WEB TIER UNBOUNDED
+
+That entry moved detection into `ds-sales-worker` with `--max-memory-restart 700M`, and it
+worked — the worker has not been the victim since. **The process killed today is
+`next-server`,** and reading the live pm2 config found why:
+
+| app | ceiling |
+|---|---|
+| internal, client, hr, api, jobs, pm2-logrotate | 500M |
+| ds-sales-worker | 700M |
+| **ds-sales-agent ×2 (the dashboard)** | **NONE** |
+
+**Every app on the box had a ceiling except the one a person actually looks at.** `deploy.sh`
+line 148 starts the cluster with no `--max-memory-restart`, and the comment four lines below
+it says the worker's cap was "a one-time setup step" — so the web tier never got the
+equivalent and nothing said so. **A ceiling is what decides WHO kills the process:** with one,
+pm2 recycles ONE worker while its sibling keeps serving, which is the entire reason the
+cluster has two; without one, the KERNEL picks the victim and systemd takes down all eight apps.
+
+### THE TRIGGER IS `/analytics` PLUS ITS OWN AUTO-REFRESH
+
+Every timed-out request in the nginx log carries `referrer: .../analytics` and an `?_rsc=`
+query — Next.js RSC payload fetches, i.e. **the 30-45s auto-refresh prefetching `/`, `/cost`
+and `/analytics`**. On ONE vCPU a slow `/analytics` render blocks the loop, the refresh
+stacks another render on the one still running, and memory climbs per queued render:
+
+```
+04:56:23  upstream timed out ... GET /analytics?_rsc=  (and /, /cost)
+04:59:41  OOM: next-server killed at 773MB
+05:00:32  connect() failed (111: Connection refused)  <- the blank page Tabish saw
+```
+
+**The refresh interval was sized for a page that renders fast; when the page slows down the
+refresh becomes the amplifier rather than the convenience.** Not changed here — the ceiling
+converts this from an outage into a worker recycle, and changing the refresh cadence is a
+separate decision with its own measurement.
+
+### THE FIX, AND IT IS MUTATION-TESTED
+
+`--max-memory-restart 450M` on both web workers (450×2 = 900M worst case on a 2 GB box shared
+with six other apps), applied live AND written into `deploy.sh`. **`pm2 reload` does NOT apply
+a changed ceiling to a running cluster**, so the script also READS the live ceiling and
+rebuilds the cluster when it is absent — otherwise the fix would only land on a future
+cluster rebuild and a bare `pm2 start` by hand would silently undo it.
+
+**VERIFIED BY BREAKING IT ON THE REAL SERVER:** a bare `pm2 start` left the ceiling at `0`,
+the guard detected it and rebuilt at 471859200 (450M), and the dashboard served 200 in 0.27s
+throughout. Restoring the ceiling is what the test asserts, not that the script parses.
+
+| | |
+|---|---|
+| edge, after | **30/30 → 307**, full page 200 in 0.28s, every asset 200 |
+| load average | **19.08 → 0.40** (5-min average had been 28.35) |
+| memory available | 431 MB → **561 MB** |
+| ceilings | all nine processes capped; **0 uncapped** |
+| detection | scheduled and running, next pass on the 15-minute clock |
+
+**STATED, NOT FIXED:** the box also serves `digitalsukoon.com` on PHP-FPM and the log carries a
+routine web-shell scan (`/wso.php`, `/priv8.php`, `wp-content/plugins/pwnd/pwnd.php`) — all
+answered *"Primary script unknown"*, i.e. nothing found, and unrelated to this outage. It is
+noise, not a breach, and it is recorded because it looks alarming in the same log.
+
+---
+
 ## 3 SEPTEMBER, LATE NIGHT — A NEW MAC PAIRS ITSELF: NO SECRETS, NO TERMINAL
 
 **Tabish: *"no need for the hassle of private key, production database url, etc? We want a
