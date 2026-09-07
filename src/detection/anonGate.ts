@@ -36,8 +36,12 @@ import { log } from '@/lib/logger'
 export const DETECT_FEED_OK_KEY = 'detectFeedOkAt'
 export const DETECT_THROTTLED_KEY = 'detectThrottledUntil'
 
-/** Cooldown per consecutive throttle. Index = strikes - 1, clamped to the last entry. */
-export const ANON_THROTTLE_STEPS_MS: readonly number[] = [15, 30, 60, 120].map((m) => m * 60_000)
+/**
+ * Cooldown per consecutive throttle. Index = strikes - 1, clamped to the last entry. Capped
+ * at an hour on purpose: each retry costs ONE request, and the cost of a longer cap is an
+ * extra hour of blindness after Instagram has already relented.
+ */
+export const ANON_THROTTLE_STEPS_MS: readonly number[] = [15, 30, 60].map((m) => m * 60_000)
 
 export interface AnonGateState {
   throttledUntil: number | null

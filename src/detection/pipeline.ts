@@ -135,6 +135,20 @@ export async function runDetection(
   const spacingMs = opts.channelSpacingMs ?? DETECT_CHANNEL_SPACING_MS
   let requestsMade = 0
   let throttledUntil: Date | null = null
+  /**
+   * A cooldown that ends a second after the cron fires would otherwise cost a whole extra
+   * pass: the 15-minute steps and the 15-minute cron share a grid. MEASURED on the first
+   * live pass — until=07:30:00.571Z against a cron at 07:30:00.000Z. If the gate reopens
+   * within two minutes, wait for it; two minutes of patience against fifteen of blindness.
+   */
+  const early = anonGateCheck()
+  if (!early.ok) {
+    const waitMs = early.until.getTime() - Date.now()
+    if (waitMs > 0 && waitMs <= GATE_REOPEN_WAIT_MAX_MS) {
+      log.step('the anonymous-read cooldown ends shortly — waiting for it before reading', { waitSeconds: Math.ceil(waitMs / 1000) })
+      await new Promise((r) => setTimeout(r, waitMs + 500))
+    }
+  }
 
   const channels: ChannelOutcome[] = []
   const floorUnix = Math.floor(hoursAgo(lookbackHours).getTime() / 1000)
@@ -548,6 +562,9 @@ let passCounter = 0
 
 /** Gap between channel fetches within one pass, plus up to the same again as jitter. */
 export const DETECT_CHANNEL_SPACING_MS = 2500
+
+/** Wait for a cooldown that ends this soon rather than skipping the pass — see `runDetection`. */
+export const GATE_REOPEN_WAIT_MAX_MS = 2 * 60_000
 
 /**
  * What the dashboard reads to tell "the pass ran" from "the pass READ something".

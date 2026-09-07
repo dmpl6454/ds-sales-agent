@@ -52,7 +52,7 @@ describe('isThrottleResponse — what counts as Instagram saying stop', () => {
 })
 
 describe('the pure ladder', () => {
-  it('opens a 15-minute cooldown on the first strike and doubles on each repeat, capped', () => {
+  it('opens a 15-minute cooldown on the first strike and doubles on each repeat, capped at an hour', () => {
     let s = noteThrottle(EMPTY_ANON_STATE, 1_000, 'feed')
     expect(s.strikes).toBe(1)
     expect(s.throttledUntil).toBe(1_000 + 15 * MIN)
@@ -61,7 +61,7 @@ describe('the pure ladder', () => {
     s = noteThrottle(s, 3_000, 'profile')
     expect(s.throttledUntil).toBe(3_000 + 60 * MIN)
     s = noteThrottle(s, 4_000, 'feed')
-    expect(s.throttledUntil).toBe(4_000 + 120 * MIN)
+    expect(s.throttledUntil).toBe(4_000 + 60 * MIN) // capped at an hour: a retry costs one request
     s = noteThrottle(s, 5_000, 'feed')
     expect(s.throttledUntil).toBe(5_000 + ANON_THROTTLE_STEPS_MS[ANON_THROTTLE_STEPS_MS.length - 1]!)
     expect(s.lastThrottleSource).toBe('feed')
@@ -176,6 +176,8 @@ describe('every anonymous Instagram caller consults the gate (source grep)', () 
   it('the pipeline checks the gate per channel BEFORE fetching, and rehydrates it per pass', () => {
     const src = readFileSync(join(root, 'pipeline.ts'), 'utf8')
     const body = src.slice(src.indexOf('export async function runDetection('))
+    // a cooldown ending just after the cron fires must be WAITED for, not skipped for 15 minutes
+    expect(body).toMatch(/waitMs <= GATE_REOPEN_WAIT_MAX_MS/)
     const check = body.indexOf('anonGateCheck()')
     const fetch = body.indexOf('await fetchFeed(')
     expect(check).toBeGreaterThan(-1)
