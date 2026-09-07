@@ -26,8 +26,19 @@ RES="$(cd "$(dirname "$0")" && pwd)"
 DASHBOARD_URL="https://e035e4d46c.digitalsukoon.com"
 SENTINEL="$HOME/.ds-sales-agent-data/setup-complete"
 
+# ── A PORT PROBE PROVES A LISTENER, NOT THE RIGHT APP (2026-09-07) ───────────
+#
+# This used to open http://localhost:3100 whenever ANYTHING answered on that port. Port 3100 is
+# not exotic — this project itself moved off 3000 precisely because another app on this machine
+# had taken it — so on a Mac where something else is listening, the icon opened a stranger's app
+# and the person reported that they "could not sign in on the dashboard". A local dashboard is a
+# convenience for the maintainer; the hosted URL is the one that is always right.
+#
+# So the probe asks for OUR page and checks it is ours, and anything else falls through to the
+# hosted dashboard. Same lesson as the tunnel's `nc -z` check, which passed while every real
+# query died: a port that answers is not the service you wanted.
 open_dashboard() {
-  if nc -z 127.0.0.1 3100 2>/dev/null; then
+  if curl -fsS -m 2 "http://127.0.0.1:3100/sign-in" 2>/dev/null | grep -q "<title>Instagram Outreach</title>"; then
     open "http://localhost:3100"
   else
     open "$DASHBOARD_URL"

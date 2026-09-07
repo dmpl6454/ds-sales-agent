@@ -202,6 +202,20 @@ describe('the app relaunches the installer when setup never finished', () => {
     expect(installer.indexOf('setup-complete')).toBeGreaterThan(installer.indexOf('install-tunnel.sh install'))
   })
 
+  it('opens the hosted dashboard unless OUR app is the thing on :3100', () => {
+    /*
+     * A PORT PROBE PROVES A LISTENER, NOT THE RIGHT APP. The launcher opened localhost:3100
+     * whenever anything answered there — and port 3100 is not exotic: this project moved off
+     * 3000 precisely because another app on this machine had taken it. On a Mac with something
+     * else listening, the icon opened a stranger's app and the person reported they "could not
+     * sign in on the dashboard". Same lesson as the tunnel's `nc -z` check, which passed while
+     * every real query died.
+     */
+    const l = readFileSync(join(repo, 'scripts/dmg/launcher.sh'), 'utf8')
+    expect(l).toMatch(/<title>Instagram Outreach<\/title>/)
+    expect(l, 'a bare port probe opens whatever is listening').not.toMatch(/if nc -z 127\.0\.0\.1 3100/)
+  })
+
   it('still treats a maintainer’s dev checkout as a shortcut, never installing over it', () => {
     expect(launcher).toMatch(/Desktop\/AI Sales Agent/)
   })
