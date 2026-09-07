@@ -1,8 +1,10 @@
 DS SALES AGENT — SETUP
 ======================
 
-You need: a Mac with Google Chrome installed, and the dashboard login (an email and
-password; ask whoever runs this). Nothing else — no keys, no database details.
+You need: a Mac with Google Chrome installed. Nothing else — no keys, no database
+details, and no dashboard login of your own: the Mac appears on whoever runs the
+dashboard's Senders page and they approve it from there. Ask them for a login only
+if you want to watch the dashboard yourself.
 
 Steps
 -----
@@ -10,7 +12,9 @@ Steps
    with no security warnings. A small dialog asks you to confirm a name for this Mac
    (it is pre-filled). Click Continue.
 
-2. A browser tab opens on the dashboard. Sign in if asked, check that the page shows
+2. A browser tab opens on the dashboard. Either approve it yourself if you have a
+   login, or read the code and key from the installer window to whoever runs the
+   dashboard — the Mac is already listed on their Senders page. Check that it shows
    the same code and key as the dialog on your Mac, and click "Approve this Mac".
    That is the whole hand-over: this Mac now has its own, forward-only access to the
    shared database — no shell, no files, one port — and it can be revoked on the
