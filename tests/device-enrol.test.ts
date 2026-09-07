@@ -166,3 +166,50 @@ describe('the approve link survives signing in, and a waiting Mac is listed', ()
     expect(fn).toMatch(/device\.enrol\.requested/)
   })
 })
+
+/**
+ * ── THE .APP MUST NOT BECOME A BROWSER SHORTCUT AFTER A FAILED INSTALL (2026-09-07) ──
+ *
+ * `launcher.sh` asked whether `~/ds-sales-agent` EXISTS, and `install.sh` creates that
+ * directory at step 2 — before the runtime, the tunnel, the pairing and the agent. So any
+ * failure after the unpack left the directory behind and every later double-click opened a web
+ * page instead of resuming. Handing the person a newer DMG changed nothing, because the check
+ * is about their disk rather than about the image.
+ *
+ * MEASURED after a second operator installed twice: exactly ONE enrolment request had ever
+ * reached the server (our own probe), and no dashboard session since 1 September.
+ *
+ * Same correction as the aborted first run of 1 September, one layer up: a completion
+ * SENTINEL, never file existence.
+ */
+describe('the app relaunches the installer when setup never finished', () => {
+  const repo = join(__dirname, '..')
+  const launcher = readFileSync(join(repo, 'scripts/dmg/launcher.sh'), 'utf8')
+  const installer = readFileSync(join(repo, 'scripts/dmg/install.sh'), 'utf8')
+
+  it('decides on the completion sentinel, not on the code directory', () => {
+    expect(launcher).toMatch(/setup-complete/)
+    expect(
+      launcher,
+      'a bare directory check turns a half-finished install into a permanent shortcut',
+    ).not.toMatch(/if \[ -d "\$HOME\/ds-sales-agent" \] \|\| \[ -d "\$HOME\/Desktop/)
+  })
+
+  it('writes that sentinel LAST, after everything that can fail', () => {
+    /* Written at step 2 it would mean "setup started", which is the bug being fixed. */
+    expect(installer).toMatch(/setup-complete/)
+    expect(installer.indexOf('setup-complete')).toBeGreaterThan(installer.indexOf('tar -xzf'))
+    expect(installer.indexOf('setup-complete')).toBeGreaterThan(installer.indexOf('install-tunnel.sh install'))
+  })
+
+  it('still treats a maintainer’s dev checkout as a shortcut, never installing over it', () => {
+    expect(launcher).toMatch(/Desktop\/AI Sales Agent/)
+  })
+
+  it('does not require the person at the keyboard to hold a dashboard login', () => {
+    /* The waiting Mac is listed on /senders, so anyone already signed in can approve it. A new
+       operator has no account, and demanding one is what stopped the pairing dead. */
+    expect(installer).toMatch(/Macs waiting to be approved/)
+    expect(installer, 'sign-in must not be stated as the only way').not.toMatch(/Sign in if asked, check that it shows/)
+  })
+})

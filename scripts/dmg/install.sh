@@ -181,12 +181,24 @@ else
   read -r USER_CODE DEVICE_CODE APPROVE_PATH <<< "$PARSED"
 
   open "$DASHBOARD_URL$APPROVE_PATH"
-  MSG="A browser tab has opened. Sign in if asked, check that it shows this code and key, then click “Approve this Mac”.
+  # ── YOU DO NOT NEED A DASHBOARD LOGIN TO PAIR THIS MAC (2026-09-07) ──────────
+  #
+  # This used to say only "Sign in if asked", which made a dashboard account a hard requirement
+  # for the person at the keyboard — and a new operator does not have one. MEASURED after a
+  # second operator installed twice: no new dashboard session since 1 September, so they never
+  # got past that page, and the pairing died with it.
+  #
+  # Since the waiting Mac is listed on /senders, ANYONE already signed in can approve it. So the
+  # code and fingerprint are what matter, and they are read out here to be passed on. Approving
+  # it yourself is the alternative, not the requirement.
+  MSG="This Mac is waiting to be approved. Read the code and key below to whoever runs the dashboard — it is already showing on their Senders page under “Macs waiting to be approved”, and they can approve it from there.
 
 Code:  $USER_CODE
 Key:   $FPR
 
-This window closes by itself once approved."
+If you have a dashboard login yourself, the browser tab that just opened does the same thing.
+
+This window closes by itself once approved. The request expires in 15 minutes — if it does, just open DS Sales Agent again."
   echo "$MSG"
   DLG=""
   if [ "$MODE" = gui ]; then
@@ -241,4 +253,23 @@ if [ "$MODE" = gui ]; then
   B=$(osascript -e "button returned of (display dialog \"$(esc "$DONE")\" with title \"DS Sales Agent — ready\" buttons {\"Done\",\"Open dashboard\"} default button 2)" 2>/dev/null || echo Done)
   [ "$B" = "Open dashboard" ] && open "$DASHBOARD_URL/senders"
 fi
+# ── THE COMPLETION SENTINEL ───────────────────────────────────────────────────
+#
+# WRITTEN LAST, AND ONLY HERE. The app's launcher used to ask whether `~/ds-sales-agent`
+# EXISTS, and this script creates that directory at step 2 — before the runtime, the tunnel,
+# the pairing and the agent. So ANY failure after the unpack (no Chrome, a dropped network, a
+# dismissed dialog, an enrolment nobody approved inside fifteen minutes) left the directory
+# behind and turned the .app into a permanent browser shortcut: every later double-click opened
+# a web page and NEVER re-ran the installer.
+#
+# MEASURED 2026-09-07, after a second operator installed twice: 1 enrolment request ever
+# reaching the server (a probe of ours), and no new dashboard session since 1 September. Their
+# Mac had stopped being able to try.
+#
+# This file is the same shape as `ENV_DONE_MARK` above and the same lesson as 1 September's
+# aborted first run: **a completion sentinel, never file existence.** It lives in the DATA
+# directory, not the credential one, so a support bundle or a backup can copy it freely.
+mkdir -p "$HOME/.ds-sales-agent-data"
+printf 'setup completed %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$HOME/.ds-sales-agent-data/setup-complete"
+
 echo "== $(date) — setup finished"
