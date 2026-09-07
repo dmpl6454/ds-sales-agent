@@ -105,6 +105,32 @@ queue being fully held.
   hands `modelKey` over and the installer writes it; a Mac still without it refuses the failover and
   says why. A Mac paired before this needs re-pairing or the key added by hand — today that is none.
 
+### THE FIRST OTHER-OPERATOR INSTALL FAILED AT `pnpm install`, AND THE CAUSE WAS A DEPENDENCY, NOT THEIR MAC
+
+**Tabish, with a photo of the DMPLs Mac Studio: a dialog reading *"pnpm install failed — see the
+log"*, its pairing already approved, its agent never started.** Reproduced here from an EMPTY
+package store: `better-sqlite3 install$ prebuild-install || node-gyp rebuild` — and
+`prebuild-install` answered **`http 404 …/v13.0.2/better-sqlite3-v13.0.2-node-v127-darwin-arm64.tar.gz
+— No prebuilt binaries found`**. The top-level dependency had drifted to `^13.0.2` (in the 12 August
+history rebuild), a version that publishes **no prebuilt binary for Node 22 on Apple Silicon**, so
+every fresh Mac fell into a native compile that needs Xcode's command line tools and Python. This
+Mac has both, which is the only reason every install here — including today's smoke test — passed.
+The adapter's own `better-sqlite3@12.11.1` HAS the prebuild and was being installed beside it.
+
+- `package.json` pins `better-sqlite3` to **`12.11.1`**; the lockfile now carries ONE version. An
+  empty-store install re-run: prebuild fetched, **zero `gyp` lines**, done in 9 s. Suite green.
+- `install.sh` keeps pnpm's output, retries once (a dropped connection is the other common
+  cause), and puts the DIAGNOSIS in the dialog — Xcode tools / network / disk, with the last six
+  lines of pnpm — instead of sending a non-technical operator to a log file on their own machine.
+
+**WHY "SIGN IN" SAID THE ACCOUNT WAS ALREADY SIGNED IN.** The hosted Connect button relays the
+sign-in to a DEVICE, and with exactly one Mac online it auto-targets that one. Their Mac's agent
+had never started, so `tabish-mac` was the only Mac online, the request went there — the page said
+so: *"Asked tabish-mac to open a sign-in window…"* — and that Mac reported the account already
+signed in. Correct, and confusing. Once their agent beats, two Macs are online and the device picker
+appears. **The standing rule stands: one Instagram account lives on exactly ONE Mac** — move a page
+by signing in on the new Mac and signing out on the old one, never both.
+
 **AN AUDIT WORKFLOW WAS RUN AND PRODUCED NOTHING.** Six reviewer agents were launched for an
 end-to-end loophole hunt; all six died on the account's session limit before returning a finding,
 after consuming ~2.4M tokens. Not retried. The three items above came from reading the failover path
