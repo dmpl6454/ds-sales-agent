@@ -89,7 +89,11 @@ else
 fi
 if ! command -v pnpm >/dev/null 2>&1; then
   say "Installing pnpm…"
-  npm install -g pnpm >/dev/null
+  # PINNED to the major this repo is verified against (7 Sept 2026). An unpinned install
+  # fetched pnpm 12 on the first operator Mac while every install here had run under pnpm 9,
+  # and pnpm 12 refuses dependency build scripts as a hard error unless pnpm-workspace.yaml
+  # allows them — it does now, and the pin keeps the next major from changing the rules again.
+  npm install -g pnpm@12 >/dev/null
 fi
 echo "pnpm $(pnpm -v) found"
 
@@ -247,7 +251,9 @@ if ! pnpm_try; then
   echo "pnpm install failed once — retrying in 10 s"; sleep 10
   if ! pnpm_try; then
     HINT="Could not install the app's packages."
-    if grep -q -i -E "gyp|xcode|xcrun|clang|python" "$PNPM_OUT"; then
+    if grep -q -i -E "IGNORED_BUILDS|Ignored build scripts|approve-builds" "$PNPM_OUT"; then
+      HINT="This pnpm refused to run the packages' install scripts. The app's pnpm-workspace.yaml allows them — this image predates it; download the installer again from the dashboard and open it. (Please report which version of the installer this was.)"
+    elif grep -q -i -E "gyp|xcode|xcrun|clang|python" "$PNPM_OUT"; then
       HINT="A package tried to compile itself and this Mac lacks Apple's command line tools. Open Terminal, run: xcode-select --install, then open DS Sales Agent again. (This should not happen with the shipped versions — please report it.)"
     elif grep -q -i -E "ENOTFOUND|ETIMEDOUT|ECONNRESET|ECONNREFUSED|EAI_AGAIN|registry.npmjs.org|github.com|binaries.prisma.sh|network" "$PNPM_OUT"; then
       HINT="The download of the app's packages failed — this Mac could not reach npmjs.org, github.com or binaries.prisma.sh. Check the internet connection (a VPN or office firewall can block these), then open DS Sales Agent again."

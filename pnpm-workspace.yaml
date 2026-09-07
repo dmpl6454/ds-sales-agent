@@ -1,0 +1,29 @@
+# Which dependencies may run their install scripts (7 Sept 2026).
+#
+# pnpm 10+ refuses dependency build scripts unless the project allows them, and pnpm 12 makes
+# that refusal a hard error: `ERR_PNPM_IGNORED_BUILDS`. The first other-operator install died
+# on exactly that — their `npm install -g pnpm` fetched pnpm 12 while this repo had only ever
+# been installed under pnpm 9, which runs scripts by default. Without these scripts Prisma's
+# engines are never downloaded and better-sqlite3 never gets its binary, so nothing starts.
+#
+# Two spellings on purpose: `allowBuilds` is what pnpm 12 reads (verified: exit 0, Prisma
+# generated, better_sqlite3.node present); `onlyBuiltDependencies` is the pnpm 10 form. The
+# `pnpm` field in package.json is no longer read at all. This file has no `packages:` key —
+# the repo is a single package; pnpm 9 REQUIRES a `packages` key, so the root is listed as the
+# only package, which leaves the lockfile's `importers` (already `.`) unchanged.
+packages:
+  - '.'
+allowBuilds:
+  '@prisma/client': true
+  '@prisma/engines': true
+  better-sqlite3: true
+  esbuild: true
+  prisma: true
+  sharp: true
+onlyBuiltDependencies:
+  - '@prisma/client'
+  - '@prisma/engines'
+  - better-sqlite3
+  - esbuild
+  - prisma
+  - sharp

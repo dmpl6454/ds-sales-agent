@@ -123,6 +123,21 @@ The adapter's own `better-sqlite3@12.11.1` HAS the prebuild and was being instal
   cause), and puts the DIAGNOSIS in the dialog — Xcode tools / network / disk, with the last six
   lines of pnpm — instead of sending a non-technical operator to a log file on their own machine.
 
+**AND THE SECOND ATTEMPT FAILED ONE LAYER UP — THE DIALOG NOW SAID WHY, WHICH IS THE ONLY REASON IT
+WAS FOUND IN MINUTES.** *"Ignored build scripts: @prisma/engines, better-sqlite3, esbuild, prisma,
+sharp — run pnpm approve-builds"*. Their `npm install -g pnpm` had fetched **pnpm 12**, which refuses
+dependency install scripts as a hard error (`ERR_PNPM_IGNORED_BUILDS`) unless the project allows them;
+this Mac runs **pnpm 9.15**, which runs them by default, so no install here had ever met the rule.
+Without those scripts Prisma's engines are never downloaded and nothing starts. REPRODUCED with
+`npx pnpm@12 install` on the shipped tree, then the fix measured three ways: the `pnpm` field in
+package.json is **no longer read at all** by pnpm 12 (it says so and still fails);
+`onlyBuiltDependencies` in `pnpm-workspace.yaml` is READ (it appears in `pnpm config list`) and still
+fails; **`allowBuilds` as a map is what pnpm 12 honours** — exit 0, Prisma generated,
+`better_sqlite3.node` present. `pnpm-workspace.yaml` carries both spellings plus the `packages: ['.']`
+key that pnpm 9 demands (*"packages field missing or empty"* without it); pnpm 9 here installs with the
+lockfile untouched, and the server runs pnpm 10.33. The installer pins `pnpm@12` so the next major
+cannot change the rules underneath a shipped image, and its dialog names this failure by name.
+
 **WHY "SIGN IN" SAID THE ACCOUNT WAS ALREADY SIGNED IN.** The hosted Connect button relays the
 sign-in to a DEVICE, and with exactly one Mac online it auto-targets that one. Their Mac's agent
 had never started, so `tabish-mac` was the only Mac online, the request went there — the page said
