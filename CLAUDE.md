@@ -5,6 +5,80 @@ changing anything that touches sending.
 
 ---
 
+## 7 SEPTEMBER — THE .APP HAD BECOME A BROWSER SHORTCUT, SO THEIR MAC HAD STOPPED TRYING
+
+**Tabish: *"both sign in and paired devices doesn't work even after individual installed
+updated dmg. The new mac could not use it."*** MEASURED before anything changed, and the two
+numbers are the whole diagnosis:
+
+| | |
+|---|---|
+| `device.enrol.requested` rows ever | **1** — our own probe of 4 September |
+| dashboard sessions created since 1 September | **0** |
+
+So their Mac had never reached the server AT ALL: not for pairing, not for signing in. The
+hosted side was healthy the whole time — `/sign-in` 200 with a real form, `/devices/enrol`
+correctly carrying its code through `?next=`, the enrol API answering.
+
+### THE LAUNCHER ASKED WHETHER A DIRECTORY EXISTED
+
+`launcher.sh` read `[ -d "$HOME/ds-sales-agent" ]`, and `install.sh` creates that directory at
+**step 2** — before the private runtime, the tunnel, the pairing and the agent. So ANY failure
+after the unpack (no Chrome, a dropped network, a dismissed dialog, an enrolment nobody
+approved inside fifteen minutes) left the directory behind and **turned the .app into a
+permanent browser shortcut: every later double-click opened a web page and the installer never
+ran again.** Handing them a newer DMG changed nothing, because the check is about their DISK
+rather than about the image — which is exactly what "even after installing the updated dmg"
+means.
+
+**THIS IS THE ABORTED-FIRST-RUN DEFECT OF 1 SEPTEMBER, ONE LAYER UP.** That entry ends *"The
+check is a completion SENTINEL now, never file existence"* — and it fixed the check INSIDE the
+installer (`.env`) while the LAUNCHER's kept asking whether a folder was there. A lesson
+recorded in one file did not reach the file one call up.
+
+- `install.sh` writes `~/.ds-sales-agent-data/setup-complete` as its **LAST** action, so it
+  means setup FINISHED rather than setup started. In the DATA directory, never the credential
+  one.
+- `launcher.sh` decides on that sentinel. No sentinel plus an existing code directory is an
+  INTERRUPTED install, and it says so before resuming — *"The last setup did not finish.
+  Picking up where it stopped"* — rather than silently doing something different. The installer
+  was already idempotent: it re-unpacks, keeps an existing `.env` and tunnel key, and pairs
+  again only if needed.
+- A maintainer's `~/Desktop/AI Sales Agent` checkout stays a shortcut and is never installed
+  over.
+
+**DRIVEN IN A FAKE `HOME` ACROSS ALL FIVE STATES BEFORE SHIPPING**, with `open`, `osascript`,
+`nc` and `nohup` stubbed to record rather than act: fresh Mac and interrupted install both
+relaunch the installer with different wording, completed and dev-checkout both open the
+dashboard — **and the OLD launcher opens a browser in exactly the reported state**, which is
+the control that proves the diagnosis rather than assuming it.
+
+### AND PAIRING NO LONGER NEEDS THE PERSON AT THE KEYBOARD TO HOLD A DASHBOARD LOGIN
+
+The installer's dialog said *"Sign in if asked"*, which makes an account a hard requirement for
+someone who by definition has none — and **0 sessions since 1 September** says that is where
+they stopped. It was true when written and stopped being true on 4 September, when a waiting
+Mac became visible on `/senders`: anyone ALREADY signed in can approve it.
+
+The dialog and README now lead with reading the code and fingerprint to whoever runs the
+dashboard, and approving it yourself is the alternative rather than the requirement. **A new
+operator needs no dashboard account to pair a Mac**, which removes the one step of this flow
+that depended on a credential nobody had handed over.
+
+**HOW THEIR MAC GETS UNSTUCK — two ways, either is enough.** Hand them the rebuilt DMG (they
+cannot fetch it themselves: `/api/download/agent` is behind auth, which is the same wall), or
+have them delete `~/ds-sales-agent` and open the app they already have — the old launcher then
+finds no directory and runs the installer. **The sign-in they were stuck at is no longer part
+of the path.**
+
+| | |
+|---|---|
+| tests / typecheck | **2,265 / 127 files**, clean; the sentinel and its POSITION both mutation-tested |
+| deploy | zero-gap reload, dashboard 200 throughout |
+| DMG | rebuilt from `16081f8`, notarised, byte-identical on the server, and the **mounted image verified to carry the fixed launcher** |
+
+---
+
 ## 4 SEPTEMBER, EVENING — ANOTHER OPERATOR PAIRED A MAC AND IT WAS INVISIBLE
 
 **Tabish: *"Another user has installed the agent (opened the dmg via double click), we cannot
