@@ -37,7 +37,21 @@ import { replyHaltFloor } from '@/outreach/replyHalt'
 import { mentionsHandleExactly, brandStringsNameProspect } from '@/outreach/materialAllowance'
 // A publisher's own watermark/series code is not a third party — see ownMarks.ts.
 import { stripOwnMarksFromBrands } from '@/detection/ownMarks'
-import { readHeartbeat, readPassHealth, machineId } from '@/worker/scheduler'
+import { readHeartbeat, readPassHealth, machineId, type PassHealth } from '@/worker/scheduler'
+import { DETECTION_FAILOVER_AFTER_MS } from '@/detection/failover'
+
+/**
+ * No host has read a feed page recently. The threshold is the failover's own (20 minutes),
+ * so the dashboard and the device agent agree about when the server counts as blind.
+ */
+export function detectionBlind(
+  passes: Pick<PassHealth, 'feedOkAt' | 'feedStale' | 'throttledUntil'>,
+  now: number = Date.now(),
+): boolean {
+  if (passes.feedStale) return true
+  if (!passes.throttledUntil) return false
+  return passes.feedOkAt === null || now - passes.feedOkAt.getTime() > DETECTION_FAILOVER_AFTER_MS
+}
 import { assessWatch, watchHealthSentence } from '@/detection/watchHealth'
 import { getDetector } from '@/detection/detectors'
 /**
@@ -671,13 +685,15 @@ async function computeCeoView(): Promise<CeoView> {
      */
     health = 'broken'
     headline = watchHealthSentence(watch) ?? 'The watch is not running.'
-  } else if (passes.throttledUntil || passes.feedStale) {
+  } else if (detectionBlind(passes)) {
     /**
      * OUTPUT, not liveness (7 Sept 2026). For three days the pass ran on time, threw
      * nothing and stamped itself healthy while Instagram refused every read — so this
-     * branch keys on whether a feed page was actually FETCHED, and on the cooldown the
-     * gate recorded. It sits above the pass-stale branch because a refused pass is not a
-     * failing one, and "the server's own log says why" would send a person to the wrong log.
+     * branch keys on whether a feed page was actually FETCHED by ANY host, and on the
+     * cooldown the server recorded. Blind means the server is refused AND nobody (the
+     * server, or a paired Mac reading in its place) has fetched a page for 20 minutes, or
+     * nothing has been fetched for an hour. A refused server with a Mac reading is the
+     * ATTENTION rung further down — paid posts ARE being found then.
      */
     health = 'broken'
     const lastOk = passes.feedOkAt
@@ -706,6 +722,14 @@ async function computeCeoView(): Promise<CeoView> {
     headline =
       `The watch process is running, but ${failing} keeps failing — last succeeded ` +
       `${minutes !== null ? `${minutes} minutes ago` : 'unknown'}. The server's own log says why.`
+  } else if (passes.throttledUntil) {
+    // The server is refused but a paired Mac is reading the feeds in its place (feedOkAt is
+    // fresh, or `detectionBlind` above would have fired). Worth knowing, not broken.
+    health = 'attention'
+    const minutes = passes.feedOkAt ? Math.round((Date.now() - passes.feedOkAt.getTime()) / 60_000) : null
+    headline =
+      `Instagram is refusing anonymous reads from the server until ${istStamp(passes.throttledUntil)}; ` +
+      `a paired Mac is reading the feeds in its place (last read ${minutes ?? '?'} minutes ago). Nothing to do.`
   } else if (unreadReplies.length > 0) {
     // A reply outranks a waiting draft: it is the only event here that is revenue.
     health = 'attention'

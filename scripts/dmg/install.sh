@@ -113,6 +113,9 @@ write_env() { # write_env DBURL NAME
   set_env MAX_TOTAL_SENDS unlimited
   set_env DS_DEVICE_NAME "\"$2\""
   set_env OPERATOR_NAME "\"$2\""
+  # The classifier key travels with the pairing (7 Sept 2026): when this Mac reads the feeds
+  # in the server's place it must be able to JUDGE what it stores. Absent → the agent says so.
+  [ -n "${3:-}" ] && set_env DEEPSEEK_API_KEY "\"$3\""
   echo ".env written (this file stays on this machine only)"
 }
 write_ssh_config() { # write_ssh_config HOST USER
@@ -142,7 +145,7 @@ elif [ "$MANUAL" = 1 ]; then
   read -r DBURL
   case "$DBURL" in postgresql://*127.0.0.1:15432*) ;; *) fail "That does not look like postgresql://…@127.0.0.1:15432/… — stopping so nothing half-configured is left behind." ;; esac
   NAME=$(ask "A short name for this machine (it shows on the dashboard)" "$(scutil --get ComputerName 2>/dev/null || hostname -s)")
-  write_env "$DBURL" "$NAME"
+  write_env "$DBURL" "$NAME" "${MODEL_KEY:-}"
   if [ ! -f "$KEY" ]; then
     bold "Drag the tunnel key file Tabish sent you into this window, then press Enter:"
     read -r KEYSRC
@@ -206,13 +209,13 @@ This window closes by itself once approved. The request expires in 15 minutes �
     DLG=$!
   fi
 
-  DBURL=""; SSH_HOST=""; SSH_USER=""
+  DBURL=""; SSH_HOST=""; SSH_USER=""; MODEL_KEY=""
   for _ in $(seq 1 300); do
     # The device code is the secret that releases the connection string: it goes in the BODY, never
     # the URL, so it is not written to any access log on the way.
     P=$(curl -fsS -X POST -H 'Content-Type: application/json' --data "{\"deviceCode\":\"$DEVICE_CODE\"}" "$DASHBOARD_URL/api/device/enrol/poll" 2>/dev/null || echo '{"status":"pending"}')
-    STATUS=$(printf '%s' "$P" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{const j=JSON.parse(s);console.log(j.status, j.databaseUrl||"", j.sshHost||"", j.sshUser||"")}catch{console.log("pending")}})')
-    read -r ST DBURL SSH_HOST SSH_USER <<< "$STATUS"
+    STATUS=$(printf '%s' "$P" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{const j=JSON.parse(s);console.log(j.status, j.databaseUrl||"", j.sshHost||"", j.sshUser||"", j.modelKey||"")}catch{console.log("pending")}})')
+    read -r ST DBURL SSH_HOST SSH_USER MODEL_KEY <<< "$STATUS"
     case "$ST" in
       approved) break ;;
       expired|unknown) [ -n "$DLG" ] && kill "$DLG" 2>/dev/null || true; fail "The pairing request expired or was not found. Open DS Sales Agent again and approve within 15 minutes." ;;
@@ -223,7 +226,7 @@ This window closes by itself once approved. The request expires in 15 minutes �
   [ "${ST:-}" = approved ] && [ -n "$DBURL" ] || fail "Nobody approved this Mac within 15 minutes. Open DS Sales Agent again to retry."
   say "Approved — finishing the setup…"
 
-  write_env "$DBURL" "$NAME"
+  write_env "$DBURL" "$NAME" "${MODEL_KEY:-}"
   write_ssh_config "${SSH_HOST:-172.105.53.101}" "${SSH_USER:-root}"
 fi
 echo "tunnel key: this Mac's own, forward-only (no shell, no files, one port)"

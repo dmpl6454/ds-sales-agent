@@ -91,8 +91,9 @@ export interface DetectionSummary {
  * for why detection no longer runs on the sending schedule.
  */
 export async function runDetection(
-  opts: { lookbackHours?: number; channelSpacingMs?: number } = {},
+  opts: { lookbackHours?: number; channelSpacingMs?: number; role?: DetectionRole } = {},
 ): Promise<DetectionSummary> {
+  const role: DetectionRole = opts.role ?? 'primary'
   const lookbackHours = opts.lookbackHours ?? DETECT_LOOKBACK_HOURS
   // A restart must not forget a cooldown (pm2 recycles the worker on its memory ceiling),
   // or the pass resumes the exact hammering the cooldown exists to stop.
@@ -455,7 +456,27 @@ export async function runDetection(
       resumesAt: throttledUntil?.toISOString() ?? 'unknown',
     })
   }
-  await recordDetectionOutput({ pagesFetched, throttledUntil })
+  await recordDetectionOutput({ pagesFetched, throttledUntil, role })
+  /**
+   * A FAILOVER pass (an operator's Mac reading because the server cannot) stops here: brand
+   * discovery and the frame re-judge run on that machine's own timers already, and the
+   * evidence they need — frames on disk, a classifier key — is the server's. Doubling the
+   * lookups from a home IP is how that IP gets throttled too.
+   */
+  if (role === 'failover') {
+    return {
+      channels,
+      throttledUntil,
+      channelsUnread,
+      pagesFetched,
+      postsSeen: channels.reduce((n, c) => n + c.fetched, 0),
+      newPosts: channels.reduce((n, c) => n + c.stored, 0),
+      detected: channels.reduce((n, c) => n + c.campaigns, 0),
+      hadParseFailure: channels.some((c) => c.parseFailure === true),
+      hadError: channels.some((c) => c.error !== undefined),
+      brandsResolved: { looked: 0, decided: 0, skippedUnsure: 0, haltedEarly: false, unreached: 0, backingOff: 0, awaitingRetry: 0 },
+    }
+  }
   const brandsResolved = await autoResolveBrands().catch((err): AutoResolveSummary => {
     log.warn('brand auto-resolve failed — next pass retries', {
       error: err instanceof Error ? err.message : String(err),
@@ -557,6 +578,16 @@ export async function runDetection(
   }
 }
 
+/**
+ * Who is running the pass. The PRIMARY is the server's worker; a FAILOVER pass is an
+ * operator's Mac reading because the server cannot (src/detection/failover.ts). The
+ * distinction matters for one write: `detectThrottledUntil` describes the SERVER's cooldown
+ * and only the server may set or clear it — a Mac writing its own cooldown there would tell
+ * the dashboard the wrong host's story, and a Mac clearing it would hide a server still
+ * being refused, which is exactly the condition that makes the Mac's reading necessary.
+ */
+export type DetectionRole = 'primary' | 'failover'
+
 /** Rotates the channel order between passes — see the note in `runDetection`. */
 let passCounter = 0
 
@@ -572,7 +603,11 @@ export const GATE_REOPEN_WAIT_MAX_MS = 2 * 60_000
  * channel does not throw — that is how three blind days looked healthy (4-7 Sept 2026).
  * Best-effort like every other stamp: recording output must never fail the pass.
  */
-async function recordDetectionOutput(input: { pagesFetched: number; throttledUntil: Date | null }): Promise<void> {
+async function recordDetectionOutput(input: {
+  pagesFetched: number
+  throttledUntil: Date | null
+  role: DetectionRole
+}): Promise<void> {
   const writes: Promise<unknown>[] = []
   if (input.pagesFetched > 0) {
     const value = new Date().toISOString()
@@ -580,7 +615,9 @@ async function recordDetectionOutput(input: { pagesFetched: number; throttledUnt
       prisma.setting.upsert({ where: { key: DETECT_FEED_OK_KEY }, update: { value }, create: { key: DETECT_FEED_OK_KEY, value } }),
     )
   }
-  if (input.throttledUntil) {
+  if (input.role !== 'primary') {
+    // A failover pass reports what it READ and nothing about the server's cooldown.
+  } else if (input.throttledUntil) {
     const value = input.throttledUntil.toISOString()
     writes.push(
       prisma.setting.upsert({ where: { key: DETECT_THROTTLED_KEY }, update: { value }, create: { key: DETECT_THROTTLED_KEY, value } }),
