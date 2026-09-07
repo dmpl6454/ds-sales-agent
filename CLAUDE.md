@@ -5,6 +5,98 @@ changing anything that touches sending.
 
 ---
 
+## 7 SEPTEMBER, MIDDAY — ZERO SENDS BECAUSE INSTAGRAM HAD BEEN REFUSING EVERY ANONYMOUS READ FOR THREE DAYS, AND THE PASS CALLED ITSELF HEALTHY
+
+**Tabish: *"How is it possible that no messages have been sent today … is autopilot and paid
+posts detection healthy?"*** Autopilot was. Detection had been ~99% blind since **4 September
+03:00 IST** and nothing on any screen said so. MEASURED before anything changed:
+
+| per day | 3 Sep | 4 Sep | 5 Sep | 6 Sep | 7 Sep to 12:00 |
+|---|---|---|---|---|---|
+| feed pages fetched OK (worker log) | 3,388 | 478 | 12 | 6 | 6 |
+| `channel failed … HTTP 401` lines | 0 | 1,427 | 1,694 | 1,697 | 813 |
+| posts stored / paid | 730 / 118 | 67 / 9 | 47 / 18 | 24 / 9 | 8 / 6 |
+| prospects minted · drafts written · delivered | 19 · 131 · 126 | 4 · 171 · 127 | 0 · 150 · 150 | 0 · 34 · 34 | 0 · 0 · 0 |
+
+Every one of the 19 watched channels answered `HTTP 401 {"message":"Please wait a few minutes
+before you try again.","require_login":true}` on every 15-minute pass. **The same 401 came back
+from this Mac**, on the feed endpoint AND the profile endpoint — so the *"discovery livelocked
+on the home IP"* of 4 September (`looked=1 haltedEarly=true`, `unreached` climbing 82 → 110)
+was this same event seen from the other machine. Deliveries lagged by two days because the
+queue still had material; the last one went at 23:31 IST on 6 September. At noon the queue held
+**45 drafts, every one held by Tabish's own rules** (34 waiting for a paid post, 4 on a reply).
+
+### IT IS A PER-IP COOLING THROTTLE, NOT A CLIENT BLOCK — AND WE NEVER LET IT COOL
+
+Control probes, all from the Linode: `curl` and Node's `fetch` both 401; HTTP/1.1 and HTTP/2
+both 401; anonymous device cookies plus every web header still 401; the profile HTML page 200
+but only the SPA shell. **One curl returned 200 with 12 items after ~14 minutes of no
+requests, and five quick probes re-tripped it.** So Instagram meant "wait a few minutes"
+literally — and `feed.ts` named only a **429** as a rate limit. A 401 was a per-channel
+`FeedFetchError`, `pipeline.ts` logged `channel failed` and moved to the next channel, so
+every pass fired ~19 requests at an IP that had just been told to wait. The IP never got its
+few minutes. **A pass that is refused on every channel does not throw, so `detectLastOkAt`
+stayed fresh, `assessWatch` read only the heartbeat, and three blind days looked healthy** —
+liveness, success and output are three different facts, for the fourth time in this file.
+
+### THE FIX: ONE GATE PER HOST, A HALT THAT RELEASES ITSELF, AND AN ALARM ABOUT OUTPUT
+
+- **`src/detection/anonGate.ts`** — every anonymous Instagram caller on a host (`feed.ts`,
+  `enrichHandle.ts`, `exists.ts`, `resolveBrand.ts`; a totality grep pins the set) asks it
+  before spending a request and classifies the answer after. **401 and 429 are throttles**
+  (403 only with `require_login` in the body). A throttle opens a cooldown **15 → 30 → 60 min**
+  on consecutive strikes, capped at an hour because a retry costs ONE request; one success
+  resets the ladder. While closed, every caller refuses WITHOUT a network call. HOST-wide, not
+  per module: the throttle the feed earned a second ago binds the badge door too. Persisted as
+  `anonThrottle:<host>` and rehydrated after a restart, or pm2 recycling the worker mid-cooldown
+  would resume the exact hammering the cooldown ends.
+- **`pipeline.ts`** halts the pass on the first throttle (the rest of the channels are
+  `skipped: 'throttled'`, ONE alarm line), rotates the channel order between passes (under the
+  throttle the only channel ever read was the alphabetical head), pages only past the newest
+  post already stored (one page per channel in the steady state — volume is what earned this),
+  spaces channels 2.5–5 s apart, and **waits for a cooldown that ends within two minutes of the
+  cron** — MEASURED on the first live pass: `until=07:30:00.571Z` against a cron at 07:30:00.000Z
+  would otherwise have cost a whole pass for 571 ms.
+- **`detectFeedOkAt` / `detectThrottledUntil`** are stamped by the pipeline and read by
+  `readPassHealth`; the dashboard ladder renders *"Instagram is refusing anonymous reads from
+  the server, so no paid posts are being found — last successful read …; the next attempt is at
+  13:00. Sending is not affected."* **VERIFIED on the live hosted page** with a five-minute probe
+  session (deleted after): the sentence is on `/`, status `broken`.
+- **Detection failover on the device agent** (`src/detection/failover.ts`, PURE): when no host
+  has fetched a feed page for 20 minutes or the server has recorded a cooldown, a Mac runs the
+  SAME `runDetection` from its own residential IP — idempotent on shortcode, both hosts stamp the
+  same `detectFeedOkAt`, the server's planner drafts from either. Never while the Mac's own gate
+  is closed; *"never recorded"* is unknown, not blind. Official-page lookups on the agent
+  **60 → 20 per pass**: ~2,900 anonymous lookups a day from the home IP is what got it throttled.
+- The badge door halts on a host throttle instead of benching an innocent candidate for 24h.
+
+**FIRST TWO GATED PASSES ON THE LINODE, LIVE:** 12:45 IST — one request, `401`, strike 1,
+**17 channels unread, 0 read**, cooldown to 13:00, stamps written. 13:00 — *"resuming a cooldown
+recorded before this process started"*, waited 1 s for the boundary, one request, `401`, strike 2,
+cooldown to 13:30. **The hammering is over: two requests in 30 minutes where there were ~40.**
+
+> **WHAT IS NOT FIXED, STATED PLAINLY: the IPs have not recovered yet.** Forty-five minutes of
+> near-silence was not enough for the Linode, and the Mac's first probe after its restart was a
+> 401 too. Recovery is now a measurement the system makes for itself — one request per cooldown,
+> at most an hour apart, on both hosts — and the moment either IP is allowed back the worker log
+> reads `anonymous reads recovered` and `detectFeedOkAt` moves. If neither recovers within a day,
+> the honest options are a different IP or a decision about reading with a session, and both are
+> Tabish's. **Decision 4 stands: no cookie, no session, no proxy were added here.**
+
+**Also recorded, because it is mine:** the Mac agent was restarted twice to load this, and the
+second restart landed while a reply sweep was mid-read (the check I used looked at the wrong log
+lines). The new process reclaimed the lock and re-ran the sweep; no message was in flight, the
+queue being fully held.
+
+| | |
+|---|---|
+| tests / typecheck | **2,285 / 129 files**, clean; the feed gate and the pipeline gate both mutation-tested |
+| deploy | `476ec2a`, zero-gap, dashboard 200 throughout; worker restarted onto the gate |
+| DMG | rebuilt from `476ec2a`, `spctl: accepted — source=Notarized Developer ID`, **sha256 `e140750e…` identical on disk, on the server and through the hosted `/api/download/agent`**; the mounted image carries `anonGate.ts`, `failover.ts` and the fixed launcher |
+| hosted onboarding | `/sign-in` 200 with the form; `/devices/enrol?code=…` 307 carrying `?next=`; download behind auth |
+
+---
+
 ## 7 SEPTEMBER — THE .APP HAD BECOME A BROWSER SHORTCUT, SO THEIR MAC HAD STOPPED TRYING
 
 **Tabish: *"both sign in and paired devices doesn't work even after individual installed
