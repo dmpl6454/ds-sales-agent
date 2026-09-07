@@ -328,8 +328,20 @@ async function detectionFailoverPass(): Promise<void> {
       log.step('detection failover idle', { reason: decision.reason })
       return
     }
+    if (!process.env.DEEPSEEK_API_KEY) {
+      /**
+       * Without the classifier key a pass would STORE posts it cannot JUDGE — rows that sit
+       * UNCLASSIFIED until somebody runs `ig:classify` by hand, which is a feature that is
+       * not running. The pairing hand-off carries the key (deviceEnrol.ts); a Mac paired
+       * before that, or by hand, says so here rather than silently doing half a job.
+       */
+      log.step('detection failover idle', {
+        reason: 'this machine has no DEEPSEEK_API_KEY in .env, so it could store posts but not judge them — re-pair, or add the key',
+      })
+      return
+    }
     log.info('detection failover — reading the feeds from this machine', { reason: decision.reason })
-    const d = await runDetection()
+    const d = await runDetection({ role: 'failover' })
     log.info('detection failover pass', {
       newPosts: d.newPosts,
       paid: d.detected,

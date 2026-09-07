@@ -268,7 +268,19 @@ export async function approveEnrolment(
 
 export type PollResult =
   | { status: 'pending'; deviceName: string }
-  | { status: 'approved'; deviceName: string; databaseUrl: string; sshHost: string; sshUser: string }
+  | {
+      status: 'approved'
+      deviceName: string
+      databaseUrl: string
+      sshHost: string
+      sshUser: string
+      /**
+       * The classifier key, so a paired Mac can JUDGE the posts it stores when it reads the
+       * feeds in the server's place (detection failover, 7 Sept 2026). Without it a failover
+       * pass would store rows nothing judges. Null when the server itself has none.
+       */
+      modelKey: string | null
+    }
   | { status: 'expired' }
   | { status: 'unknown' }
 
@@ -290,6 +302,7 @@ export async function pollEnrolment(deviceCode: string): Promise<PollResult> {
     databaseUrl: env.DEVICE_DATABASE_URL ?? '',
     sshHost: env.DEVICE_SSH_HOST,
     sshUser: env.DEVICE_SSH_USER,
+    modelKey: process.env.DEEPSEEK_API_KEY || null,
   }
 }
 
