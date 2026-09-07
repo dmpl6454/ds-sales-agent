@@ -366,7 +366,7 @@ export async function discoverOfficialPages(
          * sibling pass, where reading a per-handle failure as a run-wide one cost three
          * consecutive zero-progress runs.
          */
-        if ((e.reason ?? '').includes('429')) {
+        if (/\b(429|401)\b/.test(e.reason ?? '')) {
           out.haltedEarly = true
           break outer
         }

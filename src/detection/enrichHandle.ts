@@ -1,3 +1,4 @@
+import { anonGateCheck, anonGateRecordSuccess, anonGateRecordThrottle, isThrottleResponse } from './anonGate'
 import { log } from '@/lib/logger'
 import { FEED_HEADERS, REQUEST_TIMEOUT_MS } from './feed'
 
@@ -97,6 +98,11 @@ export async function enrichHandle(handle: string): Promise<HandleEnrichment> {
      * it. A timeout surfaces as a thrown AbortError and lands in the catch below, which
      * already reports "not reachable", and NOT-REACHABLE IS NEVER A VERDICT here.
      */
+    const gate = anonGateCheck()
+    if (!gate.ok) {
+      // No request. Reported as a 429 so every caller's "back off" branch fires (see anonGate.ts).
+      return { ...empty, reason: `HTTP 429 (anonymous reads throttled until ${gate.until.toISOString()})`, status: 429 }
+    }
     const res = await fetch(`https://i.instagram.com/api/v1/feed/user/${encodeURIComponent(h)}/username/`, {
       headers: FEED_HEADERS,
       signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
@@ -106,8 +112,11 @@ export async function enrichHandle(handle: string): Promise<HandleEnrichment> {
       // Not reachable is not the same as not a brand. It stays UNRESOLVED either way.
       // The status travels so the CALLER can tell a dead handle (404) from a throttle —
       // this function still never converts either into a verdict.
+      const text = await res.text().catch(() => '')
+      if (isThrottleResponse(res.status, text)) anonGateRecordThrottle('profile', res.status)
       return { ...empty, reason: `HTTP ${res.status}`, status: res.status }
     }
+    anonGateRecordSuccess('profile')
 
     const body = (await res.json()) as {
       items?: Array<{ user?: Record<string, unknown> }>

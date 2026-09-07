@@ -3,6 +3,7 @@ import { getSettings } from '@/lib/settings'
 import { log } from '@/lib/logger'
 import { writeStringArray } from '@/lib/json'
 import { fetchFeed, FeedFetchError, type FeedPost } from './feed'
+import { anonGateCheck, hydrateAnonGate, DETECT_FEED_OK_KEY, DETECT_THROTTLED_KEY } from './anonGate'
 import { getDetector } from './detectors'
 import { setChannelVocabulary } from './detectors/semantic'
 import { buildVocabulary } from './detectors/novelty'
@@ -56,6 +57,8 @@ export interface ChannelOutcome {
   pagesFetched: number
   error?: string
   parseFailure?: boolean
+  /** Not read at all this pass: Instagram had told this host to stop (see anonGate.ts). */
+  skipped?: 'throttled'
 }
 
 export interface DetectionSummary {
@@ -65,6 +68,11 @@ export interface DetectionSummary {
   detected: number
   hadParseFailure: boolean
   hadError: boolean
+  /** Set when the host is in an anonymous-read cooldown; the pass read nothing after it began. */
+  throttledUntil: Date | null
+  /** Channels this pass did not read because of that cooldown. */
+  channelsUnread: number
+  pagesFetched: number
   /**
    * What the automatic brand resolver did in this pass — lookups spent, prospects created,
    * and whether a throttle cut it short.
@@ -83,9 +91,12 @@ export interface DetectionSummary {
  * for why detection no longer runs on the sending schedule.
  */
 export async function runDetection(
-  opts: { lookbackHours?: number } = {},
+  opts: { lookbackHours?: number; channelSpacingMs?: number } = {},
 ): Promise<DetectionSummary> {
   const lookbackHours = opts.lookbackHours ?? DETECT_LOOKBACK_HOURS
+  // A restart must not forget a cooldown (pm2 recycles the worker on its memory ceiling),
+  // or the pass resumes the exact hammering the cooldown exists to stop.
+  await hydrateAnonGate()
   /**
    * Only channels we have chosen to WATCH.
    *
@@ -103,10 +114,32 @@ export async function runDetection(
     orderBy: { handle: 'asc' },
   })
 
-  const channels: ChannelOutcome[] = []
-  const sinceUnix = Math.floor(hoursAgo(lookbackHours).getTime() / 1000)
+  /**
+   * ROTATE the start so a pass cut short by a throttle does not read the same alphabetical
+   * head every time and never reach @viralbhayani. MEASURED 7 Sept 2026: under the throttle
+   * the only channel ever fetched was one, and it was the same one all day.
+   */
+  const offset = targets.length > 0 ? passCounter++ % targets.length : 0
+  const ordered = [...targets.slice(offset), ...targets.slice(0, offset)]
+  /**
+   * ONE page per channel in the steady state. Paging stops at the newest post we already
+   * hold (plus a minute of overlap), so a channel whose 12 newest posts we have costs one
+   * request. Only a channel with a real gap — nothing stored inside the lookback — pages
+   * deeper. Volume is what earned the throttle; this roughly halves it.
+   */
+  const newestStored = new Map<string, number>()
+  for (const row of await prisma.detectedCampaign.groupBy({ by: ['targetId'], _max: { postedAt: true } })) {
+    const at = row._max.postedAt
+    if (at) newestStored.set(row.targetId, Math.floor(at.getTime() / 1000))
+  }
+  const spacingMs = opts.channelSpacingMs ?? DETECT_CHANNEL_SPACING_MS
+  let requestsMade = 0
+  let throttledUntil: Date | null = null
 
-  for (const target of targets) {
+  const channels: ChannelOutcome[] = []
+  const floorUnix = Math.floor(hoursAgo(lookbackHours).getTime() / 1000)
+
+  for (const target of ordered) {
     const outcome: ChannelOutcome = {
       handle: target.handle,
       fetched: 0,
@@ -121,7 +154,22 @@ export async function runDetection(
       pagesFetched: 0,
     }
 
+    const gate = anonGateCheck()
+    if (!gate.ok) {
+      // No request is made. Every remaining channel lands here until the cooldown ends.
+      outcome.skipped = 'throttled'
+      outcome.error = `throttled until ${gate.until.toISOString()}`
+      throttledUntil = gate.until
+      channels.push(outcome)
+      continue
+    }
+    if (requestsMade > 0 && spacingMs > 0) {
+      // Space channels out instead of a 19-request burst — bursts are what a throttle counts.
+      await new Promise((r) => setTimeout(r, spacingMs + Math.floor(Math.random() * spacingMs)))
+    }
     try {
+      const sinceUnix = Math.max(floorUnix, (newestStored.get(target.id) ?? 0) - 60)
+      requestsMade += 1
       const { posts, pagesFetched } = await fetchFeed(target.handle, { maxPosts: 48, sinceUnix })
       outcome.fetched = posts.length
       outcome.pagesFetched = pagesFetched
@@ -355,6 +403,10 @@ export async function runDetection(
       if (err instanceof FeedFetchError && err.isParseFailure) {
         outcome.parseFailure = true
         log.alarm('feed shape changed — detection is blind until fixed', { handle: target.handle, message })
+      } else if (err instanceof FeedFetchError && err.isThrottle) {
+        // The gate has already alarmed once; here we only record that this channel was cut.
+        outcome.skipped = 'throttled'
+        throttledUntil = err.until
       } else {
         log.error('channel failed', { handle: target.handle, error: message })
       }
@@ -380,6 +432,16 @@ export async function runDetection(
    * cost us the posts we already read and stored. Every lookup is cached UNKNOWN and the
    * next pass retries.
    */
+  const pagesFetched = channels.reduce((n, c) => n + c.pagesFetched, 0)
+  const channelsUnread = channels.filter((c) => c.skipped === 'throttled').length
+  if (channelsUnread > 0) {
+    log.alarm('detection halted early — Instagram is refusing anonymous reads from this host', {
+      channelsUnread,
+      channelsRead: channels.length - channelsUnread,
+      resumesAt: throttledUntil?.toISOString() ?? 'unknown',
+    })
+  }
+  await recordDetectionOutput({ pagesFetched, throttledUntil })
   const brandsResolved = await autoResolveBrands().catch((err): AutoResolveSummary => {
     log.warn('brand auto-resolve failed — next pass retries', {
       error: err instanceof Error ? err.message : String(err),
@@ -469,6 +531,9 @@ export async function runDetection(
 
   return {
     channels,
+    throttledUntil,
+    channelsUnread,
+    pagesFetched,
     postsSeen: channels.reduce((n, c) => n + c.fetched, 0),
     newPosts: channels.reduce((n, c) => n + c.stored, 0),
     detected: channels.reduce((n, c) => n + c.campaigns, 0),
@@ -476,6 +541,37 @@ export async function runDetection(
     hadError: channels.some((c) => c.error !== undefined),
     brandsResolved,
   }
+}
+
+/** Rotates the channel order between passes — see the note in `runDetection`. */
+let passCounter = 0
+
+/** Gap between channel fetches within one pass, plus up to the same again as jitter. */
+export const DETECT_CHANNEL_SPACING_MS = 2500
+
+/**
+ * What the dashboard reads to tell "the pass ran" from "the pass READ something".
+ * `detectLastOkAt` is stamped when the pass does not throw, and a pass refused on every
+ * channel does not throw — that is how three blind days looked healthy (4-7 Sept 2026).
+ * Best-effort like every other stamp: recording output must never fail the pass.
+ */
+async function recordDetectionOutput(input: { pagesFetched: number; throttledUntil: Date | null }): Promise<void> {
+  const writes: Promise<unknown>[] = []
+  if (input.pagesFetched > 0) {
+    const value = new Date().toISOString()
+    writes.push(
+      prisma.setting.upsert({ where: { key: DETECT_FEED_OK_KEY }, update: { value }, create: { key: DETECT_FEED_OK_KEY, value } }),
+    )
+  }
+  if (input.throttledUntil) {
+    const value = input.throttledUntil.toISOString()
+    writes.push(
+      prisma.setting.upsert({ where: { key: DETECT_THROTTLED_KEY }, update: { value }, create: { key: DETECT_THROTTLED_KEY, value } }),
+    )
+  } else {
+    writes.push(prisma.setting.deleteMany({ where: { key: DETECT_THROTTLED_KEY } }))
+  }
+  await Promise.all(writes.map((w) => w.catch(() => undefined)))
 }
 
 function dedupe(values: string[]): string[] {

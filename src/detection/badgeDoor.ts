@@ -185,6 +185,16 @@ export async function badgeDoorPass(opts: {
       summary.enriched += 1
       const e = await enrichHandle(handle)
       await new Promise((r) => setTimeout(r, spacingMs))
+      if (!e.reachable && (e.status === 429 || e.status === 401)) {
+        // Instagram told this HOST to stop — not a fact about this handle. Halt the pass
+        // rather than sending an innocent candidate to the back of the queue for 24h.
+        summary.haltedEarly = true
+        log.warn('badge door halted — Instagram is refusing anonymous reads from this host', {
+          handle,
+          reason: e.reason ?? 'unknown',
+        })
+        break
+      }
       if (!e.reachable) {
         summary.unreachable += 1
         // A refusal to answer is never a verdict — but it IS a reason to stop spending

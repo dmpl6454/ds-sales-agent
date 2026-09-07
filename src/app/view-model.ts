@@ -671,6 +671,22 @@ async function computeCeoView(): Promise<CeoView> {
      */
     health = 'broken'
     headline = watchHealthSentence(watch) ?? 'The watch is not running.'
+  } else if (passes.throttledUntil || passes.feedStale) {
+    /**
+     * OUTPUT, not liveness (7 Sept 2026). For three days the pass ran on time, threw
+     * nothing and stamped itself healthy while Instagram refused every read — so this
+     * branch keys on whether a feed page was actually FETCHED, and on the cooldown the
+     * gate recorded. It sits above the pass-stale branch because a refused pass is not a
+     * failing one, and "the server's own log says why" would send a person to the wrong log.
+     */
+    health = 'broken'
+    const lastOk = passes.feedOkAt
+    const minutes = lastOk ? Math.round((Date.now() - lastOk.getTime()) / 60_000) : null
+    headline =
+      `Instagram is refusing anonymous reads from the server, so no paid posts are being found — ` +
+      `last successful read ${minutes !== null ? `${minutes} minutes ago` : 'unknown'}` +
+      `${passes.throttledUntil ? `; the next attempt is at ${istStamp(passes.throttledUntil)}` : ''}. ` +
+      `Sending is not affected. Nothing new is discovered until it clears, and it clears by itself.`
   } else if (passes.detectStale || passes.planStale) {
     /**
      * Below the dead-process rung (that one is unrecoverable loss; this one is work

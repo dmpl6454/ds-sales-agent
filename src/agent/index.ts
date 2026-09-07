@@ -1,3 +1,4 @@
+import { hydrateAnonGate } from '@/detection/anonGate'
 import { prisma } from '@/lib/db'
 import { env } from '@/lib/env'
 import { log, describeError } from '@/lib/logger'
@@ -168,7 +169,7 @@ const BRAND_LOOKUPS_PER_PASS = 25
  * 30-minute pass, drains the fresh set plus a slice of the old film-title backlog each pass.
  * A real 429 still HALTS the pass, so this cannot escalate into an IP block.
  */
-const OFFICIAL_LOOKUPS_PER_PASS = 60
+const OFFICIAL_LOOKUPS_PER_PASS = 20 // was 60: ~2,900 anonymous lookups a day from the home IP is what got it throttled (7 Sept 2026)
 /** Badge checks per brand pass — the FEED endpoint, 6s spacing inside the pass. */
 const BADGE_ENRICHMENTS_PER_PASS = 10
 
@@ -297,6 +298,7 @@ async function brandPass(): Promise<void> {
   }
   brandPassRunning = true
   try {
+    await hydrateAnonGate() // a cooldown recorded before this process started still binds
     const summary = await autoResolveBrands({ maxLookups: BRAND_LOOKUPS_PER_PASS })
     /**
      * Logged EVERY pass, including the empty one. "Nothing was discovered" and "the pass

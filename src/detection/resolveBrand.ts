@@ -1,3 +1,4 @@
+import { anonGateCheck, anonGateRecordSuccess, anonGateRecordThrottle, resetAnonGate, setAnonGateClock } from './anonGate'
 import { prisma } from '@/lib/db'
 import { log } from '@/lib/logger'
 import type { BrandLookupKind } from '@/lib/constants'
@@ -624,6 +625,7 @@ let clock: () => number = () => Date.now()
 
 /** Test seam. Pass nothing to restore the real clock. */
 export function setBrandResolverClock(fn?: () => number): void {
+  setAnonGateClock(fn) // the host gate and this latch must read ONE clock, or a test's past leaks into the other's present
   clock = fn ?? (() => Date.now())
 }
 
@@ -646,6 +648,7 @@ function cooldownRemaining(now: number): { active: boolean; until: number | null
  * to try, which is exactly the judgement the automatic path cannot make for itself.
  */
 export function resetBrandResolverLimit(): void {
+  resetAnonGate() // a person deciding to try again clears the host-wide cooldown too
   if (rateLimitedUntil !== null) {
     log.info('brand lookup cooldown cleared deliberately', {
       wasUntil: new Date(rateLimitedUntil).toISOString(),
@@ -818,6 +821,12 @@ export async function resolveBrand(
    * once set and says nothing about whether it will ever stop being true. A reason carrying
    * an expiry is a reason an operator can wait out or act on.
    */
+  // The HOST-WIDE gate (anonGate.ts) outranks this module's own latch: a throttle the feed
+  // fetch earned a second ago binds here too, and adopting it keeps the wording below true.
+  const gate = anonGateCheck()
+  if (!gate.ok && (rateLimitedUntil === null || gate.until.getTime() > rateLimitedUntil)) {
+    rateLimitedUntil = gate.until.getTime()
+  }
   const cooldown = cooldownRemaining(clock())
   if (cooldown.active && cooldown.until !== null) {
     return {
@@ -886,6 +895,7 @@ export async function resolveBrand(
       const outcome = interpretLookupFailure({ handle: h, status: res.status, body })
       verdict = outcome.verdict
       if (outcome.haltRun) {
+        anonGateRecordThrottle('profile', res.status)
         rateLimitedUntil = clock() + RATE_LIMIT_COOLDOWN_MS
         /**
          * `warn`, not `step`. `step` is the narration of ordinary work and scrolls past
@@ -907,6 +917,7 @@ export async function resolveBrand(
         })
       }
     } else {
+      anonGateRecordSuccess('profile')
       const user = ((await res.json()) as { data?: { user?: Record<string, unknown> } })?.data?.user
       if (!user) {
         verdict = { kind: 'MISSING', handle: h }

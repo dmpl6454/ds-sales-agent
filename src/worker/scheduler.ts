@@ -1,3 +1,4 @@
+import { DETECT_FEED_OK_KEY, DETECT_THROTTLED_KEY } from '@/detection/anonGate'
 import cron, { type ScheduledTask } from 'node-cron'
 import { hostname as osHostname } from 'node:os'
 import { prisma } from '@/lib/db'
@@ -110,12 +111,25 @@ export interface PassHealth {
   planOkAt: Date | null
   detectStale: boolean
   planStale: boolean
+  /**
+   * OUTPUT, not liveness: the last time a detection pass actually fetched a feed page.
+   * `detectOkAt` only says the pass did not throw — on 4-7 Sept 2026 it stayed fresh for
+   * three days while Instagram refused every read (see anonGate.ts). Null on a deployment
+   * that has never written it, and null never alarms.
+   */
+  feedOkAt: Date | null
+  feedStale: boolean
+  /** Set while the detection host is in an anonymous-read cooldown; the dashboard says so. */
+  throttledUntil: Date | null
 }
+
+/** A detection pass every 15 minutes with nothing fetched for this long is blind, not quiet. */
+export const FEED_STALE_MS = 60 * 60 * 1000
 
 /** What the dashboard reads beside the heartbeat. Null timestamps never read as stale. */
 export async function readPassHealth(now: Date = new Date()): Promise<PassHealth> {
   const rows = await prisma.setting.findMany({
-    where: { key: { in: [PASS_OK_KEYS.detect, PASS_OK_KEYS.plan] } },
+    where: { key: { in: [PASS_OK_KEYS.detect, PASS_OK_KEYS.plan, DETECT_FEED_OK_KEY, DETECT_THROTTLED_KEY] } },
   })
   const at = (key: string): Date | null => {
     const row = rows.find((r) => r.key === key)
@@ -126,7 +140,17 @@ export async function readPassHealth(now: Date = new Date()): Promise<PassHealth
   const detectOkAt = at(PASS_OK_KEYS.detect)
   const planOkAt = at(PASS_OK_KEYS.plan)
   const stale = (d: Date | null) => d !== null && now.getTime() - d.getTime() > PASS_STALE_MS
-  return { detectOkAt, planOkAt, detectStale: stale(detectOkAt), planStale: stale(planOkAt) }
+  const feedOkAt = at(DETECT_FEED_OK_KEY)
+  const throttledRaw = at(DETECT_THROTTLED_KEY)
+  return {
+    detectOkAt,
+    planOkAt,
+    detectStale: stale(detectOkAt),
+    planStale: stale(planOkAt),
+    feedOkAt,
+    feedStale: feedOkAt !== null && now.getTime() - feedOkAt.getTime() > FEED_STALE_MS,
+    throttledUntil: throttledRaw !== null && throttledRaw.getTime() > now.getTime() ? throttledRaw : null,
+  }
 }
 
 /** What the dashboard reads. `null` when no scheduler has ever run. */

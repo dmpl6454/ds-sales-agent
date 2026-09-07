@@ -1,3 +1,4 @@
+import { anonGateCheck, anonGateRecordSuccess, anonGateRecordThrottle, isThrottleResponse } from './anonGate'
 import { z } from 'zod'
 import { log } from '@/lib/logger'
 import type { EnrichedPost } from './types'
@@ -61,6 +62,13 @@ export class FeedFetchError extends Error {
     message: string,
     /** True when the shape changed rather than the request failing — an alarm. */
     public readonly isParseFailure = false,
+    /**
+     * True when Instagram told THIS HOST to stop (401/429 — see anonGate.ts). The pipeline
+     * halts the whole pass on it rather than trying the next channel: every further request
+     * only extends the cooldown. `until` is when the gate reopens.
+     */
+    public readonly isThrottle = false,
+    public readonly until: Date | null = null,
   ) {
     super(`[@${handle}] ${message}`)
     this.name = 'FeedFetchError'
@@ -276,12 +284,22 @@ export async function fetchFeed(
 ): Promise<FetchFeedResult> {
   const maxPosts = opts.maxPosts ?? 48
   const maxPages = opts.maxPages ?? 6
-  const delayMs = opts.delayMs ?? 700
+  const delayMs = opts.delayMs ?? 2500 // between pages of one channel — bursts are what earn a throttle
 
   const posts: FeedPost[] = []
   let maxId: string | null = null
   let pages = 0
   let moreAvailable = false
+  const gate = anonGateCheck()
+  if (!gate.ok) {
+    throw new FeedFetchError(
+      handle,
+      `anonymous reads are throttled on this host until ${gate.until.toISOString()} — no request made`,
+      false,
+      true,
+      gate.until,
+    )
+  }
 
   while (pages < maxPages && posts.length < maxPosts) {
     const url = `${ENDPOINT}/${encodeURIComponent(handle)}/username/?count=12${
@@ -289,12 +307,21 @@ export async function fetchFeed(
     }`
 
     const res = await fetchPageWithRetry(url, handle)
-    if (res.status === 429) {
-      throw new FeedFetchError(handle, 'rate limited (HTTP 429) — back off and retry next slot')
-    }
     if (!res.ok) {
+      const body = await res.text().catch(() => '')
+      if (isThrottleResponse(res.status, body)) {
+        const until = anonGateRecordThrottle('feed', res.status)
+        throw new FeedFetchError(
+          handle,
+          `Instagram refused anonymous reads (HTTP ${res.status}) — every lookup on this host halts until ${until.toISOString()}`,
+          false,
+          true,
+          until,
+        )
+      }
       throw new FeedFetchError(handle, `HTTP ${res.status}`)
     }
+    anonGateRecordSuccess('feed')
 
     let parsed
     try {
