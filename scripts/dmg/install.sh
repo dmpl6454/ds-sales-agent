@@ -234,7 +234,34 @@ echo "tunnel key: this Mac's own, forward-only (no shell, no files, one port)"
 # ── 4. Dependencies, the tunnel, the agent ────────────────────────────────────
 say "Installing (2–4 minutes on the first run)…"
 cd "$DEST"
-pnpm install >/dev/null 2>&1 || pnpm install || fail "pnpm install failed — see the log."
+# ── pnpm install, and WHY it failed when it fails (7 Sept 2026) ──────────────────────────
+# Another operator's Mac Studio died here with a dialog reading only "pnpm install failed —
+# see the log", and the log was on their machine. The cause was ours: better-sqlite3 had
+# drifted to a version with no prebuilt binary for Node 22 on Apple Silicon, so pnpm fell
+# back to compiling it, which needs Xcode's command line tools that a fresh Mac lacks. The
+# dependency is pinned now (package.json), and this step keeps the output, retries once
+# (a dropped connection is the other common cause), and puts the diagnosis IN the dialog.
+PNPM_OUT="$DEST/.pnpm-install.out"
+pnpm_try() { pnpm install > "$PNPM_OUT" 2>&1; }
+if ! pnpm_try; then
+  echo "pnpm install failed once — retrying in 10 s"; sleep 10
+  if ! pnpm_try; then
+    HINT="Could not install the app's packages."
+    if grep -q -i -E "gyp|xcode|xcrun|clang|python" "$PNPM_OUT"; then
+      HINT="A package tried to compile itself and this Mac lacks Apple's command line tools. Open Terminal, run: xcode-select --install, then open DS Sales Agent again. (This should not happen with the shipped versions — please report it.)"
+    elif grep -q -i -E "ENOTFOUND|ETIMEDOUT|ECONNRESET|ECONNREFUSED|EAI_AGAIN|registry.npmjs.org|github.com|binaries.prisma.sh|network" "$PNPM_OUT"; then
+      HINT="The download of the app's packages failed — this Mac could not reach npmjs.org, github.com or binaries.prisma.sh. Check the internet connection (a VPN or office firewall can block these), then open DS Sales Agent again."
+    elif grep -q -i -E "ENOSPC|no space left" "$PNPM_OUT"; then
+      HINT="This Mac is out of disk space. Free some space, then open DS Sales Agent again."
+    fi
+    TAIL="$(tail -n 6 "$PNPM_OUT" | cut -c1-160)"
+    fail "$HINT
+
+Last lines from pnpm:
+$TAIL"
+  fi
+fi
+echo "packages installed"
 bash scripts/prisma-client-for-env.sh
 DS_TUNNEL_HOST=ds-linode bash scripts/install-tunnel.sh install
 sleep 4
