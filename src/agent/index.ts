@@ -1,4 +1,6 @@
-import { hydrateAnonGate } from '@/detection/anonGate'
+import { anonGateCheck, hydrateAnonGate, DETECT_FEED_OK_KEY, DETECT_THROTTLED_KEY } from '@/detection/anonGate'
+import { runDetection } from '@/detection/pipeline'
+import { decideDetectionFailover, DETECTION_FAILOVER_INTERVAL_MS } from '@/detection/failover'
 import { prisma } from '@/lib/db'
 import { env } from '@/lib/env'
 import { log, describeError } from '@/lib/logger'
@@ -289,6 +291,59 @@ let stopping = false
  * started on top of it, both spending the same lookup budget against the same throttled
  * endpoint. In-process is the right scope: the bound this protects is per host.
  */
+/**
+ * ── DETECTION FAILOVER (7 Sept 2026) ─────────────────────────────────────────────────
+ *
+ * The server's IP was refused every anonymous read for three days and detection went blind
+ * with nothing to hand the work to. This Mac sits on its own residential IP and already
+ * reads Instagram anonymously for the badge door, so when no host has fetched a feed page
+ * for 20 minutes — or the server has recorded a cooldown — this device runs the SAME
+ * `runDetection` the server runs. Idempotent on shortcode; the server's planner drafts
+ * from whatever either host stored. The decision is pure (src/detection/failover.ts) and
+ * this device never reads while its own gate is closed. NOT gated on autopilot: reading
+ * public feeds is not activity against anyone's account, and a blind fleet with autopilot
+ * off is still a fleet that will have nothing to send when it is switched on.
+ */
+let detectionFailoverRunning = false
+
+async function detectionFailoverPass(): Promise<void> {
+  if (detectionFailoverRunning) return
+  detectionFailoverRunning = true
+  try {
+    await hydrateAnonGate()
+    const rows = await prisma.setting.findMany({ where: { key: { in: [DETECT_FEED_OK_KEY, DETECT_THROTTLED_KEY] } } })
+    const at = (key: string): Date | null => {
+      const v = rows.find((r) => r.key === key)?.value
+      if (!v) return null
+      const d = new Date(v)
+      return Number.isNaN(d.getTime()) ? null : d
+    }
+    const decision = decideDetectionFailover({
+      feedOkAt: at(DETECT_FEED_OK_KEY),
+      serverThrottledUntil: at(DETECT_THROTTLED_KEY),
+      thisHostGateOpen: anonGateCheck().ok,
+      now: new Date(),
+    })
+    if (!decision.run) {
+      log.step('detection failover idle', { reason: decision.reason })
+      return
+    }
+    log.info('detection failover — reading the feeds from this machine', { reason: decision.reason })
+    const d = await runDetection()
+    log.info('detection failover pass', {
+      newPosts: d.newPosts,
+      paid: d.detected,
+      pagesFetched: d.pagesFetched,
+      channelsUnread: d.channelsUnread,
+      resumesAt: d.throttledUntil?.toISOString() ?? null,
+    })
+  } catch (err) {
+    log.warn('detection failover failed — next pass retries', { error: err instanceof Error ? err.message : String(err) })
+  } finally {
+    detectionFailoverRunning = false
+  }
+}
+
 let brandPassRunning = false
 
 async function brandPass(): Promise<void> {
@@ -556,6 +611,15 @@ export async function runDeviceAgent(): Promise<void> {
   disk.unref?.()
 
   /**
+   * Detection failover — this machine reads the feeds when the server cannot. Fired once at
+   * startup so a blind server is covered within a minute of the agent coming up, then on the
+   * server's own 15-minute cadence. See the docblock on `detectionFailoverPass`.
+   */
+  void detectionFailoverPass()
+  const failover = setInterval(() => void detectionFailoverPass(), DETECTION_FAILOVER_INTERVAL_MS)
+  failover.unref?.()
+
+  /**
    * Servicing sign-in requests raised from the HOSTED website: an operator with no
    * localhost dashboard clicks Connect there, the server writes a request addressed to
    * this device, and this loop opens the Chrome window here — the only machine that
@@ -626,6 +690,7 @@ export async function runDeviceAgent(): Promise<void> {
   clearInterval(brands)
   clearInterval(replies)
   clearInterval(disk)
+  clearInterval(failover)
   stopConnectLoop()
 }
 
