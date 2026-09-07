@@ -88,11 +88,40 @@ second restart landed while a reply sweep was mid-read (the check I used looked 
 lines). The new process reclaimed the lock and re-ran the sweep; no message was in flight, the
 queue being fully held.
 
+### THREE THINGS THE FIRST VERSION GOT WRONG, FOUND BY WALKING THE FAILOVER THROUGH (SAME AFTERNOON)
+
+- **The throttle stamp had no owner.** `recordDetectionOutput` wrote and DELETED `detectThrottledUntil`
+  from whichever host ran the pass, so a Mac reading in the server's place would have overwritten
+  the server's cooldown with its own and, on a good read, deleted it — hiding a server still being
+  refused, which is the very condition that makes the Mac's reading necessary. `runDetection({ role })`:
+  only the PRIMARY touches that row; a FAILOVER pass stamps what it read and skips brand discovery
+  and the frame re-judge (they run on the Mac's own timers already).
+- **A reading Mac would have rendered as "no paid posts are being found".** The ladder keyed on the
+  server's cooldown alone. `detectionBlind` now means no host has fetched a page for 20 minutes (the
+  failover's own threshold, so page and agent agree); a refused server with a Mac reading is an
+  ATTENTION line instead. The attention rung is untested live — it needs a Mac to actually get through.
+- **An operator's Mac has no classifier key.** `install.sh` writes seven `.env` keys and `DEEPSEEK_API_KEY`
+  was not one of them, so a failover pass there would store posts nothing judges. The pairing poll now
+  hands `modelKey` over and the installer writes it; a Mac still without it refuses the failover and
+  says why. A Mac paired before this needs re-pairing or the key added by hand — today that is none.
+
+**AN AUDIT WORKFLOW WAS RUN AND PRODUCED NOTHING.** Six reviewer agents were launched for an
+end-to-end loophole hunt; all six died on the account's session limit before returning a finding,
+after consuming ~2.4M tokens. Not retried. The three items above came from reading the failover path
+by hand, which is the cheaper instrument anyway.
+
+**THE SHIPPED TREE WAS BOOTED, not only inspected:** `git archive HEAD` unpacked to a scratch dir,
+`pnpm install --offline` from the local store, `prisma-client-for-env.sh` → postgresql, and
+`pnpm agent:device` with `SEND_ENABLED=false` refused with its designed sentence — the agent's whole
+module graph, `runDetection` included, loads from exactly the bytes the DMG carries. (The first run of
+that smoke test APPENDED `DATABASE_URL` to `.env.example`'s copy and dotenv kept the first line — the
+1 September installer trap, reproduced in the harness rather than the product.)
+
 | | |
 |---|---|
-| tests / typecheck | **2,285 / 129 files**, clean; the feed gate and the pipeline gate both mutation-tested |
-| deploy | `476ec2a`, zero-gap, dashboard 200 throughout; worker restarted onto the gate |
-| DMG | rebuilt from `476ec2a`, `spctl: accepted — source=Notarized Developer ID`, **sha256 `e140750e…` identical on disk, on the server and through the hosted `/api/download/agent`**; the mounted image carries `anonGate.ts`, `failover.ts` and the fixed launcher |
+| tests / typecheck | **2,288 / 130 files**, clean; the feed gate and the pipeline gate both mutation-tested |
+| deploy | `391229f`, zero-gap, dashboard 200 throughout; worker restarted onto the gate |
+| DMG | rebuilt from `391229f`, `spctl: accepted — source=Notarized Developer ID`, **sha256 `6fdee0c6…` identical on disk and on the server**; the mounted image carries `anonGate.ts`, `failover.ts`, the key hand-off and the fixed launcher |
 | hosted onboarding | `/sign-in` 200 with the form; `/devices/enrol?code=…` 307 carrying `?next=`; download behind auth |
 
 ---
