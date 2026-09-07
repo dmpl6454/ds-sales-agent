@@ -1,3 +1,4 @@
+import { anonGateCheck, anonGateRecordSuccess, anonGateRecordThrottle, isThrottleResponse } from './anonGate'
 import { assertSafeHandle } from '@/lib/urls'
 
 /**
@@ -136,6 +137,8 @@ export async function probeHandle(
     return { check: 'unknown', facts: null }
   }
 
+  // A throttled host must answer "unknown", never "missing" — absence of data is not a verdict.
+  if (!anonGateCheck().ok) return { check: 'unknown', facts: null }
   try {
     const res = await fetch(`${ENDPOINT}${encodeURIComponent(handle)}`, {
       headers: HEADERS,
@@ -147,6 +150,11 @@ export async function probeHandle(
      * else is not worth downloading to answer a yes/no question.
      */
     const body = res.status === 200 || res.status === 400 ? await res.text().catch(() => '') : ''
+    if (isThrottleResponse(res.status, body)) {
+      anonGateRecordThrottle('exists', res.status)
+      return { check: 'unknown', facts: null }
+    }
+    if (res.status === 200) anonGateRecordSuccess('exists')
     const check = interpretExistence(res.status, body)
     return { check, facts: res.status === 200 ? parseHandleFacts(body) : null }
   } catch {
