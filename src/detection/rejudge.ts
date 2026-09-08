@@ -1,4 +1,5 @@
 import { prisma } from '@/lib/db'
+import type { Prisma } from '@/generated/prisma/client'
 import { getSettings } from '@/lib/settings'
 import { detectionCutoff } from '@/lib/cutoff'
 import { judgeWithFrame } from './judge'
@@ -119,8 +120,12 @@ export async function rejudgeUnusedEvidence(opts: RejudgeOptions = {}): Promise<
     postedAt: { gte: cutoff },
     verdict: 'ORGANIC',
     humanLabel: null,
-    signals: { contains: 'frame:call-failed' },
-  } as const
+    // Both are "the evidence exists and nothing reached a verdict": the classifier did not
+    // answer, or (8 Sept 2026) the OCR run itself died under load. Neither is a fact about the
+    // post, so both are retried; `frame:no-ocr-engine` is NOT, because a host with no engine
+    // would re-record it every pass forever.
+    OR: [{ signals: { contains: 'frame:call-failed' } }, { signals: { contains: 'frame:ocr-failed' } }],
+  } satisfies Prisma.DetectedCampaignWhereInput
 
   const candidates = await prisma.detectedCampaign.findMany({
     where,
@@ -195,7 +200,7 @@ export async function rejudgeUnusedEvidence(opts: RejudgeOptions = {}): Promise<
        * means the frame WAS read here and the classifier did not answer — look at the model.
        * Anything else means this host cannot see the frame — run it where the frames are.
        */
-      if (judged.signals.includes('frame:call-failed')) skippedCallFailed++
+      if (judged.signals.includes('frame:call-failed') || judged.signals.includes('frame:ocr-failed')) skippedCallFailed++
       else skippedNoEvidence++
       continue
     }
@@ -206,7 +211,7 @@ export async function rejudgeUnusedEvidence(opts: RejudgeOptions = {}): Promise<
      * pass forever — the livelock `resolveBrand`'s module-level latch produced, where one
      * throttled handle held the whole per-pass budget while making no request at all.
      */
-    const signals = (p.signals ?? '').replace(/frame:call-failed/g, judged.signals.join(' '))
+    const signals = (p.signals ?? '').replace(/frame:(?:call|ocr)-failed/g, judged.signals.join(' '))
 
     /**
      * The dry run DECIDES exactly as the writing pass does — same `judgeWithFrame`, same

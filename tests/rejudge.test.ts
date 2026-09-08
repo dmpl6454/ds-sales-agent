@@ -46,7 +46,7 @@ describe('re-judging never writes what it did not read', () => {
    */
   it('computes the replacement signal only after the guard', () => {
     const guard = SRC.indexOf('if (!readTheFrame)')
-    const rewrite = SRC.indexOf("replace(/frame:call-failed/g")
+    const rewrite = SRC.indexOf("replace(/frame:(?:call|ocr)-failed/g")
     expect(guard).toBeGreaterThan(-1)
     expect(rewrite).toBeGreaterThan(guard)
   })
