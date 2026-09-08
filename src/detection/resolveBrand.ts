@@ -1,4 +1,5 @@
 import { anonGateCheck, anonGateRecordSuccess, anonGateRecordThrottle, resetAnonGate, setAnonGateClock } from './anonGate'
+import { FEED_HEADERS, IG_HOST } from './feed'
 import { prisma } from '@/lib/db'
 import { log } from '@/lib/logger'
 import type { BrandLookupKind } from '@/lib/constants'
@@ -310,14 +311,9 @@ const _declaredKindsAreProducible: BrandVerdict['kind'] = null as unknown as Bra
 void _verdictKindsAreDeclared
 void _declaredKindsAreProducible
 
-const ENDPOINT = 'https://www.instagram.com/api/v1/users/web_profile_info/?username='
-const HEADERS: Record<string, string> = {
-  'x-ig-app-id': '936619743392459',
-  'User-Agent':
-    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36',
-  Accept: '*/*',
-  Referer: 'https://www.instagram.com/',
-}
+// ONE anonymous identity for every Instagram read — see the docblock on FEED_HEADERS (8 Sept 2026).
+const ENDPOINT = `${IG_HOST}/api/v1/users/web_profile_info/?username=`
+const HEADERS: Record<string, string> = FEED_HEADERS
 
 /**
  * Spacing between profile lookups.

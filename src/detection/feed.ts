@@ -32,25 +32,41 @@ import type { EnrichedPost } from './types'
  *    debugging path.
  */
 
-const ENDPOINT = 'https://www.instagram.com/api/v1/feed/user'
-const IG_WEB_APP_ID = '936619743392459'
+/**
+ * ── THE ANONYMOUS IDENTITY IS THE APP'S, NOT THE WEBSITE'S (8 Sept 2026) ──────────────
+ *
+ * From 4 Sept every sessionless read presented as the WEB app (`www.instagram.com`, app id
+ * 936619743392459, a Chrome User-Agent) was refused with
+ * `401 {"message":"Please wait a few minutes…","require_login":true}` — from the Linode, from
+ * the office network, from a home network overnight and from a phone hotspot, on the first
+ * request each time. Four unrelated IPs cannot all be "our IP being throttled", and it was
+ * not: the SAME sessionless request presented as the Instagram ANDROID app (`i.instagram.com`,
+ * the app's own id, its User-Agent) returned 200 with 12 items from the very network that had
+ * just refused the web form, paginated correctly, and answered the profile endpoint with the
+ * badge. The wall keys on the CLIENT IDENTITY. No session, no cookie, no proxy — decision 4
+ * stands; only the costume changed.
+ *
+ * ONE definition, imported everywhere (exists.ts, resolveBrand.ts, enrichHandle.ts), because
+ * four copies of an identity are four places for the next such change to be half-applied.
+ * MEASURED LIMIT: the profile endpoint still 429s from the Linode under this identity too —
+ * lookups stay on the home-IP device agents, exactly as before.
+ */
+export const IG_HOST = 'https://i.instagram.com'
+export const IG_APP_ID = '567067343352427' // Instagram for Android — a public constant, not a credential
+const ENDPOINT = `${IG_HOST}/api/v1/feed/user`
 
 /**
- * Exported so `enrichHandle.ts` calls this endpoint with the IDENTICAL header set rather
- * than declaring its own.
- *
  * There is exactly one rule about these headers and it is decision 4: **no credentials,
  * ever.** Attaching a session cookie here converts an IP-level risk into an
- * account-ban risk, which is the one thing this project must not do. Two copies of this
- * object is two places for a cookie to be added by someone who only read one of them.
+ * account-ban risk, which is the one thing this project must not do. One copy of this
+ * object is one place for a cookie to be added, and it is grepped for.
  */
 export const FEED_HEADERS: Record<string, string> = {
-  'x-ig-app-id': IG_WEB_APP_ID,
+  'X-IG-App-ID': IG_APP_ID,
   'User-Agent':
-    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36',
+    'Instagram 361.0.0.46.88 Android (33/13; 420dpi; 1080x2340; samsung; SM-S911B; dm1q; qcom; en_IN; 674675155)',
   Accept: '*/*',
-  'Accept-Language': 'en-US,en;q=0.9',
-  Referer: 'https://www.instagram.com/',
+  'Accept-Language': 'en-IN',
 }
 
 /** Local alias, so the existing call sites in this file read unchanged. */
