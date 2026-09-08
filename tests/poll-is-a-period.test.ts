@@ -156,10 +156,11 @@ describe('every anonymous lookup is bounded', () => {
     ['src/detection/feed.ts', 'the feed itself'],
   ])('%s bounds its fetch', (file) => {
     const src = code(read(file))
-    const fetches = [...src.matchAll(/await fetch\(/g)]
+    // igGet is the Instagram transport since 8 Sept 2026 (node:https — Node's fetch adds Sec-Fetch headers the app identity must not carry)
+    const fetches = [...src.matchAll(/await (fetch|igGet)\(/g)]
     expect(fetches.length, 'no fetch found — this check would pass vacuously').toBeGreaterThan(0)
     /* Every fetch call in these files must carry the shared timeout. */
-    const bounded = [...src.matchAll(/AbortSignal\.timeout\(REQUEST_TIMEOUT_MS\)/g)]
+    const bounded = [...src.matchAll(/(AbortSignal\.timeout\(REQUEST_TIMEOUT_MS\)|timeoutMs: REQUEST_TIMEOUT_MS)/g)]
     expect(bounded.length).toBeGreaterThanOrEqual(fetches.length)
   })
 

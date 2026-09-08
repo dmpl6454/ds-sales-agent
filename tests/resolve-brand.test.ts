@@ -1,4 +1,15 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { setIgTransportForTests } from '@/detection/igHttp'
+
+// Every Instagram read now goes through igGet (node:https, no Sec-Fetch headers). These tests
+// stub globalThis.fetch per case, so the transport is bridged to WHATEVER fetch is stubbed at
+// call time — the stubs and their assertions are unchanged.
+setIgTransportForTests(async (url, init) => {
+  const r = await (globalThis.fetch as unknown as (u: string, i: { headers: Record<string, string> }) => Promise<Response>)(url, {
+    headers: init.headers,
+  })
+  return { status: r.status, ok: r.ok, text: () => r.text(), json: () => r.json() as Promise<unknown> }
+})
 
 /**
  * `decideBrand` is mocked so these tests exercise the INTEGRATION rule set — which

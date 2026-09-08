@@ -1,5 +1,6 @@
 import { anonGateCheck, anonGateRecordSuccess, anonGateRecordThrottle, resetAnonGate, setAnonGateClock } from './anonGate'
 import { FEED_HEADERS, IG_HOST } from './feed'
+import { igGet } from './igHttp'
 import { prisma } from '@/lib/db'
 import { log } from '@/lib/logger'
 import type { BrandLookupKind } from '@/lib/constants'
@@ -819,7 +820,7 @@ export async function resolveBrand(
    */
   // The HOST-WIDE gate (anonGate.ts) outranks this module's own latch: a throttle the feed
   // fetch earned a second ago binds here too, and adopting it keeps the wording below true.
-  const gate = anonGateCheck()
+  const gate = anonGateCheck('profile')
   if (!gate.ok && (rateLimitedUntil === null || gate.until.getTime() > rateLimitedUntil)) {
     rateLimitedUntil = gate.until.getTime()
   }
@@ -857,10 +858,7 @@ export async function resolveBrand(
      * which is UNKNOWN — "we never got to look", retried later. That is the correct
      * reading and it is emphatically not a verdict about the account.
      */
-    const res = await fetch(ENDPOINT + encodeURIComponent(h), {
-      headers: HEADERS,
-      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
-    })
+    const res = await igGet(ENDPOINT + encodeURIComponent(h), { headers: HEADERS, timeoutMs: REQUEST_TIMEOUT_MS })
 
     if (res.status === 404) {
       verdict = { kind: 'MISSING', handle: h }

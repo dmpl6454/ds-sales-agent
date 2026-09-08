@@ -89,7 +89,20 @@ export function noteSuccess(state: AnonGateState, now: number): AnonGateState {
 
 // ── The process-wide instance ──────────────────────────────────────────────────────────
 
-let state: AnonGateState = { ...EMPTY_ANON_STATE }
+/**
+ * TWO SCOPES, NOT ONE (8 Sept 2026). The feed endpoint and the profile endpoint are throttled
+ * SEPARATELY by Instagram: the Linode has answered 429 on every profile lookup for weeks while
+ * its feed reads were served the same minute. A host-wide gate turned that permanent 429 into a
+ * 15→30→60-minute feed blackout on every pass — the pass ended by asking one profile, was told
+ * no, and closed the door the feed had just walked through. A throttle on one scope binds only
+ * that scope. Both are still per HOST, because Instagram counts the address within a scope.
+ */
+export type AnonScope = 'feed' | 'profile'
+export function scopeOf(source: string): AnonScope {
+  return source === 'feed' ? 'feed' : 'profile'
+}
+
+let states: Record<AnonScope, AnonGateState> = { feed: { ...EMPTY_ANON_STATE }, profile: { ...EMPTY_ANON_STATE } }
 let clock: () => number = () => Date.now()
 
 /** Tests inject a clock; production never calls this. */
@@ -102,18 +115,19 @@ export function setAnonGateClock(fn?: () => number): void {
  * `ig:brands --run` has decided to try — the same decision that clears the module latch.
  */
 export function resetAnonGate(): void {
-  state = { ...EMPTY_ANON_STATE }
+  states = { feed: { ...EMPTY_ANON_STATE }, profile: { ...EMPTY_ANON_STATE } }
 }
 
-export function anonGateSnapshot(): AnonGateState {
-  return { ...state }
+export function anonGateSnapshot(scope: AnonScope = 'feed'): AnonGateState {
+  return { ...states[scope] }
 }
 
 export type AnonGateVerdict = { ok: true } | { ok: false; until: Date; strikes: number }
 
 /** Ask BEFORE spending a request. `ok: false` means make no network call at all. */
-export function anonGateCheck(): AnonGateVerdict {
+export function anonGateCheck(scope: AnonScope = 'feed'): AnonGateVerdict {
   const now = clock()
+  const state = states[scope]
   if (isThrottled(state, now)) {
     return { ok: false, until: new Date(state.throttledUntil!), strikes: state.strikes }
   }
@@ -123,9 +137,10 @@ export function anonGateCheck(): AnonGateVerdict {
 /** Record a throttle response. Returns when the cooldown ends. Logs once per throttle. */
 export function anonGateRecordThrottle(source: string, status: number): Date {
   const now = clock()
-  state = noteThrottle(state, now, source)
+  const scope = scopeOf(source)
+  const state = (states[scope] = noteThrottle(states[scope], now, source))
   const until = new Date(state.throttledUntil!)
-  log.alarm('Instagram is refusing anonymous reads from this host — halting every anonymous lookup', {
+  log.alarm(`Instagram is refusing anonymous ${scope} reads from this host — halting ${scope} lookups`, {
     source,
     status,
     strikes: state.strikes,
@@ -138,10 +153,12 @@ export function anonGateRecordThrottle(source: string, status: number): Date {
 
 /** Record a successful anonymous response — resets the ladder. */
 export function anonGateRecordSuccess(source: string): void {
-  const hadTrouble = state.strikes > 0 || state.throttledUntil !== null
-  state = noteSuccess(state, clock())
+  const scope = scopeOf(source)
+  const before = states[scope]
+  const hadTrouble = before.strikes > 0 || before.throttledUntil !== null
+  states[scope] = noteSuccess(before, clock())
   if (hadTrouble) {
-    log.info('anonymous reads recovered', { source })
+    log.info('anonymous reads recovered', { source, scope })
     void persist()
   }
 }
@@ -161,7 +178,7 @@ async function persist(): Promise<void> {
   // the database without a `setting` table, which throws BEFORE any promise exists.
   try {
     const key = anonGateSettingKey()
-    const value = JSON.stringify(state)
+    const value = JSON.stringify(states)
     await prisma.setting.upsert({ where: { key }, update: { value }, create: { key, value } })
   } catch {
     // deliberately silent
@@ -178,20 +195,29 @@ export async function hydrateAnonGate(): Promise<void> {
   const row = await prisma.setting.findUnique({ where: { key: anonGateSettingKey() } }).catch(() => null)
   if (!row) return
   try {
-    const saved = JSON.parse(row.value) as Partial<AnonGateState>
-    const until = typeof saved.throttledUntil === 'number' ? saved.throttledUntil : null
-    if (until !== null && until > clock() && (state.throttledUntil === null || until > state.throttledUntil)) {
-      state = {
-        ...state,
-        throttledUntil: until,
-        strikes: Math.max(state.strikes, typeof saved.strikes === 'number' ? saved.strikes : 1),
-        lastThrottleAt: typeof saved.lastThrottleAt === 'number' ? saved.lastThrottleAt : state.lastThrottleAt,
-        lastThrottleSource: typeof saved.lastThrottleSource === 'string' ? saved.lastThrottleSource : state.lastThrottleSource,
+    const parsed = JSON.parse(row.value) as Record<string, Partial<AnonGateState>>
+    // Rows written before the split carried ONE state; read that as the feed scope.
+    const perScope: Partial<Record<AnonScope, Partial<AnonGateState>>> =
+      'feed' in parsed || 'profile' in parsed ? (parsed as Partial<Record<AnonScope, Partial<AnonGateState>>>) : { feed: parsed as Partial<AnonGateState> }
+    for (const scope of ['feed', 'profile'] as AnonScope[]) {
+      const saved = perScope[scope]
+      if (!saved) continue
+      const state = states[scope]
+      const until = typeof saved.throttledUntil === 'number' ? saved.throttledUntil : null
+      if (until !== null && until > clock() && (state.throttledUntil === null || until > state.throttledUntil)) {
+        states[scope] = {
+          ...state,
+          throttledUntil: until,
+          strikes: Math.max(state.strikes, typeof saved.strikes === 'number' ? saved.strikes : 1),
+          lastThrottleAt: typeof saved.lastThrottleAt === 'number' ? saved.lastThrottleAt : state.lastThrottleAt,
+          lastThrottleSource: typeof saved.lastThrottleSource === 'string' ? saved.lastThrottleSource : state.lastThrottleSource,
+        }
+        log.step('resuming a cooldown recorded before this process started', {
+          scope,
+          until: new Date(until).toISOString(),
+          strikes: states[scope].strikes,
+        })
       }
-      log.step('resuming a cooldown recorded before this process started', {
-        until: new Date(until).toISOString(),
-        strikes: state.strikes,
-      })
     }
   } catch {
     // an unreadable row is not a cooldown
