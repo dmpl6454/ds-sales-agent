@@ -114,7 +114,15 @@ the dashboard rendered it as "no OCR engine on this machine", and **nothing ever
   successful page. Harmless while it lasted (idempotent on shortcode; Vision is the better
   engine), but the dashboard would have said "a paired Mac is reading in its place" about a
   server that was working.
-- The four posts were re-judged on the server after the deploy.
+- **A FIFTH arrived while the fix deployed, from the OTHER engine.** This Mac's failover pass
+  (16:17 IST, Vision, 17 filmygyan posts in a burst) filed one post `frame:no-ocr-engine` too. So
+  the label can come from either engine when any per-frame step blinks, and the fix is not about
+  RapidOCR: **once an engine has read a frame in a process, a later "unavailable" is demoted to a
+  retryable failure** carrying both reasons (`engineProven` in `ocr.ts`).
+- **And re-judging the four APPENDED `frame:read-agreed` beside the stale mark**, so the dashboard
+  went on counting them as unread. `ig:ocr --reclassify` now supersedes the stale marks
+  (`STALE_FRAME_MARKS`), as `rejudge.ts` always did; the four rows were cleaned on the server and
+  the fifth re-judged after the deploy. `/paid-posts` reads 0.
 
 ### WHAT NOT TO DO — THE LIST THIS SESSION EARNED
 

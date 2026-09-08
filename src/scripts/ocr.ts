@@ -37,6 +37,7 @@ import { classifyCaption, semanticReadiness } from '@/detection/detectors/semant
 import { ocrEngineCommand } from '@/lib/platform'
 import type { Verdict } from '@/lib/constants'
 
+const STALE_FRAME_MARKS = new Set(['frame:no-ocr-engine', 'frame:ocr-failed', 'frame:call-failed', 'frame:not-saved'])
 const argv = process.argv.slice(2)
 const reclassify = argv.includes('--reclassify')
 const limitArg = argv.indexOf('--limit')
@@ -238,7 +239,10 @@ for (const c of worthJudging) {
     where: { id: c.id },
     data: {
       verdict: framed.verdict,
-      signals: writeStringArray([...c.signals, ...framed.signals]),
+      // A read that succeeded SUPERSEDES the marks that said it had not: the four posts
+      // re-judged on 8 Sept 2026 kept `frame:no-ocr-engine` beside `frame:read-agreed`, and the
+      // dashboard went on counting them as unread. Same rule as rejudge.ts: rewrite, never append.
+      signals: writeStringArray([...c.signals.filter((sig) => !STALE_FRAME_MARKS.has(sig)), ...framed.signals]),
       frameText: (framed.frameText ?? c.summary).slice(0, 400),
     },
   })
