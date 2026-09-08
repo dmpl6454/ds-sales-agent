@@ -342,8 +342,34 @@ export function parseTesseractTsv(tsv: string): TextObservation[] | null {
   return out
 }
 
+/**
+ * AN ENGINE THAT HAS READ A FRAME IN THIS PROCESS CANNOT BE "UNAVAILABLE" A MINUTE LATER.
+ *
+ * MEASURED 8 Sept 2026: five posts were filed `frame:no-ocr-engine` on hosts whose engine had
+ * read dozens of frames in the same pass — four by RapidOCR on the Linode under a memory squeeze,
+ * one by Vision on the Mac during a 17-post failover burst. Whatever step blinked (a spawn, a
+ * probe, a stat under load), the honest name for it is a FAILED run that the rejudge pass retries,
+ * not a fact about the machine that nothing ever revisits. So once any engine has answered here,
+ * a later `unavailable` is demoted to `failed` carrying both reasons.
+ */
+let engineProven: OcrEngine | null = null
+
 /** Read the text in one image. Never throws; every failure is a named outcome. */
 export async function readImageText(imagePath: string): Promise<OcrOutcome> {
+  const outcome = await readImageTextOnce(imagePath)
+  if (outcome.kind === 'read') engineProven = outcome.engine
+  else if (outcome.kind === 'unavailable' && engineProven) {
+    return { kind: 'failed', reason: `${engineProven} read a frame earlier in this process; this time: ${outcome.reason}` }
+  }
+  return outcome
+}
+
+/** Tests only. */
+export function resetEngineProvenForTests(): void {
+  engineProven = null
+}
+
+async function readImageTextOnce(imagePath: string): Promise<OcrOutcome> {
   if (!(await fileExists(imagePath))) return { kind: 'no-frame' }
 
   const engine = ocrEngineCommand()
