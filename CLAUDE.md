@@ -5,6 +5,85 @@ changing anything that touches sending.
 
 ---
 
+## 8 SEPTEMBER — IT WAS NEVER OUR IPs. THE WEB IDENTITY IS WALLED; THE APP'S IDENTITY IS SERVED
+
+**Tabish, with a screenshot of `curl` from his phone's hotspot returning the same 401, and the
+fact that his laptop had spent the whole night on a different network:** four unrelated
+networks — Linode `172.105.53.101`, the office `45.119.13.132`, a home network overnight, a
+phone hotspot — all refused the sessionless read on the FIRST request. Yesterday's entry called
+it a per-IP throttle. **That was wrong, and so was the next guess ("closed for everyone").** An
+outside review also corrected two claims: `igweb_rollout: true` is a fixed marker in Instagram's
+failure payloads (present in reports from 2024), not a rollout meter; and anonymous access is
+degraded, not shut. Both accepted.
+
+### WHAT ACTUALLY DISCRIMINATES: THE CLIENT IDENTITY — MEASURED THE SAME MINUTE, SAME NETWORK
+
+| sessionless request, `feed/user/viralbhayani/username/?count=12` | office | Linode |
+|---|---|---|
+| WEB identity (`www.instagram.com`, app id 936619743392459, Chrome UA) | **401** require_login | **401** |
+| ANDROID APP identity (`i.instagram.com`, app id 567067343352427, `Instagram 361… Android` UA) | **200, 12 items** | **200, 12 items** |
+| … with pagination (`max_id`) | 200, 12 more | — |
+| profile endpoint under the app identity | **200, `is_verified: true`** | 429 (the Linode's profile 429 predates all of this) |
+
+Full parity: caption, `taken_at`, `coauthor_producers`, `image_versions2`, `video_versions`,
+`usertags` (present on the posts that have them). **No session, no cookie, no proxy — decision 4
+stands; only the costume changed.** The identity lives ONCE in `feed.ts` (`IG_HOST`,
+`IG_APP_ID`, `FEED_HEADERS`) and is imported by `exists.ts`, `resolveBrand.ts`, `enrichHandle.ts`;
+`tests/one-instagram-identity.test.ts` refuses a second copy or the retired web constants
+outside the logged-in browser driver.
+
+### AND THEN NODE'S OWN `fetch` BROKE IT — "SecFetch Policy violation"
+
+The first deploy of the app identity produced `channel failed … HTTP 400` on every channel
+while a Python probe from the same host got 200. `node -e fetch(...)` with the identical
+headers: **400 `SecFetch Policy violation.`** on both hosts, every header variant. Node's global
+`fetch` (undici) adds `Sec-Fetch-Mode/Site/Dest` to every request and the Fetch spec forbids
+scripts from setting or removing `Sec-` headers — browser headers on an app identity is a
+contradiction Instagram refuses. `node:https` sends exactly what it is given: **200, 12 items,
+both hosts.** `src/detection/igHttp.ts` is the ONE transport (`igGet`, a `Response`-shaped
+result so four call sites changed a word; tests bridge their `fetch` stubs to it). The
+timeout-bound grep test accepts `timeoutMs: REQUEST_TIMEOUT_MS`.
+
+### THE GATE IS TWO SCOPES, AND A LEGACY ROW LANDS IN THE SCOPE ITS SOURCE NAMES
+
+The Linode's profile lookups have 429'd for weeks (documented since 12 Aug). Under yesterday's
+HOST-wide gate, the auto-resolve at the end of every pass asked one profile, was told 429, and
+**closed the door the feed had just walked through** — a 15→30→60-minute feed blackout on
+every pass. `anonGate.ts` now keeps `feed` and `profile` states separately (`anonGateCheck(scope)`,
+scope derived from the recording source). And a row persisted BEFORE the split, earned by
+profile 429s, was hydrated as a FEED cooldown and skipped the 13:30 pass whole while a direct
+feed probe returned 12 items — a legacy row now lands in the scope its `lastThrottleSource`
+names, profile by default.
+
+### VERIFIED LIVE — DETECTION IS BACK
+
+The 13:45 IST pass on the Linode under the app identity + `node:https`: **channel after channel
+fetched, 0 failures**; by 14:00 IST **135 posts stored, 13 judged paid**, the first new paid posts
+since the 12:00 fluke of 7 September — and the pass was still working through the four-day
+backlog when this was written. The Mac's profile lookups answer again too (a per-handle
+category-schema 400, which is an answer, not a wall).
+
+**ALSO TODAY, ON TABISH'S INSTRUCTION:** `@tabishmukaddam1` — the rehearsal burner — is
+DELETED entirely: the account row, its 514 routes (0 messages ever delivered, so no history
+lost) and its Chrome profile on this Mac, audited as `sender.deleted`. The "safe test recipient"
+this file has leaned on no longer exists; a new throwaway is Tabish's to provide if wanted.
+
+**THE WEB BUILD ON THE LINODE FAILED TWICE TODAY — OOM at 438 MB RSS with 291 MB free and 1.3 GB
+in swap.** `deploy.sh` did what it promises: the running site was untouched and the new FILES
+landed, so the worker was restarted onto them by hand (`pm2 restart ds-sales-worker`). The web
+tier still serves the `7c580f2` build until a build succeeds; the one visible gap is
+`addTarget`'s existence probe (web identity → `unknown` → admitted with a warning). The
+structural answer is the one recorded on 4 September: a larger Linode.
+
+| | |
+|---|---|
+| tests / typecheck | **2,290 / 131 files**, clean |
+| commits | `7ae8b37` identity · `1a19c67` transport + scopes · `003a963` legacy row · pushed |
+| DMG | rebuilt from `003a963`, notarised, **sha256 `2079d4df…` identical on the server**, carries `igHttp.ts` |
+| autopilot | ON; agent beating; 29 sends on 7 Sept (rollover), 0 by noon on 8 Sept for lack of material — material is arriving again |
+
+---
+
 ## 7 SEPTEMBER, MIDDAY — ZERO SENDS BECAUSE INSTAGRAM HAD BEEN REFUSING EVERY ANONYMOUS READ FOR THREE DAYS, AND THE PASS CALLED ITSELF HEALTHY
 
 **Tabish: *"How is it possible that no messages have been sent today … is autopilot and paid
