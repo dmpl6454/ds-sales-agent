@@ -57,10 +57,11 @@ names, profile by default.
 
 ### VERIFIED LIVE — DETECTION IS BACK
 
-The 13:45 IST pass on the Linode under the app identity + `node:https`: **channel after channel
-fetched, 0 failures**; by 14:00 IST **135 posts stored, 13 judged paid**, the first new paid posts
-since the 12:00 fluke of 7 September — and the pass was still working through the four-day
-backlog when this was written. The Mac's profile lookups answer again too (a per-handle
+The 13:45 IST pass on the Linode under the app identity + `node:https`, complete at 14:21:
+**`detection pass newPosts=307 paid=49`, 17 channels fetched, 0 failures, `detectFeedOkAt`
+stamped** — the first real pass since 4 September 03:00, judging a four-day backlog in 36 minutes.
+The Mac's profile lookups answer again under the same identity: **29 prospects minted today**
+after four days of zero, and **24 deliveries by 14:20 IST** after zero at noon. The Mac's profile lookups answer again too (a per-handle
 category-schema 400, which is an answer, not a wall).
 
 **ALSO TODAY, ON TABISH'S INSTRUCTION:** `@tabishmukaddam1` — the rehearsal burner — is
