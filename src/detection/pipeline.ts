@@ -154,6 +154,7 @@ export async function runDetection(
   const channels: ChannelOutcome[] = []
   const floorUnix = Math.floor(hoursAgo(lookbackHours).getTime() / 1000)
 
+  let feedAliveStamped = false
   for (const target of ordered) {
     const outcome: ChannelOutcome = {
       handle: target.handle,
@@ -188,6 +189,18 @@ export async function runDetection(
       const { posts, pagesFetched } = await fetchFeed(target.handle, { maxPosts: 48, sinceUnix })
       outcome.fetched = posts.length
       outcome.pagesFetched = pagesFetched
+      // THE PASS SAYS IT IS ALIVE ON ITS FIRST PAGE, NOT ONLY AT ITS END (8 Sept 2026). `detectFeedOkAt`
+      // was stamped by recordDetectionOutput when the pass FINISHED, so a slow pass — 30 minutes on 8
+      // Sept while OCR crawled on a squeezed box — looked to the Mac's failover exactly like a blind
+      // server (its threshold is 20 minutes), and the Mac re-read and re-judged the same channels.
+      // One cheap write per pass, primary only: a failover pass must not speak for the server.
+      if (role === 'primary' && pagesFetched > 0 && !feedAliveStamped) {
+        feedAliveStamped = true
+        const value = new Date().toISOString()
+        void prisma.setting
+          .upsert({ where: { key: DETECT_FEED_OK_KEY }, update: { value }, create: { key: DETECT_FEED_OK_KEY, value } })
+          .catch(() => undefined)
+      }
 
       if (posts.length === 0) {
         // The endpoint returned 200 with nothing. Either the account is empty or

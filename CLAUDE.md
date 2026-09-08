@@ -89,6 +89,33 @@ new image resumes it; from then on any image with a different VERSION updates it
 predates the classifier-key hand-off, so that Mac cannot read feeds in the server's place until
 re-paired (delete `~/ds-sales-agent`, open the app); sending is unaffected.
 
+### "NOTHING IS READING THE FOOTAGE" WAS A FAILED RUN WEARING A PERMANENT LABEL
+
+**Tabish, from `/paid-posts`: *"4 posts have a frame saved that no OCR engine on this machine
+could open … We were detecting using OCR effectively before, why the hurdle?"*** MEASURED: the four
+posts were judged at 15:18, 15:23, 15:41 and 15:42 IST today — inside the server's slow 15:15 pass,
+while my deploy's `prisma generate` and two reloading web workers sat beside it on a box with
+~550 MB free. RapidOCR on the Linode reads one of those very frames in **9.8 s** the moment the
+box is quiet, and `import rapidocr_onnxruntime` answers. So the engine was never missing.
+`runRapidOcr` returned `null` when the Python run died or timed out, the fallback filed that as
+`unavailable` ("RapidOCR is installed but did not run"), the pipeline stored `frame:no-ocr-engine`,
+the dashboard rendered it as "no OCR engine on this machine", and **nothing ever retried it**
+— `rejudgeUnusedEvidence` retried `frame:call-failed` alone. The `frame:call-failed` lesson of
+17 August, one engine along: a transient failure with a permanent name.
+
+- A run that did not answer is now **`failed`** with the exit reason (retryable, `frame:ocr-failed`);
+  `unavailable` means only "no engine is installed here". The rejudge pass retries `ocr-failed`
+  beside `call-failed`; `no-ocr-engine` stays un-retried on purpose (a host with no engine would
+  re-record it every pass forever).
+- **And the slow pass exposed a second thing:** 45 of the 70 posts judged after 15:14 IST carry
+  `frame:engine-vision` — this Mac's failover re-read and re-judged the channels, because
+  `detectFeedOkAt` was stamped only when a pass FINISHED and a 30-minute pass looks exactly like
+  a blind server to a 20-minute threshold. A primary pass now stamps itself alive on its first
+  successful page. Harmless while it lasted (idempotent on shortcode; Vision is the better
+  engine), but the dashboard would have said "a paired Mac is reading in its place" about a
+  server that was working.
+- The four posts were re-judged on the server after the deploy.
+
 ### WHAT NOT TO DO — THE LIST THIS SESSION EARNED
 
 1. **Do not blame the IP when a remote refuses.** Change the client identity first; one request.
@@ -108,6 +135,10 @@ re-paired (delete `~/ds-sales-agent`, open the app); sending is unaffected.
    an interrupt; wait for the row to clear (the restart today waited twice).
 9. **Do not leave a completed install with no way to update.** Compare versions; a sentinel means
    "finished", not "final".
+10. **Do not file a run that did not answer as "unavailable".** An installed engine that dies
+    under load is a FAILED run and must be retried; "no engine" is a fact about the machine.
+11. **Do not stamp a long-running pass's health only at its end.** The failover's threshold is
+    20 minutes; a pass that takes longer must say it is alive mid-way or another host duplicates it.
 
 | | |
 |---|---|

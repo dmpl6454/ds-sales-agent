@@ -367,10 +367,12 @@ export async function readImageText(imagePath: string): Promise<OcrOutcome> {
 
   if (engine.engine === 'rapidocr') {
     const viaRapid = await runRapidOcr(imagePath)
-    if (viaRapid) return viaRapid
-    // Chosen but unusable — try the last resort rather than reporting no text.
+    if (viaRapid.kind === 'read') return viaRapid
+    // Chosen but it did not answer this time — try the last resort, and if there is none,
+    // report the FAILED run (retried by the rejudge pass), never "no engine": the engine is
+    // installed, `ocrEngineCommand` just said so.
     const fallback = await runTesseract(imagePath)
-    return fallback ?? { kind: 'unavailable', reason: 'RapidOCR is installed but did not run' }
+    return fallback ?? viaRapid
   }
 
   const viaTesseract = await runTesseract(imagePath)
@@ -393,10 +395,19 @@ export async function readImageText(imagePath: string): Promise<OcrOutcome> {
  * Linode against Vision's ~5/s locally — ONNX inference on a shared 2 GB box with no GPU.
  * That is fine for a background pass and would not be fine in a request.
  */
-async function runRapidOcr(imagePath: string): Promise<OcrOutcome | null> {
+async function runRapidOcr(imagePath: string): Promise<OcrOutcome> {
   const script = join(process.cwd(), 'scripts', 'rapidocr-read.py')
   const res = await runCapture(RAPIDOCR_PYTHON, [script, imagePath], 90_000)
-  if (!res.ok) return null
+  /**
+   * A run that did not answer is `failed` — RETRYABLE — and never `unavailable`. FOUND 8 Sept
+   * 2026: during a memory squeeze on the Linode (a deploy's prisma generate beside two web
+   * workers, ~550 MB free) four RapidOCR runs died or timed out; the old `return null` fell
+   * through to "RapidOCR is installed but did not run" as `unavailable`, which the dashboard
+   * rendered as "no OCR engine on this machine" and NOTHING ever retried — the engine read the
+   * very same frame in 9.8 s the moment the box was quiet. A transient failure wearing a
+   * permanent label is this file's oldest trap (see `frame:call-failed`, 17 Aug).
+   */
+  if (!res.ok) return { kind: 'failed', reason: `RapidOCR did not run: ${res.reason}` }
   const obs = parseVisionOutput(res.stdout)
   if (!obs) return { kind: 'failed', reason: 'could not parse the RapidOCR output' }
   return { kind: 'read', engine: 'rapidocr', observations: obs }
