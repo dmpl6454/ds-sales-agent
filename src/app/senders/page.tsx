@@ -12,6 +12,8 @@ import { RemoveSenderForm } from './remove-form'
 import { TeamPanel } from './team-panel'
 import { listTeam, revokeDevice, approveDevice } from '../actions'
 import { listPairedDevices, listPendingEnrolments } from '@/lib/deviceEnrol'
+import { readInstallerBuild } from '@/lib/installerBuild'
+import { buildVersion } from '@/lib/buildVersion'
 
 export const dynamic = 'force-dynamic'
 
@@ -39,9 +41,15 @@ export default async function SendersPage({ searchParams }: { searchParams: Prom
    * via the operator-gated action, so a VIEWER can still load the page.
    */
   const now = Date.now()
-  const devices = (await readPresence())
-    .filter((d) => now - new Date(d.at).getTime() < 2 * 60_000)
-    .map((d) => d.device)
+  const presence = (await readPresence()).filter((d) => now - new Date(d.at).getTime() < 2 * 60_000)
+  const devices = presence.map((d) => d.device)
+  // WHICH BUILD EACH MAC RUNS, BESIDE THE BUILD THE INSTALLER CARRIES (2026-09-08). Installed
+  // Macs do not auto-update; a re-run of a newer image does update them, and this is the screen
+  // that says whether that has happened. Absent (an agent older than this field) renders as
+  // "unknown", never as current.
+  const agentBuild = new Map(presence.map((d) => [d.device, d.version ? { version: d.version, source: d.versionSource ?? 'unknown' } : null] as const))
+  const installerBuild = readInstallerBuild()
+  const thisBuild = buildVersion()
 
   // Only an operator manages the team; a viewer gets the page without that section.
   const team = user.role === 'operator' ? await listTeam() : null
@@ -131,6 +139,12 @@ export default async function SendersPage({ searchParams }: { searchParams: Prom
           <a className="btn" href="/api/download/agent" download>
             Download the installer (.dmg)
           </a>{' '}
+          <span className="muted">
+            {installerBuild
+              ? `Installer build ${installerBuild}${installerBuild === thisBuild ? ' — the same as this dashboard.' : ` — this dashboard is build ${thisBuild}.`}`
+              : 'No installer build is recorded beside the image.'}
+            {' '}Running the newer image on an already-paired Mac updates it in place.
+          </span>{' '}
           <details className="muted" style={{ margin: '0.5rem 0' }}>
             <summary>If the app is blocked on their Mac</summary>
             <p>
@@ -219,6 +233,7 @@ export default async function SendersPage({ searchParams }: { searchParams: Prom
                     <th>Mac</th>
                     <th>Tunnel key</th>
                     <th>Now</th>
+                    <th>Agent build</th>
                     <th></th>
                   </tr>
                 </thead>
@@ -230,6 +245,21 @@ export default async function SendersPage({ searchParams }: { searchParams: Prom
                         <code>{d.fingerprint}</code>
                       </td>
                       <td>{devices.includes(d.name) ? 'online' : 'not beating'}</td>
+                      <td>
+                        {(() => {
+                          const b = agentBuild.get(d.name)
+                          if (!devices.includes(d.name)) return <span className="muted">—</span>
+                          if (!b) return <span className="muted">unknown (agent predates the stamp)</span>
+                          if (b.source === 'git') return <span className="muted">{b.version} (development checkout)</span>
+                          if (installerBuild && b.version !== installerBuild)
+                            return (
+                              <span style={{ color: 'var(--warn, #b45309)' }}>
+                                {b.version} — not the installer&rsquo;s {installerBuild}; re-run the installer on that Mac
+                              </span>
+                            )
+                          return <code>{b.version}</code>
+                        })()}
+                      </td>
                       <td>
                         <form action={revokeDevice}>
                           <input type="hidden" name="name" value={d.name} />

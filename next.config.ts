@@ -1,4 +1,27 @@
 import type { NextConfig } from 'next'
+import { execSync } from 'node:child_process'
+import { readFileSync } from 'node:fs'
+
+
+// ── THE BUILD KNOWS ITS OWN COMMIT; THE SERVER MAY NOT (2026-09-08) ─────────
+// The web tier is built on the maintainer's Mac and shipped as a directory (the Linode cannot
+// build it: OOM-killed three times), so a `git rev-parse` at RUNTIME on the server would name
+// nothing — there is no git there. The commit is read here, at build time, and baked into the
+// bundle as DS_BUILD_SHA; `src/lib/buildVersion.ts` reads it first. Never a stale constant:
+// falls back to a `.version` stamp, then 'unknown'.
+function buildSha(): string {
+  try {
+    const v = readFileSync('.version', 'utf8').trim()
+    if (v) return v
+  } catch {
+    /* no stamp */
+  }
+  try {
+    return execSync('git rev-parse --short HEAD', { stdio: ['ignore', 'pipe', 'ignore'] }).toString().trim() || 'unknown'
+  } catch {
+    return 'unknown'
+  }
+}
 
 const nextConfig: NextConfig = {
   /**
@@ -16,6 +39,7 @@ const nextConfig: NextConfig = {
    * at the new one. Unset (a laptop, `pnpm local`, the tests) it is plain `.next`.
    */
   distDir: process.env.NEXT_DIST_DIR || '.next',
+  env: { DS_BUILD_SHA: buildSha() },
   // Native or server-only packages. Bundling them fails: Prisma and better-sqlite3
   // load native bindings, and patchright ships a prebuilt core bundle with optional
   // requires that a bundler cannot resolve statically. External is not an

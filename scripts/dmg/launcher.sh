@@ -52,7 +52,21 @@ if [ -d "$HOME/Desktop/AI Sales Agent" ]; then
   exit 0
 fi
 
+# A COMPLETED INSTALL IS NOT THE END OF UPDATES (2026-09-08). Until now a sentinel meant "open
+# the dashboard, forever", so a newer DMG handed to a paired operator did nothing on their Mac.
+# The image carries its commit in Resources/VERSION and the installer stamps the same into
+# ~/ds-sales-agent/.version; when they differ, this image is newer than what is installed and
+# the installer runs again — it keeps .env and the tunnel key, sweeps the old code, unpacks the
+# new, and restarts the agent. Same image twice is a no-op that opens the dashboard.
 if [ -f "$SENTINEL" ]; then
+  IMG_V="$(cat "$RES/VERSION" 2>/dev/null || true)"
+  INST_V="$(cat "$HOME/ds-sales-agent/.version" 2>/dev/null || true)"
+  if [ -n "$IMG_V" ] && [ "$IMG_V" != "$INST_V" ] && [ -d "$HOME/ds-sales-agent" ]; then
+    MSG="Updating DS Sales Agent to build $IMG_V (this Mac runs ${INST_V:-an older build}) — a dialog will appear in a moment."
+    osascript -e "display notification \"$MSG\" with title \"DS Sales Agent\"" >/dev/null 2>&1 || true
+    nohup bash "$RES/install.sh" --gui >/dev/null 2>&1 &
+    exit 0
+  fi
   open_dashboard
   exit 0
 fi

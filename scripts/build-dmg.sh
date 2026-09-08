@@ -68,6 +68,12 @@ clang -arch arm64 -arch x86_64 -O2 -Wall -Wextra -mmacosx-version-min=12.0 \
 chmod +x "$APP/Contents/MacOS/ds-sales-agent" "$APP/Contents/Resources/install.sh" "$APP/Contents/Resources/launcher.sh"
 
 git archive --format=tar.gz -o "$APP/Contents/Resources/ds-sales-agent.tar.gz" HEAD
+# THE IMAGE KNOWS ITS OWN COMMIT (2026-09-08). The launcher compares this against the build an
+# installed Mac is running and re-runs the installer when the image is newer — until now a
+# completed install turned the .app into a dashboard shortcut for life, so handing someone a
+# newer DMG changed nothing on their Mac. Written INSIDE Resources, before signing, so it is
+# sealed with everything else.
+git rev-parse --short HEAD > "$APP/Contents/Resources/VERSION"
 
 # The verification, not the construction: no secret may ride along.
 if tar -tzf "$APP/Contents/Resources/ds-sales-agent.tar.gz" | grep -qE '(^|/)\.env$|ds_tunnel_key|\.pem$'; then
@@ -143,6 +149,9 @@ if [ -n "$SIGN_ID" ]; then
   fi
 fi
 
+# A sidecar beside the image, uploaded by deploy.sh next to the DMG the dashboard serves, so
+# /senders can name the installer's build beside each paired Mac's own.
+git rev-parse --short HEAD > "$OUT.version"
 echo "built:  $OUT  ($(du -h "$OUT" | cut -f1 | tr -d ' '))  from $(git rev-parse --short HEAD)"
 echo "signed: ${SIGN_ID:-NO — unsigned, macOS 15 will refuse a double-click}"
 echo "ticket: $NOTARISED"

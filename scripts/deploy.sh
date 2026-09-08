@@ -60,9 +60,50 @@ if [[ -f "$DMG" ]]; then
   echo "==> Uploading the installer ($(du -h "$DMG" | cut -f1))"
   ssh "$HOST" 'mkdir -p ~/.ds-sales-agent-data'
   scp -q "$DMG" "$HOST:~/.ds-sales-agent-data/DS-Sales-Agent.dmg"
+  # The build the image carries (written by build-dmg.sh), so /senders can show it beside each
+  # paired Mac's own agent build (2026-09-08).
+  if [[ -f "$DMG.version" ]]; then
+    scp -q "$DMG.version" "$HOST:~/.ds-sales-agent-data/DS-Sales-Agent.dmg.version"
+    echo "    installer build $(cat "$DMG.version")"
+  fi
 else
   echo "==> No local installer at $DMG — the download button will report it unpublished"
 fi
+
+# ── BUILD ON THIS MAC, SHIP THE DIRECTORY (2026-09-08) ──────────────────────
+# The Linode (1 vCPU, 2 GB, ~1.3 GB in swap) OOM-killed `next build` THREE times on 8 Sept at
+# ~440 MB RSS and went unresponsive for minutes each time, while the dashboard served the
+# previous day's build. The web tier is therefore built HERE, into the dist dir the server is
+# NOT serving, and shipped as a tarball; the server only unpacks and reloads. `.next` output is
+# JavaScript + JSON — native modules (sharp, better-sqlite3) load from the server's own
+# node_modules at runtime, which `pnpm install` below keeps in step with the lockfile.
+#
+# The generated Prisma client is BUNDLED into the build, so the local client must be the
+# Postgres one: this refuses if DATABASE_URL here is not Postgres rather than shipping a
+# SQLite-baked dashboard to a Postgres server. DS_PREBUILT=0 restores the server-side build.
+PREBUILT_TARGET=""
+VERSION_SHA="$(git rev-parse --short HEAD)"
+if [[ "${DS_PREBUILT:-1}" == "1" ]]; then
+  case "$(grep -o '^DATABASE_URL="\?[a-z]*' .env 2>/dev/null | head -1)" in
+    *postgres*) ;;
+    *) echo "error: .env DATABASE_URL must be Postgres to prebuild the web tier (the generated client is bundled). DS_PREBUILT=0 builds on the server instead." >&2; exit 1 ;;
+  esac
+  bash scripts/prisma-client-for-env.sh >/dev/null
+  REMOTE_ACTIVE="$(ssh "$HOST" "cat '$DIR/.active-dist' 2>/dev/null || echo .next")"
+  if [[ "$REMOTE_ACTIVE" == ".next-a" ]]; then PREBUILT_TARGET=.next-b; else PREBUILT_TARGET=.next-a; fi
+  echo "==> Building $PREBUILT_TARGET on this Mac (the server serves $REMOTE_ACTIVE and cannot build)"
+  rm -rf "$PREBUILT_TARGET"
+  if ! NEXT_DIST_DIR="$PREBUILT_TARGET" pnpm build > /tmp/ds-build-local.log 2>&1; then
+    echo "BUILD FAILED on this Mac — nothing was shipped and the server is untouched. Tail:"
+    tail -30 /tmp/ds-build-local.log
+    exit 1
+  fi
+  echo "    built $(cat "$PREBUILT_TARGET/BUILD_ID") as $VERSION_SHA; shipping (webpack cache excluded)"
+  tar czf /tmp/ds-dist.tgz --exclude="$PREBUILT_TARGET/cache" "$PREBUILT_TARGET"
+  scp -q /tmp/ds-dist.tgz "$HOST:/tmp/ds-dist.tgz"
+fi
+echo "$VERSION_SHA" > /tmp/ds-version
+scp -q /tmp/ds-version "$HOST:/tmp/ds-version"
 
 echo "==> Extracting, and REMOVING what is no longer in the repo"
 #
@@ -121,19 +162,31 @@ pnpm exec prisma generate --config prisma.postgres.config.ts >/dev/null
 # replace.
 ACTIVE=\$(cat .active-dist 2>/dev/null || echo .next)
 if [[ "\$ACTIVE" == ".next-a" ]]; then TARGET=.next-b; else TARGET=.next-a; fi
-echo "==> Building into \$TARGET while \$ACTIVE keeps serving"
-rm -rf "\$TARGET"
-if ! NEXT_DIST_DIR="\$TARGET" nice -n 15 ionice -c 3 pnpm build > /tmp/ds-build.log 2>&1; then
-  echo
-  echo "BUILD FAILED. The running build (\$ACTIVE) was never touched and is still serving."
-  echo "The tail of the log:"
-  echo
-  tail -30 /tmp/ds-build.log
-  echo
-  echo "Fix it, then run this script again. Full log on the server: /tmp/ds-build.log"
-  exit 1
+if [[ -n "$PREBUILT_TARGET" ]]; then
+  # Built on the Mac (see above). The target was chosen from THIS server's .active-dist a
+  # moment ago, so it is the directory not being served; unpack over it and never touch ACTIVE.
+  TARGET="$PREBUILT_TARGET"
+  echo "==> Unpacking the prebuilt \$TARGET while \$ACTIVE keeps serving"
+  rm -rf "\$TARGET"
+  tar xzf /tmp/ds-dist.tgz
+  [[ -f "\$TARGET/BUILD_ID" ]] || { echo "the shipped \$TARGET has no BUILD_ID — refusing to switch to it"; exit 1; }
+else
+  echo "==> Building into \$TARGET while \$ACTIVE keeps serving"
+  rm -rf "\$TARGET"
+  if ! NEXT_DIST_DIR="\$TARGET" nice -n 15 ionice -c 3 pnpm build > /tmp/ds-build.log 2>&1; then
+    echo
+    echo "BUILD FAILED. The running build (\$ACTIVE) was never touched and is still serving."
+    echo "The tail of the log:"
+    echo
+    tail -30 /tmp/ds-build.log
+    echo
+    echo "Fix it, then run this script again. Full log on the server: /tmp/ds-build.log"
+    exit 1
+  fi
 fi
 echo "\$TARGET" > .active-dist
+# The build stamp for the tsx-run processes here (the worker) — src/lib/buildVersion.ts reads it.
+cp /tmp/ds-version .version
 
 # The web process runs as a pm2 CLUSTER of two workers so \`pm2 reload\` can replace them one
 # at a time. A legacy fork-mode process (\`pnpm start\`) is converted here once — the only
