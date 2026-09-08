@@ -1,3 +1,4 @@
+import { igGet, type IgResponse } from './igHttp'
 import { anonGateCheck, anonGateRecordSuccess, anonGateRecordThrottle, isThrottleResponse } from './anonGate'
 import { z } from 'zod'
 import { log } from '@/lib/logger'
@@ -240,7 +241,7 @@ const RETRY_BASE_MS = 800
 export const REQUEST_TIMEOUT_MS = 12_000
 
 /** Transport-level retry with exponential backoff. Never retries a 429 or a 4xx. */
-async function fetchPageWithRetry(url: string, handle: string): Promise<Response> {
+async function fetchPageWithRetry(url: string, handle: string): Promise<IgResponse> {
   let lastError: unknown
 
   for (let attempt = 0; attempt <= PAGE_RETRIES; attempt++) {
@@ -259,7 +260,7 @@ async function fetchPageWithRetry(url: string, handle: string): Promise<Response
     try {
       // A timeout surfaces here as a thrown AbortError, i.e. exactly like any other
       // transport failure, so it is retried the same way and bounded the same way.
-      const res = await fetch(url, { headers: HEADERS, signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) })
+      const res = await igGet(url, { headers: HEADERS, timeoutMs: REQUEST_TIMEOUT_MS })
 
       // 429 and 4xx are answers, not failures. Hand them straight back — the caller
       // distinguishes them, and hammering either one makes the situation worse.

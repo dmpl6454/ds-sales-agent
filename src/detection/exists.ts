@@ -1,5 +1,6 @@
 import { anonGateCheck, anonGateRecordSuccess, anonGateRecordThrottle, isThrottleResponse } from './anonGate'
 import { FEED_HEADERS, IG_HOST } from './feed'
+import { igGet } from './igHttp'
 import { assertSafeHandle } from '@/lib/urls'
 
 /**
@@ -131,13 +132,9 @@ export async function probeHandle(
   }
 
   // A throttled host must answer "unknown", never "missing" — absence of data is not a verdict.
-  if (!anonGateCheck().ok) return { check: 'unknown', facts: null }
+  if (!anonGateCheck('profile').ok) return { check: 'unknown', facts: null }
   try {
-    const res = await fetch(`${ENDPOINT}${encodeURIComponent(handle)}`, {
-      headers: HEADERS,
-      redirect: 'follow',
-      signal: AbortSignal.timeout(12_000),
-    })
+    const res = await igGet(`${ENDPOINT}${encodeURIComponent(handle)}`, { headers: HEADERS, timeoutMs: 12_000 })
     /**
      * A 200 body carries the identity facts; a 400 might carry the schema error. Anything
      * else is not worth downloading to answer a yes/no question.

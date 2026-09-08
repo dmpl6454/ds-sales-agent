@@ -32,6 +32,7 @@ import {
   setAnonGateClock,
 } from '@/detection/anonGate'
 import { fetchFeed, FeedFetchError } from '@/detection/feed'
+import { setIgTransportForTests, type IgResponse } from '@/detection/igHttp'
 
 const MIN = 60_000
 
@@ -84,7 +85,6 @@ describe('the pure ladder', () => {
 
 describe('the process-wide gate and the feed contract', () => {
   let now = 1_700_000_000_000
-  const realFetch = globalThis.fetch
   beforeEach(() => {
     resetAnonGate()
     setAnonGateClock(() => now)
@@ -92,15 +92,23 @@ describe('the process-wide gate and the feed contract', () => {
   afterEach(() => {
     setAnonGateClock()
     resetAnonGate()
-    globalThis.fetch = realFetch
+    setIgTransportForTests()
   })
 
   const respond = (status: number, body: string) =>
-    vi.fn(async () => new Response(body, { status, headers: { 'content-type': 'application/json' } }))
+    vi.fn(
+      async (): Promise<IgResponse> => ({
+        status,
+        ok: status >= 200 && status < 300,
+        text: async () => body,
+        json: async () => JSON.parse(body) as unknown,
+      }),
+    )
+  const useTransport = (fn: ReturnType<typeof respond>) => setIgTransportForTests(fn as unknown as Parameters<typeof setIgTransportForTests>[0])
 
   it('a 401 from the feed closes the gate, and the error names the reopening time', async () => {
     const fetchMock = respond(401, '{"message":"Please wait a few minutes before you try again.","require_login":true}')
-    globalThis.fetch = fetchMock as unknown as typeof fetch
+    useTransport(fetchMock)
     await expect(fetchFeed('viralbhayani', { maxPages: 1 })).rejects.toMatchObject({
       name: 'FeedFetchError',
       isThrottle: true,
@@ -111,9 +119,12 @@ describe('the process-wide gate and the feed contract', () => {
   })
 
   it('while the gate is closed fetchFeed makes NO request at all', async () => {
-    anonGateRecordThrottle('profile', 429) // a throttle earned by a DIFFERENT module binds here
+    anonGateRecordThrottle('exists', 429) // a throttle earned by a DIFFERENT profile-scope module binds only profile reads
+    expect(anonGateCheck('profile').ok).toBe(false)
+    expect(anonGateCheck('feed')).toEqual({ ok: true }) // the feed scope is untouched — the Linode's permanent profile 429 must not blind it
+    anonGateRecordThrottle('feed', 401)
     const fetchMock = respond(200, '{"items":[],"more_available":false,"status":"ok"}')
-    globalThis.fetch = fetchMock as unknown as typeof fetch
+    useTransport(fetchMock)
     const err = await fetchFeed('viralbhayani', { maxPages: 1 }).catch((e: unknown) => e)
     expect(err).toBeInstanceOf(FeedFetchError)
     expect((err as FeedFetchError).isThrottle).toBe(true)
@@ -125,7 +136,7 @@ describe('the process-wide gate and the feed contract', () => {
     now += 15 * MIN
     expect(anonGateCheck()).toEqual({ ok: true })
     const fetchMock = respond(200, '{"items":[],"more_available":false,"status":"ok"}')
-    globalThis.fetch = fetchMock as unknown as typeof fetch
+    useTransport(fetchMock)
     const result = await fetchFeed('viralbhayani', { maxPages: 1 })
     expect(result.pagesFetched).toBe(1)
     expect(anonGateSnapshot().strikes).toBe(0)
@@ -142,7 +153,7 @@ describe('the process-wide gate and the feed contract', () => {
   })
 
   it('a plain 404 is a fact about the handle, not a throttle — the gate stays open', async () => {
-    globalThis.fetch = respond(404, '{"status":"fail"}') as unknown as typeof fetch
+    useTransport(respond(404, '{"status":"fail"}'))
     const err = await fetchFeed('nobody_here_xyz', { maxPages: 1 }).catch((e: unknown) => e)
     expect((err as FeedFetchError).isThrottle).toBe(false)
     expect(anonGateCheck()).toEqual({ ok: true })
@@ -160,14 +171,20 @@ describe('every anonymous Instagram caller consults the gate (source grep)', () 
   const NOT_INSTAGRAM_API = new Set(['media.ts', 'decideBrand.ts', 'semantic.ts'])
 
   it('a file that calls fetch() against Instagram must check the gate before and classify the answer after', () => {
-    const callers = walk(root).filter((f) => /await fetch\(/.test(readFileSync(f, 'utf8')))
+    // Every Instagram read goes through igGet (igHttp.ts); a bare fetch() against Instagram is itself a defect.
+    const callers = walk(root).filter((f) => /igGet\(/.test(readFileSync(f, 'utf8')) && !f.endsWith('igHttp.ts'))
     const relevant = callers.filter((f) => !NOT_INSTAGRAM_API.has(f.split('/').pop()!))
+    // Comments stripped first: a docblock that MENTIONS `await fetch()` is not a call (that grep
+    // trap is recorded in CLAUDE.md for every-send-path-asks-the-gate).
+    const code = (f: string) => readFileSync(f, 'utf8').replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')
+    const bareFetchers = walk(root).filter((f) => /await fetch\(/.test(code(f)) && !NOT_INSTAGRAM_API.has(f.split('/').pop()!))
+    expect(bareFetchers, 'an Instagram read using Node fetch gets 400 SecFetch Policy violation — use igGet').toEqual([])
     expect(relevant.map((f) => f.split('/').pop()).sort()).toEqual(
       ['enrichHandle.ts', 'exists.ts', 'feed.ts', 'resolveBrand.ts'].sort(),
     )
     for (const file of relevant) {
       const src = readFileSync(file, 'utf8')
-      expect(src, `${file} must ask anonGateCheck() before spending a request`).toMatch(/anonGateCheck\(\)/)
+      expect(src, `${file} must ask anonGateCheck() before spending a request`).toMatch(/anonGateCheck\(/)
       expect(src, `${file} must record a throttle response`).toMatch(/anonGateRecordThrottle\(/)
       expect(src, `${file} must record a success so the ladder resets`).toMatch(/anonGateRecordSuccess\(/)
     }
@@ -178,7 +195,7 @@ describe('every anonymous Instagram caller consults the gate (source grep)', () 
     const body = src.slice(src.indexOf('export async function runDetection('))
     // a cooldown ending just after the cron fires must be WAITED for, not skipped for 15 minutes
     expect(body).toMatch(/waitMs <= GATE_REOPEN_WAIT_MAX_MS/)
-    const check = body.indexOf('anonGateCheck()')
+    const check = body.indexOf('anonGateCheck(')
     const fetch = body.indexOf('await fetchFeed(')
     expect(check).toBeGreaterThan(-1)
     expect(check).toBeLessThan(fetch)

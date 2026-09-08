@@ -1,4 +1,14 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest'
+import { setIgTransportForTests } from '@/detection/igHttp'
+
+// enrichHandle reads through igGet (node:https, no Sec-Fetch headers); these cases stub
+// globalThis.fetch, so the transport is bridged to whatever fetch is stubbed at call time.
+setIgTransportForTests(async (url, init) => {
+  const r = await (globalThis.fetch as unknown as (u: string, i: { headers: Record<string, string> }) => Promise<Response>)(url, {
+    headers: init.headers,
+  })
+  return { status: r.status, ok: r.ok, text: () => r.text(), json: () => r.json() as Promise<unknown> }
+})
 
 import { enrichHandle } from '../src/detection/enrichHandle'
 

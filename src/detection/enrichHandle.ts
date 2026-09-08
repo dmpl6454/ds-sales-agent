@@ -1,6 +1,7 @@
 import { anonGateCheck, anonGateRecordSuccess, anonGateRecordThrottle, isThrottleResponse } from './anonGate'
 import { log } from '@/lib/logger'
-import { FEED_HEADERS, REQUEST_TIMEOUT_MS } from './feed'
+import { FEED_HEADERS, IG_HOST, REQUEST_TIMEOUT_MS } from './feed'
+import { igGet } from './igHttp'
 
 /**
  * What can we still learn about a handle whose category Instagram will not serve?
@@ -98,14 +99,14 @@ export async function enrichHandle(handle: string): Promise<HandleEnrichment> {
      * it. A timeout surfaces as a thrown AbortError and lands in the catch below, which
      * already reports "not reachable", and NOT-REACHABLE IS NEVER A VERDICT here.
      */
-    const gate = anonGateCheck()
+    const gate = anonGateCheck('profile')
     if (!gate.ok) {
       // No request. Reported as a 429 so every caller's "back off" branch fires (see anonGate.ts).
       return { ...empty, reason: `HTTP 429 (anonymous reads throttled until ${gate.until.toISOString()})`, status: 429 }
     }
-    const res = await fetch(`https://i.instagram.com/api/v1/feed/user/${encodeURIComponent(h)}/username/`, {
+    const res = await igGet(`${IG_HOST}/api/v1/feed/user/${encodeURIComponent(h)}/username/`, {
       headers: FEED_HEADERS,
-      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+      timeoutMs: REQUEST_TIMEOUT_MS,
     })
 
     if (!res.ok) {
