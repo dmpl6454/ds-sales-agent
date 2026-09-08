@@ -7,6 +7,7 @@ import { daysAgo } from '@/lib/time'
 import { detectionCutoff } from '@/lib/cutoff'
 import { visibleChannelFilter } from '@/detection/visibleChannels'
 import { readHeartbeat } from '@/worker/scheduler'
+import { buildVersion } from '@/lib/buildVersion'
 import { SignOutButton } from './sign-out-button'
 import { RailToggle } from './chrome'
 
@@ -304,6 +305,16 @@ export async function Nav({ current, email }: { current: string; email?: string 
       <div className="rail-foot">
         <div className="rail-status rail-when-open">
           <p className="rail-group-label">Right now</p>
+
+          {/*
+            WHICH BUILD IS THIS SCREEN (2026-09-08). The hosted dashboard served yesterday's build
+            for a day while the worker ran today's, and nothing said so. Baked in at build time
+            (DS_BUILD_SHA), so it names the commit the bundle came from — not the server's disk.
+          */}
+          <div className="rail-status-row">
+            <span className="dot dot-idle" />
+            <span className="muted">Build {buildVersion()}</span>
+          </div>
 
           {/*
             THE HEARTBEAT, ON EVERY SCREEN. A toggle that promises behaviour must show

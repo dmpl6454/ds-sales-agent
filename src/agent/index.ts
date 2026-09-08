@@ -1,3 +1,4 @@
+import { buildVersionInfo, type BuildVersionSource } from '@/lib/buildVersion'
 import { anonGateCheck, hydrateAnonGate, DETECT_FEED_OK_KEY, DETECT_THROTTLED_KEY } from '@/detection/anonGate'
 import { runDetection } from '@/detection/pipeline'
 import { decideDetectionFailover, DETECTION_FAILOVER_INTERVAL_MS } from '@/detection/failover'
@@ -209,6 +210,15 @@ export interface DevicePresence {
   at: string
   /** Which accounts this device holds a logged-in Chrome profile for. */
   handles: string[]
+  /**
+   * The build this agent is running (`buildVersion()`), so /senders can show a Mac that is
+   * still on last week's DMG beside the installer's current build (2026-09-08). Optional
+   * because rows written before this existed carry none — absence renders as "unknown",
+   * never as "current".
+   */
+  version?: string
+  /** 'stamp' = installed from an image (can be updated by re-running it); 'git' = a checkout. */
+  versionSource?: BuildVersionSource
 }
 
 /**
@@ -233,7 +243,7 @@ export async function localSenderHandles(): Promise<string[]> {
  * rediscovering.
  */
 export async function writePresence(handles: string[]): Promise<void> {
-  const me: DevicePresence = { device: deviceId(), at: new Date().toISOString(), handles }
+  const me: DevicePresence = { device: deviceId(), at: new Date().toISOString(), handles, version: buildVersionInfo().version, versionSource: buildVersionInfo().source }
   const row = await prisma.setting.findUnique({ where: { key: DEVICE_PRESENCE_KEY } })
 
   let all: DevicePresence[] = []
