@@ -1,4 +1,5 @@
 import { anonGateCheck, anonGateRecordSuccess, anonGateRecordThrottle, isThrottleResponse } from './anonGate'
+import { FEED_HEADERS, IG_HOST } from './feed'
 import { assertSafeHandle } from '@/lib/urls'
 
 /**
@@ -52,17 +53,9 @@ import { assertSafeHandle } from '@/lib/urls'
  */
 export type HandleCheck = 'exists' | 'missing' | 'unknown'
 
-const ENDPOINT = 'https://www.instagram.com/api/v1/users/web_profile_info/?username='
-
-const HEADERS = {
-  'User-Agent':
-    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36',
-  // The gate. Without it this endpoint answers with a login wall rather than JSON.
-  'x-ig-app-id': '936619743392459',
-  Accept: '*/*',
-  'Accept-Language': 'en-US,en;q=0.9',
-  Referer: 'https://www.instagram.com/',
-}
+// ONE anonymous identity for every Instagram read — see the docblock on FEED_HEADERS (8 Sept 2026).
+const ENDPOINT = `${IG_HOST}/api/v1/users/web_profile_info/?username=`
+const HEADERS = FEED_HEADERS
 
 /**
  * Meta's deleted-schema error. The account is there; its category cannot be serialised.
