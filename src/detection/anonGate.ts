@@ -196,9 +196,17 @@ export async function hydrateAnonGate(): Promise<void> {
   if (!row) return
   try {
     const parsed = JSON.parse(row.value) as Record<string, Partial<AnonGateState>>
-    // Rows written before the split carried ONE state; read that as the feed scope.
-    const perScope: Partial<Record<AnonScope, Partial<AnonGateState>>> =
-      'feed' in parsed || 'profile' in parsed ? (parsed as Partial<Record<AnonScope, Partial<AnonGateState>>>) : { feed: parsed as Partial<AnonGateState> }
+    // Rows written before the split carried ONE host-wide state. It lands in the scope its
+    // source names — MEASURED 8 Sept 13:30: a legacy row earned by the Linode's permanent
+    // profile 429s was read as a FEED cooldown and skipped a whole pass while a direct feed
+    // probe from the same host returned 12 items. Absence of a source means profile, the
+    // scope that has actually been refused on the server for weeks; the feed is never blamed
+    // on evidence that does not name it.
+    const legacy = !('feed' in parsed) && !('profile' in parsed)
+    const legacyState = parsed as unknown as Partial<AnonGateState>
+    const perScope: Partial<Record<AnonScope, Partial<AnonGateState>>> = legacy
+      ? { [legacyState.lastThrottleSource === 'feed' ? 'feed' : 'profile']: legacyState }
+      : (parsed as Partial<Record<AnonScope, Partial<AnonGateState>>>)
     for (const scope of ['feed', 'profile'] as AnonScope[]) {
       const saved = perScope[scope]
       if (!saved) continue
