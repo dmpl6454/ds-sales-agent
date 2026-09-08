@@ -170,6 +170,23 @@ if [[ -n "$PREBUILT_TARGET" ]]; then
   rm -rf "\$TARGET"
   tar xzf /tmp/ds-dist.tgz
   [[ -f "\$TARGET/BUILD_ID" ]] || { echo "the shipped \$TARGET has no BUILD_ID — refusing to switch to it"; exit 1; }
+  # FOUND BY RUNNING IT (8 Sept): the first prebuilt deploy answered HTTP 500 with "Cannot find
+  # module @prisma/client-<hash>/runtime/client". Turbopack externalises the native and heavy
+  # packages (pg, better-sqlite3, patchright, node-cron, @prisma/*) as RELATIVE symlinks under
+  # <dist>/node_modules into node_modules/.pnpm/<name>@<ver>_<peer-suffix>/ — and that suffix is
+  # spelled differently by pnpm 9 (the Mac) and pnpm 10 (here), so every link dangled. Each is
+  # re-pointed at THIS machine's copy of the same package; a package this machine lacks is
+  # reported, never silently left dangling.
+  find "\$TARGET/node_modules" -type l | while read -r link; do
+    rel="\${link#\$TARGET/node_modules/}"; pkg="\${rel%-*}"
+    if [[ -e "node_modules/\$pkg" ]]; then
+      ln -sfn "\$(readlink -f "node_modules/\$pkg")" "\$link"
+    else
+      echo "    WARNING: no local copy of \$pkg for \$link — that module will fail to load"
+    fi
+  done
+  # The build machine's absolute path is recorded in required-server-files; make it this one's.
+  sed -i "s|$PWD|$DIR|g" "\$TARGET/required-server-files.json" "\$TARGET/required-server-files.js" 2>/dev/null || true
 else
   echo "==> Building into \$TARGET while \$ACTIVE keeps serving"
   rm -rf "\$TARGET"
