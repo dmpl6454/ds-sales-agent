@@ -178,6 +178,55 @@ matters. Verified on the SHIPPED image: `spctl: accepted — source=Notarized De
 `misconfigured` branch and its non-empty-endpoint check present, **0 credential-shaped files** in
 the payload, and the same sha256 on the box.
 
+### "ARE YOU POSITIVE A NEW MAC WORKS?" — I WAS NOT, AND WALKING THE PATH FOUND THREE HOLES
+
+**Tabish: *"Another individual when they install the DMG, the sales agent must work. Consider all
+possibilities and loopholes."*** The server side had been verified from THIS Mac; a fresh Mac's
+whole journey had not. Walked step by step, three things would have failed a real person:
+
+1. **The installer's "keep the existing .env and key" path never touched the ssh stanza.**
+   `write_ssh_config` appended only when no `Host ds-linode` existed, so every Mac installed
+   before the move — Sudhanshu's half-finished Mac Studio included — would have tunnelled to the
+   OLD address on every re-run, forever. The stanza is now REWRITTEN in full (an awk that drops the
+   old block; the maintainer's own `Host linode` alias is a different word and survives — driven in
+   a fake HOME with both present).
+2. **And that stale tunnel would have COME UP**, because the old box is still alive, still runs
+   Postgres with yesterday's copy of our database, and still held our two forward-only keys. A
+   re-run would have "succeeded" against a stale copy, the Mac's presence written where nobody
+   looks. **Our two restricted keys are removed from the old box's `authorized_keys`** (8 → 6
+   keys, 0 forward-only), and this Mac's tunnel key now gets `Permission denied` there — so a stale
+   stanza fails fast, and **a kept configuration whose tunnel does not come up now pairs the Mac
+   AGAIN** (`pair_this_mac` is a function that runs twice; the hand-off is the only channel that
+   carries the current address, and it also rewrites a `.env` that predates the classifier key).
+3. **The `--manual` path hardcoded `172.105.53.101`** — a person typing secrets by hand would have
+   been pointed at another team's server. It asks for the address now, defaulting to today's box;
+   the last mention of the old IP is gone from the installer.
+
+**THEN THE WHOLE PAIRING WAS DONE FOR REAL AGAINST THE NEW BOX** with a scratch ed25519 key,
+through the LIVE hosted pages, not the code:
+
+| step | result |
+|---|---|
+| `POST /api/device/enrol/start` (public, no session) | `userCode 53A6A5EH` |
+| `/senders`, signed in | the waiting row rendered with that code; **Approve this Mac** clicked |
+| `POST /api/device/enrol/poll` | `approved`, **`sshHost 173.230.131.144`**, `sshUser root`, **modelKey present**, `databaseUrl …@127.0.0.1:15432/ds_sales_agent`; a second poll → `unknown` (secrets handed out once) |
+| the new box's `authorized_keys` | 1 line, `restrict,port-forwarding,permitopen=… command="/usr/bin/false"` intact |
+| a tunnel with THAT key, the handed URL | `select current_database(), boxMarker, count(targets)` → **`ds_sales_agent`, `173.230.131.144`, 1016** |
+| a shell with that key | **refused** |
+| **Revoke** clicked on the paired row | the line is gone from the box |
+
+So the handed credentials reach the right database, the key can do exactly one thing, and both
+buttons work. The DMG was rebuilt from `0471de3` with the installer fixes, notarised, accepted,
+3.6 MB (CLAUDE.md is the largest payload entry; nothing unexpected rode along), uploaded;
+`/senders` reads *"Installer build 0471de3 — the same as this dashboard"*. `pm2` on the new box
+holds both processes in its dump and `pm2-root` is enabled, so a reboot brings them back.
+
+**WHAT A NEW OPERATOR STILL NEEDS FROM A PERSON, stated so nobody looks for a bug:** the image
+itself (the download is behind the dashboard login — Tabish hands the file or the shared
+`team@` login), Chrome on their Mac, someone signed in to click Approve within fifteen minutes,
+and the lid open. **Sudhanshu's Mac Studio:** open the new image once; the kept settings fail
+against the old box, it pairs again, Tabish approves, and it is on the new box with the key.
+
 ### WHAT IS STILL TABISH'S
 
 1. **Resize to 2 GB** if the zero-gap deploy and the headroom are wanted. Nothing needs editing —
