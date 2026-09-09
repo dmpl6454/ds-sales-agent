@@ -36,6 +36,10 @@ const settleClaims = vi.fn()
 const markChallenged = vi.fn()
 const ensureConversationChecked = vi.fn()
 
+const { probeHandle } = vi.hoisted(() => ({ probeHandle: vi.fn(async () => ({ check: 'unknown' as const, facts: null })) }))
+// The pre-drive existence probe (9 Sept 2026) is a NETWORK call to Instagram; these tests are
+// about the drive, so it answers 'unknown' — which changes nothing — unless a case overrides it.
+vi.mock('@/detection/exists', () => ({ probeHandle: (...a: unknown[]) => probeHandle(...a) }))
 vi.mock('@/lib/db', () => ({
   prisma: {
     senderAccount: { findUnique: (...a: unknown[]) => senderFindUnique(...a), update: (...a: unknown[]) => senderUpdate(...a) },
@@ -116,6 +120,7 @@ beforeEach(() => {
   attemptFindMany.mockReset().mockResolvedValue(twoDraftsFromOneSender())
   attemptUpdateMany.mockReset().mockResolvedValue({ count: 1 })
   attemptUpdate.mockReset().mockResolvedValue({})
+  probeHandle.mockReset().mockResolvedValue({ check: 'unknown', facts: null })
   senderUpdate.mockReset().mockResolvedValue({})
   auditCreate.mockReset().mockResolvedValue({})
   transaction.mockReset().mockResolvedValue([])
@@ -507,5 +512,27 @@ describe('a not-in-thread failure is recorded as its own kind', () => {
     })
     await deliverWaiting()
     expect(settleClaims.mock.calls[0]![1]).toMatchObject({ delivered: false, failureCode: 'not-in-thread' })
+  })
+})
+
+/**
+ * A RECIPIENT WHOSE PAGE IS GONE IS PARKED BEFORE ANY DRIVE (9 Sept 2026). @hemantpandeyji: a
+ * verified prospect on 8 Sept whose page had vanished by the 9th — four senders each drove Chrome
+ * at it three times before parking. One anonymous probe now asks first; `missing` parks with no
+ * browser, `unknown` changes nothing.
+ */
+describe('a recipient whose page is gone is parked before any browser drive', () => {
+  it("parks FAILED 'profile-gone', releases the claim, and never calls the sender", async () => {
+    probeHandle.mockResolvedValue({ check: 'missing', facts: null })
+    await deliverWaiting({ maxSends: 2 })
+    expect(send).not.toHaveBeenCalled()
+    expect(attemptUpdate).toHaveBeenCalledWith(
+      expect.objectContaining({ data: expect.objectContaining({ status: 'FAILED', failureCode: 'profile-gone' }) }),
+    )
+    expect(settleClaims).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ delivered: false, failureCode: 'profile-gone' }))
+  })
+  it("an 'unknown' probe (a throttle, a blip) changes nothing — absence of an answer is not a verdict", async () => {
+    await deliverWaiting({ maxSends: 1 })
+    expect(send).toHaveBeenCalledTimes(1)
   })
 })

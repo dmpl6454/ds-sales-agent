@@ -139,6 +139,16 @@ export const FAILURE_CODES = [
   'composer-mismatch',
   'no-composer',
   'no-message-button',
+  /**
+   * THE RECIPIENT'S PAGE IS GONE (9 Sept 2026). Instagram answers "Sorry, this page isn't
+   * available" for the handle — deleted, deactivated or renamed since admission. @hemantpandeyji
+   * was a verified prospect on 8 Sept; by the 9th four senders had each driven Chrome at the dead
+   * page three times (12 drives from revenue accounts) and parked `no-message-button`, a name that
+   * says nothing about WHY. Parked on the FIRST sighting, never retried, and the planner refuses
+   * to write for that recipient for a week (TARGET_UNREACHABLE) — after which ONE anonymous
+   * probe, not a browser, asks again.
+   */
+  'profile-gone',
   'enforcement',
   'logged-out',
   'two-factor',

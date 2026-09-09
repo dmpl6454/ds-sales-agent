@@ -45,6 +45,7 @@ function ok(): ResendInput {
     targetCategories: [],
   /* No unsettled park on this pair — the UNCERTAIN_DELIVERY tests supply the other side. */
   parkedFailureCode: null,
+  targetProfileGoneAt: null,
   material: { held: false as const, allowance: 1, delivered: 0 },
     targetOptedOut: false,
     targetIsWatchOnly: false,

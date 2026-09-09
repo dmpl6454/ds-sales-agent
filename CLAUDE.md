@@ -128,6 +128,42 @@ Cloudflare A record → each paired Mac gets the new tunnel host (Sudhanshu's re
 Linode CLI or API token exists on this Mac or the server**, so listing other boxes needs a
 Personal Access Token (Linodes: read) from Tabish, or a look at Cloud Manager.
 
+### A DEAD PAGE COST TWELVE BROWSER DRIVES, AND THE FIX IS TO ASK BEFORE DRIVING
+
+**Tabish, with a screenshot of a Chrome window on `instagram.com/hemantpandeyji/` reading "Sorry,
+this page isn't available": *"The agent is stuck on this one."*** MEASURED: `@hemantpandeyji` was
+minted a verified prospect at 11:39Z on 8 Sept ("Hemant Pandey", `isVerified: true`, from a paid
+post) and its page had vanished — deleted, deactivated or renamed — by the next day. **Four
+senders each drove Chrome at it three times** (@bollywoodpaparazzii, @totalfilmii,
+@bollywoodchronicle, @bollywoodsocietyy — twelve drives from revenue accounts over two days), each
+walking the Message button, the … menu and the inbox route before parking `no-message-button` — a
+name that says nothing about WHY. It was not stuck: the retry cap parked each pair after three. It
+was worse than stuck, because the parked-failure stop is per PAIR and the fact was about the
+RECIPIENT, so every page's first look was its own. The same class as @acearteofficial on 1 Sept,
+which was retired by hand and taught nothing to the code.
+
+- **`profile-gone` is a failure code** (FAILURE_CODES 11 → 12), released from its reservation
+  like every never-reached-a-composer code.
+- **The drive recognises the dead page** before the … menu and the inbox route: "Sorry, this page
+  isn't available" on the profile → `profile-gone`, one look, parked FAILED without a retry.
+- **One anonymous request before any drive.** `deliver.ts` asks `probeHandle` (decision 4 holds:
+  no session, this machine's own IP) immediately before `browserSender.send`; `missing` parks the
+  draft with NO browser and releases the claim; `unknown` — a throttle, a blip — changes nothing,
+  because absence of an answer is not a verdict.
+- **`TARGET_UNREACHABLE`, at the governor AND the gate, target-scoped, not overridable.** A
+  `profile-gone` park on ANY pair to a recipient inside `PROFILE_GONE_RECHECK_DAYS` (7) refuses
+  every page for that recipient. It comes from the SAME query that already found the pair's own
+  park — widened to the recipient and split by `parkedRows.ts` (`splitParks`, PURE), so the query
+  budget did not move by one. It lifts by itself after a week, when one probe asks again. The
+  remedy is `href: null`: no button reaches a deleted account.
+- `@hemantpandeyji` retired through `ig:retire-target` with the reason, as the precedent did.
+
+**FOUND BY RUNNING THE SUITE: the delivery harness phoned Instagram.** `probeHandle` was not
+mocked in `deliver-challenged.test.ts` or `session-invalid.test.ts`, so fixture handles resolved
+`missing` against the real endpoint and three tests failed with "called 1 times, expected 2" —
+exactly the 22 August `enrichHandle` finding, one module along. Mocked to `unknown` by default;
+one case overrides it to `missing` and asserts the sender is never called.
+
 ### RULES, ADDED TO THE STANDING LIST
 
 12. **Never run our stack beside someone else's production.** Our own box, or nothing.
@@ -139,6 +175,10 @@ Personal Access Token (Linodes: read) from Tabish, or a look at Cloud Manager.
     wrapper; start the node entry point directly (as the web tier already does).
 16. **One OCR child at a time, and bounded.** The pipeline already judges sequentially; a
     future concurrency change must keep it so on any box smaller than 4 GB.
+18. **Ask anonymously before you drive.** A browser drive at a revenue account is the costliest
+    request this system makes; one sessionless probe first turns a dead page into zero drives.
+19. **A per-pair stop cannot see a per-recipient fact.** When a failure is about WHO, scope the
+    stop to the recipient, or every page discovers it separately.
 
 ---
 

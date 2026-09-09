@@ -127,6 +127,7 @@ describe('the rule is enforced at BOTH ends', () => {
       senderStatus: 'ACTIVE',
       senderHasSession: true,
       parkedFailureCode: null,
+      targetProfileGoneAt: null,
       material: { held: false, allowance: 1, delivered: 0 },
       targetOptedOut: false,
       targetIsWatchOnly: false,

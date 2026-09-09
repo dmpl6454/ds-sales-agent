@@ -65,6 +65,8 @@ const STOP_LABELS: Record<(typeof RESEND_BLOCKS)[keyof typeof RESEND_BLOCKS], st
     'an earlier message to them cleared the composer and never appeared in the thread, so they may already have it — that one page never writes to them again',
   [RESEND_BLOCKS.PARKED_FAILURE]:
     'an earlier message to them was parked after repeated failures — re-queue or discard that one first',
+  [RESEND_BLOCKS.TARGET_UNREACHABLE]:
+    'their Instagram page no longer exists — deleted or renamed since it was admitted; nothing is sent until it is seen again',
   [RESEND_BLOCKS.NO_SESSION]: 'the account is not signed in',
   [RESEND_BLOCKS.PAIR_DAILY_CAP]: 'this account already sent this recipient five messages today',
   [RESEND_BLOCKS.FOLLOW_UP_SAME_DAY]:

@@ -107,6 +107,7 @@ function governorInput(over: Record<string, unknown> = {}) {
     targetRepliedAt: null,
     hasPendingAttempt: false,
     parkedFailureCode: null,
+    targetProfileGoneAt: null,
     material: { held: false as const, allowance: 1, delivered: 0 },
     unusedCampaignCount: 5,
     describableCampaignCount: 5,
@@ -178,6 +179,8 @@ const GOVERNOR_CASES: Array<[string, Record<string, unknown>]> = [
   [SKIP_REASONS.MATERIAL_EXHAUSTED, { material: { held: true, allowance: 1, delivered: 1, campaigns: 1 } }],
   [SKIP_REASONS.UNCERTAIN_DELIVERY, { parkedFailureCode: 'not-in-thread' }],
   [SKIP_REASONS.PARKED_FAILURE, { parkedFailureCode: 'no-composer' }],
+  // The recipient's page is gone — a fact about WHO, target-scoped (9 Sept 2026).
+  [SKIP_REASONS.TARGET_UNREACHABLE, { targetProfileGoneAt: new Date('2026-09-09T06:00:00Z') }],
   [SKIP_REASONS.NO_NEW_MATERIAL, { touchesSoFar: 1, unusedCampaignCount: 0 }],
   /**
    * ── UNCLAIMED POSTS EXIST AND NONE CAN BE DESCRIBED (2026-09-01) ──────────
@@ -245,6 +248,7 @@ function gateInput(over: Record<string, unknown> = {}) {
     senderStatus: 'ACTIVE',
     senderHasSession: true,
     parkedFailureCode: null,
+    targetProfileGoneAt: null,
     material: { held: false as const, allowance: 1, delivered: 0 },
     targetOptedOut: false,
     targetIsWatchOnly: false,
@@ -319,6 +323,7 @@ const GATE_CASES: Array<[string, Record<string, unknown>]> = [
   [RESEND_BLOCKS.MATERIAL_EXHAUSTED, { material: { held: true, allowance: 1, delivered: 1, campaigns: 1 } }],
   [RESEND_BLOCKS.UNCERTAIN_DELIVERY, { parkedFailureCode: 'not-in-thread' }],
   [RESEND_BLOCKS.PARKED_FAILURE, { parkedFailureCode: 'no-composer' }],
+  [RESEND_BLOCKS.TARGET_UNREACHABLE, { targetProfileGoneAt: new Date('2026-09-09T06:00:00Z') }],
   [RESEND_BLOCKS.NO_SESSION, { senderHasSession: false }],
   // Five per day from one account to one recipient (2026-08-18).
   [RESEND_BLOCKS.PAIR_DAILY_CAP, { pairSentTodayCount: 5, maxPerPairPerDay: 5 }],
@@ -699,7 +704,10 @@ describe('every failure code is documented for a person', () => {
     // 'unreadable' (2026-09-02): a pre-send READ that could not vouch for the thread — no send
     // attempted — so it must not wear a send-failure code or retire the pair. 10 → 11.
     expect(FAILURE_CODES).toContain('unreadable')
-    expect(FAILURE_CODES.length).toBe(11)
+    // 'profile-gone' (2026-09-09): the recipient's page answers "Sorry, this page isn't available"
+    // — parked on first sight, never retried, target-scoped stop for a week. 11 → 12.
+    expect(FAILURE_CODES).toContain('profile-gone')
+    expect(FAILURE_CODES.length).toBe(12)
     for (const c of FAILURE_CODES) expect(c).toMatch(/^[a-z][a-z0-9-]+$/)
   })
 

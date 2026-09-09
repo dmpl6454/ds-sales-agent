@@ -125,6 +125,18 @@ export async function sendDm(params: SendDmParams): Promise<SendDmResult> {
        * If IT fails too, the failure code is honest about how much was tried, and the
        * retry cap (3) parks the draft visibly and lets the queue move on.
        */
+      // A DEAD PAGE IS NOT A HIDDEN DOOR (9 Sept 2026). "Sorry, this page isn't available" means
+      // the account is gone or renamed; the … menu and the inbox route cannot reach what does
+      // not exist, and trying them is a minute of browser activity from a revenue account for
+      // nothing — twelve drives at @hemantpandeyji before this existed.
+      const gone = await page.getByText("Sorry, this page isn't available", { exact: false }).first().isVisible().catch(() => false)
+      if (gone) {
+        return {
+          ok: false,
+          reason: 'the profile page reads "Sorry, this page isn\'t available" — the account is gone or renamed since it was admitted',
+          failureCode: 'profile-gone',
+        }
+      }
       log.step('the profile offers no way into the DM — trying the inbox route', { target: targetHandle })
       const viaInbox = await openThreadViaInbox(page, targetHandle)
       if (!viaInbox) {

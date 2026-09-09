@@ -11,6 +11,7 @@ import { claimForAttempt, settleClaims } from './reservations'
 import { markChallenged } from './challenge'
 import { markSessionInvalid, clearSessionInvalid } from './sessionHealth'
 import { ensureConversationChecked } from './replyCheck'
+import { probeHandle } from '@/detection/exists'
 
 /**
  * Deliver messages that are ALREADY waiting.
@@ -404,6 +405,29 @@ export async function deliverWaiting(opts: DeliverOptions = {}): Promise<Deliver
       await new Promise((r) => setTimeout(r, waitSeconds * 1000))
     }
 
+    /**
+     * ONE ANONYMOUS REQUEST BEFORE A BROWSER DRIVE (9 Sept 2026). A recipient admitted as verified
+     * can cease to exist — @acearteofficial (1 Sept), @hemantpandeyji (8 Sept) — and until now the
+     * first anyone learned of it was Chrome standing on "Sorry, this page isn't available" from a
+     * revenue account, three times per sender. `probeHandle` asks Instagram's profile endpoint
+     * with no session (decision 4) from this machine's own IP; `missing` parks the draft here
+     * with NO drive. `unknown` (a throttle, a blip) changes nothing — absence of an answer is not
+     * a verdict, and the drive itself recognises the dead page as the second net.
+     */
+    const probe = await probeHandle(target.handle)
+    if (probe.check === 'missing') {
+      const error = `@${target.handle}'s Instagram page no longer exists (anonymous probe: not found) — nothing was driven`
+      await prisma.outreachAttempt.update({
+        where: { id: attempt.id },
+        data: { status: 'FAILED', failureCode: 'profile-gone', error, attempts: MAX_DELIVERY_ATTEMPTS },
+      })
+      await settleClaims(claim.held, { delivered: false, failureCode: 'profile-gone' })
+      log.warn("the recipient's page is gone — parked without a browser drive", { pair: pairKey })
+      out.failed += 1
+      out.outcomes.push({ pairKey, result: `@${target.handle}'s page no longer exists — parked; no browser was driven` })
+      continue
+    }
+
     log.step('delivering a waiting message', { pair: pairKey, chars: attempt.renderedBody.length })
     // Counted BEFORE the await. A send that throws still drove a browser, and the bound is
     // about activity against these accounts rather than about outcomes.
@@ -507,6 +531,19 @@ export async function deliverWaiting(opts: DeliverOptions = {}): Promise<Deliver
       })
       out.failed += 1
       out.outcomes.push({ pairKey, result: `@${sender.handle} is logged out — it needs signing in again before anything can send from it` })
+      continue
+    }
+
+    if (failureCode === 'profile-gone') {
+      // The drive itself met "Sorry, this page isn't available". Parked on FIRST sighting — a
+      // retry cannot make a deleted account exist — and the planner refuses this recipient for a
+      // week (TARGET_UNREACHABLE) so no other page drives at it either.
+      await prisma.outreachAttempt.update({
+        where: { id: attempt.id },
+        data: { status: 'FAILED', error, failureCode, attempts: MAX_DELIVERY_ATTEMPTS },
+      })
+      out.failed += 1
+      out.outcomes.push({ pairKey, result: `@${target.handle}'s page no longer exists — parked after one look` })
       continue
     }
 

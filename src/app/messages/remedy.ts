@@ -83,6 +83,16 @@ export const REMEDIES = {
   },
 
   /**
+   * No control, on purpose. A deleted or renamed page cannot be reached by any button; the stop
+   * lifts by itself after a week and one anonymous probe asks again. If it stays gone, retire the
+   * recipient (`pnpm ig:retire-target`).
+   */
+  [RESEND_BLOCKS.TARGET_UNREACHABLE]: {
+    href: null,
+    label: 'Their Instagram page no longer exists — nothing to do here; it is re-checked after a week',
+  },
+
+  /**
    * No control, on purpose. Retirement is the one promise the UI makes that has to survive
    * every other feature, so there is deliberately no "un-retire" button beside a draft.
    */

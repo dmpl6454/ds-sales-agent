@@ -204,6 +204,7 @@ const DEFINITELY_NOT_DELIVERED = new Set([
   'composer-mismatch', // We refused before pressing Enter. This is the guard working.
   'no-composer', // The thread never opened a message box.
   'no-message-button', // We never even reached a composer.
+  'profile-gone', // The page does not exist; no composer was ever reached.
 ])
 
 /** Is it certain that nothing reached the recipient? Unknown codes answer NO. */
