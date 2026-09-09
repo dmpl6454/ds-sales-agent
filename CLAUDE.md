@@ -5,6 +5,103 @@ changing anything that touches sending.
 
 ---
 
+## 9 SEPTEMBER, EVENING — THE CAP WAS ON THE WRAPPER, THE CEILING WAS A TRIGGER, AND THE DMG, THE BOX AND THE DASHBOARD READ ONE COMMIT
+
+**Tabish: everything on the new box, working; the DMG must work e2e; no outage for the other
+box.** The other team's handoff (they have removed every trace of us from `172.105.53.101`)
+named the one thing the morning's migration carried over unfixed, and measuring the box found a
+second. Both fixed, deployed and proven live; **the old box was not touched, and nothing of ours
+runs anywhere but `173.230.131.144`.**
+
+### pm2 WAS CAPPING pnpm, NOT THE WORKER — RULE 15, STILL LIVE ON OUR OWN BOX
+
+MEASURED: `ds-sales-worker` script `/usr/bin/pnpm`, `mem=23M` — the WRAPPER — under a 500M cap
+that could never bind; the real worker (`node --require preflight … src/worker/index.ts`,
+100 MB, three processes deep) was invisible to pm2, and pm2's SIGINT reached `sh`. `deploy.sh`
+now starts **`node --import tsx src/worker/index.ts` directly** (`--interpreter node`,
+`--node-args="--import tsx --max-old-space-size=384"`, `--max-memory-restart 500M`,
+`--kill-timeout 20000`) and REBUILDS the definition whenever the live one differs — wrapper,
+cap or node args — so a hand-started worker cannot keep the old shape unnoticed. Proven under
+pm2 on the box with a throwaway `.ts` before shipping (one process, zero children, SIGINT
+delivered, zero SIGKILLs), then live: `pm2 restart ds-sales-worker` took **0.4 s**, the worker
+logged `received SIGINT — stopping pid=20653`, **0 SIGKILL escalations, 0 orphan OCR children**,
+heartbeat back under the new pid. The worker's shutdown now kills any in-flight OCR child
+(`killLiveOcrChildren`, driven both ways by `tests/ocr-shutdown.test.ts`) and gives itself a
+15 s deadline under pm2's 20 s, so a stop that hangs says so instead of vanishing.
+
+### THE WEB CEILING SAT BELOW THE WORKING SET, SO pm2 RELOADED THE DASHBOARD 57 TIMES TODAY
+
+`ds-sales-agent` read **61 restarts**. `pm2.log` names 57 of them: *"restarted because it
+exceeds --max-memory-restart"* at **351–546 MB against a 350M cap**, on pm2's 30-second sampling
+cadence, while the previous session's Playwright swept the seven pages once a minute — and
+twice more at 10:51 and 10:55Z under three page renders. Each one is a SOFT RELOAD: the new
+Next process starts before the old stops, so every memory-triggered reload briefly ran **two**
+Next processes on a 961 MB box — the exact opposite of what the cap is for. **0 nginx 5xx all
+day, which is why nobody saw it.**
+
+The first number tried, 560M, was **still a trigger**: after the deploy a 14-render sweep of
+the seven hosted pages peaked at **641 MB RSS** (`VmHWM`) and rested at 554 MB — V8 keeps
+freed pages and Next keeps a module copy per route — with pm2 recording 0 reloads only because
+RSS had dipped under the line by its next sample. The single-worker ceiling is **720M**: a
+runaway detector above the measured plateau, never a pacing device. `--max-old-space-size=256`
+is what bounds the heap (no heap OOM in the log all day), and RAM is what fixes the box.
+`deploy.sh` also rebuilds the cluster when the ceiling **CHANGES**, not only when it is absent;
+the 350M trigger had survived two deploys because the guard only asked *"is there one?"*.
+Applied live with the script's own start line (dashboard back in 3.2 s), and the script's own
+comparisons now read `equal` for both processes, so the next deploy rebuilds nothing.
+
+Both pinned by `tests/deploy-worker-process.test.ts` — comments stripped, mutation-tested three
+ways (wrapper restored, 350 restored, absent-only guard restored: each fails). And the deploy
+log had said *"0 tracked files"* while shipping all 482: `tr -d '\0' | wc -l` counts newlines
+in a NUL-separated list. It counts files now.
+
+### THE DMG, THE BOX AND THE DASHBOARD READ `90dc6cf`, AND EVERY LEG WAS MEASURED, NOT ASSUMED
+
+| | |
+|---|---|
+| tests / typecheck | **2,318 / 136 files**, clean; Postgres client restored after the suite |
+| deploy | `90dc6cf` prebuilt here, served from `.next-b`; cluster rebuilt at the new ceiling; worker rebuilt as a direct node process; `pm2 save` — **the dump carries both new shapes**, so a reboot brings back the fixed definitions, not the wrapper |
+| DMG | rebuilt from `90dc6cf`, notarised **Accepted** (app and image), `Resources/VERSION=90dc6cf`, **0** old-box addresses in the installer, the `misconfigured` branch present, **0** credential-shaped files; **sha256 `e09c9b76…` identical local, on the box, and through the hosted download (200, `application/x-apple-diskimage`, 2,701,217 B)** |
+| hosted pages, signed in, through Cloudflare | all seven **200**, no error boundary, second round warm in 0.4–1.1 s; `/senders` *"Installer build 90dc6cf — the same as this dashboard"*, *"Online now: tabish-mac"*; `/` *"Autopilot is ON — the agent sends by itself"*; `/paid-posts` **0 OCR-warning lines** |
+| pairing | `POST /api/device/enrol/start` with a scratch key → `userCode 8NHWENBX`; poll → **`pending`** (not `misconfigured`, so the hand-off keys are set on the box); probe row and probe session deleted, **0 pending enrolments left** |
+| detection / drafting under the rebuilt worker | the deploy landed mid-pass at 16:46 and the restart proof followed, so the 16:47 pass was lost (idempotent, on the 15-minute clock). The **17:03 IST pass completed**: `detection pass newPosts=12 paid=1`, worker **211 MB / 287 MB peak**, 0 children left behind; drafting followed at 17:06 (`outreach summary queued=3`), and `detectFeedOkAt` and `planLastOkAt` both moved |
+| sending | **76 delivered today**, 0 unsettled `SENDING` rows; the agent on this Mac holding the rest by the material rule in its own words |
+| the box, after all of it | **533–580/961 MB, load 0.2**, and swap at ~700 MB — see below |
+
+**THE BOX PAGES THE IDLE DASHBOARD OUT DURING A PASS, WHICH IS 961 MB SPEAKING, NOT A FAULT.**
+After the 17:03 pass the web process (same pid, 0 restarts) read **VmRSS 25 MB / VmSwap 393 MB**
+and answered its first request in **1.17 s** (0.08 s warm) while the kernel paged it back in; the
+worker held 130 MB in swap. Postgres + the worker + an OCR child + Next exceed the RAM together,
+so the kernel chooses what waits. Nothing is broken and nothing was killed; the standing
+recommendation to **resize to 2 GB** is now measured rather than argued, and `deploy.sh` restores
+the two-worker zero-gap design by itself on the deploy after a resize.
+
+**THE SCREENSHOT IN THE REQUEST IS FROM 8 SEPTEMBER, NOT A LIVE FAULT.** *"Build ad5daa8"* and
+*"1–50 of 1928"* are that afternoon's numbers (today reads `90dc6cf` and 2,050+ paid), and the
+*"4 posts … no OCR engine on this machine"* banner it shows is the failed-run-as-permanent-label
+defect fixed the same afternoon; the new box reads **0**.
+
+### THE OLD BOX, FOR THE RECORD
+
+Not touched. Their session removed our pm2 entries, the nginx site, `/opt/ds-sales-agent`, the
+OCR venv and the data dir; `/opt/ds-ocr-bakeoff` (18 MB, the 8 August engine comparison
+scratch) sits in their quarantine — **nothing in this repo references it** (`grep bakeoff`
+finds one docblock), so it can be deleted whenever they like. On our side the address survives
+only where it should: `deploy.sh`'s refusal guard, `env.ts`'s comment on why the default is
+gone, and this file's history. `docs/DEPLOY.md` now names the box we actually run on.
+
+### RULES, ADDED TO THE STANDING LIST
+
+23. **A ceiling below the working set is a trigger, not a backstop.** Measure RSS under a real
+    page sweep before choosing a cap; in cluster mode a memory reload doubles memory at the
+    worst possible moment.
+24. **Check what pm2 is measuring.** `mem=23M` on a process that does real work means the cap
+    and the signal are on a wrapper.
+25. **A guard that asks "is there one?" does not apply a change.** Compare the live value against
+    the value this deploy wants.
+
+---
+
 ## 9 SEPTEMBER, AFTERNOON — WE HAVE OUR OWN BOX: 173.230.131.144
 
 **Tabish provisioned a Linode and handed over the root password. Everything below is migrated,
