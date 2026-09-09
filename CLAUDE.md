@@ -103,15 +103,50 @@ are LEFT in place for now as a fallback and should be removed once this box has 
 | frames | **13,380 files / 697 MB** streamed across (more than the old box's 13,247, because this box has been banking its own since it started), and one **read** with RapidOCR to prove the engine works rather than imports |
 | tests | **2,311 passing**, typecheck clean |
 
-### WHAT IS STILL TABISH'S, AND THE FIRST ONE IS BLOCKING
+### THE DNS RECORD IS CUT OVER, AND THE WHOLE PIPELINE IS VERIFIED GREEN ON THE NEW BOX
 
-1. **The Cloudflare A record.** `e035e4d46c` still points at `172.105.53.101`, where nothing of
-   ours runs, so **the hosted URL serves 502 until it changes** to `173.230.131.144`, Proxied ON.
-   Everything behind it is already correct. Until then, `http://localhost:3100` on this Mac.
-2. **Resize to 2 GB** if the zero-gap deploy and the headroom are wanted. Nothing needs editing.
-3. **Change the box's root password** — it was pasted into a chat. Password auth is off, so it is
+Tabish changed the Cloudflare A record (`e035e4d46c` → `173.230.131.144`, Proxied). The hosted URL
+resolves through the edge (`104.21.9.81`, `172.67.189.48`) and **every leg was then measured rather
+than assumed**, with a ten-minute probe session on the real hosted pages:
+
+| leg | how it was checked | result |
+|---|---|---|
+| the hosted app | `/`, `/senders`, `/paid-posts` rendered SIGNED IN through Cloudflare | **200**, 275 / 31 / 184 KB |
+| which build | the rail on all three pages | **Build `1d133bb`** — the commit deployed today |
+| autopilot | the landing page's own sentence | *"Autopilot is ON"*, *"The watch is running"* |
+| the installer | `/api/download/agent` authenticated | **200 `application/x-apple-diskimage` 2,688,430 bytes**, and `/senders` reads *"Installer build 1d133bb"*, i.e. the image and the dashboard are the same commit |
+| paid posts | the page's own count | **2,002 paid in window**, and **no OCR warning** — the frames copied and the engine reads them |
+| the devices | `/senders` | *"Online now: tabish-mac"* |
+| detection | a 14-minute before/after snapshot | posts **15,309 → 15,319**, paid **2,048 → 2,050**, **0 in-window unjudged**, no cooldown recorded |
+| the schedule | `Setting.schedulerHeartbeat` | `machine: linode-detect`, seconds fresh; `boxMarker` = `173.230.131.144` |
+| drafting | the worker's own log | `outreach summary` on every 15-minute pass — `queued=0/1 skipped≈4,250` |
+| **the queue, by the GATE'S own verdict** | `recheckBeforeSend` executed against all 44 waiting drafts | **38 `material-exhausted`, 3 `identical-to-a-message-they-already-have`, 3 `target-replied` — 44 of 44 held by Tabish's own rules, 0 errored, 0 stuck in SENDING** |
+| messaging | the agent's log and the delivery ledger | `dm delivered bollywoodchronicle → barketindia` at 13:36 IST; **54 delivered today**, pacing held at *"the last message went out 0 minute(s) ago — spacing is 1 minutes"* |
+| the box | under a live pass | **531 of 961 MB, 272 MB swap, load 0.10, disk 37%**, both pm2 processes stable |
+
+**A LOW SEND RATE THIS AFTERNOON IS THE OUTAGE'S SHAPE, NOT A FAULT, AND THE HOURLY TAPE SHOWS
+IT.** Deliveries per IST hour: 8 Sept **11h=1 12h=8 13h=15 14h=20 15h=48 16h=21 17h=9 18h=7
+20h=37 21h=9** (175), then **NOTHING from 22h to 10h** — our processes were stopped at 21:07 and
+the Mac did not take the schedule until 10:54 — then 9 Sept **11h=41 12h=10 13h=3**. The 41 is the
+backlog draining in one hour; the 3 is the material-bound steady state resuming, which is exactly
+what the gate's verdict above says. **The lever on volume is watched channels and discovery, never
+the pace.**
+
+**KNOWN AND PRE-EXISTING, restated so it is not read as new:** the reply sweep still covers 4
+conversations a run against `deferred=2687`, the documented cap; and the planner's own summary
+counts ~4,250 skipped pairs, ~2,270 of them `material-exhausted`, which is Tabish's one-message-
+per-paid-post rule releasing itself as detection finds more.
+
+### WHAT IS STILL TABISH'S
+
+1. **Resize to 2 GB** if the zero-gap deploy and the headroom are wanted. Nothing needs editing —
+   `deploy.sh` reads the RAM and restores the two-worker cluster on the next deploy by itself.
+2. **Change the box's root password** — it was pasted into a chat. Password auth is off, so it is
    not remotely exploitable, but it is still a credential that has been seen.
-4. **Sudhanshu's Mac:** hand over the rebuilt DMG. It pairs to the new box now.
+3. **Sudhanshu's Mac:** hand over the rebuilt DMG (`1d133bb`). It pairs to the new box now.
+4. **The old box's leftovers**, after a few quiet days: `/opt/ds-sales-agent`, `/opt/ds-ocr-venv`,
+   `~/.ds-sales-agent-data`, the 2 forward-only tunnel keys and the `ds-sales-agent` nginx site.
+   About a gigabyte back for the other team. Our cron there is already gone.
 
 ### RULES, ADDED TO THE STANDING LIST
 
