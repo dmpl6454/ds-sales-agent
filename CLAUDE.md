@@ -5,6 +5,125 @@ changing anything that touches sending.
 
 ---
 
+## 9 SEPTEMBER, AFTERNOON — WE HAVE OUR OWN BOX: 173.230.131.144
+
+**Tabish provisioned a Linode and handed over the root password. Everything below is migrated,
+running and verified; the one step left is a DNS record, and it is his.** Read the entry beneath
+this one first — it is why this box exists.
+
+### THE BOX, AND THE ONE NUMBER THAT SHAPED EVERY DECISION
+
+**1 vCPU, 961 MB RAM, 21 GB disk, Ubuntu 24.04.** That is HALF the memory of the shared box we
+just left, and the shared box could not build the web tier. It is still the right move — nothing
+else runs here, so an OOM kill costs only us — but every sizing choice below follows from 961 MB
+and **the honest recommendation is still 2 GB**, which restores the two-worker zero-gap design on
+its own (see below).
+
+| | |
+|---|---|
+| ssh | key-only. Our key installed with the password, then **`PasswordAuthentication no`** — a root password on a public IP is brute-forced within hours and this box holds the database |
+| swap | **2 GB** (`/swapfile`, `vm.swappiness=20`). On 961 MB this is what turns a spike into slowness instead of a kill |
+| postgres | 16.15, `max_connections=60`, `shared_buffers=96MB`. **60 is the load-bearing number**: Postgres reserves per-connection memory, so 100 slots is 800 MB of worst case this box cannot pay, and measured real use on the old box was ~17 |
+| node / pnpm / pm2 | 22.23.2 / 10.34.5 / 7.0.4 — same majors as the old box, which the prebuilt-dist symlink re-pointing depends on |
+| pm2 | `OOMPolicy=continue` drop-in, `pm2 startup systemd` + `pm2 save`, so a reboot brings both processes back |
+| nginx + TLS | the same Cloudflare Origin wildcard cert (valid to 2041), the same site file, `e035e4d46c.digitalsukoon.com` |
+| OCR | RapidOCR in `/opt/ds-ocr-venv` — **and it needs `libgl1` + `libglib2.0-0t64`**, which the old box happened to have and a fresh one does not: `import cv2` fails with `libGL.so.1: cannot open shared object file`. Verified by READING a real frame, not by importing |
+| keys | our management key + **exactly the 2 forward-only tunnel keys**. The old box's other 6 authorized keys are other people's management keys and were deliberately NOT copied |
+| memory now | 545 of 961 MB used, 270 MB swap, load 0.14, with a detection pass running |
+
+### THE WEB TIER SIZES ITSELF FROM THE BOX'S OWN RAM, SO A RESIZE NEEDS NOBODY TO REMEMBER
+
+The cluster has two workers so `pm2 reload` can replace them one at a time and a request always
+has somewhere to land (3 Sept). That is 2 × 300 MB of heap plus RSS, which 961 MB cannot pay
+beside Postgres, the detection worker and an OCR child. So `deploy.sh` reads `free -m` and below
+~1.5 GB runs **ONE** worker at a 256 MB heap — a deploy costs a ~2 second gap instead of an OOM
+kill. **DERIVED, never a remembered flag** (`DS_WEB_WORKERS` overrides): resize the box and the
+next deploy restores the zero-gap design by itself. The worker's heap follows the same rule
+(384 MB below 1.5 GB, 512 above).
+
+### THE MIGRATION, AND THE CONTROL PROBE THAT CAUGHT A REAL MISTAKE
+
+The role, password and database name are **identical** to the old box on purpose: a paired Mac's
+`.env` points at `127.0.0.1:15432` through its tunnel, so the entire cutover for a Mac is one
+`HostName` line in `~/.ssh/config` — no re-pairing, no secret re-issued.
+
+`pg_dump -Fc` (niced and ionice'd: the old box serves 91 people) → this Mac → `pg_restore`.
+**Verified by exact per-table counts, not by size:** 19 tables, **99,467 rows, identical on every
+table**, and the load-bearing rows spot-checked — 3,175 delivered attempts, 933 live prospects,
+2,041 paid posts, 6 senders, 18 settings, 2 users, and today's `hemantpandeyji optedOut=true`.
+
+**AND THEN THE TUNNEL WAS STILL ON THE OLD BOX WHILE EVERYTHING LOOKED RIGHT.** I repointed the
+`ds-linode` alias (the one the DMG installer writes) and restarted the tunnel; the port answered,
+the database was named `ds_sales_agent`, and 933 prospects came back. All true, and the tunnel was
+talking to the OLD box — because `install-tunnel.sh` defaults to `DS_TUNNEL_HOST=linode`, a
+**different alias** that I had not touched. Both boxes held a complete copy, so every check I
+would naturally run agreed with itself. **What settled it was a row that exists on only one box.**
+`deploy.sh` now writes `Setting.boxMarker` with the deploying box's own public IP, so the question
+"am I connected to the box I think I am" is one query and can never be a stale claim. `deploy.sh`
+and `install-tunnel.sh` both default to `linode`, which now points at the new box, and the guard
+still refuses `172.105.53.101` by IP.
+
+### A PAIRING NO LONGER HANDS OUT A GUESSED ADDRESS
+
+`env.ts` had `DEVICE_SSH_HOST` defaulting to a hardcoded **`172.105.53.101`** — and on the day
+that address stopped being ours, a pairing would have SUCCEEDED and pointed an operator's Mac at
+another team's production server. The old `.env` never set the key, so the default was the live
+value. Fixed three ways, in the direction `SIGNUP_INVITE_CODE` already takes (unset closes the
+door rather than opening it):
+
+- the default is **gone**; unset means unset;
+- `pollEnrolment` returns a new **`misconfigured`** status naming the missing keys, **and keeps the
+  enrolment row** — secrets are handed out once, so a hand-off that cannot be completed must not
+  burn the request. Fixing the server's `.env` lets the same waiting Mac finish;
+- `install.sh` names that status in the dialog, and **checks the endpoint is non-empty** before
+  writing an ssh config. It never did: an empty value wrote a tunnel to nowhere and surfaced
+  minutes later as *"the database tunnel did not come up"*.
+
+`DEVICE_SSH_HOST=173.230.131.144` is set on the box.
+
+### CLEANED UP ON THE SHARED BOX, BECAUSE OUR CODE WAS STILL SCHEDULED TO RUN THERE
+
+Its crontab held **`30 3 * * * cd /opt/ds-sales-agent && pnpm ig:accuracy --repeat 3`** — ours,
+pointed at the old copy of the database, due to fire at 03:30 and spend CPU and model calls on a
+box we had promised never to touch again. Removed; 7 of their lines remain, 0 of ours. Our files
+are LEFT in place for now as a fallback and should be removed once this box has a few quiet days
+(`/opt/ds-sales-agent`, `/opt/ds-ocr-venv`, `~/.ds-sales-agent-data`, the 2 tunnel keys, the
+`ds-sales-agent` nginx site).
+
+### VERIFIED HEALTHY, END TO END
+
+| | |
+|---|---|
+| the schedule | back on the server: heartbeat `machine: linode-detect`, seconds fresh. The Mac's `scheduler` job is **uninstalled**; it is `agent:device` (sends only) again |
+| detection | `detection pass newPosts=10 paid=3` on the new box's own IP; **58 posts / 13 paid in the hour**; `detectFeedOkAt` 1 min fresh |
+| drafting | `planLastOkAt` 12 min fresh, 7 drafts in the hour, 44 waiting all held by rule |
+| sending | from this Mac, unchanged: `dm delivered bollywoodchronicle → timesmusichub`, 7 delivered in the hour, 0 SENDING stuck |
+| the hosted app | exercised against the new box with the real hostname and cert: `/sign-in` **200**, the DMG download **200**. nginx, TLS and Next all correct |
+| the DMG | rebuilt from `1d133bb`, notarised, `spctl: accepted`, **sha256 `e4ab6046…` identical on the box**, sidecar version = code version = `1d133bb` |
+| frames | **13,380 files / 697 MB** streamed across (more than the old box's 13,247, because this box has been banking its own since it started), and one **read** with RapidOCR to prove the engine works rather than imports |
+| tests | **2,311 passing**, typecheck clean |
+
+### WHAT IS STILL TABISH'S, AND THE FIRST ONE IS BLOCKING
+
+1. **The Cloudflare A record.** `e035e4d46c` still points at `172.105.53.101`, where nothing of
+   ours runs, so **the hosted URL serves 502 until it changes** to `173.230.131.144`, Proxied ON.
+   Everything behind it is already correct. Until then, `http://localhost:3100` on this Mac.
+2. **Resize to 2 GB** if the zero-gap deploy and the headroom are wanted. Nothing needs editing.
+3. **Change the box's root password** — it was pasted into a chat. Password auth is off, so it is
+   not remotely exploitable, but it is still a credential that has been seen.
+4. **Sudhanshu's Mac:** hand over the rebuilt DMG. It pairs to the new box now.
+
+### RULES, ADDED TO THE STANDING LIST
+
+20. **A default that names a specific machine will one day name the wrong one.** Unset must fail
+    loudly; an address is not a sensible fallback.
+21. **When two copies of a database exist, every ordinary check agrees with itself.** Only a row
+    present on one of them says which you are talking to — write that marker before you migrate.
+22. **`import` is not `read`.** A Python package that imports on one box can fail on another for a
+    system library; prove an engine by giving it real input.
+
+---
+
 ## 9 SEPTEMBER — WE HELPED TAKE DOWN ANOTHER TEAM'S PRODUCTION, SO WE ARE OFF THAT BOX FOR GOOD
 
 **READ THIS BEFORE TOUCHING ANYTHING ON 172.105.53.101. Our processes there are STOPPED and

@@ -228,7 +228,7 @@ cp /tmp/ds-version .version
 # row that exists on one box settled it. The deploy writes it now, so it can never be a
 # stale claim: the box that last deployed says so itself, and one query answers
 # "am I connected to the box I think I am".
-sudo -u postgres psql -qtA -d ds_sales_agent -c "insert into \"Setting\"(key,value,\"updatedAt\") values('boxMarker','\$(curl -s -m 5 ifconfig.me || hostname)',now()) on conflict (key) do update set value=excluded.value, \"updatedAt\"=now()" >/dev/null 2>&1 || true
+sudo -u postgres psql -qtA -d ds_sales_agent -c "insert into \"Setting\"(key,value,\"updatedAt\") values('boxMarker','\$(curl -4 -s -m 5 ifconfig.me || hostname)',now()) on conflict (key) do update set value=excluded.value, \"updatedAt\"=now()" >/dev/null 2>&1 || true
 
 # The web process runs as a pm2 CLUSTER of two workers so \`pm2 reload\` can replace them one
 # at a time. A legacy fork-mode process (\`pnpm start\`) is converted here once — the only
