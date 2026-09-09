@@ -1,4 +1,5 @@
 import { prisma } from '@/lib/db'
+import { env } from '@/lib/env'
 import { log } from '@/lib/logger'
 import { DELIVERED_STATUSES } from '@/lib/constants'
 import { hoursAgo } from '@/lib/time'
@@ -725,6 +726,23 @@ async function inboxPhase(
 
 export async function checkForReplies(): Promise<ReplyCheckSummary> {
   const outcomes: ReplyCheckOutcome[] = []
+  /**
+   * THE SEND FLOOR COVERS THE SWEEP TOO (9 Sept 2026). A reply sweep opens a revenue account's
+   * Chrome profile and drives it — the same act as a send minus the paste — and until today the
+   * only thing keeping the SERVER's scheduler from doing that was the accident that the server
+   * had no profiles on disk. The day the schedule moved to a Mac that DOES hold them
+   * (`DS_WATCH_MODE=scheduler`, SEND_ENABLED=false pinned), its 11:00 slot swept
+   * @bollywoodsocietyy, @bollywoodchronicle and @bollywoodpaparazzii while the device agent on
+   * the same Mac tried to send from @bollywoodpaparazzii — three drives failed `unknown`
+   * because Chrome already held the profile. Two processes on one profile is the exact thing
+   * this design forbids. So a process that may not send may not sweep either; the device
+   * agent (SEND_ENABLED=true, under the send lock) is the one sweeper, as it has been since
+   * 19 August.
+   */
+  if (!env.SEND_ENABLED) {
+    log.info('reply sweep refused — SEND_ENABLED is false here, and a sweep drives the same browser profiles a send does')
+    return { checked: 0, repliesFound: 0, unreadable: 0, incomplete: 0, deferred: 0, outcomes, inboxesScanned: 0, inboxRepliesRecorded: 0, inboxUnmatched: [] }
+  }
   let checked = 0
   let repliesFound = 0
   let unreadable = 0

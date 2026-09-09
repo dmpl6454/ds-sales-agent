@@ -5,6 +5,143 @@ changing anything that touches sending.
 
 ---
 
+## 9 SEPTEMBER — WE HELPED TAKE DOWN ANOTHER TEAM'S PRODUCTION, SO WE ARE OFF THAT BOX FOR GOOD
+
+**READ THIS BEFORE TOUCHING ANYTHING ON 172.105.53.101. Our processes there are STOPPED and
+must never be started again. The schedule runs on Tabish's Mac until a dedicated box exists.**
+
+### WHAT HAPPENED, IN THE OTHER TEAM'S OWN MEASUREMENTS
+
+The Linode is the production server of **dashmani-platform** — an Express API and four Next
+portals under the SAME root pm2 daemon as ours, on 1 vCPU and 2 GB, with **91 employees**
+depending on it. From **14:35 to 20:19 IST on 8 September (5h44m)** their API was alive,
+listening, and pinned at 99.9% CPU answering nothing; nginx returned 504 to everyone. Their
+own report (`.planning/INCIDENT-2026-09-08-API-MAIN-THREAD-HANG.md` in their repo, `f88c9de`)
+names latent bugs of theirs as the cause — an un-guarded 2-hourly sweep that stacked, a feed
+map rebuilt per batch, a sweep that replays on boot — **and our deployment as the trigger and
+the amplifier.** Each of these is ours:
+
+- **My `next build` at 14:30 IST was the OOM that turned degradation into outage.** `dmesg`:
+  `09:00:28Z Killed process (node) anon-rss:343312kB task_memcg=pm2-root.service` — THEIR API —
+  and `09:02:36Z Killed process (node) anon-rss:655552kB … session-68449.scope` — MY third
+  server-side build, in an interactive SSH session. pm2 restarted their API, the boot-time
+  sweep replayed the pathological queue, and it never answered again until a person restarted
+  it at 20:19. The 8 Sept entry below records those three builds as "OOM-killed"; it does not
+  record who else they killed. **This is that record.**
+- **Our footprint was 370–700 MB of a 2 GB box:** two dashboard workers (156 + 47 MB), the
+  worker (163 MB + a 43 MB pnpm wrapper), and `rapidocr-read.py` children at ~100 MB each,
+  spawned every few seconds. Free memory 216 MB, swap 1,177 of 1,519 MB, load 3.3 on one core.
+- **Our processes were cycling:** 49 and 58 restarts on the two web workers in 3.5 hours (the
+  450 MB pm2 ceiling recycling them, plus my reloads), 18 on the worker — each worker restart
+  logged `failed to kill – retrying` until pm2 escalated to SIGKILL, because the pm2 script is
+  `/usr/bin/pnpm` and the signal reached the WRAPPER, not the process (`worker/index.ts`
+  handles SIGTERM; pnpm did not forward it), and `--max-memory-restart` on that definition
+  measured pnpm's 43 MB and never applied. **The same wrapper blind spot that hid their own
+  API's hang.** Any in-flight OCR child was orphaned each time.
+
+**What is NOT ours, for the platform owner's record:** `mysqld` (running since 2 Sept) and the
+three `php-fpm` workers serve the WordPress / `digitalsukoon.com` site on the same box (nginx
+sites `wordpress` and `default`). This file recorded them on 4 Sept as another team's.
+
+**What our deploy never did:** `pm2 restart all`, `pm2 reload all`, `pm2 resurrect`. It did run
+`pm2 save` after every deploy — a global write to the shared dump — and that line is deleted.
+
+### WHAT WAS DONE TO US, AND WHAT WE DID ABOUT IT
+
+The other session stopped `ds-sales-agent` ×2 and `ds-sales-worker` at **21:07 IST**, killed
+the orphaned OCR children (free memory 142 → 296 → ~760 MB, swap 1.2 GB → 0.5 GB), and fixed
+their deploy to restart their five apps by name, one call each — their first attempt at a
+multi-name restart revived ours, because pm2 6.0.14 cycles every process in id order
+including stopped ones. `pm2 save` was run with ours stopped, so a resurrect leaves them
+stopped. Nothing of ours was deleted. **Do not run `pm2 start ds-sales-agent ds-sales-worker`
+there.** `scripts/deploy.sh` now REFUSES that host outright (`DS_ALLOW_SHARED_HOST=1` overrides,
+for a read, never a deploy) — a rule written down is not a rule enforced.
+
+**MEASURED the next morning, before anything was changed:** detection had continued from this
+Mac's failover (160 posts, 13 paid since the stop), **drafting had written 0** — the planner
+lived only in the stopped worker — deliveries were 3 since the stop with the last 13.5 hours
+old, 44 drafts waited all held by rule, the hosted dashboard answered 502 and no Mac could
+pair. Autopilot ON and idle for lack of material.
+
+### THE INTERIM SHAPE: THE SCHEDULE RUNS ON THIS MAC, AND THIS MAC STILL SENDS
+
+`DS_WATCH_MODE=scheduler bash scripts/install-watch.sh install` — a THIRD mode beside
+`agent:device` and `worker`. It runs `pnpm worker` under its OWN launchd label
+(`com.digitalsukoon.ds-sales-agent.scheduler`, log `scheduler.log`) beside the device agent,
+with **`SEND_ENABLED=false` and `AUTOPILOT_ENABLED=false` pinned in the plist** — dotenv never
+overrides a variable already in the environment, so this process cannot take the send lock or
+drive a browser however the switch is set. It is the Linode worker's exact posture, relocated:
+detect every 15 minutes, draft on the same clock and at the four slots, hold the dispatcher on
+`autopilot-off`, hold the reply sweep on the lock. The device agent on the same Mac keeps
+sending, reading replies and connecting accounts, unchanged. Both share one host, so the anon
+gate rows are shared too; OCR here is Vision, ~5 frames/s and no Python child. `install-watch.sh
+status` reports the watch job; the scheduler's own heartbeat says `machine: tabish-mac`.
+
+**Verified live at 10:54 IST:** `scheduler starting host=worker … autopilot=false`, catch-up
+none due, detection and drafting scheduled on `*/15`, the four IST slots armed. **At 11:04 the
+planner wrote 25 drafts** (`outreach summary queued=25`) after fourteen hours of zero; the
+11:00 slot closed at 11:12 with `postsSeen=201 newPosts=6 queued=6`; the device agent delivered
+@bollywoodpaparazzii → @cinemaganjfilms at 11:07 and sent again at 11:09. Drafting and sending
+are back on this Mac alone.
+
+### AND THE FIRST SLOT ON THE MAC FOUND THE FLOOR HAD A HOLE — TWO PROCESSES, ONE PROFILE
+
+`scheduler.log`, 11:01–11:03: *opening Chrome profile handle=bollywoodsocietyy … bollywoodchronicle
+… bollywoodpaparazzii*. **The scheduler process — SEND_ENABLED=false — was driving revenue
+profiles.** The 11:00 slot's reply sweep (`runSlot` → `checkForReplies`) sat behind NO floor: on
+the Linode it had only ever no-op'd because that box had no profiles on disk (`profileStatus` →
+no session → skip), which this file recorded on 18 August as *"the sweep runs where it cannot
+work"* and never read the other way round. Move the schedule to a Mac that HOLDS the profiles and
+the accident stops protecting you. Meanwhile the device agent tried to send from
+@bollywoodpaparazzii at 11:04 and 11:05 and both drives **failed `failureCode=unknown`**, because
+Chrome already held that profile for the sweep; the moment the sweep moved on, the 11:06 send
+delivered. Two processes on one profile is the exact thing decision 1 forbids, and the failed
+launch was the SAFE outcome — a second context on a live profile would have been worse.
+
+- **`checkForReplies` now refuses first thing when `SEND_ENABLED` is false** — a sweep opens
+  and drives the same browser profiles a send does, so a process that may not send may not
+  sweep. The device agent (SEND_ENABLED=true, under the send lock) is the one sweeper, as it
+  has been since 19 August. Guard before the inbox scan, before any query; the refusal is a log
+  line. `tests/reply-sweep-send-floor.test.ts` drives it and pins the guard's position.
+- **Proven live without a browser:** `SEND_ENABLED=false pnpm ig:replies` → *"reply sweep
+  refused — SEND_ENABLED is false here…"*, `checked 0`, zero Chrome processes. The scheduler
+  job was restarted onto the fix at 11:14 after the slot closed.
+- The two failed drafts (bagchi_mb, bts.bighitofficial) kept their reservations and moved to
+  the back of the queue with one attempt spent each; nothing was delivered twice.
+
+**The general lesson, for the standing list:** 17. **A guard that only holds because of what a
+host LACKS is not a guard.** When a process moves to a machine with different local state, every
+"it cannot happen here" must be re-derived from a rule, not from an absence.
+
+**What this costs, stated:** a closed lid pauses detection AND drafting now, not only sends;
+the hosted dashboard and new-Mac pairing are DOWN until a dedicated box exists (Sudhanshu's
+installer would open a 502); the local dashboard on `:3100` (rebuilt onto this code, 200) is
+the only UI. `pnpm test` still regenerates the SQLite client, so a scheduler restart during a
+suite run boots onto the wrong client — run `prisma-client-for-env.sh` before any restart.
+
+### THE STRUCTURAL ANSWER: A DEDICATED BOX, AND WHAT IT TAKES
+
+A 4 GB shared Linode (~$24/month): Postgres 16 + nginx + the worker + the dashboard, nothing
+else. Everything we have is small — **DB 78 MB, frames 680 MB, OCR venv 387 MB** — so the move
+is an afternoon: provision → Postgres + pg_dump/restore → deploy (prebuilt from this Mac) →
+Cloudflare A record → each paired Mac gets the new tunnel host (Sudhanshu's re-pairs). **No
+Linode CLI or API token exists on this Mac or the server**, so listing other boxes needs a
+Personal Access Token (Linodes: read) from Tabish, or a look at Cloud Manager.
+
+### RULES, ADDED TO THE STANDING LIST
+
+12. **Never run our stack beside someone else's production.** Our own box, or nothing.
+13. **Never build or `pnpm install` on a machine that serves other people.** A 655 MB build
+    is what tipped the kernel.
+14. **Never a global pm2 command on a shared daemon** — no `restart all`, `reload all`,
+    `resurrect`, `kill`, `update`, `save`. Names only, one per call, and only ours.
+15. **A memory cap belongs on the real process.** `pm2 start /usr/bin/pnpm …` measures the
+    wrapper; start the node entry point directly (as the web tier already does).
+16. **One OCR child at a time, and bounded.** The pipeline already judges sequentially; a
+    future concurrency change must keep it so on any box smaller than 4 GB.
+
+---
+
 ## 8 SEPTEMBER, AFTERNOON — WHY DETECTION STOPPED, WHAT NOT TO DO AGAIN, THE WEB TIER BUILT HERE, AND A DMG THAT UPDATES A PAIRED MAC
 
 **Tabish: record what went wrong and how it was solved so it is not repeated; why did paid-post
