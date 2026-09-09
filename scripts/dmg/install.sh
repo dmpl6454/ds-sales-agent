@@ -134,27 +134,26 @@ write_env() { # write_env DBURL NAME
   [ -n "${3:-}" ] && set_env DEEPSEEK_API_KEY "\"$3\""
   echo ".env written (this file stays on this machine only)"
 }
-write_ssh_config() { # write_ssh_config HOST USER
-  mkdir -p "$HOME/.ssh"; chmod 700 "$HOME/.ssh"
-  if ! grep -q "^Host ds-linode$" "$HOME/.ssh/config" 2>/dev/null; then
-    {
-      echo ""
-      echo "Host ds-linode"
-      echo "  HostName $1"
-      echo "  User $2"
-      echo "  IdentityFile $KEY"
-      echo "  IdentitiesOnly yes"
-      echo "  StrictHostKeyChecking accept-new"
-    } >> "$HOME/.ssh/config"
-    chmod 600 "$HOME/.ssh/config"
-  fi
+write_ssh_config() { # write_ssh_config HOST USER — REWRITES the stanza, because the server can move
+  mkdir -p "$HOME/.ssh"; chmod 700 "$HOME/.ssh"; touch "$HOME/.ssh/config"
+  # THE SERVER MOVED ON 9 Sept 2026, and this used to append only when no `Host ds-linode` stanza
+  # existed — so every Mac installed before the move kept tunnelling to the old address forever,
+  # however many times the installer was re-run. The stanza is replaced in full now; the
+  # maintainer's own `Host linode` alias (a different word) is left alone.
+  awk 'BEGIN{skip=0} /^Host /{skip=($2=="ds-linode")} !skip' "$HOME/.ssh/config" > "$HOME/.ssh/config.tmp" && mv "$HOME/.ssh/config.tmp" "$HOME/.ssh/config"
+  {
+    echo ""
+    echo "Host ds-linode"
+    echo "  HostName $1"
+    echo "  User $2"
+    echo "  IdentityFile $KEY"
+    echo "  IdentitiesOnly yes"
+    echo "  StrictHostKeyChecking accept-new"
+  } >> "$HOME/.ssh/config"
+  chmod 600 "$HOME/.ssh/config"
 }
 
-ENV_DONE_MARK="written by the DS Sales Agent installer"
-if [ -f "$DEST/.env" ] && grep -qF "$ENV_DONE_MARK" "$DEST/.env" && [ -f "$KEY" ]; then
-  echo ".env and tunnel key already present — keeping them"
-
-elif [ "$MANUAL" = 1 ]; then
+manual_secrets() {
   # ── 3a. The old way: secrets handed over by a person. Terminal only. ─────────
   [ "$MODE" = gui ] && fail "--manual needs Terminal."
   bold "Paste the DATABASE_URL Tabish gave you, then press Enter:"
@@ -169,10 +168,19 @@ elif [ "$MANUAL" = 1 ]; then
     [ -f "$KEYSRC" ] || fail "No file at: $KEYSRC"
     mkdir -p "$HOME/.ssh"; chmod 700 "$HOME/.ssh"; cp "$KEYSRC" "$KEY"; chmod 600 "$KEY"
   fi
-  write_ssh_config 172.105.53.101 root
+  # The pairing hand-off is the source of truth for the server's address; this path has no
+  # hand-off, so a person confirms it. The default is today's box, never a silent constant —
+  # a hardcoded address here is how a Mac would have been pointed at another team's server.
+  SRV=$(ask "The server address Tabish gave you" "173.230.131.144")
+  write_ssh_config "$SRV" root
+}
 
-else
+pair_this_mac() {
   # ── 3b. PAIR THIS MAC: its own key, approved in the browser, handed the URL once ─
+  # A FUNCTION, because it runs twice: on a fresh Mac, and on a re-run whose kept tunnel
+  # settings no longer reach a server (the server moved, 9 Sept 2026). The hand-off is the only
+  # channel that carries the current address; an existing key is offered again, and a key already
+  # authorised on the new server makes the approval a formality.
   DEFAULT_NAME="$(scutil --get ComputerName 2>/dev/null || hostname -s)"
   DEFAULT_NAME="$(printf '%s' "$DEFAULT_NAME" | tr -cd 'A-Za-z0-9 ._-' | cut -c1-40)"
   NAME=$(ask "Name this Mac (it shows on the dashboard):" "${DEFAULT_NAME:-mac}")
@@ -249,7 +257,18 @@ This window closes by itself once approved. The request expires in 15 minutes �
   say "Approved — finishing the setup…"
 
   write_env "$DBURL" "$NAME" "${MODEL_KEY:-}"
-  write_ssh_config "${SSH_HOST:-172.105.53.101}" "${SSH_USER:-root}"
+  write_ssh_config "$SSH_HOST" "$SSH_USER"
+}
+
+ENV_DONE_MARK="written by the DS Sales Agent installer"
+KEPT=0
+if [ -f "$DEST/.env" ] && grep -qF "$ENV_DONE_MARK" "$DEST/.env" && [ -f "$KEY" ]; then
+  echo ".env and tunnel key already present — keeping them (re-checked once the tunnel is tried)"
+  KEPT=1
+elif [ "$MANUAL" = 1 ]; then
+  manual_secrets
+else
+  pair_this_mac
 fi
 echo "tunnel key: this Mac's own, forward-only (no shell, no files, one port)"
 
@@ -287,11 +306,23 @@ $TAIL"
 fi
 echo "packages installed"
 bash scripts/prisma-client-for-env.sh
+tunnel_up() { sleep 4; nc -z 127.0.0.1 15432 2>/dev/null && return 0; sleep 6; nc -z 127.0.0.1 15432 2>/dev/null; }
 DS_TUNNEL_HOST=ds-linode bash scripts/install-tunnel.sh install
-sleep 4
-if ! nc -z 127.0.0.1 15432 2>/dev/null; then
-  sleep 6
-  nc -z 127.0.0.1 15432 2>/dev/null || fail "The database tunnel did not come up. If this Mac was just approved, wait a minute and open DS Sales Agent again; otherwise check the network."
+if ! tunnel_up; then
+  if [ "$KEPT" = 1 ]; then
+    # THE KEPT SETTINGS REACH NOTHING — THE SERVER MAY HAVE MOVED (9 Sept 2026). Sudhanshu's
+    # half-finished install held an ssh stanza naming the old box; "keep the existing .env and
+    # key" would have tunnelled there forever and failed here every time. Pairing again is the
+    # only path that carries the current address, and it also rewrites a .env that predates the
+    # classifier-key hand-off.
+    echo "the tunnel did not come up on the kept settings — the server may have moved; pairing this Mac again"
+    say "The server's address seems to have changed. Pairing this Mac again — a dialog will appear."
+    pair_this_mac
+    DS_TUNNEL_HOST=ds-linode bash scripts/install-tunnel.sh install
+    tunnel_up || fail "The database tunnel did not come up even after pairing again. Check the network, then open DS Sales Agent again."
+  else
+    fail "The database tunnel did not come up. If this Mac was just approved, wait a minute and open DS Sales Agent again; otherwise check the network."
+  fi
 fi
 echo "tunnel is up (127.0.0.1:15432 → the shared database)"
 bash scripts/install-watch.sh install
