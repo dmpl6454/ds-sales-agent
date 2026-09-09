@@ -5,6 +5,88 @@ changing anything that touches sending.
 
 ---
 
+## 9 SEPTEMBER, NIGHT — THE REPLY SWEEP HAD NOT RUN FOR NINE HOURS, AND THE DMG WAS DOWNLOADED AS THE PERSON WHO WILL DOWNLOAD IT
+
+**Tabish: *"Make sure autopilot is healthy and then also make sure dmg has no remaining
+loopholes and can be downloaded by another individual accordingly."*** Autopilot was delivering
+— 90 today — and one guard inside it was blind. Found by reading the agent's own log, fixed,
+proven live, and the fresh-Mac path re-walked from the installer's bytes to the shared login's
+download.
+
+### THE FOUR-HOUR QUIET WAS THE LID, MEASURED
+
+The hourly tape stopped at 17:00 IST (10 sends) and resumed at 22:18. `pmset -g log`: the Mac
+was **on battery**, slept at ~18:07, `Wake from Deep Idle … lid` at 22:18:15, AC power at
+22:18:22. The agent's log has 132 lines in the 18h hour, then 1, 0, 1 (dark-wake ticks), then
+93 — and the first delivery three minutes after the wake. The server kept working the whole
+time: **216 posts stored, 19 paid, 8 drafts written** while the Mac slept. Physics, documented
+since 2 Sept; the watch job's `caffeinate` is present (pid 44932) and cannot cover a closed lid
+on battery.
+
+### THE REPLY SWEEP RAN TWICE TODAY AND THEN LOST EVERY TURN TO THE SEND PACE
+
+`grep 'reply sweep'` over the day: sweeps at **13:07 and 13:31 IST**, then **twelve
+consecutive** half-hourly ticks reading *"a send is in progress — the reply sweep waits for the
+next pass"* (13:50 → 17:50), then nothing. `replyPass` asked `withSendLock` **once** per tick;
+at the one-minute pace a send holds the fleet lock ~47 of every ~60 seconds, so one try loses
+about three times in four, and 0.75^12 is what nine hours of a blind reply halt looks like.
+This is the coverage number this file predicted would *"fall quietly as the fleet grows"* — it
+fell to zero on a Tuesday afternoon and nothing said so, because the line it logs reads like a
+routine hold.
+
+- **The sweep polls for the lock** every 5 s for up to 3 minutes (`REPLY_LOCK_WAIT_MS`). A
+  send ends every minute and the next starts only when the gap clears, ~13 s later; the poll
+  lands in that window. Nothing is held while waiting — each try is one `create` on the lock
+  row. Once it holds the lock the dispatcher waits, which is the documented trade.
+- **The pass flags are timestamps.** The Mac slept mid-pass and every dark-wake tick until
+  22:10 read `running = true` about a pass frozen for four hours (the 22 Aug brand pass sat
+  "still running" 70 minutes the same way). A flag older than `PASS_STALE_MS` (45 min, past
+  any bounded pass) is alarmed and treated as stale. Both pinned by
+  `tests/reply-sweep-lock-wait.test.ts` (fake timers, mutation-tested both ways).
+- **Restarted onto it at 22:33 IST after waiting for the send lock to clear** (rule 8; it
+  cleared in 45 s). The startup sweep took the lock at once and **found three replies
+  waiting** in the inbox lists — @namratha_jauni (51 min old, to two pages) and
+  @ssantoshshukla (1 h) — each halting outreach the moment it was read, then read four deep
+  threads and found a fourth: `reply sweep checked=4 repliesFound=1`. Replies recorded today
+  went **2 → 6** in twelve minutes; the dispatcher took the lock back the same second the
+  sweep released it. That is what nine blind hours had been hiding.
+
+### AUTOPILOT, MEASURED HEALTHY ON EVERY OTHER LEG
+
+| | |
+|---|---|
+| switch | ON since 14:33 IST; Tabish's own flips are the only ones in the audit log |
+| senders | 6 ACTIVE, 6 with sessions recorded, 0 invalid, 0 challenged |
+| breaker | quiet: 3 `no-message-button` in 24 h, 0 `not-in-thread` |
+| queue | 51 waiting, every one held by name — the material rule (168 holds), the allowance (19), the reply halt (15); `pnpm queued` renders all 51 *"Chrome profile ready"* |
+| sending | **90 delivered today**, 0 stuck `SENDING`; between sends the dispatcher's own `too-soon` at the 1-minute gap |
+| detection / drafting | on the server, stamps fresh through the Mac's sleep; the direct-node worker restarted gracefully again on this deploy (SIGINT logged, 0 SIGKILL) |
+| the box | 0 memory reloads and 0 5xx since the 720M ceiling; 598/961 MB after the deploy |
+
+### THE DMG, WALKED FROM THE BYTES A FRESH MAC RUNS, AND DOWNLOADED AS THE PERSON WHO WILL
+
+| | |
+|---|---|
+| the download | as **`team@digitalsukoon.com`** — the shared login another individual is handed — **200, sha256 identical** to the local image and the box's copy; anonymous → **307 to `/sign-in?next=/api/download/agent`**; `/senders` renders the button and *"Installer build 01016fc — the same as this dashboard"* for that account too |
+| the image | rebuilt from `01016fc` (the sweep fix rides in the agent code), notarised Accepted, `VERSION=01016fc`, 556 payload entries, **0 credential-shaped, 0 old-box addresses**; CLAUDE.md is the largest entry at 771 KB |
+| `install.sh` | `DASHBOARD_URL` is the hosted URL; Chrome refused at step 0; Node ≥20 or a private runtime; pnpm pinned to 12; `.env` written per key (DATABASE_URL, SEND/AUTOPILOT_ENABLED, device name, classifier key); `Host ds-linode` **rewritten** in full and `install-tunnel.sh` called with `DS_TUNNEL_HOST=ds-linode` — the alias the tunnel uses is the alias the installer writes; every poll state handled (`approved`, `pending`, `expired`, `unknown`, `misconfigured`); the manual path defaults to `173.230.131.144`; the sentinel is written last |
+| the key the server hands back | `permitopen` carries **both** `127.0.0.1:5432` and `localhost:5432`; the tunnel forwards to `localhost:5432` and permitopen matches strings (the 1 Sept trap); both live lines on the box carry both |
+| `launcher.sh` / README | hosted URL, sentinel decision, VERSION compare → update; README says double-click, read the code, Approve on `/senders`, Connect opens Chrome on their Mac — no stale step |
+
+**What only a second Mac can prove** stays stated rather than claimed: the physical run on
+someone else's hardware. Sudhanshu's Mac Studio is that test, and everything it will execute
+has now been read or driven.
+
+### RULES, ADDED TO THE STANDING LIST
+
+26. **A guard that yields to the work it guards starves.** A periodic check needing a lock the
+    hot path holds most of the time must wait for it, bounded — or it runs only when the
+    fleet is idle, which is when it matters least.
+27. **A "running" flag is a timestamp.** A process that sleeps mid-pass wakes with a true
+    boolean about nothing; a bounded pass older than its bound is stale.
+
+---
+
 ## 9 SEPTEMBER, EVENING — THE CAP WAS ON THE WRAPPER, THE CEILING WAS A TRIGGER, AND THE DMG, THE BOX AND THE DASHBOARD READ ONE COMMIT
 
 **Tabish: everything on the new box, working; the DMG must work e2e; no outage for the other
