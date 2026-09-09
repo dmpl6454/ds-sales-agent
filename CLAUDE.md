@@ -137,6 +137,47 @@ conversations a run against `deferred=2687`, the documented cap; and the planner
 counts ~4,250 skipped pairs, ~2,270 of them `material-exhausted`, which is Tabish's one-message-
 per-paid-post rule releasing itself as detection finds more.
 
+### THE SWITCH WAS CLICKED, IN A REAL BROWSER, ON THE HOSTED PAGE
+
+**Tabish: *"turning on and off autopilot works? Messages are being sent?"*** Not read from the
+code and not written to the database by a script — the real `button[role="switch"]` on
+`https://e035e4d46c.digitalsukoon.com/` was clicked in Playwright with a ten-minute probe session,
+and each click was checked against the DATABASE and the AUDIT LOG rather than against the page
+that had just rendered it:
+
+| | |
+|---|---|
+| before | `aria-checked=true`, `Setting.autopilotEnabled=true` |
+| click → OFF | `aria-checked=false`, DB `false`, page reads *"Autopilot is OFF — messages wait for you. Nothing sends."*, audit `autopilot.set` **OFF** by `tabish@dashmani.com` |
+| click → ON | `aria-checked=true`, DB `true`, page reads *"Autopilot is ON — the agent sends by itself"*, audit `autopilot.set` **ON** by `tabish@dashmani.com` |
+
+**THE FIRST RUN PROVED THE ROW, NOT THE BEHAVIOUR, AND THE GAP WAS MINE.** The off window lasted
+**13 seconds** and the device agent polls every 30, so it never ticked while off — the switch was
+verified and its EFFECT was not. Repeated with an 80-second window: the agent logged
+`dispatcher held reason=autopilot-off … tick=device` and **delivered 0** in it, then after the
+second click had **0 autopilot-off holds**. *A control is proven by the behaviour it changes, not
+by the state it writes* — and a window shorter than the consumer's poll interval measures nothing.
+
+**Messages are being sent: 63 today**, newest 7 minutes before this was written
+(`bollywoodsocietyy → rashmika_mandanna`). What the agent refuses on now is the material rule in
+its own words — *"no paid post of theirs has been detected and one of our pages has already
+written"* — which is Tabish's own one-message-per-paid-post rule, not a fault.
+
+**ALL SEVEN PAGES RENDER SIGNED IN THROUGH CLOUDFLARE**, checked for an error boundary and for
+their own content, not just a 200: `/` 273KB, `/targets` 99KB (*"Pages we watch (17)"*,
+*"Companies we message (934)"*, *"Showing 1–50 of 934 · page 1 of 19"*), `/senders` 31KB,
+`/paid-posts` 187KB, `/rules` 41KB, `/analytics` 401KB, `/cost` 71KB.
+
+**AND THE IMAGE, THE BOX AND THE DASHBOARD NOW READ ONE COMMIT.** The DMG was at `1d133bb` while
+HEAD had moved to `63bcdf8` — docs plus one line of `deploy.sh`, which no Mac ever runs, so it was
+functionally current and would still have rendered *"Installer build 1d133bb — this dashboard is
+build 1d133bb"*. Both were rebuilt anyway so `/senders` reads **"Installer build 63bcdf8 — the
+same as this dashboard"**: an operator should never have to reason about whether a difference
+matters. Verified on the SHIPPED image: `spctl: accepted — source=Notarized Developer ID`,
+`Resources/VERSION=63bcdf8`, the launcher's version compare present, the installer's
+`misconfigured` branch and its non-empty-endpoint check present, **0 credential-shaped files** in
+the payload, and the same sha256 on the box.
+
 ### WHAT IS STILL TABISH'S
 
 1. **Resize to 2 GB** if the zero-gap deploy and the headroom are wanted. Nothing needs editing —
