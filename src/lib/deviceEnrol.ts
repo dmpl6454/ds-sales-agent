@@ -283,6 +283,15 @@ export type PollResult =
     }
   | { status: 'expired' }
   | { status: 'unknown' }
+  /**
+   * THE SERVER CANNOT FINISH THIS PAIRING (9 Sept 2026). It has no endpoint to hand over —
+   * `DEVICE_DATABASE_URL` or `DEVICE_SSH_HOST` is unset. The enrolment row is deliberately
+   * KEPT, so fixing the server's .env lets the same waiting Mac complete instead of starting
+   * again. Until today `DEVICE_SSH_HOST` fell back to a hardcoded address, and on the day that
+   * address became another team's box a pairing would have succeeded and pointed an operator's
+   * Mac at a stranger's server.
+   */
+  | { status: 'misconfigured'; missing: string[] }
 
 /** The installer asks with its secret device code. Secrets are handed out ONCE; the row goes. */
 export async function pollEnrolment(deviceCode: string): Promise<PollResult> {
@@ -295,12 +304,22 @@ export async function pollEnrolment(deviceCode: string): Promise<PollResult> {
     return { status: 'expired' }
   }
   if (!e.approvedAt) return { status: 'pending', deviceName: e.deviceName }
+  // Checked BEFORE the row is removed: secrets are handed out once, so a hand-off that cannot
+  // be completed must leave the request intact rather than burning it.
+  const databaseUrl = env.DEVICE_DATABASE_URL
+  const sshHost = env.DEVICE_SSH_HOST
+  if (!databaseUrl || !sshHost) {
+    return {
+      status: 'misconfigured',
+      missing: [...(databaseUrl ? [] : ['DEVICE_DATABASE_URL']), ...(sshHost ? [] : ['DEVICE_SSH_HOST'])],
+    }
+  }
   await remove(e.userCode)
   return {
     status: 'approved',
     deviceName: e.deviceName,
-    databaseUrl: env.DEVICE_DATABASE_URL ?? '',
-    sshHost: env.DEVICE_SSH_HOST,
+    databaseUrl,
+    sshHost,
     sshUser: env.DEVICE_SSH_USER,
     modelKey: process.env.DEEPSEEK_API_KEY || null,
   }

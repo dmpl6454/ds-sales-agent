@@ -220,11 +220,35 @@ echo "\$TARGET" > .active-dist
 # The build stamp for the tsx-run processes here (the worker) — src/lib/buildVersion.ts reads it.
 cp /tmp/ds-version .version
 
+# ── WHICH BOX AM I TALKING TO? (9 Sept 2026) ────────────────────────────────
+# During the migration this Mac's tunnel was pointed at the NEW box by editing the
+# `ds-linode` alias — and `install-tunnel.sh` defaults to `linode`, a DIFFERENT alias that
+# was still on the old one. Everything looked right: the port answered, the database was
+# named ds_sales_agent, and 933 prospects came back, because BOTH boxes held a copy. Only a
+# row that exists on one box settled it. The deploy writes it now, so it can never be a
+# stale claim: the box that last deployed says so itself, and one query answers
+# "am I connected to the box I think I am".
+sudo -u postgres psql -qtA -d ds_sales_agent -c "insert into \"Setting\"(key,value,\"updatedAt\") values('boxMarker','\$(curl -s -m 5 ifconfig.me || hostname)',now()) on conflict (key) do update set value=excluded.value, \"updatedAt\"=now()" >/dev/null 2>&1 || true
+
 # The web process runs as a pm2 CLUSTER of two workers so \`pm2 reload\` can replace them one
 # at a time. A legacy fork-mode process (\`pnpm start\`) is converted here once — the only
 # deploy that still costs a few seconds.
 # 450M x 2 workers = 900M worst case on a 2GB box shared with six other pm2 apps.
-WEB_MAX_MEM="\${DS_WEB_MAX_MEM:-450M}"
+# ── THE WEB TIER IS SIZED FROM THIS BOX'S OWN RAM (9 Sept 2026) ─────────────
+# The cluster has two workers so `pm2 reload` can replace them one at a time and a request
+# always has somewhere to land (3 Sept). That costs 2 x 300 MB of heap plus RSS, which a
+# 961 MB box cannot pay beside Postgres, the detection worker and an OCR child — so below
+# ~1.5 GB it runs ONE worker and a deploy costs a ~2 second gap instead of an OOM kill.
+# DERIVED, never a remembered flag: resize the box and the next deploy restores the
+# zero-gap design on its own.
+RAM_MB=\$(free -m | awk '/^Mem:/{print \$2}')
+if [[ "\${DS_WEB_WORKERS:-auto}" != auto ]]; then WEB_WORKERS="\$DS_WEB_WORKERS"
+elif (( RAM_MB < 1500 )); then WEB_WORKERS=1
+else WEB_WORKERS=2; fi
+WEB_HEAP_DEFAULT=\$(( WEB_WORKERS == 1 ? 256 : 300 ))
+WEB_MEM_DEFAULT=\$(( WEB_WORKERS == 1 ? 350 : 450 ))
+echo "==> This box has \${RAM_MB} MB: \${WEB_WORKERS} web worker(s), \${WEB_HEAP_DEFAULT} MB heap each"
+WEB_MAX_MEM="\${DS_WEB_MAX_MEM:-\${WEB_MEM_DEFAULT}M}"
 # THREE LAYERS OF MEMORY DEFENCE, AND WHY THE pm2 CEILING ALONE WAS NOT ENOUGH (2026-09-04).
 # The kernel OOM-killed next-server TWICE that day (773MB and 607MB anon-rss) WITH the 450M pm2
 # ceiling live: pm2 samples memory every ~30s, and a render pile-up on a swapping 1-vCPU box
@@ -243,8 +267,8 @@ WEB_MAX_MEM="\${DS_WEB_MAX_MEM:-450M}"
 # \`pm2 reload --node-args\` applies with a rolling restart (verified live). In FORK mode
 # (the worker) env IS the real environ and is inherited down pnpm -> tsx -> node, so
 # NODE_OPTIONS is the right carrier there and node_args would only reach the pnpm wrapper.
-WEB_HEAP_MB="\${DS_WEB_HEAP_MB:-300}"
-WORKER_HEAP_MB="\${DS_WORKER_HEAP_MB:-512}"
+WEB_HEAP_MB="\${DS_WEB_HEAP_MB:-\$WEB_HEAP_DEFAULT}"
+WORKER_HEAP_MB="\${DS_WORKER_HEAP_MB:-\$(( RAM_MB < 1500 ? 384 : 512 ))}"
 WEB_NODE_ARGS="--max-old-space-size=\$WEB_HEAP_MB"
 MODE=\$(pm2 jlist | node -e 'const l=JSON.parse(require("fs").readFileSync(0));const p=l.find(p=>p.name==="ds-sales-agent");console.log(p?p.pm2_env.exec_mode:"absent")')
 if [[ "\$MODE" == "cluster_mode" ]]; then
@@ -253,7 +277,7 @@ if [[ "\$MODE" == "cluster_mode" ]]; then
 else
   echo "==> Converting ds-sales-agent to a two-worker cluster (one-time; a few seconds)"
   pm2 delete ds-sales-agent >/dev/null 2>&1 || true
-  NEXT_DIST_DIR="\$TARGET" pm2 start node_modules/next/dist/bin/next --name ds-sales-agent -i 2 --node-args="\$WEB_NODE_ARGS" --max-memory-restart "\$WEB_MAX_MEM" --cwd "$DIR" -- start -H 127.0.0.1 -p 3100 >/dev/null
+  NEXT_DIST_DIR="\$TARGET" pm2 start node_modules/next/dist/bin/next --name ds-sales-agent -i "\$WEB_WORKERS" --node-args="\$WEB_NODE_ARGS" --max-memory-restart "\$WEB_MAX_MEM" --cwd "$DIR" -- start -H 127.0.0.1 -p 3100 >/dev/null
 fi
 # The web workers MUST carry a memory ceiling, and this line is the only thing that keeps it
 # after a cluster is rebuilt. Without it \`next-server\` grows unbounded, the KERNEL picks the
@@ -267,7 +291,7 @@ CURRENT_MEM=\$(pm2 jlist | node -e 'const l=JSON.parse(require("fs").readFileSyn
 if [[ "\$CURRENT_MEM" == "0" ]]; then
   echo "==> Web workers had NO memory ceiling — rebuilding the cluster with \$WEB_MAX_MEM"
   pm2 delete ds-sales-agent >/dev/null 2>&1 || true
-  NEXT_DIST_DIR="\$TARGET" pm2 start node_modules/next/dist/bin/next --name ds-sales-agent -i 2 --node-args="\$WEB_NODE_ARGS" --max-memory-restart "\$WEB_MAX_MEM" --cwd "$DIR" -- start -H 127.0.0.1 -p 3100 >/dev/null
+  NEXT_DIST_DIR="\$TARGET" pm2 start node_modules/next/dist/bin/next --name ds-sales-agent -i "\$WEB_WORKERS" --node-args="\$WEB_NODE_ARGS" --max-memory-restart "\$WEB_MAX_MEM" --cwd "$DIR" -- start -H 127.0.0.1 -p 3100 >/dev/null
 fi
 # Detection runs in its OWN process (ds-sales-worker) so a heavy pass cannot OOM the web
 # server and 502 the dashboard (2026-09-02). It reads source via tsx, so it must be

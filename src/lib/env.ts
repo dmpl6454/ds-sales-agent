@@ -118,7 +118,16 @@ const schema = z.object({
    */
   DEVICE_DATABASE_URL: z.string().optional(),
   DEVICE_AUTHORIZED_KEYS: z.string().optional().transform((v) => v ?? '/root/.ssh/authorized_keys'),
-  DEVICE_SSH_HOST: z.string().optional().transform((v) => v ?? '172.105.53.101'),
+  /**
+   * WHERE A NEWLY PAIRED MAC IS TOLD TO TUNNEL. It used to default to a hardcoded
+   * '172.105.53.101' — and on 9 Sept 2026 that address stopped being ours: it is another
+   * team's production box, which our processes must never touch again. A default naming the
+   * wrong machine is worse than no default, because the pairing SUCCEEDS and the operator's
+   * Mac quietly opens a tunnel to a stranger's server. Unset now means the enrol hand-off
+   * refuses and says so, which is the same direction as SIGNUP_INVITE_CODE being unset
+   * closing signup rather than opening it.
+   */
+  DEVICE_SSH_HOST: z.string().optional(),
   DEVICE_SSH_USER: z.string().optional().transform((v) => v ?? 'root'),
 
   OPERATOR_NAME: z.string().optional().transform((v) => v ?? 'operator'),
