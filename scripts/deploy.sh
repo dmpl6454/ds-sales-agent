@@ -246,7 +246,15 @@ if [[ "\${DS_WEB_WORKERS:-auto}" != auto ]]; then WEB_WORKERS="\$DS_WEB_WORKERS"
 elif (( RAM_MB < 1500 )); then WEB_WORKERS=1
 else WEB_WORKERS=2; fi
 WEB_HEAP_DEFAULT=\$(( WEB_WORKERS == 1 ? 256 : 300 ))
-WEB_MEM_DEFAULT=\$(( WEB_WORKERS == 1 ? 350 : 450 ))
+# THE RSS CEILING MUST SIT ABOVE THE SERVER'S ORDINARY WORKING SET, OR IT IS A TRIGGER, NOT A
+# BACKSTOP (measured 9 Sept 2026 on the 961 MB box): with a 256 MB heap, rendering the seven
+# dashboard pages takes next-server to 415-546 MB RSS, and a 350M ceiling soft-reloaded the
+# single worker 57 TIMES IN ONE DAY — pm2 samples every 30 s and reloads the moment RSS is over
+# the line. A soft reload starts the NEW process before stopping the old, so each memory-
+# triggered reload briefly ran TWO Next processes on a box that cannot afford one and a half.
+# Zero 5xx resulted, which is exactly why nobody noticed. 560M clears every measured render;
+# a genuine runaway is still caught well before the kernel acts.
+WEB_MEM_DEFAULT=\$(( WEB_WORKERS == 1 ? 560 : 450 ))
 echo "==> This box has \${RAM_MB} MB: \${WEB_WORKERS} web worker(s), \${WEB_HEAP_DEFAULT} MB heap each"
 WEB_MAX_MEM="\${DS_WEB_MAX_MEM:-\${WEB_MEM_DEFAULT}M}"
 # THREE LAYERS OF MEMORY DEFENCE, AND WHY THE pm2 CEILING ALONE WAS NOT ENOUGH (2026-09-04).
@@ -264,9 +272,9 @@ WEB_MAX_MEM="\${DS_WEB_MAX_MEM:-\${WEB_MEM_DEFAULT}M}"
 # HOW EACH CAP REACHES ITS PROCESS DIFFERS, and getting it wrong is silent: in CLUSTER mode
 # pm2 injects env into process.env from JavaScript AFTER Node has started, so a NODE_OPTIONS
 # env var is inert for a V8 startup flag — it must be node_args (pm2 --node-args), which
-# \`pm2 reload --node-args\` applies with a rolling restart (verified live). In FORK mode
-# (the worker) env IS the real environ and is inherited down pnpm -> tsx -> node, so
-# NODE_OPTIONS is the right carrier there and node_args would only reach the pnpm wrapper.
+# \`pm2 reload --node-args\` applies with a rolling restart (verified live). The worker is a
+# DIRECT node process since 9 Sept 2026 (below), so node_args reaches it too; NODE_OPTIONS was
+# the right carrier only while a pnpm wrapper sat between pm2 and node.
 WEB_HEAP_MB="\${DS_WEB_HEAP_MB:-\$WEB_HEAP_DEFAULT}"
 WORKER_HEAP_MB="\${DS_WORKER_HEAP_MB:-\$(( RAM_MB < 1500 ? 384 : 512 ))}"
 WEB_NODE_ARGS="--max-old-space-size=\$WEB_HEAP_MB"
@@ -287,18 +295,44 @@ fi
 # its sibling keeps serving, which is the entire reason the cluster has two.
 # \`pm2 reload\` does NOT apply a changed ceiling to a running cluster, so set it on the live
 # process too — otherwise this only takes effect on the next cluster rebuild.
+# A CHANGED ceiling is applied the same way (9 Sept 2026): the first version rebuilt only when
+# the ceiling was ABSENT, so correcting a wrong number needed a hand rebuild nobody would
+# remember — the 350M trigger above stayed live through two deploys. Compare against the
+# value THIS deploy wants, in the bytes pm2 stores. DS_WEB_MAX_MEM is written as NNNM.
+WEB_MAX_MEM_BYTES=\$(( \${WEB_MAX_MEM%M} * 1048576 ))
 CURRENT_MEM=\$(pm2 jlist | node -e 'const l=JSON.parse(require("fs").readFileSync(0));const p=l.find(p=>p.name==="ds-sales-agent");console.log(p&&p.pm2_env.max_memory_restart?p.pm2_env.max_memory_restart:0)')
-if [[ "\$CURRENT_MEM" == "0" ]]; then
-  echo "==> Web workers had NO memory ceiling — rebuilding the cluster with \$WEB_MAX_MEM"
+if [[ "\$CURRENT_MEM" != "\$WEB_MAX_MEM_BYTES" ]]; then
+  echo "==> Web memory ceiling is \$CURRENT_MEM bytes, this deploy wants \$WEB_MAX_MEM — rebuilding the cluster (a few seconds)"
   pm2 delete ds-sales-agent >/dev/null 2>&1 || true
   NEXT_DIST_DIR="\$TARGET" pm2 start node_modules/next/dist/bin/next --name ds-sales-agent -i "\$WEB_WORKERS" --node-args="\$WEB_NODE_ARGS" --max-memory-restart "\$WEB_MAX_MEM" --cwd "$DIR" -- start -H 127.0.0.1 -p 3100 >/dev/null
 fi
 # Detection runs in its OWN process (ds-sales-worker) so a heavy pass cannot OOM the web
 # server and 502 the dashboard (2026-09-02). It reads source via tsx, so it must be
-# restarted too or it keeps running the code from before this deploy. Restart if present;
-# do not create it here — its first creation and memory cap are a one-time setup step.
-# NODE_OPTIONS, not --node-args, for the worker: see the fork-mode note above.
-pm2 describe ds-sales-worker >/dev/null 2>&1 && NODE_OPTIONS="--max-old-space-size=\$WORKER_HEAP_MB" pm2 restart ds-sales-worker --update-env >/dev/null || true
+# restarted too or it keeps running the code from before this deploy.
+#
+# THE WORKER IS ONE NODE PROCESS, STARTED DIRECTLY — NEVER \`pm2 start pnpm -- worker\` (9 Sept
+# 2026, rule 15). Under the wrapper pm2 measured pnpm's 0.6 MB and never the 100 MB worker, so
+# --max-memory-restart was inert; and pm2's SIGINT reached sh, not node, so every restart
+# logged "failed to kill – retrying" until pm2 SIGKILLed the tree and orphaned any OCR child.
+# That is the same blind spot that hid the other team's API hang on the shared box.
+# \`node --import tsx src/worker/index.ts\` is a SINGLE process: the cap measures the real
+# worker, SIGINT lands on the handler in worker/index.ts, and the OCR child is killed with it.
+# Verified under pm2 on this box: interpreter node, zero child processes, zero SIGKILLs.
+# The definition is REBUILT when it differs from this one (wrapper, cap or node args), so a
+# hand-started worker cannot keep the old shape unnoticed; otherwise it is a plain restart.
+WORKER_MAX_MEM="\${DS_WORKER_MAX_MEM:-\$(( RAM_MB < 1500 ? 500 : 700 ))M}"
+WORKER_MAX_MEM_BYTES=\$(( \${WORKER_MAX_MEM%M} * 1048576 ))
+WORKER_NODE_ARGS="--import tsx --max-old-space-size=\$WORKER_HEAP_MB"
+WANT_WORKER="$DIR/src/worker/index.ts|\$WORKER_NODE_ARGS|\$WORKER_MAX_MEM_BYTES"
+HAVE_WORKER=\$(pm2 jlist | node -e 'const l=JSON.parse(require("fs").readFileSync(0));const p=l.find(p=>p.name==="ds-sales-worker");if(!p){console.log("absent");process.exit()}const e=p.pm2_env;console.log([e.pm_exec_path,(e.node_args||[]).join(" "),e.max_memory_restart||0].join("|"))')
+if [[ "\$HAVE_WORKER" == "\$WANT_WORKER" ]]; then
+  echo "==> Restarting the detection worker onto this build"
+  pm2 restart ds-sales-worker --update-env >/dev/null
+else
+  echo "==> Detection worker is [\$HAVE_WORKER] — rebuilding it as a direct node process with a \$WORKER_MAX_MEM ceiling"
+  pm2 delete ds-sales-worker >/dev/null 2>&1 || true
+  pm2 start src/worker/index.ts --name ds-sales-worker --interpreter node --node-args="\$WORKER_NODE_ARGS" --max-memory-restart "\$WORKER_MAX_MEM" --kill-timeout 20000 --cwd "$DIR" >/dev/null
+fi
 sleep 8
 # The Linode has ONE vCPU. Detection/OCR in the worker competed with page renders for it and
 # the dashboard took 3-12s per page (load average hit 49, measured 2026-09-02). The web is what
