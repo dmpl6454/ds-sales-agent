@@ -235,11 +235,17 @@ This window closes by itself once approved. The request expires in 15 minutes �
     case "$ST" in
       approved) break ;;
       expired|unknown) [ -n "$DLG" ] && kill "$DLG" 2>/dev/null || true; fail "The pairing request expired or was not found. Open DS Sales Agent again and approve within 15 minutes." ;;
+      # The server has no endpoint to hand over (9 Sept 2026). Its .env is missing a key; this
+      # Mac did nothing wrong and its request is still waiting, so it retries rather than dying.
+      misconfigured) [ -n "$DLG" ] && kill "$DLG" 2>/dev/null || true; fail "This Mac was approved, but the dashboard server is not yet configured to hand over its address. Tell Tabish: the server's .env needs DEVICE_SSH_HOST and DEVICE_DATABASE_URL. Your request is still waiting — open DS Sales Agent again once that is set." ;;
     esac
     sleep 3
   done
   [ -n "$DLG" ] && kill "$DLG" 2>/dev/null || true
   [ "${ST:-}" = approved ] && [ -n "$DBURL" ] || fail "Nobody approved this Mac within 15 minutes. Open DS Sales Agent again to retry."
+  # An EMPTY endpoint writes a tunnel to nowhere and the failure surfaces minutes later as
+  # "the database tunnel did not come up" (9 Sept 2026). Checked here, where it can be named.
+  [ -n "$SSH_HOST" ] && [ -n "$SSH_USER" ] || fail "The dashboard did not hand over a server address. Tell Tabish the server's .env needs DEVICE_SSH_HOST; nothing was changed on this Mac."
   say "Approved — finishing the setup…"
 
   write_env "$DBURL" "$NAME" "${MODEL_KEY:-}"
