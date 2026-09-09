@@ -1,4 +1,4 @@
-import { spawn } from 'node:child_process'
+import { spawn, type ChildProcess } from 'node:child_process'
 import { mkdir, writeFile, access, chmod } from 'node:fs/promises'
 import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -155,13 +155,29 @@ FileHandle.standardOutput.write(try JSONSerialization.data(withJSONObject: out))
  * path injectable. `framePathFor` also refuses anything outside `[A-Za-z0-9_-]`, so this
  * is the second of two independent guards rather than the only one.
  */
-function runCapture(
+/**
+ * Every OCR child still running. A worker restart used to orphan the child that was mid-frame
+ * (pm2's signal reached a pnpm wrapper, never node — 9 Sept 2026), so the worker's shutdown
+ * now asks this module to kill whatever is in flight. Exported for `worker/index.ts`; the
+ * count it returns is logged so a restart that interrupted a read says so.
+ */
+const liveChildren = new Set<ChildProcess>()
+
+export function killLiveOcrChildren(): number {
+  let killed = 0
+  for (const p of liveChildren) if (p.kill('SIGKILL')) killed += 1
+  liveChildren.clear()
+  return killed
+}
+
+export function runCapture(
   command: string,
   args: string[],
   timeoutMs: number,
 ): Promise<{ ok: true; stdout: string } | { ok: false; reason: string }> {
   return new Promise((resolve) => {
     const p = spawn(command, args)
+    liveChildren.add(p)
     let stdout = ''
     let stderr = ''
     const timer = setTimeout(() => {
@@ -172,10 +188,12 @@ function runCapture(
     p.stderr.on('data', (d) => (stderr += d.toString('utf8')))
     p.on('error', (e) => {
       clearTimeout(timer)
+      liveChildren.delete(p)
       resolve({ ok: false, reason: `${command} could not start: ${e.message}` })
     })
     p.on('close', (code) => {
       clearTimeout(timer)
+      liveChildren.delete(p)
       if (code === 0) resolve({ ok: true, stdout })
       else resolve({ ok: false, reason: `${command} exited ${code}${stderr ? `: ${stderr.slice(0, 160)}` : ''}` })
     })

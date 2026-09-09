@@ -8,7 +8,7 @@ by running it. Where something is not done, it says so.
 ## The shape
 
 ```
-LINODE 172.105.53.101                     A USER'S OWN MAC / WINDOWS
+LINODE 173.230.131.144                     A USER'S OWN MAC / WINDOWS
 ─────────────────────                     ─────────────────────────
 dashboard        :3100 (127.0.0.1)        pnpm agent:device
 nginx  → TLS, Cloudflare origin cert      their Chrome profiles
@@ -65,7 +65,7 @@ In Cloudflare → `digitalsukoon.com` → DNS, add:
 ```
 Type   A
 Name   e035e4d46c            (i.e. e035e4d46c.digitalsukoon.com)
-IPv4   172.105.53.101
+IPv4   173.230.131.144
 Proxy  Proxied (orange cloud)   ← required; the origin cert only validates behind CF
 TTL    Auto
 ```

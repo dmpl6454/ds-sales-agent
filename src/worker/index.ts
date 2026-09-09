@@ -1,6 +1,7 @@
 import { prisma } from '@/lib/db'
 import { log } from '@/lib/logger'
 import { startScheduler, stopScheduler } from './scheduler'
+import { killLiveOcrChildren } from '@/detection/ocr'
 
 /**
  *   pnpm worker
@@ -26,8 +27,22 @@ async function main(): Promise<void> {
   log.info('press Ctrl+C to stop')
 }
 
+/**
+ * pm2 sends SIGINT on every restart and reload. This process is the REAL worker (deploy.sh
+ * starts it as `node --import tsx src/worker/index.ts`, never through a pnpm wrapper), so the
+ * signal lands here — and pm2 SIGKILLs anything still alive after its kill timeout (20 s in
+ * deploy.sh) with no line in our log. Hence a shorter deadline of our own that says so, and
+ * the OCR child killed first: a restart mid-frame used to orphan it.
+ */
 async function shutdown(signal: string): Promise<void> {
-  log.info(`received ${signal} — stopping`)
+  log.info(`received ${signal} — stopping`, { pid: process.pid })
+  const deadline = setTimeout(() => {
+    log.alarm('shutdown did not finish within 15s — exiting anyway')
+    process.exit(0)
+  }, 15_000)
+  deadline.unref()
+  const killed = killLiveOcrChildren()
+  if (killed > 0) log.info('killed in-flight OCR child processes', { count: killed })
   await stopScheduler()
   await prisma.$disconnect().catch(() => undefined)
   process.exit(0)
