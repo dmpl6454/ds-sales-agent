@@ -42,8 +42,6 @@
 
 set -euo pipefail
 
-LABEL="com.digitalsukoon.ds-sales-agent.watch"
-PLIST="$HOME/Library/LaunchAgents/${LABEL}.plist"
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 LOG_DIR="$HOME/.ds-sales-agent-data/logs"
 
@@ -55,10 +53,33 @@ LOG_DIR="$HOME/.ds-sales-agent-data/logs"
 #                 and writes drafts, and this machine — which is where the Chrome profiles
 #                 and Instagram sessions actually live — delivers them.
 #
+#   scheduler     DETECTS AND DRAFTS, NEVER SENDS — the Linode worker's job, relocated to a Mac
+#                 (9 Sept 2026). It runs `pnpm worker` under its OWN launchd label beside the
+#                 device agent, with SEND_ENABLED=false and AUTOPILOT_ENABLED=false pinned in
+#                 the plist (dotenv never overrides a variable already in the environment), so
+#                 this process can never take the send lock or drive a browser: the device
+#                 agent on the same Mac keeps doing the sending, exactly as when the server
+#                 owned the schedule. WHY IT EXISTS: our processes on the shared Linode
+#                 contributed to a 5h44m outage of the platform hosted there and were stopped;
+#                 until a dedicated box exists, this is where the schedule lives.
+#
 # Defaults to `agent:device` because that is the hosted shape, and because running a second
 # scheduler against a shared database is the thing the heartbeat guard exists to refuse.
-# Override with DS_WATCH_MODE=worker for a laptop-only install.
+# Override with DS_WATCH_MODE=worker for a laptop-only install, or DS_WATCH_MODE=scheduler
+# to host the schedule here while a device agent also runs here.
 MODE="${DS_WATCH_MODE:-agent:device}"
+case "$MODE" in
+  agent:device|worker)
+    LABEL="com.digitalsukoon.ds-sales-agent.watch"; LOG_BASE="watch"; PROGRAM="$MODE"; FLOORS="" ;;
+  scheduler)
+    LABEL="com.digitalsukoon.ds-sales-agent.scheduler"; LOG_BASE="scheduler"; PROGRAM="worker"
+    FLOORS="    <key>SEND_ENABLED</key>
+    <string>false</string>
+    <key>AUTOPILOT_ENABLED</key>
+    <string>false</string>" ;;
+  *) echo "error: DS_WATCH_MODE must be agent:device, worker or scheduler (got '$MODE')" >&2; exit 1 ;;
+esac
+PLIST="$HOME/Library/LaunchAgents/${LABEL}.plist"
 
 # launchd runs with a minimal PATH that contains neither Homebrew nor pnpm. Resolving the
 # real binary now, and failing loudly if it is missing, beats a plist that silently never
@@ -94,7 +115,7 @@ case "${1:-install}" in
     <string>${CAFFEINATE}</string>
     <string>-i</string>
     <string>${PNPM}</string>
-    <string>${MODE}</string>
+    <string>${PROGRAM}</string>
   </array>
 
   <key>WorkingDirectory</key>
@@ -112,6 +133,7 @@ case "${1:-install}" in
   <dict>
     <key>PATH</key>
     <string>${NODE_BIN}:/usr/bin:/bin:/usr/sbin:/sbin</string>
+${FLOORS}
   </dict>
 
   <key>RunAtLoad</key>
@@ -130,9 +152,9 @@ case "${1:-install}" in
   <integer>30</integer>
 
   <key>StandardOutPath</key>
-  <string>${LOG_DIR}/watch.log</string>
+  <string>${LOG_DIR}/${LOG_BASE}.log</string>
   <key>StandardErrorPath</key>
-  <string>${LOG_DIR}/watch.error.log</string>
+  <string>${LOG_DIR}/${LOG_BASE}.error.log</string>
 </dict>
 </plist>
 PLIST_EOF
@@ -141,9 +163,9 @@ PLIST_EOF
     launchctl load -w "$PLIST"
 
     echo "installed: ${LABEL}"
-    echo "  mode:  ${MODE}   (worker = owns the schedule; agent:device = sends only)"
+    echo "  mode:  ${MODE}   (worker = owns the schedule and sends; scheduler = detects and drafts, never sends; agent:device = sends only)"
     echo "  repo:  ${REPO}"
-    echo "  logs:  ${LOG_DIR}/watch.log"
+    echo "  logs:  ${LOG_DIR}/${LOG_BASE}.log"
     echo
     echo "Verify it is actually running (a loaded plist is not a running process):"
     echo "  bash scripts/install-watch.sh status"
@@ -174,7 +196,7 @@ PLIST_EOF
     ;;
 
   *)
-    echo "usage: bash scripts/install-watch.sh [install|uninstall|status]" >&2
+    echo "usage: [DS_WATCH_MODE=agent:device|worker|scheduler] bash scripts/install-watch.sh [install|uninstall|status]" >&2
     exit 1
     ;;
 esac

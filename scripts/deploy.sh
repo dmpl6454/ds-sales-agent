@@ -30,6 +30,21 @@
 set -euo pipefail
 
 HOST="${DS_DEPLOY_HOST:-linode}"
+
+# ── THE SHARED LINODE IS OFF LIMITS (9 Sept 2026) ────────────────────────────
+# Our processes on 172.105.53.101 — the production box of dashmani-platform, 91 people's
+# working day — contributed to its 5h44m outage on 8 Sept: a 655 MB `next build` of ours
+# tipped the kernel into OOM-killing their API, our OCR children and two web workers ate
+# 370-700 MB of a 2 GB box, and our worker's pm2 restarts force-killed a pnpm wrapper. Our
+# processes there were stopped by the platform owner and MUST NOT be started again. This
+# refusal is the rule enforced rather than written down; DS_ALLOW_SHARED_HOST=1 is the
+# deliberate override for a one-off read, never for a deploy.
+if [[ "$HOST" == *172.105.53.101* && "${DS_ALLOW_SHARED_HOST:-0}" != "1" ]]; then
+  echo "refusing: $HOST is the shared dashmani-platform Linode. Our stack was taken off it on 9 Sept 2026" >&2
+  echo "after the 8 Sept outage; deploy to the dedicated box instead (DS_HOST=...). See CLAUDE.md, 9 September." >&2
+  exit 1
+fi
+
 DIR="${DS_DEPLOY_DIR:-/opt/ds-sales-agent}"
 ARCHIVE=/tmp/ds-agent-deploy.tgz
 
@@ -254,7 +269,6 @@ if [[ "\$CURRENT_MEM" == "0" ]]; then
   pm2 delete ds-sales-agent >/dev/null 2>&1 || true
   NEXT_DIST_DIR="\$TARGET" pm2 start node_modules/next/dist/bin/next --name ds-sales-agent -i 2 --node-args="\$WEB_NODE_ARGS" --max-memory-restart "\$WEB_MAX_MEM" --cwd "$DIR" -- start -H 127.0.0.1 -p 3100 >/dev/null
 fi
-pm2 save >/dev/null 2>&1 || true
 # Detection runs in its OWN process (ds-sales-worker) so a heavy pass cannot OOM the web
 # server and 502 the dashboard (2026-09-02). It reads source via tsx, so it must be
 # restarted too or it keeps running the code from before this deploy. Restart if present;
