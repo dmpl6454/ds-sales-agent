@@ -58,7 +58,9 @@ fi
 
 echo "==> Building the file list from git (never from the filesystem)"
 git ls-files -z > /tmp/ds-deploy-files.z
-COUNT=$(tr -d '\0' < /tmp/ds-deploy-files.z | wc -l | tr -d ' ')
+# Count the NULs: a -z list has no newlines, so the first version counted 0 files while
+# shipping every one of them (9 Sept 2026) — a wrong number is worse than none.
+COUNT=$(tr -cd '\0' < /tmp/ds-deploy-files.z | wc -c | tr -d ' ')
 echo "    $COUNT tracked files"
 
 # --null -T: exactly the tracked files, so an untracked scratch file cannot ride along.
@@ -252,9 +254,13 @@ WEB_HEAP_DEFAULT=\$(( WEB_WORKERS == 1 ? 256 : 300 ))
 # single worker 57 TIMES IN ONE DAY — pm2 samples every 30 s and reloads the moment RSS is over
 # the line. A soft reload starts the NEW process before stopping the old, so each memory-
 # triggered reload briefly ran TWO Next processes on a box that cannot afford one and a half.
-# Zero 5xx resulted, which is exactly why nobody noticed. 560M clears every measured render;
-# a genuine runaway is still caught well before the kernel acts.
-WEB_MEM_DEFAULT=\$(( WEB_WORKERS == 1 ? 560 : 450 ))
+# Zero 5xx resulted, which is exactly why nobody noticed. And 560M was STILL a trigger: after
+# the fix a 14-render sweep of the seven pages took RSS to a 641 MB peak and left it resting
+# at 554 MB, because V8 does not hand freed pages back and Next keeps a module copy per route.
+# So the ceiling is a RUNAWAY DETECTOR above the measured plateau, never a pacing device;
+# what actually bounds the heap is --max-old-space-size, and what actually fixes the box is
+# RAM (the standing recommendation is 2 GB).
+WEB_MEM_DEFAULT=\$(( WEB_WORKERS == 1 ? 720 : 450 ))
 echo "==> This box has \${RAM_MB} MB: \${WEB_WORKERS} web worker(s), \${WEB_HEAP_DEFAULT} MB heap each"
 WEB_MAX_MEM="\${DS_WEB_MAX_MEM:-\${WEB_MEM_DEFAULT}M}"
 # THREE LAYERS OF MEMORY DEFENCE, AND WHY THE pm2 CEILING ALONE WAS NOT ENOUGH (2026-09-04).
