@@ -1,3 +1,4 @@
+import { profileGoneFloor, splitParks } from './parkedRows'
 import { prisma } from '@/lib/db'
 import { templateForSettings, type FleetTemplate } from './fleetTemplate'
 import { env } from '@/lib/env'
@@ -495,10 +496,16 @@ export async function runOutreach(): Promise<PlanSummary> {
        * drafts at three attempts each. `not-in-thread` is preferred when both exist because
        * "they may already have it" is the graver fact and deserves the sentence.
        */
-      prisma.outreachAttempt.findFirst({
-        where: { pairId: pair.id, status: 'FAILED', failureCode: { not: null, notIn: ['unreadable'] } },
-        orderBy: [{ failureCode: 'asc' }, { queuedAt: 'desc' }],
-        select: { failureCode: true },
+      prisma.outreachAttempt.findMany({
+        where: {
+          pair: { targetId: pair.targetId },
+          status: 'FAILED',
+          failureCode: { not: null, notIn: ['unreadable'] },
+          // This pair's own parks, plus a `profile-gone` park from ANY pair to this recipient
+          // inside the re-check window — one query, split by parkedRows.ts (9 Sept 2026).
+          OR: [{ pairId: pair.id }, { failureCode: 'profile-gone', queuedAt: { gte: profileGoneFloor(now) } }],
+        },
+        select: { failureCode: true, queuedAt: true, pair: { select: { senderId: true } } },
       }),
       /**
        * Is there anything NEW worth writing about?
@@ -615,7 +622,7 @@ export async function runOutreach(): Promise<PlanSummary> {
         ),
       }),
       hasPendingAttempt: pending > 0,
-      parkedFailureCode: parked?.failureCode ?? null,
+      ...splitParks(parked, pair.senderId, now),
       /**
        * One message per detected paid post, asked about the RECIPIENT (2026-08-21). Both
        * counts over the same window — see materialAllowance.ts for why that matters.

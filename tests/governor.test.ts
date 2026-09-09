@@ -58,6 +58,7 @@ function base(overrides: Partial<GovernorInput> = {}): GovernorInput {
     targetRepliedAt: null,
     /* No parked failure on this pair — see the UNCERTAIN_DELIVERY tests for the other side. */
     parkedFailureCode: null,
+    targetProfileGoneAt: null,
     /* Room for one message: the allowance is max(1, campaigns). */
     material: { held: false as const, allowance: 1, delivered: 0 },
     unusedCampaignCount: 2,

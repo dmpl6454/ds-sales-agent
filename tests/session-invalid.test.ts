@@ -36,6 +36,10 @@ const markSessionInvalid = vi.fn()
 const clearSessionInvalid = vi.fn()
 const ensureConversationChecked = vi.fn()
 
+const { probeHandle } = vi.hoisted(() => ({ probeHandle: vi.fn(async () => ({ check: 'unknown' as const, facts: null })) }))
+// The pre-drive existence probe (9 Sept 2026) is a NETWORK call to Instagram; these tests are
+// about the drive, so it answers 'unknown' — which changes nothing — unless a case overrides it.
+vi.mock('@/detection/exists', () => ({ probeHandle: (...a: unknown[]) => probeHandle(...a) }))
 vi.mock('@/lib/db', () => ({
   prisma: {
     senderAccount: { findUnique: (...a: unknown[]) => senderFindUnique(...a), update: (...a: unknown[]) => senderUpdate(...a) },

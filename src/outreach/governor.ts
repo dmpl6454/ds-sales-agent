@@ -159,6 +159,14 @@ export interface GovernorInput {
   parkedFailureCode: string | null
 
   /**
+   * When a message to this RECIPIENT — from ANY of our pages — was parked because their page
+   * answered "Sorry, this page isn't available", within PROFILE_GONE_RECHECK_DAYS; null otherwise.
+   * Target-scoped on purpose: the parked-failure stop is per PAIR, which is how four senders each
+   * drove Chrome three times at @hemantpandeyji's dead page (9 Sept 2026). See parkedRows.ts.
+   */
+  targetProfileGoneAt: Date | null
+
+  /**
    * Total messages this system has ever put IN FLIGHT — sent, replied, or sitting
    * prepared and waiting for a human. Counting prepared-but-unsent matters: with a
    * ceiling of 1 and four routing pairs, counting only delivered messages would
@@ -229,6 +237,8 @@ export const SKIP_REASONS = {
   UNCERTAIN_DELIVERY: 'uncertain-delivery-unsettled',
   /** Repeated failures parked this pair. Re-drafting would re-drive the browser forever. */
   PARKED_FAILURE: 'parked-failure-unsettled',
+  /** The recipient's Instagram page is gone (deleted or renamed); nothing is deliverable. */
+  TARGET_UNREACHABLE: 'target-unreachable',
   NO_NEW_MATERIAL: 'no-new-material-to-reference',
   /**
    * ── UNCLAIMED POSTS EXIST AND NONE CAN BE DESCRIBED TO THEM (2026-09-01) ──
@@ -466,6 +476,19 @@ export function evaluatePair(input: GovernorInput): GovernorDecision {
    * collapsing them would put the ambiguous case behind a button labelled for the certain
    * one. Everything else is the retry cap having parked the pair.
    */
+  /**
+   * THE RECIPIENT'S PAGE IS GONE (9 Sept 2026) — a fact about WHO, asked before the per-pair parks
+   * because every park to a vanished page is a symptom of this one cause. Lifts by itself after
+   * PROFILE_GONE_RECHECK_DAYS, when ONE anonymous probe (deliver.ts) asks again before any drive.
+   */
+  if (input.targetProfileGoneAt !== null) {
+    return {
+      eligible: false,
+      reason: SKIP_REASONS.TARGET_UNREACHABLE,
+      detail: `their Instagram page answered "this page isn't available" on ${input.targetProfileGoneAt.toISOString().slice(0, 10)} — the account is gone or renamed; nothing is written to them until it is seen again`,
+    }
+  }
+
   if (input.parkedFailureCode !== null) {
     return input.parkedFailureCode === 'not-in-thread'
       ? {

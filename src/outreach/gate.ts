@@ -1,3 +1,4 @@
+import { profileGoneFloor, splitParks } from './parkedRows'
 import { prisma } from '@/lib/db'
 import { istDayStart } from '@/lib/time'
 import { getSettings } from '@/lib/settings'
@@ -73,6 +74,12 @@ export interface ResendInput {
    * the drift this file was extracted to stop.
    */
   parkedFailureCode: string | null
+
+  /**
+   * When a message to this RECIPIENT — from ANY page — was parked as `profile-gone` within
+   * PROFILE_GONE_RECHECK_DAYS; null otherwise. See governor.ts and parkedRows.ts (9 Sept 2026).
+   */
+  targetProfileGoneAt: Date | null
 
   /** One message per detected paid post, asked about the recipient. See materialAllowance.ts. */
   material: MaterialVerdict
@@ -355,6 +362,8 @@ export const RESEND_BLOCKS = {
   UNCERTAIN_DELIVERY: 'uncertain-delivery-unsettled',
   /** Repeated failures parked this pair; re-queue or discard before another is sent. */
   PARKED_FAILURE: 'parked-failure-unsettled',
+  /** The recipient's Instagram page is gone (deleted or renamed); nothing is deliverable. */
+  TARGET_UNREACHABLE: 'target-unreachable',
   COHORT_NOT_CLEARED: 'cohort-not-cleared',
 } as const
 
@@ -559,6 +568,18 @@ export function evaluateResend(input: ResendInput): ResendResult {
    * session and the caps: those are about whether we CAN send, this is about whether the
    * recipient already holds this message. Neither is overridable.
    */
+  /**
+   * THE RECIPIENT'S PAGE IS GONE (9 Sept 2026). Not overridable: no judgement call makes a deleted
+   * account deliverable. Lifts by itself after PROFILE_GONE_RECHECK_DAYS.
+   */
+  if (input.targetProfileGoneAt !== null) {
+    return {
+      ok: false,
+      reason: RESEND_BLOCKS.TARGET_UNREACHABLE,
+      detail: `their Instagram page answered "this page isn't available" on ${input.targetProfileGoneAt.toISOString().slice(0, 10)} — the account is gone or renamed; nothing is sent to them until it is seen again`,
+    }
+  }
+
   if (input.parkedFailureCode !== null) {
     return input.parkedFailureCode === 'not-in-thread'
       ? {
@@ -782,17 +803,19 @@ export async function recheckBeforeSend(
      * `not-in-thread` is preferred when several exist, because "they may already have it"
      * is the graver fact. See `RESEND_BLOCKS.UNCERTAIN_DELIVERY`.
      */
-    prisma.outreachAttempt.findFirst({
+    prisma.outreachAttempt.findMany({
       where: {
-        pair: { senderId, targetId },
+        pair: { targetId },
         status: 'FAILED',
         // 'unreadable' is a READ that could not vouch for the thread, not a failed send — it
         // parks its own draft and must not retire the pair (2026-09-02, four live pairs).
         failureCode: { not: null, notIn: ['unreadable'] },
         id: { not: attempt.id },
+        // This pair's own parks, plus a `profile-gone` park from ANY pair to this recipient
+        // inside the re-check window — one query, split by parkedRows.ts (9 Sept 2026).
+        OR: [{ pair: { senderId } }, { failureCode: 'profile-gone', queuedAt: { gte: profileGoneFloor(new Date()) } }],
       },
-      orderBy: [{ failureCode: 'asc' }, { queuedAt: 'desc' }],
-      select: { failureCode: true },
+      select: { failureCode: true, queuedAt: true, pair: { select: { senderId: true } } },
     }),
     /* The recipient's allowance: paid posts NAMING them (see campaignsNamingHandle — the
        targetId column is the posting channel, so counting it here was zero forever). */
@@ -844,7 +867,7 @@ export async function recheckBeforeSend(
     senderStatus: sender.status,
     senderCohortCleared: ladder.ok,
     senderCohortDetail: ladder.ok ? undefined : ladder.detail,
-    parkedFailureCode: parked?.failureCode ?? null,
+    ...splitParks(parked, senderId, new Date()),
     material: materialAllowance({ campaignsInWindow: targetCampaigns, deliveredInWindow: targetDelivered }),
     /**
      * §3.5: "connected" means a cookie on disk AND nothing has since proved it dead. A
