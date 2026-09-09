@@ -366,14 +366,33 @@ async function detectionFailoverPass(): Promise<void> {
   }
 }
 
-let brandPassRunning = false
+/**
+ * A PASS FLAG IS A TIMESTAMP, NOT A BOOLEAN (9 Sept 2026). The Mac slept mid-pass at 18:07
+ * IST; every dark-wake tick until 22:10 read `running = true` about a pass that was frozen,
+ * and a boolean has no way to say "frozen for four hours" — the 22 Aug brand pass sat
+ * "still running" for 70 minutes the same way. A pass is bounded (the reply sweep at
+ * MAX_REPLY_CHECKS_PER_RUN conversations x READ_DEADLINE, brand discovery at its lookup
+ * budget), so a flag older than the bound is STALE: log it as an alarm and run. If the
+ * frozen pass ever resumes, the send lock still serialises the two.
+ */
+export const PASS_STALE_MS = 45 * 60_000
+
+function passIsRunning(startedAt: number | null, what: string): boolean {
+  if (startedAt === null) return false
+  const ageMin = Math.round((Date.now() - startedAt) / 60_000)
+  if (Date.now() - startedAt < PASS_STALE_MS) {
+    log.step(`${what} is still running from the last pass — skipping this one`, { ageMin })
+    return true
+  }
+  log.alarm(`${what} has been "running" for ${ageMin} min — a pass frozen by sleep; treating the flag as stale`)
+  return false
+}
+
+let brandPassStartedAt: number | null = null
 
 async function brandPass(): Promise<void> {
-  if (brandPassRunning) {
-    log.step('brand discovery is still running from the last pass — skipping this one')
-    return
-  }
-  brandPassRunning = true
+  if (passIsRunning(brandPassStartedAt, 'brand discovery')) return
+  brandPassStartedAt = Date.now()
   try {
     await hydrateAnonGate() // a cooldown recorded before this process started still binds
     const summary = await autoResolveBrands({ maxLookups: BRAND_LOOKUPS_PER_PASS })
@@ -443,12 +462,32 @@ async function brandPass(): Promise<void> {
      */
     log.error('brand discovery pass failed', { error: describeError(err) })
   } finally {
-    brandPassRunning = false
+    brandPassStartedAt = null
   }
 }
 
-/** One reply sweep at a time on this machine — same reasoning as `brandPassRunning`. */
-let replyPassRunning = false
+/** One reply sweep at a time on this machine — same reasoning as `brandPassStartedAt`. */
+let replyPassStartedAt: number | null = null
+
+/**
+ * ── THE SWEEP WAITS FOR THE LOCK INSTEAD OF LOSING ITS TURN (9 Sept 2026) ──
+ *
+ * MEASURED in the agent log: the sweep ran at 13:07 and 13:31 IST and then twelve
+ * consecutive half-hourly ticks logged "a send is in progress — the reply sweep waits for
+ * the next pass". At the one-minute pace a send holds the fleet lock for ~47 of every ~60
+ * seconds, so a single try at a random instant loses about three times in four, and nine
+ * hours passed without a conversation being read — the reply halt, the hardest guard in the
+ * system, going blind exactly as CLAUDE.md predicted a quietly falling coverage number would.
+ *
+ * So the pass POLLS for the lock: a send ends every minute and the next one starts only when
+ * the gap clears (~13 s later), and a 5-second poll lands in that window within a couple of
+ * tries. The wait is bounded so a wedged lock cannot hold this tick forever, and nothing is
+ * held while waiting — each try is one `create` on the lock row that either wins or does not.
+ * Once the sweep holds the lock the dispatcher's ticks get `lockBusy` and wait, which is the
+ * documented trade (a sweep pauses sending for up to four bounded reads).
+ */
+export const REPLY_LOCK_WAIT_MS = 3 * 60_000
+export const REPLY_LOCK_POLL_MS = 5_000
 
 /**
  * EXPORTED FOR ONE REASON: `tests/autopilot-off-drives-no-browser.test.ts` drives this
@@ -459,10 +498,7 @@ let replyPassRunning = false
  * calling the function proves it GATES. Exporting it is the cheaper of the two costs.
  */
 export async function replyPass(): Promise<void> {
-  if (replyPassRunning) {
-    log.step('the reply sweep is still running from the last pass — skipping this one')
-    return
-  }
+  if (passIsRunning(replyPassStartedAt, 'the reply sweep')) return
 
   /**
    * ── AUTOPILOT OFF MEANS NO UNATTENDED BROWSER, NOT JUST NO SEND (2026-08-20) ──
@@ -514,15 +550,31 @@ export async function replyPass(): Promise<void> {
 
   // No active-hours gate since 2026-08-19: Tabish removed the time window for sending AND
   // checking, so replies are read around the clock too.
-  replyPassRunning = true
+  replyPassStartedAt = Date.now()
   try {
-    const summary = await withSendLock('reply-sweep', () => checkForReplies())
+    const started = Date.now()
+    let summary = await withSendLock('reply-sweep', () => checkForReplies())
+    let waited = false
+    while (summary === null && Date.now() - started < REPLY_LOCK_WAIT_MS) {
+      if (!waited) {
+        waited = true
+        log.step('a send is in progress — the reply sweep is waiting for the lock', {
+          upToSeconds: REPLY_LOCK_WAIT_MS / 1000,
+        })
+      }
+      await new Promise((r) => setTimeout(r, REPLY_LOCK_POLL_MS))
+      summary = await withSendLock('reply-sweep', () => checkForReplies())
+    }
     if (summary === null) {
-      // A send holds the lock. Nothing is lost: the next pass is half an hour away and
-      // the just-in-time check still reads any thread a follow-up is about to land in.
-      log.step('a send is in progress — the reply sweep waits for the next pass')
+      // The lock never freed inside the wait. Nothing is lost: the next pass is half an
+      // hour away and the just-in-time check still reads any thread a follow-up is about
+      // to land in — but this line is the count to watch; twelve in a row was the defect.
+      log.step('a send is in progress — the reply sweep waits for the next pass', {
+        waitedSeconds: Math.round((Date.now() - started) / 1000),
+      })
       return
     }
+    if (waited) log.step('the reply sweep got the lock', { afterSeconds: Math.round((Date.now() - started) / 1000) })
     /**
      * Logged every pass, including the empty one — "nothing new" and "the sweep never
      * ran" are different facts, and for reply detection that difference was invisible
@@ -540,7 +592,7 @@ export async function replyPass(): Promise<void> {
     // failing must not stop the deliveries it guards.
     log.error('reply sweep failed', { error: err instanceof Error ? err.message : String(err) })
   } finally {
-    replyPassRunning = false
+    replyPassStartedAt = null
   }
 }
 
