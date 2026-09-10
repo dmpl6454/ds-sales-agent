@@ -1,6 +1,5 @@
 import { prisma } from '@/lib/db'
 import { DELIVERED_STATUSES } from '@/lib/constants'
-import { profileStatus } from './browser/profile'
 
 /**
  * Phase 9 — the cohort ladder.
@@ -77,6 +76,15 @@ export interface CohortMember {
   cohort: number
   status: string
   challengedAt: Date | null
+  /**
+   * A hand login was RECORDED for this account and nothing has since proved it dead
+   * (`sessionPath` set, `sessionInvalidAt` null) — the same machine-independent fact
+   * `readSenderAvailability` uses. Until 2026-09-10 this was `profileStatus(...).hasSession`,
+   * a read of THIS Mac's disk, so on a second Mac holding one profile every group-1 account
+   * read as signed out, `previous.live` was 0, and that Mac could never send its group-2
+   * account: "group 1 has no account sending on its own yet" about a group delivering all day.
+   * The ladder asks whether the FLEET's previous group is live; the disk answers for one Mac.
+   */
   hasSession: boolean
   /** When this account's first message was DELIVERED, or null if it has never sent. */
   firstDeliveredAt: Date | null
@@ -232,7 +240,7 @@ export function cohortForNewAccount(args: { existingCounts: ReadonlyMap<number, 
 /** Every cohort's live state, derived. */
 export async function readCohortStates(now: Date = new Date()): Promise<CohortState[]> {
   const senders = await prisma.senderAccount.findMany({
-    select: { handle: true, cohort: true, status: true, challengedAt: true },
+    select: { handle: true, cohort: true, status: true, challengedAt: true, sessionPath: true, sessionInvalidAt: true },
     orderBy: [{ cohort: 'asc' }, { handle: 'asc' }],
   })
 
@@ -264,7 +272,7 @@ export async function readCohortStates(now: Date = new Date()): Promise<CohortSt
       cohort: s.cohort,
       status: s.status,
       challengedAt: s.challengedAt,
-      hasSession: profileStatus(s.handle).hasSession,
+      hasSession: s.sessionPath !== null && s.sessionInvalidAt === null,
       firstDeliveredAt: firstByHandle.get(s.handle) ?? null,
     }
     byCohort.set(s.cohort, [...(byCohort.get(s.cohort) ?? []), member])

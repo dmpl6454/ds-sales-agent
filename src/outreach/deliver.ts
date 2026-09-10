@@ -198,6 +198,18 @@ export async function deliverWaiting(opts: DeliverOptions = {}): Promise<Deliver
      * That is the failure this project keeps rediscovering, so the invariant to preserve
      * is that a draft the gate permits is a draft this loop will attempt.
      */
+    /**
+     * HELD FOR FREE, BEFORE THE GATE (2026-09-10). A Mac whose disk lacks this account's
+     * profile cannot send it, and the gate would say so — after its own queries, under the
+     * fleet lock. MEASURED: a second Mac holding one profile evaluated all 44 waiting drafts
+     * through the gate on every tick and held the lock for most of every poll period, starving
+     * the Mac that could send. The disk answers in microseconds; the gate still rules on
+     * everything else for the drafts this Mac can actually drive.
+     */
+    if (!profileStatus(sender.handle).hasSession) {
+      hold(`no-session — this Mac holds no signed-in profile for @${sender.handle}`)
+      continue
+    }
     const gate = await recheckBeforeSend(attempt, { unattended: true })
     if (!gate.ok) {
       hold(gate.detail ?? gate.reason)
