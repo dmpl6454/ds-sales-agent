@@ -168,6 +168,34 @@ describe('the standard template is what composing returns by default', () => {
     // The variant is still CLAIMED, so the per-pair exclusion keeps advancing.
     expect(r.variantId).toBeTruthy()
   })
+
+  /**
+   * ── AN EXHAUSTED POOL DOES NOT REFUSE HERE (2026-09-10) ──────────────────────────
+   *
+   * Under the single template the variant is a ledger entry, never the body, so the pool has
+   * nothing left to protect once every entry has been claimed for this pair. MEASURED before
+   * this case existed: three pages had each delivered six times to @amazonmgmstudiosin, eight
+   * paid posts still funded a message, and the planner threw for the elected page every pass —
+   * a recipient with material that no page could write to, because the turn only passes on a
+   * delivery. The claim now WRAPS to the least-recently-used entry (the pool's own order); the
+   * variants path keeps refusing, and its test below runs with the flag OFF for that reason.
+   */
+  it('wraps the claim instead of refusing when every variant has been used on this pair', async () => {
+    settingRows.mockReturnValue([])
+    variantFindMany.mockResolvedValue(poolOf(2))
+    usedVariantRows.mockReturnValue([{ variantId: 'var_1' }, { variantId: 'var_2' }])
+    const r = await composeForPair({
+      fleetTemplate: DEFAULT_FLEET_TEMPLATE,
+      followUpTemplate: FOLLOW_UP_WRITTEN,
+      pair: pair(),
+      senderHandle: 'bollywoodsocietyy',
+      touchNumber: 1,
+      targetHasEverReplied: false,
+    })
+    expect(r.body).toBe(SINGLE_TEMPLATE_MIDDLE)
+    // The pool is ordered least-recently-used first, so the wrap lands on its head.
+    expect(r.variantId).toBe('var_1')
+  })
 })
 
 describe('the variant pool is scoped to the target kind', () => {

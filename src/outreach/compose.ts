@@ -609,8 +609,36 @@ export async function composeForPair(args: {
   if (pool.length === 0) throw new NoVariantsError(senderHandle, pair.target.kind)
 
   const alreadySent = new Set(await usedVariantIds(pair.id))
-  const variant = pool.find((v) => !alreadySent.has(v.id))
-  if (!variant) throw new VariantsExhaustedError(senderHandle, pair.target.handle, pool.length)
+  const fresh = pool.find((v) => !alreadySent.has(v.id))
+
+  /**
+   * ── AN EXHAUSTED POOL IS A STOP ONLY WHEN THE VARIANT IS WHAT GETS SENT (2026-09-10) ──
+   *
+   * `VariantsExhaustedError` exists so a recipient is never handed a body they have already
+   * read. Under `singleTemplate` the variant's body is NEVER rendered — the first touch is the
+   * fleet template verbatim and every later message is the follow-up copy naming a different
+   * paid post — so the pool has nothing left to protect, and the byte-repeat rule that does
+   * (`IDENTICAL_TO_A_SENT_MESSAGE`, governor and gate) reads the RENDERED body, not the claim.
+   *
+   * The refusal was documented as "nearly unreachable (pool 12, maxUnansweredTouches 3)". The
+   * touch cap went on 2026-08-18 and the brand pool is SIX, so it became reachable: MEASURED
+   * on 2026-09-10, three pages had each delivered six times to @amazonmgmstudiosin, eight
+   * in-window paid posts still funded a message under Tabish's own rules, and the planner
+   * threw for the elected page on every pass — `outreach failed` in the worker log every
+   * fifteen minutes, and a recipient with material that no page could write to, because the
+   * turn only passes on a delivery. A guard that held only because of a cap that no longer
+   * exists, one module along from the reply sweep's version of the same lesson.
+   *
+   * So under the single template the claim WRAPS to the least-recently-used variant (the pool
+   * is already ordered that way): `variantId` stays populated for the ledger and the
+   * per-pair history, and nothing the recipient sees is decided by it. The variants path —
+   * where the body IS the variant — still refuses, and the test for that refusal runs with
+   * the flag off on purpose.
+   */
+  if (!fresh && !settings.singleTemplate) {
+    throw new VariantsExhaustedError(senderHandle, pair.target.handle, pool.length)
+  }
+  const variant = fresh ?? pool[0]!
 
   /**
    * ── STEP 10: THE SINGLE TEMPLATE, behind a flag, OFF BY DEFAULT ───────────

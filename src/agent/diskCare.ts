@@ -49,6 +49,24 @@ import { withSendLock } from '@/outreach/dispatcher'
 export const DISK_CARE_INTERVAL_MS = 6 * 60 * 60_000
 
 /**
+ * ── THE PRUNE POLLS FOR THE LOCK, BOUNDED (2026-09-10) ─────────────────────────────
+ *
+ * Disk care used to ask for the fleet send lock ONCE and skip the pass if it was busy. That
+ * was the reply sweep's defect of 9 Sept in a third costume: with another Mac's dispatcher
+ * holding the lock for most of every minute, one try loses almost every time, and "the prune
+ * waits for the next pass" was logged four times on 10 Sept while this Mac sat at 4.3 GiB free
+ * with 4.4 GiB of prunable profile cache — on a disk that has hit literally zero twice.
+ *
+ * So it polls, like the sweep: one `create` on the lock row per try, nothing held while it
+ * waits. Every second rather than every five, because the holder that starved it re-takes the
+ * lock milliseconds after releasing it and a five-second poll lands inside its next hold
+ * (the sweep lost a three-minute wait to exactly that the same afternoon). Still bounded, so
+ * a pass never turns into a wedge; a busy lock after the budget is reported, not retried.
+ */
+export const DISK_CARE_LOCK_WAIT_MS = 3 * 60_000
+export const DISK_CARE_LOCK_POLL_MS = 1_000
+
+/**
  * The free-space floor that triggers a prune, in bytes (10 GiB).
  *
  * Chosen from the measured failure, not taste: the machine died at 0 twice, cache regrows
@@ -148,8 +166,10 @@ export interface DiskCareReport {
   freeBytesAfter: number
   /** True when free space was above the floor, so no prune was attempted. */
   aboveFloor: boolean
-  /** True when a send held the lock and the prune stepped aside for this pass. */
+  /** True when a send held the lock for the whole wait budget and the prune stepped aside. */
   lockBusy: boolean
+  /** How long the pass polled for the lock — before it got it, or before it gave up. */
+  lockWaitedMs: number
   pruned: PruneReport[]
   skippedSmall: number
   /** Handles whose prune left a protected file missing or changed — an alarm, never a detail. */
@@ -164,6 +184,11 @@ export interface DiskCareDeps {
   listProfiles?: () => string[]
   prune?: (args: { handle: string; dryRun: boolean }) => PruneReport
   lock?: <T>(what: string, fn: () => Promise<T>) => Promise<T | null>
+  /** The wait budget and poll cadence for a busy lock — injectable so the test needs no clock. */
+  lockWaitMs?: number
+  lockPollMs?: number
+  sleep?: (ms: number) => Promise<void>
+  now?: () => number
 }
 
 /**
@@ -178,6 +203,10 @@ export async function diskCarePass(deps?: DiskCareDeps): Promise<DiskCareReport>
     listProfiles = profilesOnDisk,
     prune = pruneProfile,
     lock = withSendLock,
+    lockWaitMs = DISK_CARE_LOCK_WAIT_MS,
+    lockPollMs = DISK_CARE_LOCK_POLL_MS,
+    sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms)),
+    now = () => Date.now(),
   } = deps ?? {}
 
   const report: DiskCareReport = {
@@ -186,6 +215,7 @@ export async function diskCarePass(deps?: DiskCareDeps): Promise<DiskCareReport>
     freeBytesAfter: 0,
     aboveFloor: false,
     lockBusy: false,
+    lockWaitedMs: 0,
     pruned: [],
     skippedSmall: 0,
     identityDamage: [],
@@ -201,7 +231,7 @@ export async function diskCarePass(deps?: DiskCareDeps): Promise<DiskCareReport>
       return report
     }
 
-    const outcome = await lock('disk-care', async () => {
+    const pruneAll = async () => {
       const done: PruneReport[] = []
       for (const handle of listProfiles()) {
         // Measure first (dry run is the default and costs no writes); only a profile with
@@ -214,7 +244,17 @@ export async function diskCarePass(deps?: DiskCareDeps): Promise<DiskCareReport>
         done.push(prune({ handle, dryRun: false }))
       }
       return done
-    })
+    }
+
+    // Poll for the lock, bounded — see DISK_CARE_LOCK_WAIT_MS. Each try is one `create` on
+    // the lock row and holds nothing while it waits; the callback runs only once it is held.
+    const started = now()
+    let outcome = await lock('disk-care', pruneAll)
+    while (outcome === null && now() - started < lockWaitMs) {
+      await sleep(lockPollMs)
+      outcome = await lock('disk-care', pruneAll)
+    }
+    report.lockWaitedMs = now() - started
 
     if (outcome === null) {
       report.lockBusy = true
@@ -249,7 +289,9 @@ export async function diskCareTick(): Promise<void> {
     return
   }
   if (report.lockBusy) {
-    log.step('disk care: a send is in progress — the prune waits for the next pass')
+    log.step('disk care: a send held the lock for the whole wait — the prune waits for the next pass', {
+      waitedSeconds: Math.round(report.lockWaitedMs / 1000),
+    })
     return
   }
 
