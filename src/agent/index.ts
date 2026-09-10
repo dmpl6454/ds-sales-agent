@@ -6,6 +6,7 @@ import { prisma } from '@/lib/db'
 import { env } from '@/lib/env'
 import { log, describeError } from '@/lib/logger'
 import { dispatchTick, withSendLock } from '@/outreach/dispatcher'
+import { thisMacRole } from '@/outreach/activeDevice'
 import {
   deviceId,
   DEVICE_PRESENCE_KEY,
@@ -99,6 +100,22 @@ import { startConnectLoop } from './connectPass'
  * start. A tick with nothing to do is a handful of cheap queries.
  */
 const POLL_INTERVAL_MS = 30_000
+
+/**
+ * Standby is the NORMAL state of every Mac but one, so it is announced once when it begins
+ * and once when it ends — a line per 30 s tick would bury the log this file is read from.
+ */
+let standbyDetail: string | null = null
+function announceStandby(detail: string): void {
+  if (standbyDetail === detail) return
+  standbyDetail = detail
+  log.step('this Mac is not the selected sending Mac — holding everything (beating, recording sessions, serving sign-in windows)', { detail })
+}
+function announceActive(): void {
+  if (standbyDetail === null) return
+  standbyDetail = null
+  log.info('this Mac is the selected sending Mac — sending, sweeping and looking up from here')
+}
 
 /** Written this often so the dashboard can say how long a device has been away. */
 
@@ -293,6 +310,12 @@ let stopping = false
 let detectionFailoverRunning = false
 
 async function detectionFailoverPass(): Promise<void> {
+  // Reading feeds in the server's place is fleet work; a standby Mac does not (2026-09-10).
+  const role = await thisMacRole()
+  if (!role.active) {
+    log.step('detection failover idle', { reason: `not the selected sending Mac — ${role.detail}` })
+    return
+  }
   if (detectionFailoverRunning) return
   detectionFailoverRunning = true
   try {
@@ -368,6 +391,12 @@ let brandPassStartedAt: number | null = null
 
 async function brandPass(): Promise<void> {
   if (passIsRunning(brandPassStartedAt, 'brand discovery')) return
+  // Anonymous look-ups from this home IP are fleet work too; a standby Mac spends none (2026-09-10).
+  const role = await thisMacRole()
+  if (!role.active) {
+    log.step('not the selected sending Mac — no brand look-ups from here', { detail: role.detail })
+    return
+  }
   brandPassStartedAt = Date.now()
   try {
     await hydrateAnonGate() // a cooldown recorded before this process started still binds
@@ -523,6 +552,12 @@ export async function replyPass(): Promise<void> {
     log.step('autopilot is off — the reply sweep opens no browser (replies are read again when it is on)')
     return
   }
+  // The sweep drives the same profiles a send does; only the selected Mac may (2026-09-10).
+  const role = await thisMacRole()
+  if (!role.active) {
+    log.step('not the selected sending Mac — the reply sweep opens no browser here', { detail: role.detail })
+    return
+  }
 
   // No active-hours gate since 2026-08-19: Tabish removed the time window for sending AND
   // checking, so replies are read around the clock too.
@@ -583,6 +618,19 @@ async function tick(): Promise<{ retryInMs?: number }> {
    * hypothetical: @madaboutmarketingg, 2026-08-17. See src/agent/reconcile.ts.
    */
   await reconcileSessionRecords(handles)
+
+  /**
+   * THE SENDING MAC (2026-09-10). A standby Mac beats, records its sessions and stops here —
+   * it does not evaluate the queue, hold the fleet lock or write `dispatchState`. The
+   * dispatcher asks the same question again for the CLI and dashboard paths; this early
+   * return is what keeps a standby's ticks free.
+   */
+  const role = await thisMacRole()
+  if (!role.active) {
+    announceStandby(role.detail)
+    return {}
+  }
+  announceActive()
 
   if (handles.length === 0) {
     // Not an error, and said plainly: a machine with no signed-in profile has nothing to

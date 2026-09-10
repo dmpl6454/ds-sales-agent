@@ -30,6 +30,7 @@ import { normaliseSearch, searchTerms } from '@/lib/searchTerms'
 import { attributedPostIdsForRecipients, messagedUnderElsewhere } from './view-model/recipient-search'
 import { isConnecting } from '@/outreach/browser/connect'
 import { getSettings } from '@/lib/settings'
+import { readPresence } from '@/outreach/devicePresence'
 import { visibleChannelFilter, ourOwnPageHandles } from '@/detection/visibleChannels'
 import { detectionCutoff } from '@/lib/cutoff'
 import { readLabelledSet } from '@/detection/labels'
@@ -169,6 +170,13 @@ export interface AutopilotState {
    * travels as data.
    */
   paceClause: string
+  /**
+   * THE SENDING MAC (2026-09-10): which Mac the switch acts through, and whether it is beating.
+   * `selected: null` means nothing sends anywhere; `online: false` means the chosen Mac is asleep
+   * or gone and nothing sends until it is back or another is chosen. Both are sentences on the
+   * card, because "Autopilot is ON" over a fleet that cannot send is this file's oldest lie.
+   */
+  sendingMac: { selected: string | null; online: boolean }
   /**
    * AUTOPILOT_ENABLED in .env. A hard floor — with this false the toggle cannot be
    * switched on at all, so a compromised or misclicked dashboard cannot start
@@ -945,6 +953,12 @@ async function computeCeoView(): Promise<CeoView> {
         ? 'paced, around the clock'
         : `paced, and only between ${ACTIVE_FROM_HOUR}:00 and ${ACTIVE_TO_HOUR}:00 IST`,
     allowedByEnv: env.AUTOPILOT_ENABLED,
+    sendingMac: {
+      selected: settings.activeDevice,
+      online:
+        settings.activeDevice !== null &&
+        (await readPresence()).some((d) => d.device === settings.activeDevice),
+    },
     scheduler: {
       running: hb?.fresh ?? false,
       host: hb?.beat.host ?? null,

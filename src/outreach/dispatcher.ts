@@ -1,5 +1,6 @@
 import { prisma } from '@/lib/db'
 import { deviceId, deviceIsBeating } from './devicePresence'
+import { thisMacRole } from './activeDevice'
 import { env } from '@/lib/env'
 import { log } from '@/lib/logger'
 import { getSettings } from '@/lib/settings'
@@ -90,6 +91,8 @@ export const LEGACY_LOCK_RETRY_MS = 1_000
 
 /** Consecutive busy ticks, for logging economy only — never a guard (the row is the guard). */
 let busyStreak = 0
+/** When this Mac last became a standby, for logging economy only — the Setting is the guard. */
+let standbySince: string | null = null
 const BUSY_LOG_EVERY = 30
 
 async function readSendLockHolder(): Promise<SendLockHolder | null> {
@@ -546,6 +549,19 @@ export async function withSendLock<T>(what: string, fn: () => Promise<T>): Promi
     log.step('this machine is not allowed to send (SEND_ENABLED=false) — the message stays waiting', { what })
     return null
   }
+  /**
+   * THE SENDING MAC (2026-09-10). Every browser drive in the system passes through here —
+   * the dispatcher, the dashboard's Send button, the reply sweep, the CLI — so this is where
+   * "only the selected Mac does anything" is a fact rather than a convention. Fail closed:
+   * no selection, another Mac selected, or an unreadable setting all hold. Sign-in windows
+   * (the connect relay) do NOT take this lock, deliberately: a Mac must be signable-in before
+   * it can be chosen.
+   */
+  const role = await thisMacRole()
+  if (!role.active) {
+    log.step('not the selected sending Mac — nothing drives a browser here', { what, reason: role.reason, detail: role.detail })
+    return null
+  }
 
   if (heldInThisProcess) {
     log.warn('a send is already in progress in this process — refusing to start a second', { what })
@@ -683,6 +699,27 @@ export async function dispatchTick(reason: string): Promise<DispatchTickResult> 
     }
     await recordDispatchState({ at, verdict, sent: 0 })
     return { verdict, at: at.toISOString() }
+  }
+
+  /**
+   * A STANDBY MAC EVALUATES NOTHING (2026-09-10). Asked before the breaker, the queue count and
+   * the lock, so a Mac that is not selected costs the fleet no queries and never holds the
+   * lock. Its verdict is NOT written to `dispatchState`: that row is "what the last tick did"
+   * for the whole fleet, and a standby overwriting it every 30 s would hide the selected Mac's
+   * state from the dashboard. Logged once per streak, because the streak is the normal state.
+   */
+  const role = await thisMacRole()
+  if (!role.active) {
+    if (standbySince === null) {
+      standbySince = at.toISOString()
+      log.step('this Mac is not the selected sending Mac — holding everything', { reason: role.reason, detail: role.detail, tick: reason })
+    }
+    const verdict: DispatchVerdict = { action: 'hold', reason: 'not-the-selected-mac', detail: role.detail }
+    return { verdict, at: at.toISOString() }
+  }
+  if (standbySince !== null) {
+    log.info('this Mac is the selected sending Mac again', { standbySince })
+    standbySince = null
   }
 
   const [breaker, waitingCount, lastStart] = await Promise.all([
