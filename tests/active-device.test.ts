@@ -78,6 +78,18 @@ describe('the rule is asked at both ends and by every pass', () => {
     expect(body, `${fn} never asks thisMacRole`).toContain('thisMacRole()')
   })
 
+  it('the delivery loop re-asks immediately before the READY→SENDING claim — a long evaluation is a window', () => {
+    const deliver = strip(readFileSync('src/outreach/deliver.ts', 'utf8'))
+    const loop = deliver.indexOf('for (const attempt of waiting)')
+    const claim = deliver.indexOf("data: { status: 'SENDING' }", loop)
+    const ask = deliver.lastIndexOf('thisMacRole()', claim)
+    expect(loop).toBeGreaterThan(-1)
+    expect(claim).toBeGreaterThan(loop)
+    expect(ask, 'no thisMacRole() between the loop head and the claim').toBeGreaterThan(loop)
+    // Nothing that drives a browser sits between the ask and the claim.
+    expect(deliver.slice(ask, claim)).not.toMatch(/browserSender\.send|probeHandle\(/)
+  })
+
   it('the reply sweep asks on entry and re-asks before every inbox scan and every thread read', () => {
     const sweep = strip(readFileSync('src/outreach/replyCheck.ts', 'utf8'))
     const asks = sweep.match(/thisMacRole\(\)/g) ?? []
