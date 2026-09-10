@@ -43,6 +43,8 @@ const { probeHandle } = vi.hoisted(() => ({
 }))
 // The pre-drive existence probe (9 Sept 2026) is a NETWORK call to Instagram; these tests are
 // about the drive, so it answers 'unknown' — which changes nothing — unless a case overrides it.
+// This Mac is the selected sending Mac in these fixtures (2026-09-10); the standby rule has tests/active-device.test.ts.
+vi.mock('@/outreach/activeDevice', () => ({ thisMacRole: async () => ({ active: true, selected: 'this-mac', thisDevice: 'this-mac' }) }))
 vi.mock('@/detection/exists', () => ({ probeHandle: (handle: string) => probeHandle(handle) }))
 vi.mock('@/lib/db', () => ({
   prisma: {
