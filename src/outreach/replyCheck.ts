@@ -10,6 +10,7 @@ import { parseInboxAge, plausibleReplyDate } from './browser/threadDates'
 import { triageInboxRow, snippetIsReplyText, matchInboxRow, matchInboxRowToTarget, shouldRecordInboxReply, threadIdFrom, type TargetRef } from './inboxTriage'
 import { normalise } from './matching'
 import { markChallenged } from './challenge'
+import { thisMacRole } from './activeDevice'
 
 /**
  * Checking open conversations for replies.
@@ -552,6 +553,10 @@ async function inboxPhase(
   const unmatched: string[] = []
 
   for (const sender of local) {
+    if (!(await thisMacRole()).active) {
+      log.step('the sending Mac changed mid-sweep — stopping the inbox scan here, no more browsers open on this Mac')
+      break
+    }
     /* Everything this sender ever delivered: the bodies for the ours/theirs snippet
        insurance, and the thread URLs that identify each conversation exactly. Loaded
        BEFORE the scan because the scan asks which rows are worth opening. */
@@ -743,6 +748,16 @@ export async function checkForReplies(): Promise<ReplyCheckSummary> {
     log.info('reply sweep refused — SEND_ENABLED is false here, and a sweep drives the same browser profiles a send does')
     return { checked: 0, repliesFound: 0, unreadable: 0, incomplete: 0, deferred: 0, outcomes, inboxesScanned: 0, inboxRepliesRecorded: 0, inboxUnmatched: [] }
   }
+  /**
+   * THE SENDING MAC (2026-09-10). The agent's `replyPass` asks before calling here; this asks
+   * again for the CLI (`pnpm ig:replies`) and re-asks BETWEEN conversations below, because a
+   * sweep that took the lock a second before the switch flipped kept opening Chrome on the
+   * old Mac for minutes afterwards (MEASURED: three thread reads after standby was announced).
+   */
+  if (!(await thisMacRole()).active) {
+    log.info('reply sweep refused — this Mac is not the selected sending Mac, and a sweep drives the same browser profiles a send does')
+    return { checked: 0, repliesFound: 0, unreadable: 0, incomplete: 0, deferred: 0, outcomes, inboxesScanned: 0, inboxRepliesRecorded: 0, inboxUnmatched: [] }
+  }
   let checked = 0
   let repliesFound = 0
   let unreadable = 0
@@ -776,6 +791,10 @@ export async function checkForReplies(): Promise<ReplyCheckSummary> {
 
   for (const c of candidates) {
     const pairKey = `${c.senderHandle}→${c.targetHandle}`
+    if (!(await thisMacRole()).active) {
+      log.step('the sending Mac changed mid-sweep — stopping the thread reads here, no more browsers open on this Mac')
+      break
+    }
 
     if (checked >= MAX_REPLY_CHECKS_PER_RUN) {
       /**
