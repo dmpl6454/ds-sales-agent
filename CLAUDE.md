@@ -54,6 +54,34 @@ then it behaves as before (evaluates, holds the lock, sends nothing). Once updat
 row like this Mac does, and the one-account-on-two-Macs case becomes harmless in practice: only
 the selected Mac drives.
 
+### TABISH SWITCHED IT TO THE STUDIO AT 14:29, AND THE WALK-THROUGH FOUND THREE MORE DOORS
+
+The row read `DMPLs Mac Studio` (audited as him), this Mac announced standby within one poll —
+and then **opened Chrome three more times**: the reply sweep had taken the lock a second before
+the flip and worked on through its queue of thread reads. Bounded, and not stopped. Three
+closures, all shipped in `fd4b409`:
+
+- **The sweep asks on entry and re-asks between conversations** — before every inbox scan and
+  every thread read — so a flip stops it at the next conversation; `pnpm ig:replies` on a
+  standby Mac refuses outright.
+- **The local `:3100` dashboard** was serving a build older than the rule, so its Send button
+  reached an old `withSendLock` with no role check. Rebuilt and restarted under launchd.
+- **Disk care is the one lock user exempt** (`what === 'disk-care'`): it prunes THIS Mac's own
+  caches, drives nothing and refuses while Chrome is open; a standby Mac's caches are its own.
+
+**THE STATE THIS LEAVES, STATED PLAINLY.** With the Studio selected and still on `01016fc`,
+**nobody sends**: this Mac holds by the rule, and the Studio ignores the row until it re-runs
+the installer (and could not arm its group-2 account on that build anyway). After it updates it
+sends **@bollywoodpaparazzii only**; the other five accounts neither send nor have their inboxes
+read until they are signed in on the Studio through the picker. That is the switch doing exactly
+what was asked, and it is why the preview names those five before the confirm.
+
+| | |
+|---|---|
+| the installer | **`fd4b409`**, notarised (Accepted ×2, stapled), *"the same as this dashboard"* |
+| tests / typecheck | **2,351 / 140 files**, clean |
+| this Mac | standby on `fd4b409`: dispatch, sweep, brand look-ups and failover all refuse by name; presence beating; 0 Chrome processes |
+
 ### RULES, ADDED TO THE STANDING LIST
 
 31. **A fleet has one hand on the wheel.** Which Mac does the work is a Setting a person
