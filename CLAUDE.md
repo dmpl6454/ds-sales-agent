@@ -5,6 +5,62 @@ changing anything that touches sending.
 
 ---
 
+## 10 SEPTEMBER, AFTERNOON — ONE SELECTED MAC DOES EVERYTHING; EVERY OTHER MAC HOLDS
+
+**Tabish: *"select in the senders page which mac would be responsible for everything and at a
+switch of a button the other mac starts doing all the tasks … any other paired future mac won't
+send or do anything regardless of signed in senders unless they are selected."*** Built,
+deployed (`b34e4a6`, web + worker + notarised DMG), and **exercised through the real button on
+the hosted page** before this was written.
+
+### THE RULE, AND WHERE IT IS ENFORCED
+
+`Setting.activeDevice` names ONE Mac. `src/outreach/activeDevice.ts` — `decideDeviceRole` is
+PURE, `thisMacRole` reads the row fresh per call. **Fail closed:** unset, blank, another Mac,
+or an unreadable setting all hold; "unset means everybody" is exactly the state this replaces,
+arriving by default on every fresh deployment. Enforced at both ends, like every load-bearing
+rule here:
+
+| where | what a standby Mac does |
+|---|---|
+| `withSendLock` | refuses after the `SEND_ENABLED` floor and before the lock — every browser drive (dispatcher, dashboard Send, reply sweep, CLI) passes there |
+| `dispatchTick` | returns `not-the-selected-mac` before the breaker, the queue count and the lock, and **never writes `dispatchState`** (that row is the fleet's "what the last tick did"; a standby overwriting it every 30 s would hide the selected Mac) |
+| `tick` / `replyPass` / `brandPass` / `detectionFailoverPass` | ask first; standby is announced once per streak, not once per tick |
+| still runs on a standby | presence (so it can be chosen), session reconcile, disk care, and the connect relay — **deliberately**: a Mac must be signable-in before it can be chosen |
+
+`/senders → Sending Mac`: a radio per paired-or-online Mac (online, build, signed-in accounts),
+a preview naming what will and will not send from the chosen Mac, then one confirm.
+`setActiveDevice` accepts only a paired or beating Mac and audits `device.active.set` with the
+Mac it replaced. The landing sentence names the Mac, or says *"no Mac is selected to send"* /
+*"<Mac> — the sending Mac — is not online"*. `/rules` carries the line. Autopilot is WHETHER;
+this is WHERE; both must hold.
+
+### VERIFIED BY FLIPPING IT FOR REAL, BOTH WAYS
+
+Seeded to `tabish-mac` (audited `cli:Tabish`) before the deploy, so nothing stopped. Then, in a
+real browser on the hosted `/senders` with a ten-minute probe session:
+
+| | |
+|---|---|
+| 14:22:06 | radio → **DMPLs Mac Studio**, preview read *"it sends for @bollywoodpaparazzii; @bollywoodchronicle, @bollywoodsocietyy, @madaboutmarketingg, @totalfilmii, @bachelorssociety will not send until signed in there. tabish-mac stops sending, reading replies and looking up brands"*, confirm → row `DMPLs Mac Studio`, audit by `tabish@dashmani.com` |
+| within one poll | this Mac's log: *"not the selected sending Mac — nothing drives a browser here what=dispatch:device"* (a tick already in flight, caught at the lock) then *"this Mac is not the selected sending Mac — holding everything"*; the landing page read **"Autopilot is ON — DMPLs Mac Studio sends by itself"** |
+| 14:24:10 | radio → tabish-mac, confirm → row back, audit row; the log: *"this Mac is the selected sending Mac — sending, sweeping and looking up from here"* |
+| tests / typecheck | **2,350 / 140 files**, clean; two mutations caught (unset-as-permission; the lock no longer asking) |
+| the DMG | `b34e4a6`, notarised (Accepted ×2, stapled), uploaded; `/senders` reads *"Installer build b34e4a6 — the same as this dashboard"* |
+| detection / drafting | untouched and fresh at 14:19 IST; 26 delivered today; the one failure at 14:08 was `composer-mismatch` (0 chars staged), the read-back guard refusing a failed paste and re-queuing — working as designed |
+
+**The Studio still runs `01016fc` and ignores the row until it re-runs the installer.** Until
+then it behaves as before (evaluates, holds the lock, sends nothing). Once updated it obeys the
+row like this Mac does, and the one-account-on-two-Macs case becomes harmless in practice: only
+the selected Mac drives.
+
+### RULES, ADDED TO THE STANDING LIST
+
+31. **A fleet has one hand on the wheel.** Which Mac does the work is a Setting a person
+    chooses, not a property of whose disk holds a profile; unset means nobody, said on screen.
+
+---
+
 ## 10 SEPTEMBER — THE SECOND MAC ARRIVED, AND THE FLEET LOCK HAD NEVER BEEN A FLEET LOCK
 
 **Tabish: *"The other mac installed the agent and even selected the sending machine via the
