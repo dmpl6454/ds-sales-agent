@@ -6,6 +6,7 @@ import { randomInt } from '@/lib/time'
 import { browserSender } from './senders/browser'
 import { profileStatus } from './browser/profile'
 import { recheckBeforeSend } from './gate'
+import { thisMacRole } from './activeDevice'
 import { recordDelivered } from './recordSend'
 import { claimForAttempt, settleClaims } from './reservations'
 import { markChallenged } from './challenge'
@@ -344,6 +345,19 @@ export async function deliverWaiting(opts: DeliverOptions = {}): Promise<Deliver
 
     // SENDING is the lock: it stops the dashboard button and this loop from both
     // driving the same attempt.
+    /**
+     * THE SENDING MAC, JUST IN TIME (2026-09-10). MEASURED: the tick asked at its start and again
+     * at the lock, then spent two minutes evaluating 44 drafts and drove the first sendable one —
+     * 80 s after the switch had made another Mac the sender. Same shape as the autopilot check
+     * above, for the same reason: a long evaluation is a window, and the only moment that
+     * matters is the one before the claim.
+     */
+    const roleNow = await thisMacRole()
+    if (!roleNow.active) {
+      log.step('the sending Mac changed mid-tick — stopping before the claim, nothing sent', { detail: roleNow.detail })
+      break
+    }
+
     const claimed = await prisma.outreachAttempt.updateMany({
       where: { id: attempt.id, status: 'READY' },
       data: { status: 'SENDING' },
