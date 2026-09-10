@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { readFileSync } from 'node:fs'
-import { LOCK_BUSY_RETRY_MS } from '@/outreach/dispatcher'
+import { LOCK_BUSY_RETRY_MS, LEGACY_LOCK_RETRY_MS } from '@/outreach/dispatcher'
 
 /**
  * TWO MACS, ONE LOCK — the two facts that stopped the fleet starving on 2026-09-10, as
@@ -14,9 +14,13 @@ const strip = (s: string) => s.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\
 describe('a busy fleet lock is polled, not waited out', () => {
   it('the busy verdict carries a retry hint of a few seconds', () => {
     const src = strip(readFileSync('src/outreach/dispatcher.ts', 'utf8'))
-    expect(src).toMatch(/lockBusy: true, retryInMs: LOCK_BUSY_RETRY_MS/)
+    expect(src).toMatch(/holder\.device === undefined \? LEGACY_LOCK_RETRY_MS : LOCK_BUSY_RETRY_MS/)
+    expect(src).toMatch(/lockBusy: true, retryInMs, at/)
     expect(LOCK_BUSY_RETRY_MS).toBeGreaterThanOrEqual(2_000)
     expect(LOCK_BUSY_RETRY_MS).toBeLessThanOrEqual(10_000)
+    // An agent older than the device field releases the lock for milliseconds at a time.
+    expect(LEGACY_LOCK_RETRY_MS).toBeLessThan(LOCK_BUSY_RETRY_MS)
+    expect(LEGACY_LOCK_RETRY_MS).toBeGreaterThanOrEqual(500)
   })
 })
 

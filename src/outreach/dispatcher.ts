@@ -76,6 +76,32 @@ const SEND_LOCK_STALE_MS = 6 * 60_000
  */
 export const LOCK_BUSY_RETRY_MS = 5_000
 
+/**
+ * A LEGACY HOLDER IS POLLED FASTER — a compatibility shim (2026-09-10).
+ *
+ * An agent older than the device field takes the lock for its WHOLE evaluation — every
+ * waiting draft through the gate, on every tick, back to back — so the gap between its release
+ * and its next acquire is milliseconds. MEASURED: at 5 s the poll found it busy on every try
+ * for 27 minutes and the fleet sent nothing. A row with no `device` IS that agent, so while
+ * one still runs, this Mac asks again every second and logs the wait once per streak rather
+ * than once per try. Remove when every Mac carries the device field (`/senders` → Agent build).
+ */
+export const LEGACY_LOCK_RETRY_MS = 1_000
+
+/** Consecutive busy ticks, for logging economy only — never a guard (the row is the guard). */
+let busyStreak = 0
+const BUSY_LOG_EVERY = 30
+
+async function readSendLockHolder(): Promise<SendLockHolder | null> {
+  const row = await prisma.setting.findUnique({ where: { key: SEND_LOCK_KEY } })
+  if (!row) return null
+  try {
+    return JSON.parse(row.value) as SendLockHolder
+  } catch {
+    return null
+  }
+}
+
 /** Setting key holding the last tick's outcome, so the dashboard can show what happened. */
 export const DISPATCH_STATE_KEY = 'dispatchState'
 /** Setting key holding a human's explicit pause: `{"at":...,"by":...,"reason":...}`. */
@@ -254,15 +280,20 @@ async function acquireSendLock(what: string): Promise<boolean> {
       doing: held?.what,
       secondsHeld: Math.round(ageMs / 1000),
     }
+    busyStreak += 1
     if (verdict.stalled) {
       log.alarm('a send has been running for a long time — nothing else can send until it finishes', detail)
-    } else if (holderIsLocal) {
-      log.step('another send is in progress — waiting for the next opportunity', detail)
-    } else {
-      log.step('another Mac is sending — waiting for the next opportunity', detail)
+    } else if (busyStreak === 1 || busyStreak % BUSY_LOG_EVERY === 0) {
+      // One line per streak, then every thirtieth try: at a one-second poll the per-try line
+      // buried everything else in the log.
+      log.step(holderIsLocal ? 'another send is in progress — waiting for the next opportunity' : 'another Mac is sending — waiting for the next opportunity', {
+        ...detail,
+        tries: busyStreak,
+      })
     }
     return false
   }
+  busyStreak = 0
 
   // Conditional on the row still holding exactly what we read, so two processes finding
   // the same corpse cannot both claim it.
@@ -714,8 +745,12 @@ export async function dispatchTick(reason: string): Promise<DispatchTickResult> 
       reason: 'send-in-progress',
       detail: 'another send is already running — this tick did nothing and nothing was lost',
     }
-    await recordDispatchState({ at, verdict: busy, sent: 0 })
-    return { verdict: busy, lockBusy: true, retryInMs: LOCK_BUSY_RETRY_MS, at: at.toISOString() }
+    if (busyStreak <= 1 || busyStreak % BUSY_LOG_EVERY === 0) await recordDispatchState({ at, verdict: busy, sent: 0 })
+    // One extra read on the busy path decides how soon to ask again: a row with no `device`
+    // was written by an agent that holds the lock through its whole evaluation.
+    const holder = await readSendLockHolder()
+    const retryInMs = holder !== null && holder.device === undefined ? LEGACY_LOCK_RETRY_MS : LOCK_BUSY_RETRY_MS
+    return { verdict: busy, lockBusy: true, retryInMs, at: at.toISOString() }
   }
 
   await recordDispatchState({
