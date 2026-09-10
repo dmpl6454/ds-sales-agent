@@ -67,12 +67,20 @@ in the audit log — luck).
   moved to `src/outreach/devicePresence.ts` (a leaf: the dispatcher cannot import the agent).
 - Four mutations caught (foreign→take; lid case; sweep on pid alone; ambiguous target→first).
 
-**AND THE CORRECT LOCK STARVED THIS MAC WITHIN THE HOUR.** Restarted onto the fix at 13:02 IST;
-by 13:07 the log read *"another Mac is sending — waiting"* on **32 consecutive ticks** and the
-fleet had sent nothing since 12:55. The Studio's idle dispatcher evaluated all 44 drafts through
-the gate on every tick — 43 of them for accounts it holds no profile for — holding the lock for
-most of each 30 s poll, and a tick that found the lock busy waited a whole period; equal periods
-phase-lock. Rule 26 in a new costume: the honoured lock became the starving lock.
+**AND THE CORRECT LOCK LOCKED THIS MAC OUT WITHIN THE HOUR.** Restarted onto the fix at 13:02
+IST; by 13:07 the log read *"another Mac is sending — waiting"* on **32 consecutive ticks**, and
+after a 5 s retry was added at 13:16 the poll still found the lock busy on every try until 13:25.
+The Studio's old-code dispatcher evaluated all 44 drafts through the gate on every tick — 43 of
+them for accounts it holds no profile for — and re-took the lock milliseconds after releasing it.
+Rule 26 in a new costume: the honoured lock became the lock nobody else could get.
+
+**WHETHER IT COST A SEND IS NOT SEPARABLE FROM THE MATERIAL RULE, and this is stated rather
+than claimed.** When this Mac did hold the lock (13:25 on) it evaluated all 44 drafts and held
+every one — 87 of the reasons *"no paid post of theirs has been detected and one of our pages
+has already written"*, the rest reply halts — the documented all-held steady state, and the last
+delivery (12:55) predates the lock-out. What IS measured is that a Mac running old code holds
+the fleet lock almost continuously while sending nothing; the fixes below are what stop that
+costing sends the moment material arrives.
 
 - **A busy lock returns `retryInMs` (5 s)**, consumed by the poll loop with `min()` like the
   `too-soon` hint, so the next try lands in the other dispatcher's gap.
@@ -80,6 +88,10 @@ phase-lock. Rule 26 in a new costume: the honoured lock became the starving lock
   dispatcher never spends the gate's queries under the fleet lock.
 - The contended `create` printed a nine-line Prisma error per tick (36 in ten minutes): the
   acquire reads first; the create is still the only arbiter.
+- **A lock row with no `device` is polled every second** (`LEGACY_LOCK_RETRY_MS`) and a busy
+  streak logs once, then every thirtieth try — a compatibility shim for exactly one thing: an
+  agent older than today holding the lock through its whole evaluation. Remove it when
+  `/senders` → Agent build shows every Mac on `86451a0` or later.
 
 ### THE STUDIO COULD NOT HAVE SENT ANYWAY: THE LADDER READ THIS DISK
 
@@ -106,7 +118,29 @@ rejects for the afternoon. **The keychain profile is gone from both keychains**
 needs the Apple ID app-specific password, which is Tabish's. Now: an unnotarised build is
 written to `DS-Sales-Agent.UNNOTARISED.dmg` beside the real image, and `deploy.sh` refuses to
 upload an image `stapler validate` rejects unless `DS_ALLOW_UNNOTARISED=1` says so out loud.
-**Until the profile is restored, the Studio can only take a new build via "Open Anyway".**
+**Until the profile is restored, the Studio can only take a new build via "Open Anyway".** The
+image on the box is **`ef7b1ab`**, uploaded explicitly with `DS_ALLOW_UNNOTARISED=1` because the
+box already served an unnotarised `da13ecf` and the newer build is what lets the Studio send at
+all once it updates; the local unnotarised build now lives at
+`~/Downloads/DS-Sales-Agent.UNNOTARISED.dmg` and the standard path is empty until a notarised
+build exists. Restoring the profile is one command with the app-specific password:
+`xcrun notarytool store-credentials ds-notary --apple-id sudhanshu@digitalsukoon.com --team-id DYA37GDBH3`,
+then `bash scripts/build-dmg.sh && bash scripts/deploy.sh`.
+
+### THE ANSWERS, AS MEASURED AT 13:36 IST
+
+| | |
+|---|---|
+| does the Studio's agent work | it pairs, beats (`01016fc`), holds one profile (@bollywoodpaparazzii), reads the queue and holds the lock — and has **delivered 0**: old code, and its ladder read this-disk `live`. It sends paparazzii drafts once it runs `ef7b1ab`+ |
+| the sign-in that failed | @bollywoodchronicle's Connect at 11:41 was relayed to `tabish-mac` (auto-target by freshest heartbeat); nothing was wrong with their Mac |
+| "their account is selected" | the picker preselected the most-recently-beating Mac; it stores nothing and only says where the next sign-in window opens |
+| why this Mac still delivers | it holds all six profiles; each Mac sends only for the profiles on its disk. **@bollywoodpaparazzii is on both** — Tabish's call which Mac keeps it |
+| detection / drafting | on the server, fresh: 152 posts / 7 paid in 3 h, 9 drafts in 3 h, `detectFeedOkAt` and `planLastOkAt` minutes old |
+| sending | 26 delivered today, 0 stuck `SENDING`, 0 challenged, 0 orphan parks; 44 waiting, all held by the material rule and reply halts |
+| this Mac's agent | `86451a0`; the log reads *"another Mac is sending — waiting"* once per streak and **0 takeovers** since 13:02 |
+| tests / typecheck | **2,339 / 139 files**, clean; four mutations caught |
+| not verified in a browser | the two-holder sentence on the paparazzii row (its group is collapsed in server HTML; the one-holder sibling branch rendered on bachelorssociety's row and the picker label rendered) |
+| not rebuilt | the local dashboard on :3100 still serves the previous build; the hosted URL is current |
 
 ### RULES, ADDED TO THE STANDING LIST
 
