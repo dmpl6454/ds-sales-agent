@@ -82,10 +82,58 @@ what was asked, and it is why the preview names those five before the confirm.
 | tests / typecheck | **2,351 / 140 files**, clean |
 | this Mac | standby on `fd4b409`: dispatch, sweep, brand look-ups and failover all refuse by name; presence beating; 0 Chrome processes |
 
+### TABISH SWITCHED BACK AND THE BUTTON FAILED — A TAB FROM BEFORE A DEPLOY, AND A TICK IN FLIGHT
+
+**Tabish: *"when I switched back to my mac via UI it did not work. Loopholes exist and you have
+failed to detect this issue."*** Right on both counts. His screenshot read *"Could not switch:
+Server Action "40b1…" was not found on the server"* with the rail on `b34e4a6` while the server
+ran `fd4b409` — I had deployed twice under his open tab. A server action is addressed by a
+build-specific id; a page rendered by an older build calls ids the new server no longer has,
+and `router.refresh()` cannot fix it (it re-renders server components and keeps the client
+bundle). `/senders` had no refresher at all, so a tab there stayed stale for as long as it was
+open. Every button on every open tab breaks on every deploy — I had verified the switch on the
+build I deployed and then deployed again while he was using it.
+
+- **`/api/pulse` returns `build`, and `build-watch.tsx` — mounted from the sidebar, so on every
+  authenticated page — reloads the tab once when the server's build differs from the one the
+  page was rendered by** (`decideReload`, PURE: unknown on either side or a hidden tab skips).
+  **Verified live:** a tab rendered by `d137392` reloaded itself onto `7fe1710` within one 30 s
+  poll (navigation type `reload`, no navigation by me). The first attempt to see it "fail" was
+  my own 15-minute probe session expiring 51 s before the deploy — every poll was a 401.
+- The sending-Mac switch and the autopilot toggle catch the stale rejection and reload with
+  *"This page was open before the dashboard was updated — reloading it now…"*. The toggle had
+  no `catch` at all: a rejected flip simply vanished.
+
+**THE ROUND TRIP THEN FOUND THE SECOND HOLE.** Three flips through the real button on the new
+build (tabish-mac → Studio → tabish-mac, 15:04–15:10 IST) all wrote the row and the audit, and
+this Mac's agent followed each — but at **15:08**, 80 s after leg two made the Studio the
+sender, **this Mac delivered @bollywoodsocietyy → natashabharadwaj_official.** The tick had asked
+at its start and at the lock, then spent two minutes evaluating 44 drafts and drove the first
+sendable one without asking again; the standby announcement came when that tick ended. Fixed
+where the autopilot check already lives: **re-ask immediately before the READY→SENDING claim**
+(mutation-tested). Nothing that drives a browser sits between the ask and the claim.
+
+**AND A PROCESS FAILURE OF MINE, RECORDED.** The chain that shipped that fix used `;` after
+`pnpm test`, not `&&`: the suite was red (delivery fixtures without the role mock), and the
+commit, DMG and deploy went out anyway. Production was correct — the row exists — and the
+fixtures were fixed within minutes (2,357 green), but a deploy must be gated on the suite by
+construction, not by a person reading the output.
+
+| | |
+|---|---|
+| the sending Mac | **tabish-mac** (his intent), three audited flips today by `tabish@dashmani.com` |
+| the installer | `7fe1710`, notarised, *"the same as this dashboard"*; the Studio is still on `01016fc` until it re-runs it |
+| tests / typecheck | **2,357 / 140 files**, clean |
+
 ### RULES, ADDED TO THE STANDING LIST
 
 31. **A fleet has one hand on the wheel.** Which Mac does the work is a Setting a person
     chooses, not a property of whose disk holds a profile; unset means nobody, said on screen.
+32. **A deploy invalidates every open tab.** Action ids are build-specific; a page must notice
+    a new build and reload itself, or every button is a coin toss after a deploy.
+33. **A long evaluation is a window.** A guard asked at the start of a multi-minute loop must
+    be asked again immediately before the step that cannot be undone.
+34. **A deploy is gated on the suite by `&&`, never by reading the output.**
 
 ---
 
