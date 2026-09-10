@@ -124,7 +124,46 @@ describe('diskCarePass', () => {
     expect(report.pruned).toEqual([])
   })
 
-  it('steps aside when a send holds the lock — no prune races a live browser drive', async () => {
+  /**
+   * ── THE LOCK IS POLLED, BOUNDED (2026-09-10) ──────────────────────────────────────
+   *
+   * One try per pass lost almost every time once another Mac's dispatcher held the lock for
+   * most of every minute — the reply sweep's 9 Sept defect, one lock user along — and this
+   * Mac sat at 4.3 GiB free with 4.4 GiB of prunable cache while "the prune waits for the next
+   * pass" was logged four times in an afternoon. The clock and the sleep are injected so the
+   * wait is asserted in milliseconds of fake time, not endured in real ones.
+   */
+  it('polls for a busy lock and prunes the moment it is free', async () => {
+    let clock = 0
+    let tries = 0
+    const calls: string[] = []
+    const report = await diskCarePass({
+      minFreeBytes: 100,
+      freeBytes: () => 10,
+      rotate: () => [],
+      listProfiles: () => ['a'],
+      prune: (args) => {
+        calls.push(`${args.handle}:${args.dryRun ? 'dry' : 'REAL'}`)
+        return fakePrune()(args)
+      },
+      // Busy on the first three tries, free on the fourth.
+      lock: async (_what, fn) => (++tries < 4 ? null : fn()),
+      lockWaitMs: 60_000,
+      lockPollMs: 1_000,
+      sleep: async (ms) => {
+        clock += ms
+      },
+      now: () => clock,
+    })
+    expect(tries).toBe(4)
+    expect(report.lockBusy).toBe(false)
+    expect(report.lockWaitedMs).toBe(3_000)
+    expect(calls).toEqual(['a:dry', 'a:REAL'])
+  })
+
+  it('steps aside once the wait budget is spent — bounded, never a wedge, and no prune races a live drive', async () => {
+    let clock = 0
+    let tries = 0
     const calls: string[] = []
     const report = await diskCarePass({
       minFreeBytes: 100,
@@ -135,10 +174,22 @@ describe('diskCarePass', () => {
         calls.push(args.handle)
         return fakePrune()(args)
       },
-      lock: async () => null,
+      lock: async () => {
+        tries += 1
+        return null
+      },
+      lockWaitMs: 5_000,
+      lockPollMs: 1_000,
+      sleep: async (ms) => {
+        clock += ms
+      },
+      now: () => clock,
     })
     expect(report.lockBusy).toBe(true)
     expect(calls).toEqual([])
+    // One immediate try, then one per poll inside the budget — and not one more after it.
+    expect(tries).toBe(6)
+    expect(report.lockWaitedMs).toBe(5_000)
   })
 
   it('reports identity damage instead of swallowing it', async () => {
