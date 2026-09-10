@@ -42,3 +42,16 @@ export function decideRefresh(input: {
   if (input.pending) return 'skip'
   return 'refresh'
 }
+/**
+ * SHOULD THIS TAB RELOAD ITSELF? The server's build (from the pulse) against the build this
+ * page was rendered by. Unknown on either side is a skip — "we could not compare" must never
+ * reload a page someone is typing into — and so is a hidden tab, which reloads when it is next
+ * looked at (the visibility handler polls immediately).
+ */
+export type ReloadDecision = 'reload' | 'skip'
+export function decideReload(input: { rendered: string; live: string | null; hidden: boolean }): ReloadDecision {
+  if (input.hidden) return 'skip'
+  if (input.live === null || input.live === '' || input.live === 'unknown') return 'skip'
+  if (input.rendered === '' || input.rendered === 'unknown') return 'skip'
+  return input.live === input.rendered ? 'skip' : 'reload'
+}
