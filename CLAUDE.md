@@ -5,6 +5,107 @@ changing anything that touches sending.
 
 ---
 
+## 10 SEPTEMBER, LATE AFTERNOON — THE FIVE-LEG HEALTH CHECK, AND THE ONE STALE MAC THAT WAS STARVING EVERYTHING ELSE
+
+**Tabish: *"Is autopilot and paid posts detection healthy and mac switching and dmg along with
+pairing of devices (signing in etc) healthy e2e? Do not waste tokens."*** Every leg measured
+against the live system between 15:36 and 16:08 IST, with a ten-minute probe session for the
+hosted pages (deleted after) and a real enrolment start→poll (row deleted after). Four legs were
+green as found. The fifth — autopilot — was delivering and carried two defects that share one
+root, both fixed, deployed (`57faf88`) and proven live before this was written.
+
+### WHAT WAS MEASURED, LEG BY LEG
+
+| leg | measured |
+|---|---|
+| **autopilot** | ON, `activeDevice=tabish-mac`; **30 delivered by 15:37** (hourly 00=11, 01=2, 06=4, 12=9, 15=3+); 0 stuck `SENDING`, **0 new parks in 24 h**, 5 replies recorded in 24 h, breaker quiet. The **07:00–11:59 gap was the material rule**: ~400 *"waiting message held back"* lines an hour and nothing sendable until fresh paid posts landed at 12:00; the 13:00–15:00 gap was the switching exercise (Studio selected, on a build that ignores the row = nobody sends) |
+| **detection / drafting** | on the box: `detection pass newPosts=15 paid=3` at 16:03; **165 posts / 14 paid / 0 unjudged in 3 h**; `detectFeedOkAt`, `planLastOkAt` and the heartbeat minutes fresh; 12 drafts written in 3 h; both pm2 processes online (the 15:19 restarts were a graceful deploy reload, exit 0 via SIGINT); 0 nginx 5xx; 779/961 MB, 296 MB swap, 0 OOM |
+| **Mac switching** | three audited flips 15:04–15:10 by `tabish@dashmani.com`, this Mac's log flipping *"holding everything"* ↔ *"the selected sending Mac"* within a poll each time; landing page *"Autopilot is ON — tabish-mac sends by itself"*; both Macs beating (`tabish-mac 57faf88 git`, `DMPLs Mac Studio 01016fc stamp`); `/senders` renders the *"not the installer's"* warning for the Studio |
+| **DMG** | local, box and hosted download **byte-identical** (`af6b8cdf…` at `7fe1710`, then `a5ff5931…` / 2,740,492 B at `57faf88`), notarised Accepted ×2, stapled, `stapler validate` passes; `/senders` reads *"Installer build 57faf88 — the same as this dashboard"*; anonymous download → 307 to sign-in |
+| **pairing / sign-in** | `POST /api/device/enrol/start` → 200 `{userCode, deviceCode, deviceName, approvePath, expiresInSeconds}`; poll → `pending`; row deleted, 0 left. The box's `authorized_keys` is exactly three lines: the management key, this Mac's forward-only tunnel key, the Studio's forward-only key. **The Studio beating through its own key every 30 s is the pairing proven e2e on someone else's hardware.** 11:44 `sender.login` relayed through the Studio; 0 pending connect-relay rows; both users `operator` |
+
+### THE ROOT: THE STUDIO'S STALE BUILD HOLDS THE FLEET LOCK MOST OF EVERY MINUTE
+
+`sendLock` read `{"pid":71169,"what":"dispatch:device"}` with **no `device` field** — the
+Studio's `01016fc` dispatcher, older than the field, ignoring `activeDevice`, evaluating every
+draft through the gate under the lock and re-taking it milliseconds after release. This Mac's
+log: *"another Mac is sending — waiting … otherDevice=unknown (an agent older than the device
+field) secondsHeld=67 / 81 / 95"*. The 10 Sept morning shim (`LEGACY_LOCK_RETRY_MS`, one-second
+polling) keeps the DISPATCHER sending — but every *polite* lock user on this Mac starved:
+
+- **the reply sweep**: 4 completions today (08:44, 09:12, 11:02, 14:36), **20 three-minute
+  waits lost**; inbox scans still ran (a `reply.record.inbox` at 15:19) but the deep reads
+  mostly did not;
+- **disk care**: *"a send is in progress — the prune waits for the next pass"* ×4, while this
+  Mac sat at **4.3 GiB free with 4.4 GiB of prunable profile cache** on a disk that has hit zero
+  twice. It asked once per pass and skipped.
+
+**The cure is the Studio re-running the installer** — a person's act on their Mac, which
+`/senders` already asks for by name. Until then it obeys nothing and holds the lock; once
+updated it obeys the row and holds nothing. What was fixed on this side is that a stale peer
+must not be able to starve housekeeping: **disk care polls for the lock** like the sweep
+(`DISK_CARE_LOCK_WAIT_MS` 3 min, `DISK_CARE_LOCK_POLL_MS` **1 s** — a five-second poll lands
+inside the holder's next hold, which is exactly how the sweep lost its 15:20 wait), with the
+clock and sleep injectable so the test asserts fake milliseconds. **Proven live at 16:05, two
+minutes after the restart: `disk care pruned profile caches freeGbBefore=3.5 freeGbAfter=7.3
+freedMb=3709 pruned=5 refused=[]`.**
+
+### AND A GUARD THAT HELD ONLY BECAUSE OF A CAP THAT NO LONGER EXISTS
+
+The worker's error log carried *"outreach failed pair=bollywoodchronicle→amazonmgmstudiosin
+error=@bollywoodchronicle has used all 6 of its message variants"* every 15 minutes, and the
+planner summary read `failed=1` on every pass. MEASURED: **three pages had each delivered six
+times to @amazonmgmstudiosin** (the brand pool is six), **eight in-window paid posts still
+funded a message** under Tabish's own rules, no page held a draft for it, and the turn only
+passes on a delivery — a recipient with material that nobody could write to.
+`VariantsExhaustedError` was documented as *"nearly unreachable (pool 12, maxUnansweredTouches
+3)"*; the touch cap went on 18 August and the brand pool is half the channel pool, so it became
+reachable. Under `singleTemplate` the variant body is never rendered (first touch = the fleet
+template verbatim, every later message = the follow-up copy naming a different post), so the
+pool had nothing left to protect, and the byte-repeat rule that does
+(`IDENTICAL_TO_A_SENT_MESSAGE`) reads the RENDERED body. **The claim now wraps to the
+least-recently-used variant when the flag is on; the variants path still refuses**, and its
+test runs with the flag off on purpose. First planner pass on the new code, 16:05:
+`outreach summary queued=1 sent=0 failed=0`, and a READY draft chronicle→amazonmgmstudiosin
+written at 16:03.
+
+Both fixes mutation-tested (stashing each fails exactly its new cases); suite **2,359 / 140
+files**; shipped by `pnpm test && build-dmg.sh && deploy.sh` (rule 34). The local `:3100`
+dashboard was rebuilt onto `57faf88` too — its `/api/pulse` had no `build` field, so the
+stale-tab reloader could never fire there.
+
+### A PROCESS FAILURE OF MINE, RECORDED
+
+The agent restart onto the fix was gated on "no local browser drive in flight", and the gate
+never armed: `pgrep -fc` is not a flag on macOS and the lock-pid grep was mis-escaped, so every
+try printed *waiting* and the kickstart fired after the two-minute timeout regardless — **while
+the reply sweep held the lock reading totalfilmii→the.deafie.chick.** A READ was cut short, not
+a paste (no `SENDING` row, nothing in flight, the read fails closed and is re-done), but the
+check I relied on could not have stopped a send either. A gate is code: prove it refuses before
+trusting it.
+
+### THE STATE THIS LEAVES
+
+| | |
+|---|---|
+| the sending Mac | `tabish-mac`, on `57faf88`; the Studio beats on `01016fc` and holds the lock ~95% of the time until it re-runs the installer |
+| autopilot | delivering; the startup sweep took the lock at 16:05 and is scanning inboxes; the wedged recipient has a draft |
+| disk | 7.3 GiB free after the prune; disk care now waits its turn |
+| the installer | `57faf88`, notarised, byte-identical through the hosted download |
+| still a person's | the Studio's update; the legacy-lock shim's removal once every Mac reads `86451a0`+ |
+
+### RULES, ADDED TO THE STANDING LIST
+
+35. **A guard that is "nearly unreachable" because of another rule is reachable the day that
+    rule goes.** When a cap is removed, re-derive every bound that leaned on it.
+36. **One stale agent on a shared lock starves every polite user of it.** A lock user that asks
+    once and steps aside is a lock user that never runs; poll, bounded, at the cadence the holder
+    releases — and get the stale Mac updated.
+37. **A restart gate is code too.** Prove it refuses (make it fail on purpose) before trusting
+    it to protect a drive.
+
+---
+
 ## 10 SEPTEMBER, AFTERNOON — ONE SELECTED MAC DOES EVERYTHING; EVERY OTHER MAC HOLDS
 
 **Tabish: *"select in the senders page which mac would be responsible for everything and at a
