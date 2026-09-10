@@ -17,6 +17,7 @@ export function AccountGroupView({
   group,
   fleets = [],
   devices = [],
+  signedInOn = {},
 }: {
   group: AccountGroup
   /** Fleets an out-of-rotation account may rejoin for. Empty = only the default exists. */
@@ -27,6 +28,8 @@ export function AccountGroupView({
    * offers a picker. On localhost this is ignored (the dashboard drives Chrome itself).
    */
   devices?: readonly string[]
+  /** handle → the Macs whose presence says they hold a signed-in profile for it (2026-09-10). */
+  signedInOn?: Readonly<Record<string, readonly string[]>>
 }) {
   /**
    * OUT-OF-FLEET OPENS TOO, WHEN THERE IS SOMETHING TO DECIDE (2026-08-26).
@@ -51,7 +54,7 @@ export function AccountGroupView({
       {open && (
         <div className="sendergrid">
           {group.rows.map((r) => (
-            <AccountRowView key={r.id} row={r} fleets={fleets} devices={devices} />
+            <AccountRowView key={r.id} row={r} fleets={fleets} devices={devices} signedInOn={signedInOn} />
           ))}
         </div>
       )}
@@ -63,10 +66,12 @@ function AccountRowView({
   row,
   fleets = [],
   devices = [],
+  signedInOn = {},
 }: {
   row: AccountRow
   fleets?: readonly { slug: string; name: string }[]
   devices?: readonly string[]
+  signedInOn?: Readonly<Record<string, readonly string[]>>
 }) {
   const router = useRouter()
   const [busyClear, setBusyClear] = useState(false)
@@ -84,7 +89,22 @@ function AccountRowView({
    * when more than one is online, because then the wrong target would sign the account in
    * from the wrong home IP. Ignored on localhost (the server drives Chrome itself).
    */
-  const [targetDevice, setTargetDevice] = useState<string | undefined>(devices[0])
+  /*
+    WHICH MACS HOLD THIS ACCOUNT, and where the next sign-in window opens (2026-09-10).
+
+    The picker used to preselect `devices[0]`, and `readPresence` orders devices by newest
+    heartbeat — so the Mac that had beaten eleven seconds more recently at render time read
+    as "selected" on every row, and an operator took that for an assignment. It never was:
+    nothing is stored, and the choice only says where the NEXT sign-in window opens. The
+    fact an operator actually wants — which Mac(s) hold a session for this account — is
+    `signedInOn`, from the same presence rows. The default is that Mac when exactly one
+    holds it (signing in again on the same Mac is the ordinary re-verification); with two
+    or none, the picker starts EMPTY and the server refuses an unnamed target outright.
+  */
+  const holders = signedInOn[row.handle] ?? []
+  const [targetDevice, setTargetDevice] = useState<string | undefined>(
+    holders.length === 1 && devices.includes(holders[0] ?? '') ? holders[0] : undefined,
+  )
   const startConnecting = () => connect.start(targetDevice)
 
   return (
@@ -116,6 +136,19 @@ function AccountRowView({
 
       {/* THE one next action, on the row it concerns — never a to-do list elsewhere. */}
       {row.todo && <p className="account-todo">{row.todo}</p>}
+
+      {/*
+        ONE INSTAGRAM ACCOUNT LIVES ON EXACTLY ONE MAC. Two Macs holding the same profile is
+        two device identities on one account — the pattern Instagram flags — and both will
+        send from it. Stated on the row the moment presence shows it, not discovered in a log.
+      */}
+      {holders.length === 1 && devices.length > 1 && <p className="muted">Signed in on {holders[0]}.</p>}
+      {holders.length > 1 && (
+        <p className="account-todo">
+          Signed in on {holders.join(' and ')} — {holders.length} Macs hold a session for this account and each
+          sends from its own device identity, which is the pattern Instagram flags. Keep it on one Mac.
+        </p>
+      )}
 
       <div className="account-actions">
         {/*
@@ -154,18 +187,25 @@ function AccountRowView({
         */}
         {row.connected && connect.phase !== 'done' && <CheckSignIn handle={row.handle} onDone={() => router.refresh()} />}
         {devices.length > 1 && connect.phase !== 'done' && (
-          <select
-            value={targetDevice ?? ''}
-            onChange={(e) => setTargetDevice(e.target.value)}
-            aria-label={`Which Mac opens the sign-in for @${row.handle}`}
-            title="More than one sending Mac is online — choose which one opens the sign-in window"
-          >
-            {devices.map((d) => (
-              <option key={d} value={d}>
-                on {d}
-              </option>
-            ))}
-          </select>
+          <label className="muted" title="More than one sending Mac is online — choose which one opens the sign-in window">
+            sign-in window opens{' '}
+            <select
+              value={targetDevice ?? ''}
+              onChange={(e) => setTargetDevice(e.target.value || undefined)}
+              aria-label={`Which Mac opens the sign-in for @${row.handle}`}
+            >
+              {targetDevice === undefined && (
+                <option value="" disabled>
+                  choose a Mac…
+                </option>
+              )}
+              {devices.map((d) => (
+                <option key={d} value={d}>
+                  on {d}
+                </option>
+              ))}
+            </select>
+          </label>
         )}
         {row.connected && connect.phase !== 'done' && (
           <button

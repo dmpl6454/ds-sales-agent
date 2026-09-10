@@ -1,4 +1,5 @@
 import { prisma } from '@/lib/db'
+import { deviceId, deviceIsBeating } from './devicePresence'
 import { env } from '@/lib/env'
 import { log } from '@/lib/logger'
 import { getSettings } from '@/lib/settings'
@@ -118,6 +119,12 @@ export interface SendLockHolder {
   pid: number
   what: string
   at: string
+  /**
+   * WHICH MAC wrote the row (2026-09-10). Absent on rows written by an agent older than this
+   * field, which `acquireSendLock` treats as ANOTHER Mac — the only reading that cannot
+   * step over a live sender.
+   */
+  device?: string
 }
 
 export type SendLockVerdict = { action: 'take' } | { action: 'decline'; stalled: boolean }
@@ -133,16 +140,43 @@ export type SendLockVerdict = { action: 'take' } | { action: 'decline'; stalled:
  */
 export function decideSendLock(args: {
   held: SendLockHolder | null
+  /** The local OS's answer to `process.kill(pid, 0)` — EVIDENCE ONLY WHEN THE HOLDER IS LOCAL. */
   holderAlive: boolean
+  /** The row names THIS Mac. A row naming no Mac (an agent older than the field) is NOT local. */
+  holderIsLocal: boolean
+  /** The holder's Mac is still beating in `devicePresence`. Read only when the holder is foreign. */
+  holderDeviceFresh: boolean
   ourPid: number
   ageMs: number
   staleMs?: number
 }): SendLockVerdict {
-  const { held, holderAlive, ourPid, ageMs, staleMs = SEND_LOCK_STALE_MS } = args
+  const { held, holderAlive, holderIsLocal, holderDeviceFresh, ourPid, ageMs, staleMs = SEND_LOCK_STALE_MS } = args
   if (held === null) return { action: 'take' } // unparseable must not deadlock forever
-  if (held.pid === ourPid) return { action: 'take' }
-  if (!holderAlive) return { action: 'take' }
-  return { action: 'decline', stalled: ageMs >= staleMs }
+  const stalled = ageMs >= staleMs
+  if (holderIsLocal) {
+    if (held.pid === ourPid) return { action: 'take' }
+    if (!holderAlive) return { action: 'take' }
+    return { action: 'decline', stalled }
+  }
+  /**
+   * ── A PID IS A FACT ABOUT ONE MACHINE, AND THIS LOCK IS SHARED BETWEEN MACS (2026-09-10) ──
+   *
+   * MEASURED the day a second Mac joined the fleet: this agent logged "taking over a send
+   * lock left by a process that is gone deadPid=71169" seven times in forty minutes, and
+   * 71169 was the OTHER Mac's live dispatcher, mid-tick. `process.kill(pid, 0)` had asked
+   * THIS Mac's OS about a pid on the Mac Studio, been told "no such process", and read that
+   * as a crash. So the one lock that was documented as serialising browser drives across
+   * machines serialised nothing across machines — every takeover let two dispatchers run at
+   * once, on the same account when both Macs hold its profile.
+   *
+   * A foreign holder is therefore honoured until the lock is STALE and its Mac has STOPPED
+   * BEATING. Both, not either: a lid closing mid-send leaves a fresh lock behind and must be
+   * waited for, not stepped over, and a long legitimate sweep on a Mac that is still beating
+   * is an alarm rather than a takeover. A dead Mac releases the fleet within one stale
+   * window; nothing is stepped over on the strength of a pid it cannot see.
+   */
+  if (stalled && !holderDeviceFresh) return { action: 'take' }
+  return { action: 'decline', stalled }
 }
 
 function alive(pid: number): boolean {
@@ -155,7 +189,8 @@ function alive(pid: number): boolean {
 }
 
 async function acquireSendLock(what: string): Promise<boolean> {
-  const value = JSON.stringify({ pid: process.pid, what, at: new Date().toISOString() })
+  const ourDevice = deviceId()
+  const value = JSON.stringify({ pid: process.pid, device: ourDevice, what, at: new Date().toISOString() })
 
   // `create` on the primary key IS the test-and-set: it succeeds only if no row exists.
   // A `findUnique` then `upsert` is a check-then-act, which has already produced two
@@ -185,19 +220,32 @@ async function acquireSendLock(what: string): Promise<boolean> {
   }
 
   const ageMs = held ? Date.now() - new Date(held.at).getTime() : Infinity
+  const holderIsLocal = held !== null && held.device === ourDevice
+  // The presence read costs a query, so it happens only on the path where it decides anything:
+  // a foreign holder whose lock has gone stale. A fresh foreign lock is honoured unread.
+  const foreignAndStale = held !== null && !holderIsLocal && ageMs >= SEND_LOCK_STALE_MS
   const verdict = decideSendLock({
     held,
-    holderAlive: held !== null && alive(held.pid),
+    holderAlive: holderIsLocal && held !== null && alive(held.pid),
+    holderIsLocal,
+    holderDeviceFresh: foreignAndStale ? await deviceIsBeating(held?.device) : true,
     ourPid: process.pid,
     ageMs,
   })
 
   if (verdict.action === 'decline') {
-    const detail = { otherPid: held?.pid, doing: held?.what, secondsHeld: Math.round(ageMs / 1000) }
+    const detail = {
+      otherPid: held?.pid,
+      otherDevice: held?.device ?? 'unknown (an agent older than the device field)',
+      doing: held?.what,
+      secondsHeld: Math.round(ageMs / 1000),
+    }
     if (verdict.stalled) {
       log.alarm('a send has been running for a long time — nothing else can send until it finishes', detail)
-    } else {
+    } else if (holderIsLocal) {
       log.step('another send is in progress — waiting for the next opportunity', detail)
+    } else {
+      log.step('another Mac is sending — waiting for the next opportunity', detail)
     }
     return false
   }
@@ -226,10 +274,18 @@ async function acquireSendLock(what: string): Promise<boolean> {
    */
   if (held === null) {
     log.step('the send lock held an unreadable value — replacing it')
-  } else if (held.pid === process.pid) {
+  } else if (holderIsLocal && held.pid === process.pid) {
     log.step('reclaiming a send lock this process left behind', { doing: held.what })
-  } else {
+  } else if (holderIsLocal) {
     log.step('taking over a send lock left by a process that is gone', { deadPid: held.pid })
+  } else {
+    // Loud on purpose: the other Mac has not beaten for minutes while holding the lock — a
+    // closed lid, a crash or a lost network — and a person should know the fleet waited.
+    log.alarm('taking over a send lock held by a Mac that has stopped beating', {
+      device: held.device ?? 'unknown',
+      pid: held.pid,
+      secondsHeld: Math.round(ageMs / 1000),
+    })
   }
   return true
 }
@@ -281,7 +337,10 @@ export async function parkOrphanedSending(dwellMs: number = ORPHAN_SENDING_DWELL
   } catch {
     holder = null
   }
-  if (!holder || holder.pid !== process.pid) return 0
+  // THIS pid on THIS Mac — a pid alone matches a foreign row by coincidence (2026-09-10),
+  // and a foreign dispatcher parking this Mac's in-flight drive is the one outcome worse
+  // than the zombie this sweep exists to clear.
+  if (!holder || holder.pid !== process.pid || holder.device !== deviceId()) return 0
 
   const first = await prisma.outreachAttempt.findMany({
     where: { status: 'SENDING' },

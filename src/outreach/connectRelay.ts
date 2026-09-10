@@ -227,3 +227,50 @@ export async function persistSenderSession(handle: string, verified: boolean): P
     await clearSessionInvalid(sender.id, 'hand login relayed from the dashboard, identity verified against Instagram')
   }
 }
+/**
+ * ── WHICH MAC OPENS THE SIGN-IN WINDOW — never chosen silently between two (2026-09-10) ──
+ *
+ * MEASURED on the morning a second Mac joined the fleet: the first Connect the new operator
+ * pressed was relayed to `tabish-mac` — the Mac that already held that account — because
+ * with no device named the server picked the freshest heartbeat, and the dashboard's own
+ * picker preselected `devices[0]`, which `readPresence` orders by heartbeat too. The
+ * account was already signed in there, so nothing opened on the operator's screen and the
+ * request reported "connected": the sign-in that "failed". The next one landed on the right
+ * Mac only because the picker happened to default the other way three minutes later.
+ *
+ * Which home IP an Instagram account is signed in from is the load-bearing safety choice of
+ * this whole design, so it is never decided by whichever Mac beat last. One Mac online: it
+ * is the answer. Two or more: the person names one, or nothing is asked of anybody.
+ */
+export type ConnectTargetVerdict =
+  | { ok: true; device: string }
+  | { ok: false; reason: 'none-online' | 'ambiguous' | 'named-offline' }
+
+export function resolveConnectTarget(named: string | undefined, online: readonly string[]): ConnectTargetVerdict {
+  if (named !== undefined && named !== '') {
+    return online.includes(named) ? { ok: true, device: named } : { ok: false, reason: 'named-offline' }
+  }
+  const only = online[0]
+  if (online.length === 1 && only !== undefined) return { ok: true, device: only }
+  if (online.length === 0) return { ok: false, reason: 'none-online' }
+  return { ok: false, reason: 'ambiguous' }
+}
+
+/** The sentence a refused target shows the person — names the Macs, so the fix is one click. */
+export function connectTargetProblem(
+  verdict: Extract<ConnectTargetVerdict, { ok: false }>,
+  named: string | undefined,
+  online: readonly string[],
+): string {
+  switch (verdict.reason) {
+    case 'ambiguous':
+      return (
+        `More than one sending Mac is online (${online.join(', ')}) — choose which one should open the ` +
+        'sign-in window, because that is the Mac this account will send from. Nothing was asked of either.'
+      )
+    case 'named-offline':
+      return `${named} is not online right now. Reload the page and choose a Mac that is beating.`
+    case 'none-online':
+      return 'No sending Mac is online.'
+  }
+}

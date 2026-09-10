@@ -139,7 +139,7 @@ describe('the excluded Setting keys name what their owners actually write', () =
    */
   const owners: Array<[string, string, string]> = [
     ['schedulerHeartbeat', 'src/worker/scheduler.ts', 'HEARTBEAT_KEY'],
-    ['devicePresence', 'src/agent/index.ts', 'DEVICE_PRESENCE_KEY'],
+    ['devicePresence', 'src/outreach/devicePresence.ts', 'DEVICE_PRESENCE_KEY'],
     ['dispatchState', 'src/outreach/dispatcher.ts', 'DISPATCH_STATE_KEY'],
     ['sendLock', 'src/outreach/dispatcher.ts', 'SEND_LOCK_KEY'],
     ['fleetLastSendStartedAt', 'src/outreach/paceClock.ts', 'LAST_SEND_STARTED_KEY'],
