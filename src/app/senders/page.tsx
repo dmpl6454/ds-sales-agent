@@ -43,6 +43,10 @@ export default async function SendersPage({ searchParams }: { searchParams: Prom
   const now = Date.now()
   const presence = (await readPresence()).filter((d) => now - new Date(d.at).getTime() < 2 * 60_000)
   const devices = presence.map((d) => d.device)
+  // handle → the Macs holding a signed-in profile for it, so a row can say where an account
+  // lives and warn when that is two places (2026-09-10).
+  const signedInOn: Record<string, string[]> = {}
+  for (const d of presence) for (const h of d.handles ?? []) (signedInOn[h] ??= []).push(d.device)
   // WHICH BUILD EACH MAC RUNS, BESIDE THE BUILD THE INSTALLER CARRIES (2026-09-08). Installed
   // Macs do not auto-update; a re-run of a newer image does update them, and this is the screen
   // that says whether that has happened. Absent (an agent older than this field) renders as
@@ -348,7 +352,13 @@ export default async function SendersPage({ searchParams }: { searchParams: Prom
         )}
 
         {v.groups.map((g) => (
-          <AccountGroupView key={g.key} group={g} fleets={fleets.map((f) => ({ slug: f.slug, name: f.name }))} devices={devices} />
+          <AccountGroupView
+            key={g.key}
+            group={g}
+            fleets={fleets.map((f) => ({ slug: f.slug, name: f.name }))}
+            devices={devices}
+            signedInOn={signedInOn}
+          />
         ))}
 
         {/*

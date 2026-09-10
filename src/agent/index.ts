@@ -6,7 +6,14 @@ import { prisma } from '@/lib/db'
 import { env } from '@/lib/env'
 import { log, describeError } from '@/lib/logger'
 import { dispatchTick, withSendLock } from '@/outreach/dispatcher'
-import { deviceId } from './claim'
+import {
+  deviceId,
+  DEVICE_PRESENCE_KEY,
+  PRESENCE_FRESH_MS,
+  PRESENCE_INTERVAL_MS,
+  readPresence,
+  type DevicePresence,
+} from '@/outreach/devicePresence'
 import { profileStatus } from '@/outreach/browser/profile'
 import { reconcileSessionRecords } from './reconcile'
 import { autoResolveBrands } from '@/detection/autoResolve'
@@ -94,7 +101,6 @@ import { startConnectLoop } from './connectPass'
 const POLL_INTERVAL_MS = 30_000
 
 /** Written this often so the dashboard can say how long a device has been away. */
-const PRESENCE_INTERVAL_MS = 30_000
 
 /**
  * ── BRAND DISCOVERY RUNS HERE NOW, BECAUSE HERE IS THE HOME IP ─────────────
@@ -203,23 +209,10 @@ const BADGE_ENRICHMENTS_PER_PASS = 10
 const REPLY_INTERVAL_MS = 30 * 60_000
 
 /** `Setting` key holding the last time each device checked in. */
-export const DEVICE_PRESENCE_KEY = 'devicePresence'
-
-export interface DevicePresence {
-  device: string
-  at: string
-  /** Which accounts this device holds a logged-in Chrome profile for. */
-  handles: string[]
-  /**
-   * The build this agent is running (`buildVersion()`), so /senders can show a Mac that is
-   * still on last week's DMG beside the installer's current build (2026-09-08). Optional
-   * because rows written before this existed carry none — absence renders as "unknown",
-   * never as "current".
-   */
-  version?: string
-  /** 'stamp' = installed from an image (can be updated by re-running it); 'git' = a checkout. */
-  versionSource?: BuildVersionSource
-}
+// The presence key, its row shape and its reader live in `@/outreach/devicePresence` since
+// 2026-09-10 (the send lock needs them and must not import the agent). Re-exported so the
+// dashboard and the actions keep importing them from `@/agent`.
+export { DEVICE_PRESENCE_KEY, PRESENCE_FRESH_MS, readPresence, type DevicePresence }
 
 /**
  * Which sending accounts THIS machine can actually drive.
@@ -273,23 +266,6 @@ export async function writePresence(handles: string[]): Promise<void> {
  * addressed to it sits at 'requested' until the 20-minute TTL cancels it). Four missed
  * beats is decisively offline, not a blip.
  */
-export const PRESENCE_FRESH_MS = 4 * PRESENCE_INTERVAL_MS
-
-/** Every device whose agent is beating right now, freshest first. */
-export async function readPresence(): Promise<DevicePresence[]> {
-  const row = await prisma.setting.findUnique({ where: { key: DEVICE_PRESENCE_KEY } })
-  if (!row) return []
-  try {
-    const parsed = JSON.parse(row.value)
-    if (!Array.isArray(parsed)) return []
-    const cutoff = Date.now() - PRESENCE_FRESH_MS
-    return (parsed as DevicePresence[])
-      .filter((d) => new Date(d.at).getTime() >= cutoff)
-      .sort((a, b) => b.at.localeCompare(a.at))
-  } catch {
-    return []
-  }
-}
 
 let stopping = false
 

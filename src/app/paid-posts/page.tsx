@@ -419,9 +419,10 @@ export default async function PaidPostsPage({
                         */}
                         {p.messagesSent.length === 0 && p.messagedUnder ? (
                           <span className="muted">
+                            {/* A bare shortcode read as gibberish to the person the column is for (2026-09-10). */}
                             messaged under{' '}
-                            <a href={p.messagedUnder.url} target="_blank" rel="noreferrer">
-                              {p.messagedUnder.shortcode}
+                            <a href={p.messagedUnder.url} target="_blank" rel="noreferrer" title={`Instagram post ${p.messagedUnder.shortcode}`}>
+                              another copy of this post
                             </a>
                           </span>
                         ) : null}

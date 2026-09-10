@@ -18,7 +18,7 @@ import { recheckBeforeSend, isOverridable } from '@/outreach/gate'
 import { prepareOnDemand, type OnDemandPreview } from '@/outreach/onDemand'
 import { getSettings, setSetting, SETTING_KEYS } from '@/lib/settings'
 import { startConnect, pollConnect, cancelConnect, type ConnectState } from '@/outreach/browser/connect'
-import {
+import { resolveConnectTarget, connectTargetProblem,
   enqueueConnectRequest,
   readConnectRequest,
   deleteConnectRequest,
@@ -1489,7 +1489,15 @@ export async function connectAccount(handle: string, device?: string): Promise<C
     return result
   }
 
-  const target = device ?? (await freshestSendingDevice())
+  // Two Macs online and no Mac named is REFUSED, never resolved to the freshest heartbeat —
+  // that is how the first Connect a new operator pressed was relayed to the wrong home IP
+  // (2026-09-10). See `resolveConnectTarget`.
+  const online = await onlineSendingDevices()
+  const verdict = resolveConnectTarget(device, online)
+  if (!verdict.ok && verdict.reason !== 'none-online') {
+    return { state: 'error', message: connectTargetProblem(verdict, device, online) }
+  }
+  const target = verdict.ok ? verdict.device : null
   if (!target) {
     return {
       state: 'error',
@@ -1528,10 +1536,12 @@ export async function listSendingDevices(): Promise<Array<{ device: string; hand
 }
 
 /** The freshest present device, or null when none is online. Used when the UI names none. */
-async function freshestSendingDevice(): Promise<string | null> {
+/** Every Mac beating within `DEVICE_FRESH_MS`, by name — the set a Connect may be addressed to. */
+async function onlineSendingDevices(): Promise<string[]> {
   const now = Date.now()
-  const fresh = (await readPresence()).find((d) => now - new Date(d.at).getTime() < DEVICE_FRESH_MS)
-  return fresh?.device ?? null
+  return (await readPresence())
+    .filter((d) => now - new Date(d.at).getTime() < DEVICE_FRESH_MS)
+    .map((d) => d.device)
 }
 
 /**

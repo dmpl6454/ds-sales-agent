@@ -131,10 +131,17 @@ process.env.DATABASE_URL = `file:${dbPath}`
 
 const { prisma } = await import('@/lib/db')
 const { parkOrphanedSending } = await import('@/outreach/dispatcher')
+const { deviceId } = await import('@/outreach/devicePresence')
 
 const SEND_LOCK_KEY = 'sendLock'
 
-function lockValue(pid: number) {
+// The sweep acts only on a row naming THIS pid on THIS Mac (2026-09-10); a row naming no
+// Mac — the shape an older agent writes — is another Mac's, and the sweep leaves it alone.
+function lockValue(pid: number, device: string = deviceId()) {
+  return JSON.stringify({ pid, device, what: 'test', at: new Date().toISOString() })
+}
+/** The row an agent older than the device field writes — no `device` key at all. */
+function legacyLockValue(pid: number) {
   return JSON.stringify({ pid, what: 'test', at: new Date().toISOString() })
 }
 
@@ -182,6 +189,26 @@ describe('parkOrphanedSending', () => {
     await prisma.setting.create({ data: { key: SEND_LOCK_KEY, value: lockValue(process.pid + 99_991) } })
     const parked = await parkOrphanedSending(0)
     expect(parked).toBe(0)
+    const row = await prisma.outreachAttempt.findUnique({ where: { id: 'att_sending' } })
+    expect(row?.status).toBe('SENDING')
+  })
+
+  /**
+   * A pid is a fact about one machine (2026-09-10). Two Macs share this lock row, and a
+   * foreign dispatcher that matched on pid alone would dwell and then park THIS Mac's live
+   * drive as an orphan while its browser is mid-paste. A row naming another Mac — or no Mac
+   * at all, the shape an older agent writes — must park nothing however its pid reads.
+   */
+  it('parks NOTHING when the lock names our pid on ANOTHER Mac', async () => {
+    await prisma.setting.create({ data: { key: SEND_LOCK_KEY, value: lockValue(process.pid, 'somebody-elses-mac') } })
+    expect(await parkOrphanedSending(0)).toBe(0)
+    const row = await prisma.outreachAttempt.findUnique({ where: { id: 'att_sending' } })
+    expect(row?.status).toBe('SENDING')
+  })
+
+  it('parks NOTHING when the lock names no Mac at all (an agent older than the device field)', async () => {
+    await prisma.setting.create({ data: { key: SEND_LOCK_KEY, value: legacyLockValue(process.pid) } })
+    expect(await parkOrphanedSending(0)).toBe(0)
     const row = await prisma.outreachAttempt.findUnique({ where: { id: 'att_sending' } })
     expect(row?.status).toBe('SENDING')
   })

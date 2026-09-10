@@ -1,6 +1,5 @@
 import { prisma } from '@/lib/db'
 import { log } from '@/lib/logger'
-import { hostname } from 'node:os'
 
 /**
  * CLAIMING WORK FOR THIS DEVICE — the atomic half of the agent.
@@ -36,9 +35,8 @@ import { hostname } from 'node:os'
  * and is the honest best available — the alternative is a generated id nobody can map
  * back to a physical laptop, which is worse for the operator question this answers.
  */
-export function deviceId(): string {
-  return process.env.DS_DEVICE_NAME ?? hostname()
-}
+import { deviceId } from '@/outreach/devicePresence'
+export { deviceId }
 
 export interface ClaimedAttempt {
   id: string
