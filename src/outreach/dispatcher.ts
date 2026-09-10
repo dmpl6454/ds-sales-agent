@@ -62,6 +62,20 @@ const SEND_LOCK_KEY = 'sendLock'
  */
 const SEND_LOCK_STALE_MS = 6 * 60_000
 
+/**
+ * HOW SOON A TICK THAT FOUND THE LOCK BUSY ASKS AGAIN (2026-09-10).
+ *
+ * MEASURED the hour the lock learned to honour another Mac's holder: the other Mac's idle
+ * dispatcher held the lock for most of every 30-second poll while evaluating drafts it could
+ * not send, this Mac's tick found it busy on 32 consecutive ticks, and the fleet sent nothing
+ * for thirteen minutes — two loops with the same period, phase-locked. A busy lock is a fact
+ * about the next few seconds, not the next half minute: the tick asks again after this many
+ * milliseconds (consumed with `min()` by the poll loop, like `too-soon`'s hint), so it lands
+ * in the other dispatcher's gap. The reply sweep learned the same lesson the day before
+ * (`REPLY_LOCK_POLL_MS`); CLAUDE.md rule 26.
+ */
+export const LOCK_BUSY_RETRY_MS = 5_000
+
 /** Setting key holding the last tick's outcome, so the dashboard can show what happened. */
 export const DISPATCH_STATE_KEY = 'dispatchState'
 /** Setting key holding a human's explicit pause: `{"at":...,"by":...,"reason":...}`. */
@@ -194,21 +208,21 @@ async function acquireSendLock(what: string): Promise<boolean> {
 
   // `create` on the primary key IS the test-and-set: it succeeds only if no row exists.
   // A `findUnique` then `upsert` is a check-then-act, which has already produced two
-  // concurrent slots here once and a double-send path twice.
-  try {
-    await prisma.setting.create({ data: { key: SEND_LOCK_KEY, value } })
-    return true
-  } catch {
-    // A row exists. Whether it represents a live sender is a separate question.
-  }
-
-  const row = await prisma.setting.findUnique({ where: { key: SEND_LOCK_KEY } })
+  // concurrent slots here once and a double-send path twice. The read BEFORE the create is
+  // not that: the create is still the only arbiter, and a row that vanishes between the two
+  // is caught by the create's own failure. The read exists because two Macs now contend for
+  // this row on most ticks (2026-09-10), and a create that is doomed prints a nine-line
+  // Prisma error into the agent log every time — 36 in ten minutes, burying the lines a
+  // person actually reads.
+  let row = await prisma.setting.findUnique({ where: { key: SEND_LOCK_KEY } })
   if (!row) {
     try {
       await prisma.setting.create({ data: { key: SEND_LOCK_KEY, value } })
       return true
     } catch {
-      return false
+      // Lost the race to a row created between the read and the create. Re-read it.
+      row = await prisma.setting.findUnique({ where: { key: SEND_LOCK_KEY } })
+      if (!row) return false
     }
   }
 
@@ -701,7 +715,7 @@ export async function dispatchTick(reason: string): Promise<DispatchTickResult> 
       detail: 'another send is already running — this tick did nothing and nothing was lost',
     }
     await recordDispatchState({ at, verdict: busy, sent: 0 })
-    return { verdict: busy, lockBusy: true, at: at.toISOString() }
+    return { verdict: busy, lockBusy: true, retryInMs: LOCK_BUSY_RETRY_MS, at: at.toISOString() }
   }
 
   await recordDispatchState({

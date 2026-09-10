@@ -165,12 +165,31 @@ const persona = {
 
 async function addSender(
   handle: string,
-  opts: { cohort?: number; status?: string; hasSession?: boolean; challengedAt?: Date | null } = {},
+  opts: {
+    cohort?: number
+    status?: string
+    hasSession?: boolean
+    challengedAt?: Date | null
+    /** The session was recorded and Instagram has since revoked it (§3.5). */
+    sessionInvalidAt?: Date | null
+    /** Whether THIS Mac's disk holds the profile — must not decide `live` (2026-09-10). */
+    onThisDisk?: boolean
+  } = {},
 ) {
-  const { cohort = 1, status = 'ACTIVE', hasSession = true, challengedAt = null } = opts
-  if (hasSession) sessions.add(handle)
+  const { cohort = 1, status = 'ACTIVE', hasSession = true, challengedAt = null, sessionInvalidAt = null } = opts
+  if (opts.onThisDisk ?? hasSession) sessions.add(handle)
   return prisma.senderAccount.create({
-    data: { id: `s_${handle}`, handle, displayName: handle, cohort, status, challengedAt, ...persona },
+    data: {
+      id: `s_${handle}`,
+      handle,
+      displayName: handle,
+      cohort,
+      status,
+      challengedAt,
+      sessionPath: hasSession ? `/tmp/p/${handle}` : null,
+      sessionInvalidAt,
+      ...persona,
+    },
   })
 }
 
@@ -229,6 +248,27 @@ describe('readCohortStates derives `live` from ability', () => {
     await addSender('one', { cohort: 1, hasSession: true, status: 'ACTIVE' })
     const c1 = await groupState(1)
     expect(c1.live).toBe(1)
+  })
+
+  /**
+   * THE FLEET'S GROUP 1 IS LIVE WHEREVER THE QUESTION IS ASKED (2026-09-10). A second Mac
+   * holding one group-2 profile read every group-1 account as signed out — because `live`
+   * was `profileStatus(...).hasSession`, THIS Mac's disk — and so could never send: "group 1
+   * has no account sending on its own yet" about a group that had delivered all morning.
+   */
+  it('counts an account signed in on ANOTHER Mac as live — the ladder is a fleet fact', async () => {
+    await addSender('elsewhere', { cohort: 1, hasSession: true, onThisDisk: false })
+    expect((await groupState(1)).live).toBe(1)
+  })
+
+  it('does not count a profile on this disk whose session was never recorded', async () => {
+    await addSender('ghost', { cohort: 1, hasSession: false, onThisDisk: true })
+    expect((await groupState(1)).live).toBe(0)
+  })
+
+  it('does not count a recorded session Instagram has since revoked', async () => {
+    await addSender('revoked', { cohort: 1, hasSession: true, sessionInvalidAt: new Date() })
+    expect((await groupState(1)).live).toBe(0)
   })
 
   /**

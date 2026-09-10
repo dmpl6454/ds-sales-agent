@@ -5,6 +5,120 @@ changing anything that touches sending.
 
 ---
 
+## 10 SEPTEMBER — THE SECOND MAC ARRIVED, AND THE FLEET LOCK HAD NEVER BEEN A FLEET LOCK
+
+**Tabish: *"The other mac installed the agent and even selected the sending machine via the
+sender interface … Does it work? They faced issues signing in for one account … if their
+account is selected why are messages still being delivered from this machine? … is everything
+healthy for the messaging to work on their platform? … why does the paid posts column depict
+'messaged under DdGLGQgzryJ'?"*** Every question measured against the live system before a line
+changed. The Mac Studio (`DMPLs Mac Studio`, build `01016fc`, beating) had delivered **zero**
+messages; every one of the day's 22 was in this Mac's own log. Four defects, one of them mine
+the same hour.
+
+### THE SIGN-IN THAT "FAILED" WAS RELAYED TO THE WRONG MAC, BY HEARTBEAT ORDER
+
+The audit log has the whole story in three rows: 11:40 IST the Studio pairs; **11:41
+`sender.login` @bollywoodchronicle "relayed through device:tabish-mac"** — a window opened on
+THIS Mac, which already held that session, so their screen showed nothing and the request read
+"connected"; **11:44 `sender.login` @bollywoodpaparazzii "relayed through device:DMPLs Mac
+Studio"** — the one that worked. With no device named the action picked the FRESHEST heartbeat
+(`freshestSendingDevice`), and the row's picker preselected `devices[0]`, which `readPresence`
+orders by heartbeat too — so "on DMPLs Mac Studio" was preselected on every row in Tabish's
+screenshot because that Mac had beaten eleven seconds more recently at render time. **Nothing is
+stored; the picker only says where the NEXT sign-in window opens.** It is not an assignment.
+
+- `resolveConnectTarget` (PURE): one Mac online → it; two or more and none named → **REFUSED**
+  with both Macs named, never the freshest; a named Mac that is not beating → refused.
+- The row shows **which Mac(s) hold this account's session** from the same presence rows, and
+  the picker reads *"sign-in window opens on …"*, defaulting to the sole holder or to *"choose
+  a Mac…"*. Two holders render the warning below.
+
+### @bollywoodpaparazzii IS SIGNED IN ON BOTH MACS — THE ONE UNGUARDED CASE, LIVE
+
+Presence at 12:37 IST: `tabish-mac` holds six profiles including paparazzii; `DMPLs Mac Studio`
+holds exactly `["bollywoodpaparazzii"]`. Two device identities on one account is the pattern
+this design exists to avoid (3 Sept: *"the unguarded case"*), and it was created by the 11:44
+sign-in with nothing on any screen saying so. **Not changed by code — which Mac keeps it is
+Tabish's call** — but `/senders` now reads *"Signed in on tabish-mac and DMPLs Mac Studio — 2
+Macs hold a session for this account … Keep it on one Mac"* on that row. Moving the account off
+this Mac means its Chrome profile here stops being used (the `bollywoodpaparazzii` profile dir
+under `~/.ds-sales-agent/chrome-profiles`); the Studio then holds the only session.
+
+### THE SEND LOCK IDENTIFIED ITS HOLDER BY PID, AND A PID IS A FACT ABOUT ONE MACHINE
+
+This Mac's log, 11:55–12:39: **seven lines** reading *"taking over a send lock left by a
+process that is gone deadPid=71169"* — and 71169 was the Studio's LIVE dispatcher, holding
+`dispatch:device`. `process.kill(pid, 0)` asked this Mac's OS about a pid on the Studio, was
+told "no such process", and read that as a crash. **The 3 Sept sentence *"withSendLock is a
+DATABASE row, so browser drives serialise across machines"* was false**: the row was shared, the
+liveness check was local. The per-attempt READY→SENDING claim and `DailyReservation` are atomic,
+so nothing was double-sent; what it permitted was two dispatchers driving at once, the one-minute
+gap satisfiable by both machines in the same second, and the orphan sweep (guarded by "the row
+names our pid") able to park the OTHER Mac's in-flight drive after its 12 s dwell (0 such parks
+in the audit log — luck).
+
+- **The lock row carries `device`.** `decideSendLock` takes `holderIsLocal` and
+  `holderDeviceFresh`: local rules unchanged; a foreign holder is honoured until the lock is
+  STALE (6 min) **and** its Mac has stopped beating in `devicePresence` (a lid closing mid-send
+  leaves a fresh lock and is waited for; a long sweep on a beating Mac is an alarm, not a
+  takeover). A row naming no Mac — an agent older than the field — is treated as foreign.
+- **The orphan sweep requires pid AND device.** `deviceId`, the presence key, type and reader
+  moved to `src/outreach/devicePresence.ts` (a leaf: the dispatcher cannot import the agent).
+- Four mutations caught (foreign→take; lid case; sweep on pid alone; ambiguous target→first).
+
+**AND THE CORRECT LOCK STARVED THIS MAC WITHIN THE HOUR.** Restarted onto the fix at 13:02 IST;
+by 13:07 the log read *"another Mac is sending — waiting"* on **32 consecutive ticks** and the
+fleet had sent nothing since 12:55. The Studio's idle dispatcher evaluated all 44 drafts through
+the gate on every tick — 43 of them for accounts it holds no profile for — holding the lock for
+most of each 30 s poll, and a tick that found the lock busy waited a whole period; equal periods
+phase-lock. Rule 26 in a new costume: the honoured lock became the starving lock.
+
+- **A busy lock returns `retryInMs` (5 s)**, consumed by the poll loop with `min()` like the
+  `too-soon` hint, so the next try lands in the other dispatcher's gap.
+- **A draft this Mac holds no profile for is held BEFORE the gate**, from the disk, so an idle
+  dispatcher never spends the gate's queries under the fleet lock.
+- The contended `create` printed a nine-line Prisma error per tick (36 in ten minutes): the
+  acquire reads first; the create is still the only arbiter.
+
+### THE STUDIO COULD NOT HAVE SENT ANYWAY: THE LADDER READ THIS DISK
+
+`dispatchState` from the Studio's tick: *"totalfilmii→acclimited — group 1 has no account
+sending on its own yet"*. `cohorts.ts` derived `live` from `profileStatus(...).hasSession` —
+the local disk — so on a Mac holding one group-2 profile every group-1 account read as signed
+out and **no group-2 account (paparazzii is group 2) could ever be armed there**. The 13 Aug
+lesson (`readSenderAvailability` is machine-independent) had not reached the ladder. `live` is
+now the recorded, un-invalidated session from the database; `tests/cohorts-live.test.ts` pins
+"signed in on ANOTHER Mac counts" and "a profile on this disk with no recorded session does not".
+
+### "MESSAGED UNDER DdGLGQgzryJ"
+
+The 4 Sept syndication note: a recipient named on this post was messaged under another copy of
+the same campaign, and the link text was that copy's Instagram shortcode. It reads *"messaged
+under another copy of this post"* now, the shortcode kept in the link's title.
+
+### THE DMG WAS SIGNED BUT NOT NOTARISED, AND THE GUARDS DID NOT EXIST
+
+`build-dmg.sh` warned *"no notarytool profile 'ds-notary'"*, built anyway, overwrote the
+Downloads image, and `deploy.sh` uploaded it — the hosted download served an image Gatekeeper
+rejects for the afternoon. **The keychain profile is gone from both keychains**
+(`security find-generic-password -s com.apple.gke.notary.tool` finds nothing); recreating it
+needs the Apple ID app-specific password, which is Tabish's. Now: an unnotarised build is
+written to `DS-Sales-Agent.UNNOTARISED.dmg` beside the real image, and `deploy.sh` refuses to
+upload an image `stapler validate` rejects unless `DS_ALLOW_UNNOTARISED=1` says so out loud.
+**Until the profile is restored, the Studio can only take a new build via "Open Anyway".**
+
+### RULES, ADDED TO THE STANDING LIST
+
+28. **A pid is a fact about one machine.** A shared lock needs a machine identity in the row and
+    a liveness witness in the shared store; `process.kill(pid, 0)` answers for this OS only.
+29. **When a fleet goes from one host to two, re-read every guard that says "alive", "gone",
+    "signed in" or "live".** Each was written for one disk and one OS.
+30. **A guard that yields correctly can starve.** A tick that finds a lock busy asks again in
+    seconds; equal poll periods phase-lock.
+
+---
+
 ## 9 SEPTEMBER, NIGHT — THE REPLY SWEEP HAD NOT RUN FOR NINE HOURS, AND THE DMG WAS DOWNLOADED AS THE PERSON WHO WILL DOWNLOAD IT
 
 **Tabish: *"Make sure autopilot is healthy and then also make sure dmg has no remaining

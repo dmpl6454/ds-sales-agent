@@ -123,6 +123,16 @@ if [ -n "$SIGN_ID" ] && [ "${DS_SKIP_NOTARY:-0}" != "1" ]; then
   fi
 fi
 
+# ── AN UNNOTARISED IMAGE NEVER TAKES THE DOWNLOAD IMAGE'S PLACE (2026-09-10) ─────────────
+# MEASURED: the notary keychain profile vanished between two builds; this script warned,
+# built anyway, overwrote ~/Downloads/DS-Sales-Agent.dmg, and deploy.sh uploaded it — so the
+# hosted download button served an image Gatekeeper rejects ("Apple could not verify…") for
+# an afternoon. A signed-but-unnotarised build is fine for a quick local look and useless on
+# another person's Mac; it is written BESIDE the real image under a name that says so.
+if [ -n "$SIGN_ID" ] && [ "${DS_SKIP_NOTARY:-0}" != "1" ] && [ "$NOTARISED" != yes ]; then
+  OUT="${OUT%.dmg}.UNNOTARISED.dmg"
+  echo "WARNING: writing the UNNOTARISED image to $OUT — the download image is untouched."
+fi
 rm -f "$OUT"
 hdiutil create -volname "DS Sales Agent" -srcfolder "$STAGE" -ov -format UDZO "$OUT" >/dev/null
 

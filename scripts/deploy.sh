@@ -73,7 +73,16 @@ scp -q "$ARCHIVE" "$HOST:/tmp/"
 # is NOT in the git archive (a 2.4 MB binary does not belong in the code tree), so it rides
 # separately. Optional: if there is no built image, the download route simply says so.
 DMG="${DS_DMG:-$HOME/Downloads/DS-Sales-Agent.dmg}"
-if [[ -f "$DMG" ]]; then
+# The download button hands this file to another person's Mac, where Gatekeeper assesses it
+# on the first double-click (2026-09-10: an unnotarised build reached it once). `stapler
+# validate` is that assessment's precondition, so an image without a ticket is not uploaded —
+# the one already on the box keeps serving — unless DS_ALLOW_UNNOTARISED=1 says so out loud.
+if [[ -f "$DMG" ]] && [[ "${DS_ALLOW_UNNOTARISED:-0}" != "1" ]] && ! xcrun stapler validate "$DMG" >/dev/null 2>&1; then
+  echo "==> REFUSING to upload $DMG — it carries no notarisation ticket (Gatekeeper would reject it on a fresh Mac)."
+  echo "    Rebuild with the ds-notary keychain profile present, or DS_ALLOW_UNNOTARISED=1 to upload anyway."
+  DMG=""
+fi
+if [[ -n "$DMG" && -f "$DMG" ]]; then
   echo "==> Uploading the installer ($(du -h "$DMG" | cut -f1))"
   ssh "$HOST" 'mkdir -p ~/.ds-sales-agent-data'
   scp -q "$DMG" "$HOST:~/.ds-sales-agent-data/DS-Sales-Agent.dmg"
