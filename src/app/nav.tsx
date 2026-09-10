@@ -8,6 +8,7 @@ import { detectionCutoff } from '@/lib/cutoff'
 import { visibleChannelFilter } from '@/detection/visibleChannels'
 import { readHeartbeat } from '@/worker/scheduler'
 import { buildVersion } from '@/lib/buildVersion'
+import { BuildWatch } from './build-watch'
 import { SignOutButton } from './sign-out-button'
 import { RailToggle } from './chrome'
 
@@ -314,6 +315,8 @@ export async function Nav({ current, email }: { current: string; email?: string 
           <div className="rail-status-row">
             <span className="dot dot-idle" />
             <span className="muted">Build {buildVersion()}</span>
+            {/* Every authenticated page reloads itself after a deploy, so no button ever calls a dead action id. */}
+            <BuildWatch rendered={buildVersion()} />
           </div>
 
           {/*

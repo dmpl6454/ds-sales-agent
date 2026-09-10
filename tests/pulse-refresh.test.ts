@@ -157,6 +157,38 @@ describe('the excluded Setting keys name what their owners actually write', () =
   })
 })
 
+describe('a tab reloads itself after a deploy (2026-09-10)', () => {
+  it('the pulse carries the build the server is running', () => {
+    expect(read('src/app/api/pulse/route.ts')).toMatch(/build: buildVersion\(\)/)
+  })
+  it('decideReload: a different live build reloads; same, unknown or hidden skip', async () => {
+    const { decideReload } = await import('@/app/refresh-decision')
+    expect(decideReload({ rendered: 'abc', live: 'def', hidden: false })).toBe('reload')
+    expect(decideReload({ rendered: 'abc', live: 'abc', hidden: false })).toBe('skip')
+    expect(decideReload({ rendered: 'abc', live: null, hidden: false })).toBe('skip')
+    expect(decideReload({ rendered: 'abc', live: 'unknown', hidden: false })).toBe('skip')
+    expect(decideReload({ rendered: 'unknown', live: 'def', hidden: false })).toBe('skip')
+    expect(decideReload({ rendered: 'abc', live: 'def', hidden: true })).toBe('skip')
+  })
+  it('build-watch is a client component that reloads exactly once through the pure decision', () => {
+    const src = read('src/app/build-watch.tsx').replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')
+    expect(src.trimStart().startsWith("'use client'")).toBe(true)
+    expect(src).toMatch(/decideReload\(/)
+    expect(src.match(/window\.location\.reload\(\)/g) ?? []).toHaveLength(1)
+    expect(src).not.toMatch(/@\/lib\/db|@\/lib\/session|prisma/)
+  })
+  it('the sidebar mounts it with the build the page was rendered by — on every authenticated page', () => {
+    expect(read('src/app/nav.tsx')).toMatch(/<BuildWatch rendered=\{buildVersion\(\)\}/)
+  })
+  it('the sending-Mac switch and the autopilot toggle catch a stale action and reload', () => {
+    for (const f of ['src/app/senders/active-device.tsx', 'src/app/autopilot.tsx']) {
+      const src = read(f)
+      expect(src, f).toMatch(/isStaleServerAction\(err\)/)
+      expect(src, f).toMatch(/reloadForStaleBuild\(\)/)
+    }
+  })
+})
+
 describe('auto-refresh.tsx — the wiring, by source', () => {
   const stripped = read('src/app/auto-refresh.tsx')
     .replace(/\/\*[\s\S]*?\*\//g, '')

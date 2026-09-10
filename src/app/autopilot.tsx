@@ -1,6 +1,7 @@
 'use client'
 
 import { useState } from 'react'
+import { isStaleServerAction, reloadForStaleBuild, STALE_BUILD_MESSAGE } from './stale-build'
 import Link from 'next/link'
 import { setAutopilot } from './actions'
 import type { AutopilotState } from './view-model'
@@ -28,6 +29,15 @@ export function AutopilotPanel({ state }: { state: AutopilotState }) {
     try {
       const r = await setAutopilot(on)
       setMsg({ ok: r.ok, text: r.message })
+    } catch (err) {
+      // A rejected action used to vanish here (no catch): the switch looked dead. A tab from
+      // before a deploy is the common cause, and the fix is a reload, said out loud.
+      if (isStaleServerAction(err)) {
+        setMsg({ ok: false, text: STALE_BUILD_MESSAGE })
+        reloadForStaleBuild()
+      } else {
+        setMsg({ ok: false, text: `Could not switch autopilot: ${err instanceof Error ? err.message : String(err)}` })
+      }
     } finally {
       setBusy(false)
     }

@@ -2,9 +2,10 @@ import { NextResponse } from 'next/server'
 import { prisma } from '@/lib/db'
 import { currentUser } from '@/lib/session'
 import { composeStamp, PULSE_IGNORED_SETTING_KEYS } from './stamp'
+import { buildVersion } from '@/lib/buildVersion'
 
 /**
- * GET /api/pulse → `{ stamp }` — has anything a dashboard page shows changed?
+ * GET /api/pulse → `{ stamp, build }` — has anything a dashboard page shows changed, and which build serves it?
  *
  * Polled by `auto-refresh.tsx` instead of blindly re-rendering the page on a timer. The
  * composition and the reasoning — including why five hot `Setting` keys are excluded — live
@@ -70,5 +71,6 @@ export async function GET() {
     senderUpdatedAt: senders._max.updatedAt,
   })
 
-  return NextResponse.json({ stamp }, { headers: { 'Cache-Control': 'no-store' } })
+  // `build` lets an open tab notice a deploy and reload itself (build-watch.tsx, 2026-09-10).
+  return NextResponse.json({ stamp, build: buildVersion() }, { headers: { 'Cache-Control': 'no-store' } })
 }

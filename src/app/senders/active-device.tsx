@@ -3,6 +3,7 @@
 import { useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { setActiveDevice } from '../actions'
+import { isStaleServerAction, reloadForStaleBuild, STALE_BUILD_MESSAGE } from '../stale-build'
 
 export interface SendingMacOption {
   name: string
@@ -50,7 +51,13 @@ export function ActiveDeviceSection({
       setOutcome(r)
       if (r.ok) router.refresh()
     } catch (err) {
-      setOutcome({ ok: false, message: `Could not switch: ${err instanceof Error ? err.message : String(err)}. Reload the page and try again.` })
+      if (isStaleServerAction(err)) {
+        // The tab predates a deploy; nothing was written. Say so and reload — the switch is one click after.
+        setOutcome({ ok: false, message: STALE_BUILD_MESSAGE })
+        reloadForStaleBuild()
+      } else {
+        setOutcome({ ok: false, message: `Could not switch: ${err instanceof Error ? err.message : String(err)}. Reload the page and try again.` })
+      }
     } finally {
       setBusy(false)
     }
