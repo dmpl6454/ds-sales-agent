@@ -78,6 +78,16 @@ describe('the rule is asked at both ends and by every pass', () => {
     expect(body, `${fn} never asks thisMacRole`).toContain('thisMacRole()')
   })
 
+  it('the reply sweep asks on entry and re-asks before every inbox scan and every thread read', () => {
+    const sweep = strip(readFileSync('src/outreach/replyCheck.ts', 'utf8'))
+    const asks = sweep.match(/thisMacRole\(\)/g) ?? []
+    expect(asks.length, 'entry + inbox loop + thread loop').toBeGreaterThanOrEqual(3)
+    const inboxLoop = sweep.indexOf('for (const sender of local)')
+    const threadLoop = sweep.indexOf('for (const c of candidates)')
+    expect(sweep.indexOf('thisMacRole()', inboxLoop) - inboxLoop).toBeLessThan(200)
+    expect(sweep.indexOf('thisMacRole()', threadLoop) - threadLoop).toBeLessThan(250)
+  })
+
   it('the connect relay does NOT ask — a Mac must be signable-in before it can be chosen', () => {
     const connect = strip(readFileSync('src/agent/connectPass.ts', 'utf8'))
     expect(connect).not.toContain('thisMacRole')
