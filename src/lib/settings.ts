@@ -39,6 +39,7 @@ export const SETTING_KEYS = {
   defaultCooldownDays: 'defaultCooldownDays',
   hookMaxAgeHours: 'hookMaxAgeHours',
   autopilotEnabled: 'autopilotEnabled',
+  activeDevice: 'activeDevice',
   maxNewBrandTouchesPerDay: 'maxNewBrandTouchesPerDay',
   maxWaitingNewBrandDrafts: 'maxWaitingNewBrandDrafts',
   fleetMaxPerHour: 'fleetMaxPerHour',
@@ -250,6 +251,13 @@ export interface RuntimeSettings {
    * is exactly where a fatally short template would otherwise come from.
    */
   singleTemplateBody: string | null
+  /**
+   * THE SENDING MAC (2026-09-10): the one device name that does the fleet's work — sending,
+   * the reply sweep, brand look-ups, detection failover. Every other Mac holds, whatever is
+   * signed in there. `null` means NO Mac sends (fail closed), and the landing page says so.
+   * See `src/outreach/activeDevice.ts`.
+   */
+  activeDevice: string | null
 
   /**
    * ── A SEPARATE STANDARD MESSAGE PER FLEET (2026-08-26, Tabish) ─────────
@@ -378,6 +386,7 @@ function defaults(): RuntimeSettings {
     singleTemplate: true,
     // Null = the shipped copy. A row exists only after somebody saves an edit.
     singleTemplateBody: null,
+    activeDevice: null,
     // Empty until somebody writes a second fleet's copy — which REFUSES sends to that
     // fleet rather than falling back. See fleetTemplate.ts.
     fleetTemplateBodies: new Map<string, string>(),
@@ -527,6 +536,11 @@ async function readSettings(): Promise<RuntimeSettings> {
       // Whitespace-only is treated as unset: an accidental save of nothing must fall back
       // to the shipped copy, never become an empty message body.
       return raw !== undefined && raw.trim().length > 0 ? raw : d.singleTemplateBody
+    })(),
+    activeDevice: (() => {
+      const raw = map.get(SETTING_KEYS.activeDevice)
+      // Blank means unset, and unset means NO Mac sends — never "whichever Mac happens to run".
+      return raw !== undefined && raw.trim().length > 0 ? raw.trim() : d.activeDevice
     })(),
     /**
      * Every `templateBody:<slug>` row, blank ones dropped.

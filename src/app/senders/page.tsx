@@ -13,6 +13,8 @@ import { TeamPanel } from './team-panel'
 import { listTeam, revokeDevice, approveDevice } from '../actions'
 import { listPairedDevices, listPendingEnrolments } from '@/lib/deviceEnrol'
 import { readInstallerBuild } from '@/lib/installerBuild'
+import { getSettings } from '@/lib/settings'
+import { ActiveDeviceSection } from './active-device'
 import { buildVersion } from '@/lib/buildVersion'
 
 export const dynamic = 'force-dynamic'
@@ -73,6 +75,18 @@ export default async function SendersPage({ searchParams }: { searchParams: Prom
   /* The Macs whose own tunnel keys this server holds; empty on a laptop, where there is no authorized_keys to read. */
   const paired = listPairedDevices()
   const waiting = await listPendingEnrolments()
+  // THE SENDING MAC (2026-09-10): the one Mac doing the fleet's work, and every Mac that could be.
+  // Paired (holds a tunnel key on this box) ∪ beating (the maintainer's Mac pairs by its own key).
+  const activeDevice = (await getSettings()).activeDevice
+  const knownMacs = [...new Set([...paired.map((d) => d.name), ...devices])]
+  const sendingMacOptions = knownMacs.map((name) => ({
+    name,
+    online: devices.includes(name),
+    handles: presence.find((d) => d.device === name)?.handles ?? [],
+    build: agentBuild.get(name)?.version ?? null,
+    paired: paired.some((d) => d.name === name),
+  }))
+  const rotationHandles = v.groups.flatMap((g) => g.rows.map((r) => r.handle))
 
   return (
     <>
@@ -215,6 +229,8 @@ export default async function SendersPage({ searchParams }: { searchParams: Prom
             </div>
           </section>
         )}
+
+        <ActiveDeviceSection options={sendingMacOptions} selected={activeDevice} senderHandles={rotationHandles} />
 
         <section className="group">
           <h2>Paired Macs</h2>

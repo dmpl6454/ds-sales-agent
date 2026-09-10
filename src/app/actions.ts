@@ -3,7 +3,7 @@
 import { invalidateCeoView } from './view-model'
 import { invalidateViews } from '@/lib/viewMemo'
 import { revalidatePath } from 'next/cache'
-import { approveEnrolment, revokePairedDevice } from '@/lib/deviceEnrol'
+import { approveEnrolment, revokePairedDevice, listPairedDevices } from '@/lib/deviceEnrol'
 import { redirect } from 'next/navigation'
 import { prisma } from '@/lib/db'
 import { env } from '@/lib/env'
@@ -1527,6 +1527,39 @@ export async function checkConnect(handle: string): Promise<ConnectState> {
 
 /** The devices currently running an agent, freshest first — the sign-in target picker. */
 const DEVICE_FRESH_MS = 2 * 60_000
+
+/**
+ * ── CHOOSE THE SENDING MAC (2026-09-10) ──
+ * The one Mac that sends, sweeps replies and looks up brands; every other Mac holds,
+ * whatever is signed in there (`src/outreach/activeDevice.ts`). Only a Mac that is paired or
+ * beating can be chosen — a typo must not silence the fleet — and the flip is audited with
+ * the Mac it replaced, because months later that row is the only record of why sending
+ * moved. The agents read the Setting on their next tick; nothing is restarted.
+ */
+export async function setActiveDevice(device: string): Promise<{ ok: boolean; message: string }> {
+  const user = await requireOperator()
+  const name = device.trim()
+  const online = await onlineSendingDevices()
+  const known = new Set([...listPairedDevices().map((d) => d.name), ...online])
+  if (!known.has(name)) {
+    return { ok: false, message: `${name || '(nothing)'} is not a paired or online Mac — nothing changed.` }
+  }
+  const prev = (await getSettings()).activeDevice
+  if (prev === name) return { ok: true, message: `${name} is already the sending Mac.` }
+  await setSetting(SETTING_KEYS.activeDevice, name)
+  await audit(
+    user.email,
+    'device.active.set',
+    'Setting:activeDevice',
+    `${name} (was ${prev ?? 'none'}) — it now sends, reads replies and looks up brands; every other Mac holds`,
+  )
+  invalidateCeoView()
+  refreshPath('/')
+  refreshPath('/senders')
+  const offline = online.includes(name) ? '' : ' — it is not online yet, so nothing sends until it is'
+  return { ok: true, message: `${name} is the sending Mac now${offline}.${prev ? ` ${prev} holds from its next tick.` : ''}` }
+}
+
 export async function listSendingDevices(): Promise<Array<{ device: string; handles: string[] }>> {
   await requireOperator()
   const now = Date.now()

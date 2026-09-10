@@ -179,6 +179,7 @@ export default async function RulesPage() {
     {
       group: 'Accounts',
       lines: [
+        'Only the Mac chosen under Senders → Sending Mac sends, reads replies or looks up brands. Every other paired Mac holds everything, whatever accounts are signed in there. No Mac chosen means nothing sends.',
         `An Instagram checkpoint on any one account pauses the whole fleet for ${CHALLENGE_WINDOW_HOURS} hours — every account sends the same way from the same connection, so a flag on one is a warning about all.`,
         /**
          * ONE SWITCH, 2026-08-08: "before the next may be ARMED" named the per-account toggle,

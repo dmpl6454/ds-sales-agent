@@ -71,9 +71,13 @@ export function AutopilotPanel({ state }: { state: AutopilotState }) {
           <div>
             <div className="autopilot-title">
               {state.on
-                ? covered > 0
-                  ? 'Autopilot is ON — the agent sends by itself'
-                  : 'Autopilot is ON, but no account is ready to use it'
+                ? !state.sendingMac.selected
+                  ? 'Autopilot is ON, but no Mac is selected to send'
+                  : !state.sendingMac.online
+                    ? `Autopilot is ON, but ${state.sendingMac.selected} — the sending Mac — is not online`
+                    : covered > 0
+                      ? `Autopilot is ON — ${state.sendingMac.selected} sends by itself`
+                      : 'Autopilot is ON, but no account is ready to use it'
                 : 'Autopilot is OFF — messages wait for you'}
             </div>
             {/*
@@ -91,9 +95,13 @@ export function AutopilotPanel({ state }: { state: AutopilotState }) {
             */}
             <div className="autopilot-sub">
               {state.on
-                ? covered > 0
-                  ? `It finds paid posts, decides which brands are worth writing to, writes the messages, and sends them — ${state.paceClause}.`
-                  : 'It finds paid posts, decides brands and writes messages — but no account can send yet, so everything waits. Sign one in and it starts on its own.'
+                ? !state.sendingMac.selected
+                  ? 'Nothing sends anywhere until a Mac is chosen under Senders → Sending Mac. Paid posts are still found and messages are still written.'
+                  : !state.sendingMac.online
+                    ? `Nothing sends until ${state.sendingMac.selected} is back online — open its lid, or choose another Mac under Senders. Paid posts are still found and messages are still written.`
+                    : covered > 0
+                      ? `It finds paid posts, decides which brands are worth writing to, writes the messages, and sends them from ${state.sendingMac.selected} — ${state.paceClause}. Every other Mac holds.`
+                      : 'It finds paid posts, decides brands and writes messages — but no account can send yet, so everything waits. Sign one in and it starts on its own.'
                 : 'Nothing sends. Paid posts are still found and messages are still written — drafts keep their Send buttons.'}
             </div>
           </div>

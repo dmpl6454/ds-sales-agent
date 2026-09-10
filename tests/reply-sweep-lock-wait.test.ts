@@ -27,6 +27,8 @@ vi.mock('@/outreach/dispatcher', () => ({
 vi.mock('@/lib/db', () => ({ prisma: { senderAccount: { findMany: vi.fn() }, setting: { findUnique: vi.fn(), upsert: vi.fn() } } }))
 vi.mock('@/outreach/browser/profile', () => ({ profileStatus: () => ({ hasSession: false, dir: '', initialised: false }) }))
 vi.mock('@/agent/reconcile', () => ({ reconcileSessionRecords: vi.fn() }))
+// This Mac is the selected sending Mac in these cases; the standby rule has its own test (tests/active-device.test.ts).
+vi.mock('@/outreach/activeDevice', () => ({ thisMacRole: async () => ({ active: true, selected: 'this-mac', thisDevice: 'this-mac' }) }))
 vi.mock('@/detection/autoResolve', () => ({ autoResolveBrands: vi.fn() }))
 vi.mock('@/detection/officialDiscovery', () => ({ discoverOfficialPages: vi.fn() }))
 
