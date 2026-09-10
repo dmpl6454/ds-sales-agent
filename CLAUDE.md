@@ -118,14 +118,18 @@ rejects for the afternoon. **The keychain profile is gone from both keychains**
 needs the Apple ID app-specific password, which is Tabish's. Now: an unnotarised build is
 written to `DS-Sales-Agent.UNNOTARISED.dmg` beside the real image, and `deploy.sh` refuses to
 upload an image `stapler validate` rejects unless `DS_ALLOW_UNNOTARISED=1` says so out loud.
-**Until the profile is restored, the Studio can only take a new build via "Open Anyway".** The
-image on the box is **`ef7b1ab`**, uploaded explicitly with `DS_ALLOW_UNNOTARISED=1` because the
-box already served an unnotarised `da13ecf` and the newer build is what lets the Studio send at
-all once it updates; the local unnotarised build now lives at
-`~/Downloads/DS-Sales-Agent.UNNOTARISED.dmg` and the standard path is empty until a notarised
-build exists. Restoring the profile is one command with the app-specific password:
-`xcrun notarytool store-credentials ds-notary --apple-id sudhanshu@digitalsukoon.com --team-id DYA37GDBH3`,
-then `bash scripts/build-dmg.sh && bash scripts/deploy.sh`.
+**RESTORED THE SAME AFTERNOON.** Tabish supplied the app-specific password; `xcrun notarytool
+store-credentials ds-notary --apple-id sudhanshu@digitalsukoon.com --team-id DYA37GDBH3` validated
+and saved it, and the profile's history shows the 9 Sept submission — so the profile had existed
+and vanished, cause unknown. The image was rebuilt from `ff47090`: **app and image both
+`Accepted`, `spctl: accepted`, ticket stapled**, uploaded by `deploy.sh` (whose `stapler
+validate` guard it now passes), and the hosted download is **byte-identical** (sha256
+`8569cc35…`, 2,724,076 B); `/senders` reads *"Installer build ff47090 — the same as this
+dashboard"*. The unnotarised `da13ecf`/`ef7b1ab` images are gone from the box and from
+`~/Downloads`. The Studio installed **`01016fc`** this morning, which WAS notarised — the
+break affected only today's builds, never their install. The password was pasted into a chat:
+regenerating it at appleid.apple.com is Tabish's option, and the store-credentials command
+must then be re-run with the new one.
 
 ### THE ANSWERS, AS MEASURED AT 13:36 IST
 
@@ -138,6 +142,7 @@ then `bash scripts/build-dmg.sh && bash scripts/deploy.sh`.
 | detection / drafting | on the server, fresh: 152 posts / 7 paid in 3 h, 9 drafts in 3 h, `detectFeedOkAt` and `planLastOkAt` minutes old |
 | sending | 26 delivered today, 0 stuck `SENDING`, 0 challenged, 0 orphan parks; 44 waiting, all held by the material rule and reply halts |
 | this Mac's agent | `86451a0`; the log reads *"another Mac is sending — waiting"* once per streak and **0 takeovers** since 13:02 |
+| the installer | `ff47090`, notarised, byte-identical through the hosted download |
 | tests / typecheck | **2,339 / 139 files**, clean; four mutations caught |
 | not verified in a browser | the two-holder sentence on the paparazzii row (its group is collapsed in server HTML; the one-holder sibling branch rendered on bachelorssociety's row and the picker label rendered) |
 | not rebuilt | the local dashboard on :3100 still serves the previous build; the hosted URL is current |
