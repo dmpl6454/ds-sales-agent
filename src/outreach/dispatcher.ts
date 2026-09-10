@@ -558,7 +558,10 @@ export async function withSendLock<T>(what: string, fn: () => Promise<T>): Promi
    * it can be chosen.
    */
   const role = await thisMacRole()
-  if (!role.active) {
+  // Disk care is the one exemption: it prunes THIS Mac's own browser caches, drives nothing
+  // and refuses while Chrome is open; it takes the lock only so a drive cannot start under it.
+  // A standby Mac's caches are as much its own as an active Mac's.
+  if (!role.active && what !== 'disk-care') {
     log.step('not the selected sending Mac — nothing drives a browser here', { what, reason: role.reason, detail: role.detail })
     return null
   }
