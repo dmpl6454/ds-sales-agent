@@ -130,9 +130,11 @@ export default async function RulesPage() {
     .filter(([code]) => !overridable.has(code))
     .map(([, label]) => label)
 
-  const rows: Array<{ group: string; lines: string[] }> = [
+  const rows: Array<{ group: string; lines: string[]; accent: string; kind: 'prose' | 'permit' | 'deny' }> = [
     {
       group: 'Volume',
+      accent: '#a78bfa',
+      kind: 'prose',
       lines: [
         /*
           THE ONE VOLUME RULE (2026-08-18, Tabish's instruction). Every other cap — the
@@ -162,6 +164,8 @@ export default async function RulesPage() {
     },
     {
       group: 'Hours and pace',
+      accent: '#a78bfa',
+      kind: 'prose',
       lines: [
         `${ACTIVE_FROM_HOUR}:00–${ACTIVE_TO_HOUR}:00 IST only.`,
         `Never two sends within ${FLEET_MIN_GAP_MINUTES} minutes of each other — across the ${fleetCaps._count} accounts together that works out to roughly ${Math.floor(((ACTIVE_TO_HOUR - ACTIVE_FROM_HOUR) * 60) / FLEET_MIN_GAP_MINUTES)} deliveries a day at full pace.`,
@@ -170,6 +174,8 @@ export default async function RulesPage() {
     },
     {
       group: 'Replies',
+      accent: '#34d399',
+      kind: 'prose',
       lines: [
         'A reply halts every account writing to that recipient for seven days, counted from when they wrote, then messaging resumes by itself.',
         'Before a follow-up is sent, its own conversation is read; a thread that cannot be read fully holds the send.',
@@ -178,6 +184,8 @@ export default async function RulesPage() {
     },
     {
       group: 'Accounts',
+      accent: '#d1a954',
+      kind: 'prose',
       lines: [
         'Only the Mac chosen under Senders → Sending Mac sends, reads replies or looks up brands. Every other paired Mac holds everything, whatever accounts are signed in there. No Mac chosen means nothing sends.',
         `An Instagram checkpoint on any one account pauses the whole fleet for ${CHALLENGE_WINDOW_HOURS} hours — every account sends the same way from the same connection, so a flag on one is a warning about all.`,
@@ -194,6 +202,8 @@ export default async function RulesPage() {
     },
     {
       group: 'Watching',
+      accent: '#767a96',
+      kind: 'prose',
       lines: [
         'Reading channels never uses a login, so detection can never put an account at risk.',
         'Posts from before 1 August 2026 are stored but not judged or pitched.',
@@ -202,6 +212,8 @@ export default async function RulesPage() {
     },
     {
       group: 'You may cross, with a reason shown',
+      accent: '#34d399',
+      kind: 'permit',
       lines: [
         'Send-now can cross these after showing what is being crossed, one sentence each:',
         ...CROSSABLE_ORDER.map((code) => `${CROSSABLE_LABELS[code]}.`),
@@ -209,9 +221,13 @@ export default async function RulesPage() {
     },
     {
       group: 'Never crossed, by anyone',
+      accent: '#f2777b',
+      kind: 'deny',
       lines: neverCrossed.map((l) => `${l.charAt(0).toUpperCase()}${l.slice(1)}.`),
     },
   ]
+
+  const proseGroups = rows.filter((r) => r.kind === 'prose')
 
   return (
     <>
@@ -222,38 +238,41 @@ export default async function RulesPage() {
           sub="What the system will and will not do. Every number is read from the module that enforces it."
         />
         {/*
-          A sticky index, because this page is long BY NECESSITY — it is where every
-          rationale paragraph in the product lives — and a reader who came here for one
-          rule should not have to scroll past nine groups to find it.
-        */}
-        <div className="settings-layout">
-          <nav className="settings-nav" aria-label="Rule groups">
-            {rows.map((r) => (
-              <a key={r.group} href={`#${slug(r.group)}`}>
-                {r.group}
-              </a>
-            ))}
-          </nav>
+          ── THE RULES READ AS PROSE ─────────────────────────────────────────
 
-          <div className="settings-body">
-            {rows.map((r) => (
-              <section id={slug(r.group)} key={r.group}>
+          A rule is an argument: a claim, then the sentences that qualify it. So each group
+          leads with its headline at prose weight and sets the rest underneath against a
+          coloured rule — the claim is what a reader takes away, the remainder is what stops
+          them taking away the wrong thing.
+
+          The numbered index replaced a sticky sidebar. It was there because the page is
+          long by necessity, and it is still the answer — 01–05 down the left margin is the
+          same wayfinding in a column the content was already paying for.
+        */}
+        <div className="rule-list">
+          {proseGroups.map((r, i) => (
+            <section
+              className="rule-group"
+              id={slug(r.group)}
+              key={r.group}
+              style={{ ['--rule' as string]: r.accent }}
+            >
+              <span className="rule-index" aria-hidden>
+                {String(i + 1).padStart(2, '0')}
+              </span>
+              <div>
                 <h2>{r.group}</h2>
-                {/*
-                  One rule per row in a bordered list rather than bullets. These are
-                  statements of what the system will refuse to do, and a bullet list reads
-                  as suggestions — the border makes each one a discrete fact.
-                */}
-                <div className="rows">
-                  {r.lines.map((l) => (
-                    <div className="rowitem" key={l}>
-                      <span className="prose">{l}</span>
-                    </div>
+                <div className="rule-body">
+                  <p className="rule-headline">{r.lines[0]}</p>
+                  {r.lines.slice(1).map((l) => (
+                    <p className="rule-line" key={l}>
+                      {l}
+                    </p>
                   ))}
                 </div>
-              </section>
-            ))}
-          </div>
+              </div>
+            </section>
+          ))}
         </div>
       </div>
     </>

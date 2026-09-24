@@ -5,9 +5,9 @@ import { buildRestTally } from '../view-model/rest-tally'
 import { buildChannelsView } from '../view-model'
 import { Nav } from '../nav'
 import { PageHead } from '../page-head'
-import { ImportForm } from '../prospects/import-form'
+import { AddTargetsForm } from '../prospects/add-targets-form'
 import { ProspectList } from '../prospects/list'
-import { RestBand } from '../rest-band'
+import { RestTile } from '../rest-band'
 import { ChannelsPanel } from '../channels'
 import { listCategories } from '@/outreach/categories'
 import { DETECT_INTERVAL_MINUTES } from '@/detection/cadence'
@@ -61,7 +61,7 @@ export default async function TargetsPage({
           halves of one fact, and reading the first without the second is what made the list look
           like capacity it does not have.
         */}
-        <RestBand tally={rest} />
+        <RestTile tally={rest} />
 
         {/*
           A TREND, not the last sample — a channel failing every slot for two days must not
@@ -91,7 +91,20 @@ export default async function TargetsPage({
           nothing an operator must set up and no empty table to explain. Each row below names
           the one account that writes next.
         */}
-        <ImportForm />
+        {/*
+          ── THE READING ORDER IS THE MOCKUP'S, AND IT IS THE RIGHT ONE ──────────
+
+          Add, then the pages we WATCH, then the companies we MESSAGE. The watched pages come
+          first because they are where every company below them came from: a reader who meets
+          477 companies with no explanation of their provenance has to go looking for it, and
+          the answer is the two-row list directly above.
+
+          It is also the safer order to read. The watch list is the one place a wrong row is
+          expensive — a mistyped handle there mints real prospects who get real DMs — and it is
+          two rows against four hundred, so burying it under the long list is how it goes
+          unchecked.
+        */}
+        <AddTargetsForm />
 
         {/*
           WHAT WATCHING COSTS, PER DAY.
@@ -131,10 +144,14 @@ export default async function TargetsPage({
           starts at the first page.
         */}
         <form method="get" action="/targets" className="channel-filter" id="prospects">
-          <label htmlFor="prospect-search" className="muted">
-            Find a company
-          </label>{' '}
-          <input id="prospect-search" name="q" type="search" defaultValue={v.query ?? ''} placeholder="handle or name" />{' '}
+          <input
+            id="prospect-search"
+            name="q"
+            type="search"
+            defaultValue={v.query ?? ''}
+            placeholder="Find a company — handle or name"
+            style={{ flex: '1 1 16rem', maxWidth: '26rem' }}
+          />{' '}
           <button type="submit" className="muted">
             Show
           </button>
@@ -145,7 +162,39 @@ export default async function TargetsPage({
             </span>
           ) : null}
         </form>
-        <ProspectList prospects={v.prospects} sendersAble={v.sendersAble} messagedTotal={v.paging.total} />
+        {/*
+          NO HEADING OF MY OWN ON `ProspectList`. It already emits the mockup's two
+          sections — "Pages we watch (N)" and "Companies we message (N)" — verbatim, and
+          wrapping it in a section of the same name would render each heading twice.
+
+          ── `ChannelsPanel` MOVED BELOW IT, FOLDED (2026-09-21) ─────────────────────
+
+          It used to sit HERE, open, with its own "Channels we watch" heading — so the page
+          read Add → Channels we watch (2, with Remove buttons) → Pages we watch (2, the
+          identical two handles, no buttons) → Companies we message. Two headings for one
+          fact is the duplication this file's own comment warns against one line up; it
+          just was not looking at this pair when it said so.
+
+          The mockup has ONE watch list. `ProspectList`'s "Pages we watch" is line-for-line
+          it — the reading a person gets by default now matches. `ChannelsPanel` is the only
+          place a WATCH page can be individually removed (retiring one with history asks a
+          confirmation `AddTargetsForm` has no field for), so it is folded rather than
+          deleted: every control survives, one click away, the way the Autopilot page already
+          folds its template editors below the mockup's own content instead of before it.
+        */}
+        <ProspectList
+          prospects={v.prospects}
+          sendersAble={v.sendersAble}
+          messagedTotal={v.paging.total}
+          /* `ch` is already loaded above for the folded `ChannelsPanel` — the watch
+             row's own "N posts read this week · M paid this week" reuses it rather
+             than asking the same counts twice. */
+          channels={ch.channels}
+        />
+        <details className="fold">
+          <summary>Add a channel one at a time, or remove one</summary>
+          <ChannelsPanel channels={ch.channels} fleets={fleets.map((f) => ({ slug: f.slug, name: f.name }))} />
+        </details>
         {v.paging.pageCount > 1 ? (
           <p className="muted">
             Showing {v.paging.from}&ndash;{v.paging.to} of {v.paging.total} &middot; page {v.paging.page} of{' '}
@@ -162,14 +211,6 @@ export default async function TargetsPage({
             ) : null}
           </p>
         ) : null}
-
-        <section>
-          <h2>Reading their feeds</h2>
-          <p className="page-meta">
-            {ch.lastCheckLabel} · {ch.nextSlotLabel}
-          </p>
-          <ChannelsPanel channels={ch.channels} fleets={fleets.map((f) => ({ slug: f.slug, name: f.name }))} />
-        </section>
       </div>
     </>
   )

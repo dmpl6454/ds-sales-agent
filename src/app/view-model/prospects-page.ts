@@ -403,7 +403,11 @@ async function computeProspectsPage(input?: ProspectsInput): Promise<ProspectsPa
     if (kind !== 'CHANNEL' || !watchEnabled) return null
     const r = getDetector(detectorKey).readiness?.() ?? { ready: true }
     if (r.ready) return null
-    return `Their posts are being read but nothing is judging them — ${r.reason ?? 'no classifier is set up'}. No paid post here can be found until that changes.`
+    /* The detector's own reason is a SENTENCE and usually already ends in a full
+       stop, so appending one printed "…once a key is configured.. No paid post".
+       Trimmed rather than reworded, because the reason is the detector's to write. */
+    const reason = (r.reason ?? 'no classifier is set up').replace(/\s*\.\s*$/, '')
+    return `Their posts are being read but nothing is judging them — ${reason}. No paid post here can be found until that changes.`
   }
 
   function groundTruthNote(

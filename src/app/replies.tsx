@@ -33,70 +33,110 @@ import type { ReplyCard } from './view-model'
  * The COUNT is on the summary line, always visible. A collapsible whose closed state hides
  * whether there is anything inside is a control nobody opens.
  */
+/** How many reply cards are drawn before the rest go behind the table. */
+const SHOWN = 4
+
 export function RepliesPanel({ replies }: { replies: ReplyCard[] }) {
   if (replies.length === 0) return null
+  const shown = replies.slice(0, SHOWN)
+  const rest = replies.slice(SHOWN)
 
   return (
-    <details className="replies-fold">
-      <summary>
-        {/*
-          ONE ROW PER REPLY, and some recipients wrote to more than one of our pages — so the
-          row count is not a recipient count and must not borrow its noun. Both numbers are
-          useful here precisely because this fold lists one row per reply: the summary tells
-          you how many rows are inside and how many parties they represent.
-        */}
-        {(() => {
-          const people = new Set(replies.map((r) => r.targetHandle)).size
-          if (replies.length === 1) return '1 reply'
-          return people === replies.length
-            ? `${replies.length} recipients have replied`
-            : `${replies.length} replies from ${people} recipients`
-        })()}
-        <span className="muted"> — every account writing to them is paused</span>
-      </summary>
+    <>
+      {/*
+        ── THE DESIGN'S CARDS, BOUNDED ────────────────────────────────────────
 
-      <div className="table-wrap">
-        <table className="table">
-          <thead>
-            <tr>
-              <th>Who replied</th>
-              <th>When</th>
-              <th>Our page</th>
-              <th>Frees up</th>
-              <th>Thread</th>
-            </tr>
-          </thead>
-          <tbody>
-            {replies.map((r) => (
-              <tr key={r.attemptId}>
-                <td>
-                  {r.targetName}
-                  {/* `{' '}` is load-bearing — JSX drops the space between an expression and
-                      the next line's text, which put "@handlereplied" on a live page once. */}
+        The design draws a card per reply: who, when, what they said. That is the right shape
+        at the size it depicts, and the WRONG shape at the size this system reaches — at 75
+        stored replies the page opened with 75 quotations, several of them paragraphs, above
+        the queue, which is why they were folded into a table in the first place (2026-08-25).
+
+        Both readings are honoured by bounding it: the newest four are cards, and everything
+        behind them is one line and a table. A reader meets the design's card, and the page
+        cannot become a wall of somebody else's prose as the corpus grows.
+
+        THE "I HAVE REPLIED" BUTTON IS NOT DRAWN, and that is not an omission. It was removed
+        on Tabish's instruction — "no need for clicking 'I have replied' … fleet resumes on its
+        own after 7 days anyways" — and `markReplyHandled` was deleted with it. Re-adding the
+        button would mean re-adding an early-release control nobody asked for; what replaces
+        it on each card is the date the halt frees by itself, which is the fact it was hiding.
+      */}
+      <div className="grid-2">
+        {shown.map((r) => (
+          <div className="reply" key={r.attemptId}>
+            <div className="reply-top">
+              <span className="reply-who">@{r.targetHandle}</span>
+              <span className="mono dim">{r.whenLabel}</span>
+            </div>
+            {r.preview ? (
+              <p className="reply-text">&ldquo;{r.preview}&rdquo;</p>
+            ) : (
+              /* A reply the sweep recorded from an inbox row carries no text. Say so rather
+                 than rendering empty quotation marks, which read as an empty message. */
+              <p className="reply-text muted">They replied &mdash; the text was not captured.</p>
+            )}
+            <p className="reply-foot">
+              from @{r.senderHandle} &middot; {r.freesLabel}
+              {/* The separator travels WITH the link. Split across a wrap it left the card's
+                  last line ending in a bare middot, which reads as a sentence that lost its
+                  end rather than as a list that continued. */}
+              {r.threadUrl ? (
+                <span className="nowrap">
                   {' '}
-                  <span className="muted">@{r.targetHandle}</span>
-                </td>
-                <td className="muted">{r.whenLabel}</td>
-                {/* The HANDLE, not the display name: an Instagram thread can only be opened
-                    from the profile that holds it, so this is the page to be signed in as. */}
-                <td className="muted">@{r.senderHandle}</td>
-                <td className="muted">{r.freesLabel}</td>
-                <td>
-                  {r.threadUrl ? (
-                    <a href={r.threadUrl} target="_blank" rel="noreferrer">
-                      open the thread
-                    </a>
-                  ) : (
-                    /* Never a dead link dressed as a live one. Measured: 0 of 75 rows, but a
-                       reply recorded by hand can genuinely have no thread URL. */
-                    <span className="muted">no thread recorded</span>
-                  )}
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+                  &middot;{' '}
+                  <a href={r.threadUrl} target="_blank" rel="noreferrer">
+                    open the thread
+                  </a>
+                </span>
+              ) : null}
+            </p>
+          </div>
+        ))}
       </div>
-    </details>
+
+      {rest.length > 0 ? (
+        <details className="replies-fold">
+          <summary>
+            {rest.length} more {rest.length === 1 ? 'reply' : 'replies'}
+          </summary>
+          <div className="table-wrap">
+            <table className="table">
+              <thead>
+                <tr>
+                  <th>Who replied</th>
+                  <th>When</th>
+                  <th>Our page</th>
+                  <th>Frees up</th>
+                  <th>Thread</th>
+                </tr>
+              </thead>
+              <tbody>
+                {rest.map((r) => (
+                  <tr key={r.attemptId}>
+                    <td>
+                      {r.targetName} <span className="muted">@{r.targetHandle}</span>
+                    </td>
+                    <td className="muted">{r.whenLabel}</td>
+                    {/* The HANDLE, not the display name: an Instagram thread can only be opened
+                        from the profile that holds it, so this is the page to be signed in as. */}
+                    <td className="muted">@{r.senderHandle}</td>
+                    <td className="muted">{r.freesLabel}</td>
+                    <td>
+                      {r.threadUrl ? (
+                        <a href={r.threadUrl} target="_blank" rel="noreferrer">
+                          open the thread
+                        </a>
+                      ) : (
+                        <span className="muted">no thread recorded</span>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </details>
+      ) : null}
+    </>
   )
 }

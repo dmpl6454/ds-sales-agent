@@ -25,21 +25,19 @@ export function ExportPanel({ senders }: { senders: string[] }) {
 
   return (
     <section>
-      <h2>Export sent messages</h2>
+      <h2>Export</h2>
+      {/*
+        ONE ROW, CONTENT-SIZED, NO CAPTIONS ABOVE THE CONTROLS — the mockup's own layout.
+        The labels are still here for anyone using a screen reader; `.vh` hides them from
+        sight without taking them out of the accessibility tree, the same treatment
+        `channel-filter.tsx` already uses for its search box.
+      */}
       <div className="card">
         <div className="exportform">
           <label>
-            <span>From (IST day)</span>
-            <input type="date" value={from} onChange={(e) => setFrom(e.target.value)} />
-          </label>
-          <label>
-            <span>To (IST day)</span>
-            <input type="date" value={to} onChange={(e) => setTo(e.target.value)} />
-          </label>
-          <label>
-            <span>Account</span>
+            <span className="vh">Account</span>
             <select value={sender} onChange={(e) => setSender(e.target.value)}>
-              <option value="">All accounts</option>
+              <option value="">Every account</option>
               {senders.map((h) => (
                 <option key={h} value={h}>
                   @{h}
@@ -48,9 +46,17 @@ export function ExportPanel({ senders }: { senders: string[] }) {
             </select>
           </label>
           <label>
-            <span>Rows</span>
+            <span className="vh">From (IST day)</span>
+            <input type="date" value={from} onChange={(e) => setFrom(e.target.value)} />
+          </label>
+          <label>
+            <span className="vh">To (IST day)</span>
+            <input type="date" value={to} onChange={(e) => setTo(e.target.value)} />
+          </label>
+          <label>
+            <span className="vh">Rows</span>
             <select value={status} onChange={(e) => setStatus(e.target.value)}>
-              <option value="delivered">Delivered messages</option>
+              <option value="delivered">Delivered only</option>
               <option value="replied">Replied only</option>
               <option value="all">Everything (drafts and failures too)</option>
             </select>

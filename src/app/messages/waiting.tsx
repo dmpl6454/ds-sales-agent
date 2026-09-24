@@ -25,35 +25,72 @@ const whenIst = (d: Date) =>
  * same" became "the count says 33 and the list is empty": a held draft that appears
  * nowhere reads as a stuck system, and the honest answer was one table away.
  */
-function HeldList({ heldUpNext, heldWaiting }: { heldUpNext: MessagesPageView['heldUpNext']; heldWaiting: number }) {
+function HeldList({
+  heldUpNext,
+  heldWaiting,
+  resting,
+}: {
+  heldUpNext: MessagesPageView['heldUpNext']
+  heldWaiting: number
+  /**
+   * The FLEET-WIDE resting figure, which is a different population from the rows below and
+   * that is the whole reason it is in the heading. These rows are drafts that exist and are
+   * held; `resting` counts companies the planner refused to write for at all, so they have no
+   * draft and appear in no list. A heading saying only "2 held" over a system holding back 86
+   * companies is the defect this page has produced twice — a bounded list read as the whole
+   * record. Null when the tally could not be read, and then the heading says only what it knows.
+   */
+  resting: { resting: number; total: number } | null
+}) {
   if (heldUpNext.length === 0) return null
+  /**
+   * The one sentence every held row shares, or null when they genuinely differ. Verbatim
+   * from the gate either way — this decides WHERE it is rendered, never what it says.
+   */
+  const reasons = new Set(heldUpNext.map((r) => r.why))
+  const oneReason = reasons.size === 1 ? heldUpNext[0]!.why : null
   return (
     <>
-      <h3>Resting ({heldWaiting} held)</h3>
-      {/* .table-wrap: the "why" column carries whole sentences, and a wide table must
-          scroll inside its own container — the page body must never scroll sideways. */}
-      <div className="table-wrap">
-        <table className="table">
-          <thead>
-            <tr>
-              <th>From account</th>
-              <th>To</th>
-              <th>Why it waits</th>
-              <th>Frees up</th>
-            </tr>
-          </thead>
-          <tbody>
-            {heldUpNext.map((row) => (
-              <tr key={`${row.senderHandle}-${row.targetHandle}`}>
-                <td>@{row.senderHandle}</td>
-                <td>@{row.targetHandle}</td>
-                <td>{row.why}</td>
-                <td>{whenIst(row.resumesAt)} IST</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+      <h3 className="held-head">
+        {resting
+          ? `Resting — ${resting.resting}/${resting.total} companies on cooldown or cap (${heldWaiting} held here)`
+          : `Resting (${heldWaiting} held)`}
+      </h3>
+      {/*
+        ONE BORDERED SURFACE OF HAIRLINE ROWS, which is what the design draws and what a
+        bare <table> could not be: with no container the last column ran out to the page
+        edge, so four columns of one row read as four unrelated things. The tracks are a
+        grid shared by the header and every row, and the "why" track is `minmax(0, 1fr)`
+        so the enforcer's own sentence WRAPS inside its column instead of widening the row.
+
+        AND WHEN EVERY ROW WAITS ON THE SAME RULE, THE SENTENCE IS SAID ONCE, below the
+        panel. The material rule holds most of this queue most of the time, so the "why"
+        column was routinely the same twenty-five words repeated down the page — and a fact
+        met twice teaches a reader to skip both. Nothing is summarised or re-derived: it is
+        still the enforcer's own sentence, verbatim, and the moment two rows genuinely
+        differ the column comes back and each row carries its own.
+      */}
+      <div className={`rows qrows ${oneReason ? 'qrows-held-3' : 'qrows-held'}`}>
+        <div className="qhead">
+          <span>From account</span>
+          <span>To</span>
+          {oneReason ? null : <span>Why it waits</span>}
+          <span className="qright">Frees up</span>
+        </div>
+        {heldUpNext.map((row) => (
+          <div className="qrow" key={`${row.senderHandle}-${row.targetHandle}`}>
+            <span className="qhandle">@{row.senderHandle}</span>
+            <span className="qhandle">@{row.targetHandle}</span>
+            {oneReason ? null : <span className="qwhy">{row.why}</span>}
+            <span className="qright dim">{whenIst(row.resumesAt)} IST</span>
+          </div>
+        ))}
       </div>
+      {oneReason ? (
+        <p className="cardnote lede">
+          {heldUpNext.length === 1 ? 'It waits' : 'All of them wait'} on one rule: {oneReason}
+        </p>
+      ) : null}
       {heldWaiting > heldUpNext.length ? (
         <p className="cardnote">
           {heldWaiting - heldUpNext.length} more are resting behind these, on the same two rules.
@@ -64,18 +101,19 @@ function HeldList({ heldUpNext, heldWaiting }: { heldUpNext: MessagesPageView['h
 }
 
 export function WaitingList({
-  queue,
   upNext,
   heldWaiting,
   heldUpNext,
   total,
   autopilotOn,
+  resting,
 }: {
-  queue: MessagesPageView['queueBySender']
   upNext: MessagesPageView['upNext']
   heldWaiting: number
   heldUpNext: MessagesPageView['heldUpNext']
   total: number
+  /** Fleet-wide resting companies, for the heading above the held rows — see `HeldList`. */
+  resting: { resting: number; total: number } | null
   /**
    * With this false the dispatcher holds every tick on `autopilot-off` and NOTHING in this
    * list is going anywhere. The panel used to render ETAs and "clear to send on the next
@@ -102,40 +140,36 @@ export function WaitingList({
               ? 'Autopilot is on and the dispatcher checks every minute, so each draft below sends itself when its window clears.'
               : 'each draft below is waiting for its window to clear AND for Autopilot to be switched back on.'}
           </p>
-          <HeldList heldUpNext={heldUpNext} heldWaiting={heldWaiting} />
+          <HeldList heldUpNext={heldUpNext} heldWaiting={heldWaiting} resting={resting} />
         </>
       ) : (
         <>
-          <table className="table">
-            <thead>
-              <tr>
-                <th>#</th>
-                <th>From account</th>
-                <th>To</th>
-                <th>Turn comes</th>
-              </tr>
-            </thead>
-            <tbody>
-              {upNext.map((row) => (
-                <tr key={`${row.senderHandle}-${row.targetHandle}`}>
-                  <td>{row.position}</td>
-                  <td>@{row.senderHandle}</td>
-                  <td>@{row.targetHandle}</td>
-                  <td>
-                    {row.etaMinutes === null
-                      ? 'when Autopilot is on'
-                      : row.etaMinutes <= 0
-                        ? 'next tick'
-                        : `in ~${row.etaMinutes} min`}
-                    {row.note ? (
-                      <span className={row.held ? ' note-warn' : ' note-good'}> — {row.note}</span>
-                    ) : null}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-          <p className="cardnote">
+          <div className="rows qrows qrows-next">
+            <div className="qhead">
+              <span>#</span>
+              <span>From account</span>
+              <span>To</span>
+              <span>Turn comes</span>
+            </div>
+            {upNext.map((row) => (
+              <div className="qrow" key={`${row.senderHandle}-${row.targetHandle}`}>
+                <span className="qpos">{row.position}</span>
+                <span className="qhandle">@{row.senderHandle}</span>
+                <span className="qhandle">@{row.targetHandle}</span>
+                <span className="dim">
+                  {row.etaMinutes === null
+                    ? 'when Autopilot is on'
+                    : row.etaMinutes <= 0
+                      ? 'next tick'
+                      : `in ~${row.etaMinutes} min`}
+                  {row.note ? (
+                    <span className={row.held ? ' note-warn' : ' note-good'}> &mdash; {row.note}</span>
+                  ) : null}
+                </span>
+              </div>
+            ))}
+          </div>
+          <p className="cardnote lede">
             {autopilotOn ? (
               <>
                 These are the drafts that will actually go, oldest first &mdash; one every minute, any time of day.{' '}
@@ -154,25 +188,13 @@ export function WaitingList({
             ) : null}
           </p>
 
-          <HeldList heldUpNext={heldUpNext} heldWaiting={heldWaiting} />
-
-          <h3>Waiting per account</h3>
-          <table className="table">
-            <thead>
-              <tr>
-                <th>From account</th>
-                <th>Waiting</th>
-              </tr>
-            </thead>
-            <tbody>
-              {queue.map((row) => (
-                <tr key={row.handle}>
-                  <td>@{row.handle}</td>
-                  <td>{row.count}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+          {/*
+            "Waiting per account" is GONE (the design has no such table). It counted the same
+            drafts the two tables above already list by name, so a reader met every waiting
+            draft three times — and duplication is a failure of the same kind as silence: a
+            fact seen three times teaches a reader to skip all three.
+          */}
+          <HeldList heldUpNext={heldUpNext} heldWaiting={heldWaiting} resting={resting} />
         </>
       )}
     </section>

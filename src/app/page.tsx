@@ -141,26 +141,47 @@ export default async function AutopilotPage() {
       {/* One message a minute means the page is stale before it is read; see auto-refresh.tsx. */}
       <AutoRefresh seconds={30} />
       <div className="page">
-        <PageHead title="Autopilot" sub={`${v.nowLabel} IST`} />
+        <PageHead title="Autopilot" aside={`${v.nowLabel} IST · ${v.nextSlotLabel}`} />
 
-        {/* THE ALARM, and only the alarm. */}
+        {/*
+          THE ALARM, THE SENTENCE, AND THE ONE CONTROL THE DESIGN PUTS HERE.
+
+          `SyncButton` is inside the card because the design draws it there and because it is
+          the one control that acts on what the card is ABOUT — "the watch last read 84 posts"
+          invites exactly one question, and this answers it.
+
+          WHAT MUST NOT COME BACK IN, and `tests/shell.test.ts` fails the build over both: the
+          last-check FIGURE and `SignOutButton`. This card's border and dot turn amber and red,
+          `status-attention` is the ordinary state whenever a draft is waiting, and for two days
+          it rendered an alarm containing a routine figure and a sign-out link — good news
+          inside a red box, which is how a reader learns to ignore the box. A quiet control is
+          not furniture; a figure and a nav link are.
+        */}
         <div className={`status status-${v.health}`}>
           <span className="dot" aria-hidden />
           <span className="headline">{v.headline}</span>
+          <SyncButton />
         </div>
 
-        {/* The facts, outside it, in neutral type. */}
-        <p className="page-meta">
-          {v.lastCheckLabel} · {v.nextSlotLabel} <SyncButton />
-        </p>
+        {/*
+          The facts, OUTSIDE the alarm, in neutral type.
 
-        {/* The switch, the scheduler behind it, and per-account readiness. */}
-        <AutopilotPanel state={v.autopilot} />
+          The check-now button moved INTO the hero with the design; this row is the figure it
+          acts on, which stays out of the amber box. The next slot moved up to the heading row
+          beside the clock, so it is not repeated here either.
+        */}
+        <p className="page-meta">{v.lastCheckLabel}</p>
 
-        {/* The answer to the page's question, ranked by what cannot be undone. */}
-        <BlockerList blockers={blockers} summary={blockersSummary(blockers, v.autopilot.on)} />
-
+        {/*
+          THE SWITCH AND THE PACE, SIDE BY SIDE — the mockup's shape, and it earns the pairing:
+          the switch says whether unattended sending is permitted at all, the pace says why "on"
+          does not mean "now". Read apart, the first invites "so why has nothing gone out?" and
+          the second is the answer. They were a full-width card and a half-width card two
+          sections apart, so the question and its answer were never in one glance.
+        */}
         <section className="grid-2">
+          <AutopilotPanel state={v.autopilot} />
+
           <PaceBand
             istHour={istHourOfDay(now)}
             istMinute={istMinute}
@@ -173,73 +194,110 @@ export default async function AutopilotPage() {
             minGapMinutes={m.dispatch.limits.minGapMinutes}
             lastTick={lastTick}
           />
-
-          <div className="stack">
-            {/* A reply halts every account writing to that recipient until someone takes over. */}
-            {/*
-              THE EXPLANATION MOVED TO /rules (2026-08-17), THE REPLIES DID NOT.
-
-              Two sentences used to sit here saying a reply halts every account, resumes after
-              a day, and that "I have replied" releases it sooner. `/rules` already states both
-              of those from the modules that enforce them — so this was the second copy, on the
-              page a person looks at most, which is how a reader learns to skip both.
-
-              What stays is the reply itself and the control that releases it. The heading now
-              carries the one-clause version, because a reader who has never seen this before
-              still needs to know the halt is fleet-wide, and a link cannot say that in situ.
-            */}
-            {c.replies.length > 0 && (
-              <section>
-                <h2>They replied — every account to them is paused</h2>
-                <RepliesPanel replies={c.replies} />
-                <p className="cardnote">
-                  <a href="/rules">How the pause works</a>
-                </p>
-              </section>
-            )}
-
-            {/*
-              Failures the retry cap gave up on. The "Check the conversation" section that used
-              to sit above this is GONE (2026-08-24, Tabish) along with the list of sends that
-              cleared the composer and never appeared: it was asking a person to open eighteen
-              Instagram conversations, three of them for drafts that had not failed once.
-              `ParkedList` renders nothing at all when there is nothing to show.
-            */}
-            <ParkedList parked={m.parked} />
-
-            {/*
-              NEW COMPANIES — a count, no cap. The per-day new-company cap was removed on
-              2026-08-18 (Tabish: "Remove all caps"); what bounds the queue now is its
-              depth, and what bounds deliveries is the 5-minute gap and the per-pair rule.
-            */}
-            <section>
-              <h2>New companies today</h2>
-              <p className="cardnote">
-                <strong>{m.newCompanies.delivered}</strong> contacted today
-                {m.newCompanies.waiting > 0 ? <> · {m.newCompanies.waiting} written and waiting to go out</> : null}
-                {m.newCompanies.neverContacted > 0 ? (
-                  <>
-                    {' '}
-                    · {m.newCompanies.neverContacted}{' '}
-                    {m.newCompanies.neverContacted === 1 ? 'company' : 'companies'} still to reach
-                  </>
-                ) : null}
-              </p>
-            </section>
-          </div>
         </section>
 
-        {/*
-          WHY THE QUEUE IS THE DEPTH IT IS — immediately above the queue, because it is the
-          answer to the question the queue provokes. MEASURED the day it shipped: 10 drafts
-          waiting and 469 of 473 companies resting, and every number on this page was about the
-          10. A company the planner refused to write for has no draft, so the population that
-          explains a ten-deep queue appeared nowhere.
-        */}
-        <RestBand tally={rest} />
+        {/* The answer to the page's question, ranked by what cannot be undone. */}
+        <BlockerList blockers={blockers} summary={blockersSummary(blockers, v.autopilot.on)} />
 
-        {/* The queue: who sends next (sendable drafts in dispatch order), then counts per account. */}
-        <WaitingList queue={m.queueBySender} upNext={m.upNext} heldWaiting={m.heldWaiting} heldUpNext={m.heldUpNext} total={m.waitingTotal} autopilotOn={m.autopilotOn} />
+        {/* A reply halts every account writing to that recipient until someone takes over. */}
+        {/*
+          THE EXPLANATION MOVED TO /rules (2026-08-17), THE REPLIES DID NOT.
+
+          Two sentences used to sit here saying a reply halts every account, resumes after
+          a day, and that "I have replied" releases it sooner. `/rules` already states both
+          of those from the modules that enforce them — so this was the second copy, on the
+          page a person looks at most, which is how a reader learns to skip both.
+
+          What stays is the reply itself and the control that releases it. The heading now
+          carries the one-clause version, because a reader who has never seen this before
+          still needs to know the halt is fleet-wide, and a link cannot say that in situ.
+        */}
+        {c.replies.length > 0 && (
+          <section>
+            <h2>They replied &mdash; paused</h2>
+            <RepliesPanel replies={c.replies} />
+            {/*
+              THE HEADING IS THE DESIGN'S ("They replied — paused") AND THE CLAUSE IT DROPPED
+              LANDED HERE, not nowhere. "Paused" alone does not say the halt covers EVERY page
+              writing to that recipient, and that is the part a reader meeting this for the
+              first time would otherwise have to guess at — a link cannot say it in situ.
+            */}
+            <p className="cardnote lede">
+              Every account writing to them is paused, not just the one they answered.{' '}
+              <a href="/rules">How the pause works</a>
+            </p>
+          </section>
+        )}
+
+        {/*
+          Failures the retry cap gave up on. The "Check the conversation" section that used
+          to sit above this is GONE (2026-08-24, Tabish) along with the list of sends that
+          cleared the composer and never appeared: it was asking a person to open eighteen
+          Instagram conversations, three of them for drafts that had not failed once.
+          `ParkedList` renders nothing at all when there is nothing to show.
+        */}
+        <ParkedList parked={m.parked} />
+
+        {/*
+          NEW COMPANIES — a count, no cap. The per-day new-company cap was removed on
+          2026-08-18 (Tabish: "Remove all caps"); what bounds the queue now is its
+          depth, and what bounds deliveries is the 5-minute gap and the per-pair rule.
+
+          A tile rather than a heading and a sentence: it is one figure with its parts named,
+          which is the shape the mockup gives it, and an `<h2>` over a single line of prose
+          was announcing a section that had no content of its own.
+        */}
+        <div className="card card-tint" style={{ marginBottom: 20 }}>
+          <div className="eyebrow">New companies today</div>
+          <p className="stat-sentence">
+            <strong>{m.newCompanies.delivered}</strong> contacted
+            {m.newCompanies.waiting > 0 ? <> · {m.newCompanies.waiting} waiting to go out</> : null}
+            {m.newCompanies.neverContacted > 0 ? (
+              <>
+                {' '}
+                · {m.newCompanies.neverContacted}{' '}
+                {m.newCompanies.neverContacted === 1 ? 'company' : 'companies'} still to reach
+              </>
+            ) : null}
+          </p>
+        </div>
+
+        {/*
+          ── THE QUEUE: UP NEXT, THEN WHAT IS RESTING ────────────────────────
+          The design's shape, and the ordering is the argument for it. The full rest tally used
+          to sit ABOVE this as a heading, a paragraph and a table — the largest block on the
+          page, in front of the thing the page is about. The figure that block existed to carry
+          (469 of 473 companies resting, against a ten-deep queue) is now the RESTING HEADING
+          inside the list, where a reader meets it beside the rows it explains, and the
+          per-reason breakdown is one click below rather than unfolded in the way.
+        */}
+        <WaitingList
+          upNext={m.upNext}
+          heldWaiting={m.heldWaiting}
+          heldUpNext={m.heldUpNext}
+          total={m.waitingTotal}
+          autopilotOn={m.autopilotOn}
+          resting={rest.total > 0 ? { resting: rest.resting, total: rest.total } : null}
+        />
+
+        {/*
+          THE BREAKDOWN, FOLDED. It answers "why are they resting", which is the second
+          question, and it is a table of five rows of rules — the kind of thing a person opens
+          once and then stops needing. Folded it keeps every figure and stops the page opening
+          with an explanation of a queue the reader has not seen yet.
+        */}
+        {rest.total > 0 && rest.resting > 0 ? (
+          <details className="fold">
+            {/*
+              The count is NOT repeated here: the heading one line above already reads
+              "Resting — N/M companies on cooldown or cap", and a fold restating N directly
+              under it is the duplication this page keeps producing — a fact met twice
+              teaches a reader to skip both. This summary says what is INSIDE it instead.
+            */}
+            <summary>Why they are resting, rule by rule</summary>
+            <RestBand tally={rest} />
+          </details>
+        ) : null}
 
         {/*
           ── WHAT HAS ACTUALLY GONE OUT, ON THE PAGE THAT ANSWERS "IS IT SENDING" ────
@@ -271,7 +329,10 @@ export default async function AutopilotPage() {
             <div className="rows">
               {m.recent.slice(0, 8).map((r) => (
                 <div className="rowitem" key={r.id}>
-                  <span className="mono dim" style={{ width: 96, flex: '0 0 auto' }}>
+                  {/* Wide enough for "18 Sept, 10:21" in the mono face and told not to
+                      wrap: at 96px it broke across two lines, which doubled the height of
+                      every row in the list and turned a compact history into a ledger. */}
+                  <span className="mono dim" style={{ width: 118, flex: '0 0 auto', whiteSpace: 'nowrap' }}>
                     {r.sentAt
                       ? r.sentAt.toLocaleString('en-GB', {
                           timeZone: 'Asia/Kolkata',
@@ -298,9 +359,17 @@ export default async function AutopilotPage() {
           )}
         </section>
 
-        {/* THE standard message, editable here since /settings went (2026-08-18). */}
-        <section>
-          <h2>{fleetTemplates.length > 0 ? 'The message each fleet sends' : 'The message every recipient gets'}</h2>
+        {/*
+          ── THE TWO EDITORS AND THE MANUAL SEND, FOLDED ────────────────────
+          None of these is in the design, and all three are real controls, so they are folded
+          rather than deleted. What decides it is how often each is used: the page answers "is
+          it sending" many times a day, and the copy is written once and then edited almost
+          never — so three tall panels of textareas and a send form sat permanently between a
+          reader and the answer. Folded, every control is one click away and nothing is lost;
+          each keeps its own confirmation and its own refusal.
+        */}
+        <details className="fold">
+          <summary>{fleetTemplates.length > 0 ? 'The message each fleet sends' : 'The message every recipient gets'}</summary>
           <TemplateForm
             initialBody={settings.singleTemplateBody ?? SINGLE_TEMPLATE_MIDDLE}
             edited={settings.singleTemplateBody !== null}
@@ -323,7 +392,7 @@ export default async function AutopilotPage() {
               senderCount={f.senderCount}
             />
           ))}
-        </section>
+        </details>
 
         {/**
           * ── THE SECOND MESSAGE (2026-09-01, Tabish) ─────────────────────────
@@ -337,8 +406,8 @@ export default async function AutopilotPage() {
           * split by fleet, so it is the number of companies a saved textarea would actually
           * release rather than an estimate.
           */}
-        <section>
-          <h2>The second message</h2>
+        <details className="fold">
+          <summary>The second message</summary>
           <FollowUpForm
             slug={null}
             name={fleetTemplates.length > 0 ? DEFAULT_FLEET_NAME : ''}
@@ -354,10 +423,13 @@ export default async function AutopilotPage() {
               waitingPairs={rest.noFollowUpByFleet[f.slug] ?? 0}
             />
           ))}
-        </section>
+        </details>
 
         {/* Manual send: the same queue, one draft earlier. It writes a draft that appears above. */}
-        <OnDemandPanel accounts={m.onDemandSenders} channels={m.onDemandRecipients} />
+        <details className="fold">
+          <summary>Send a message now</summary>
+          <OnDemandPanel accounts={m.onDemandSenders} channels={m.onDemandRecipients} />
+        </details>
       </div>
     </>
   )

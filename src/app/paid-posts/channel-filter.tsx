@@ -43,7 +43,16 @@ export function ChannelFilter({
 
   return (
     <form method="get" action="/paid-posts" className="channel-filter">
-      <label htmlFor="channel-pick" className="muted">
+      {/*
+        THE LABELS AND THE SUBMIT ARE VISUALLY HIDDEN, NOT DELETED. The design draws a
+        select and a search box and nothing else; a screen reader still needs to be told
+        what each control is, and the button is what makes Enter submit reliably when a
+        form holds more than one field AND what submits the channel when JavaScript has
+        not loaded and the `onChange` below never ran. `.vh` keeps all three in the
+        accessibility tree and in the tab order — it is not `display: none`, which would
+        take the button out of both and quietly break the no-JS path this form documents.
+      */}
+      <label htmlFor="channel-pick" className="vh">
         Channel
       </label>{' '}
       <select
@@ -75,7 +84,7 @@ export function ChannelFilter({
         placeholder says so, because a search that answers a question nobody knows to ask
         it answers nothing.
       */}
-      <label htmlFor="post-search" className="muted">
+      <label htmlFor="post-search" className="vh">
         Search
       </label>{' '}
       <input
@@ -89,7 +98,7 @@ export function ChannelFilter({
         The one control both paths need: it submits the typed search, and it is also what
         submits the channel when JavaScript has not loaded and the `onChange` above never ran.
       */}
-      <button type="submit" className="muted">
+      <button type="submit" className="vh">
         Show
       </button>
     </form>
