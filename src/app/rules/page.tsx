@@ -227,14 +227,7 @@ export default async function RulesPage() {
     },
   ]
 
-  /**
-   * Split by `kind` rather than by position, so a group added to the list above lands in the
-   * right half by declaring what it is. Slicing by index would put a new sixth prose group
-   * silently into the Boundaries column.
-   */
   const proseGroups = rows.filter((r) => r.kind === 'prose')
-  const permit = rows.find((r) => r.kind === 'permit')
-  const deny = rows.find((r) => r.kind === 'deny')
 
   return (
     <>
@@ -245,21 +238,12 @@ export default async function RulesPage() {
           sub="What the system will and will not do. Every number is read from the module that enforces it."
         />
         {/*
-          ── THE RULES READ AS PROSE, THE BOUNDARIES READ AS LISTS ─────────────
-
-          The two halves of this page are different KINDS of statement and the mockup gives
-          each its own shape, which is the whole reason this is not one uniform list any
-          more.
+          ── THE RULES READ AS PROSE ─────────────────────────────────────────
 
           A rule is an argument: a claim, then the sentences that qualify it. So each group
           leads with its headline at prose weight and sets the rest underneath against a
           coloured rule — the claim is what a reader takes away, the remainder is what stops
           them taking away the wrong thing.
-
-          A boundary is a membership test: a line is either in the set or it is not, and no
-          line qualifies another. So those two are ticked and crossed lists, side by side,
-          where the shape itself says "these are the things that may be crossed, and these
-          are the things that may not".
 
           The numbered index replaced a sticky sidebar. It was there because the page is
           long by necessity, and it is still the answer — 01–05 down the left margin is the
@@ -289,42 +273,6 @@ export default async function RulesPage() {
               </div>
             </section>
           ))}
-        </div>
-
-        <h2 className="bounds-head">Boundaries</h2>
-        <div className="grid-2">
-          {permit ? (
-            <section className="bounds bounds-permit" id={slug(permit.group)}>
-              <div className="bounds-title">
-                <div className="bounds-name">{permit.group}</div>
-                <p className="bounds-intro">{permit.lines[0]}</p>
-              </div>
-              {permit.lines.slice(1).map((l) => (
-                <div className="bounds-item" key={l}>
-                  <span className="bounds-mark" aria-hidden>
-                    ✓
-                  </span>
-                  <p>{l}</p>
-                </div>
-              ))}
-            </section>
-          ) : null}
-
-          {deny ? (
-            <section className="bounds bounds-deny" id={slug(deny.group)}>
-              <div className="bounds-title">
-                <div className="bounds-name">{deny.group}</div>
-              </div>
-              {deny.lines.map((l) => (
-                <div className="bounds-item" key={l}>
-                  <span className="bounds-mark" aria-hidden>
-                    ×
-                  </span>
-                  <p>{l}</p>
-                </div>
-              ))}
-            </section>
-          ) : null}
         </div>
       </div>
     </>
