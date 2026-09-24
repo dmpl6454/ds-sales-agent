@@ -28,15 +28,33 @@ export function SenderLadder({ groups }: { groups: AccountGroup[] }) {
   /* Worst first: a flagged account is the only row on this page that can stop the whole
      fleet, so it must never sit below three healthy ones. */
   const order: AccountGroup['key'][] = ['broken', 'needs-login', 'ready', 'out-of-fleet']
-  const rows = order.flatMap((key) => groups.find((g) => g.key === key)?.rows ?? [])
+  /*
+    THE GROUP TRAVELS WITH THE ROW. `AccountRow.state` is computed from the session and the
+    status and never looks at `fleetMember` — so an account taken out of the rotation that
+    still holds a live session (a retired page whose conversations the sweep must keep reading)
+    is `state: 'ready'`. Rendered from `state` alone, this list painted such a row with a green
+    dot and a "Ready" pill directly above a group heading reading "Not in the rotation — writes
+    to nobody". Both cannot be true and the heading is the correct one, so the row is drawn from
+    the GROUP it came from, and out-of-fleet never reads as able to send.
+  */
+  const rows = order.flatMap((key) =>
+    (groups.find((g) => g.key === key)?.rows ?? []).map((row) => ({ row, group: key })),
+  )
   if (rows.length === 0) return null
 
   return (
     <section>
       <h2>Accounts</h2>
       <div className="ladder">
-        {rows.map((r) => {
-          const dot = r.state === 'broken' ? 'dot-bad' : r.state === 'ready' ? 'dot-good' : 'dot-warn'
+        {rows.map(({ row: r, group }) => {
+          const outOfFleet = group === 'out-of-fleet'
+          const dot = outOfFleet
+            ? 'dot-idle'
+            : r.state === 'broken'
+              ? 'dot-bad'
+              : r.state === 'ready'
+                ? 'dot-good'
+                : 'dot-warn'
           return (
             <div className="ladder-row" key={r.id}>
               {/*
@@ -60,16 +78,20 @@ export function SenderLadder({ groups }: { groups: AccountGroup[] }) {
                     when there is one; otherwise the row reports what it has been doing, which
                     is what makes a healthy fleet legible at a glance rather than blank.
                   */}
-                  <div className={r.todo ? 'sender-sub sender-sub-warn' : 'sender-sub'}>
-                    {r.todo ??
-                      (r.state === 'ready'
-                        ? `${r.sentThisWeek} sent this week · ${r.sentToday} today`
-                        : 'Not in the rotation — writes to nobody')}
+                  <div className={r.todo && !outOfFleet ? 'sender-sub sender-sub-warn' : 'sender-sub'}>
+                    {outOfFleet
+                      ? 'Not in the rotation — writes to nobody'
+                      : (r.todo ??
+                        (r.state === 'ready'
+                          ? `${r.sentThisWeek} sent this week · ${r.sentToday} today`
+                          : 'Not in the rotation — writes to nobody'))}
                   </div>
                 </div>
               </div>
 
-              {r.state === 'ready' ? (
+              {outOfFleet ? (
+                <span className="pill">Not in rotation</span>
+              ) : r.state === 'ready' ? (
                 /*
                   "Sending" and "Ready" are the mockup's own split, and it is a real one
                   rather than an invented flourish: `sentThisWeek`/`sentToday` are already

@@ -46,12 +46,17 @@ export default async function CostPage() {
         : { text: 'Inside the expected band. The prompt prefix is matching as it should.', tone: 'good' as const }
 
   /**
-   * Classification is ONE call per post, so the classify bucket's call count IS the number
-   * of posts judged. Read from `byPurpose` rather than summed over `perChannel`: the channel
-   * rows fold calls whose subject no longer resolves into a 'no longer stored' bucket, and a
-   * headline figure must not depend on whether a join still lands.
+   * CALLS, NOT POSTS. This tile shipped labelled "Posts judged" on the premise that
+   * classification is one call per post. It is not: a post with footage is judged twice
+   * (caption alone, then with the frame — judge.ts), a failed call is recorded and retried,
+   * and the re-judge passes call again. So the classify bucket's call count over-states
+   * posts by every retry and every frame call, and the honest name for the figure is the
+   * one the ledger actually holds. Read from `byPurpose` rather than summed over
+   * `perChannel`: the channel rows fold calls whose subject no longer resolves into a
+   * 'no longer stored' bucket, and a headline figure must not depend on whether a join
+   * still lands.
    */
-  const postsJudged = v.byPurpose.find((p) => p.purpose === 'classify')?.calls ?? 0
+  const classifierCalls = v.byPurpose.find((p) => p.purpose === 'classify')?.calls ?? 0
 
   return (
     <>
@@ -91,8 +96,8 @@ export default async function CostPage() {
             </div>
           </div>
           <div className="card card-tint">
-            <div className="eyebrow">Posts judged</div>
-            <div className="tile-n">{postsJudged.toLocaleString('en-GB')}</div>
+            <div className="eyebrow">Classifier calls</div>
+            <div className="tile-n">{classifierCalls.toLocaleString('en-GB')}</div>
           </div>
         </div>
 
@@ -118,7 +123,7 @@ export default async function CostPage() {
           <div className="qrows qrows-cost">
             <div className="qhead">
               <span>Channel</span>
-              <span className="qright">Posts judged</span>
+              <span className="qright">Classifier calls</span>
               <span className="qright">Spend</span>
             </div>
             {v.perChannel.map((c) => (

@@ -754,7 +754,14 @@ async function computeCeoView(): Promise<CeoView> {
           `${new Set(unreadReplies.map((r) => r.pair.targetId)).size} recipients replied — outreach to them is paused`
   } else if (awaitingRaw.length > 0) {
     health = 'attention'
-    headline = `${awaitingRaw.length} draft${awaitingRaw.length === 1 ? '' : 's'} queued — nothing is blocked`
+    /*
+      "queued — nothing is blocked" shipped here with the mockup and was false in the common
+      case: this branch is reached with autopilot OFF, with no sending Mac selected, or with
+      every draft held by the material rule, and the dispatcher's own state row says "hold"
+      about each of them. A verdict is not a sentence. "Written and waiting" is true of a
+      queued draft whatever is holding it; the rows below say what.
+    */
+    headline = `${awaitingRaw.length} draft${awaitingRaw.length === 1 ? '' : 's'} written and waiting`
   } else if (env.DRY_RUN) {
     health = 'attention'
     headline = 'Practice mode: watching and deciding, but writing nothing to send.'

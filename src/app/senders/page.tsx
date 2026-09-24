@@ -384,7 +384,10 @@ export default async function SendersPage({ searchParams }: { searchParams: Prom
               </div>
             )}
 
-            <LoginQueue queue={q.queue} devices={devices} />
+            {/* `#sign-ins` is where the ladder's "Open Chrome, sign in" link lands. */}
+            <div id="sign-ins">
+              <LoginQueue queue={q.queue} devices={devices} />
+            </div>
           </section>
         )}
 

@@ -38,9 +38,12 @@ import { istPostedLabel, istTimeKey } from '@/lib/time'
  * the full band answers "and why, broken down by rule" — which is the right depth on Autopilot
  * and is furniture directly under a page title.
  *
- * It states the SHAPE of the answer, not just the number: on cooldown or at a cap is a rule
- * releasing itself, and saying so is what stops 469 of 477 reading as an outage. Both come from
- * the same tally, so the tile and the band can never disagree.
+ * It states the SHAPE of the answer, not just the number: a company held by a rule is not a
+ * queue that has stalled, and saying so is what stops 469 of 477 reading as an outage. It says
+ * "a rule", not "cooldown or cap": the tally is the sum of EVERY governor refusal — the material
+ * rule, a reply, a missing badge, the fleet split — most of which release themselves and some
+ * of which need a person, and the band on Autopilot is where they are told apart. Both come
+ * from the same tally, so the tile and the band can never disagree.
  */
 export function RestTile({ tally }: { tally: RestTally }) {
   const { total, resting } = tally
@@ -50,7 +53,7 @@ export function RestTile({ tally }: { tally: RestTally }) {
     <div className="card" style={{ marginBottom: 20 }}>
       <div className="eyebrow">Resting</div>
       <p className="stat-sentence">
-        <strong>{resting}</strong>/{total} are on cooldown or the daily cap — not a queue depth problem
+        <strong>{resting}</strong>/{total} are held by a rule — not a queue depth problem
       </p>
     </div>
   )

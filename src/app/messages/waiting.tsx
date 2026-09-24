@@ -53,7 +53,7 @@ function HeldList({
     <>
       <h3 className="held-head">
         {resting
-          ? `Resting — ${resting.resting}/${resting.total} companies on cooldown or cap (${heldWaiting} held here)`
+          ? `Resting — ${resting.resting}/${resting.total} companies held by a rule (${heldWaiting} held here)`
           : `Resting (${heldWaiting} held)`}
       </h3>
       {/*
