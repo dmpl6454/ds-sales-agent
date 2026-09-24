@@ -20,8 +20,6 @@
     "db:migrate": "prisma migrate dev",
     "db:push": "prisma db push",
     "db:seed": "prisma db seed",
-    "db:seed:mockup": "tsx prisma/seed-mockup.ts",
-    "db:seed:mockup:beat": "tsx prisma/seed-mockup.ts --beat",
     "db:studio": "prisma studio",
     "db:reset": "prisma migrate reset --force",
     "test": "prisma generate >/dev/null && vitest run; s=$?; bash scripts/prisma-client-for-env.sh; exit $s",
