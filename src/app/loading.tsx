@@ -35,6 +35,11 @@ const TICK_MS = 90
 
 export default function Loading() {
   const [pct, setPct] = useState(0)
+  // Rendered client-side only (see below) so this can never disagree with the visitor's
+  // own clock, and it exists so someone watching over another person's shoulder — a
+  // screen share, a support call — can tell the load they are looking at is happening
+  // now rather than a stale screenshot.
+  const [now, setNow] = useState<string | null>(null)
 
   useEffect(() => {
     const id = setInterval(() => {
@@ -45,6 +50,17 @@ export default function Loading() {
       // is supposed to guarantee.
       setPct((p) => Math.min(CEILING, p + (CEILING - p) * CLOSE_RATE + START_TICK))
     }, TICK_MS)
+    return () => clearInterval(id)
+  }, [])
+
+  useEffect(() => {
+    // Set after mount, not from `Date.now()` in the initial render: the server has no
+    // clock a client should trust for display, and computing this during SSR would be a
+    // timestamp for the wrong moment (when the page was built, not when it was opened).
+    setNow(new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }))
+    const id = setInterval(() => {
+      setNow(new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }))
+    }, 1000)
     return () => clearInterval(id)
   }, [])
 
@@ -64,6 +80,12 @@ export default function Loading() {
           <strong>AI Sales Agent</strong>
           <span>by Digital Sukoon</span>
         </div>
+
+        {now ? (
+          <div className="boot-time" aria-hidden="true">
+            {now}
+          </div>
+        ) : null}
 
         <div className="boot-bar" aria-hidden="true">
           <span style={{ width: `${shown}%` }} />
