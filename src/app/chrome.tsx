@@ -3,11 +3,12 @@
 import { useEffect, useState } from 'react'
 
 /**
- * The two pieces of shell state that live in the BROWSER rather than in the
- * database: which theme you are reading in, and whether the rail is collapsed.
+ * The one piece of shell state that lives in the BROWSER rather than in the
+ * database: which theme you are reading in. (There were two; the rail's
+ * collapsed state went with the rail.)
  *
- * Both are written to `document.documentElement.dataset` and persisted to
- * `localStorage`, and both are applied before first paint by the boot script in
+ * It is written to `document.documentElement.dataset` and persisted to
+ * `localStorage`, and applied before first paint by the boot script in
  * `layout.tsx`. Nothing here talks to the server, and deliberately so — a
  * preference about how a screen looks is not a fact about the fleet, and
  * round-tripping it would put a database write on the path of a button that
@@ -66,33 +67,3 @@ export function ThemeToggle() {
   )
 }
 
-export function RailToggle() {
-  const [collapsed, setCollapsed] = useState(false)
-  const [mounted, setMounted] = useState(false)
-
-  useEffect(() => {
-    setCollapsed(document.documentElement.dataset.rail === 'collapsed')
-    setMounted(true)
-  }, [])
-
-  const toggle = () => {
-    const next = !collapsed
-    if (next) document.documentElement.dataset.rail = 'collapsed'
-    else delete document.documentElement.dataset.rail
-    remember('ds-rail', next ? 'collapsed' : null)
-    setCollapsed(next)
-  }
-
-  return (
-    <button
-      type="button"
-      className="rail-toggle"
-      onClick={toggle}
-      aria-expanded={mounted ? !collapsed : undefined}
-      aria-label={collapsed ? 'Expand the sidebar' : 'Collapse the sidebar'}
-      title={collapsed ? 'Expand the sidebar' : 'Collapse the sidebar'}
-    >
-      {collapsed ? '›' : '‹'}
-    </button>
-  )
-}

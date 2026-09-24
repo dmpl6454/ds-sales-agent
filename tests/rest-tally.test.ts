@@ -268,11 +268,35 @@ describe('the resting tally', () => {
     expect(band).toMatch(/istPostedLabel/)
   })
 
+  /**
+   * TWO SHAPES, ONE FIGURE — and the rule is about the FIGURE.
+   *
+   * This asserted `<RestBand` on both pages, which made the COMPONENT the invariant rather
+   * than the fact it carries. `/targets` renders `<RestTile` since the mockup design landed:
+   * the same tally in one line, because directly under a page title the question is "how many
+   * of these can we write to today" and the per-rule breakdown is furniture there, while on
+   * Autopilot — the page whose whole job is "what is stopping it" — the breakdown is the
+   * point.
+   *
+   * What must not change is that the figure reaches BOTH pages and is loaded concurrently
+   * with the other builders. A page that silently stopped rendering it would be back to
+   * showing a list that looks like capacity it does not have, which is the defect this whole
+   * file exists for, so the assertion is widened rather than dropped.
+   */
   it('is rendered on both pages that ask the question', () => {
     for (const page of ['src/app/page.tsx', 'src/app/targets/page.tsx']) {
       const p = readFileSync(join(repo, page), 'utf8')
-      expect(p, `${page} must render the band`).toMatch(/<RestBand tally=\{rest\}/)
+      expect(p, `${page} must render the tally in one of its two shapes`).toMatch(
+        /<Rest(Band|Tile) tally=\{rest\}/,
+      )
       expect(p, `${page} must load it concurrently, not serially`).toMatch(/buildRestTally\(\)/)
     }
+  })
+
+  /** Both shapes read the SAME tally, so they can never report different numbers. */
+  it('the tile and the band are both in rest-band.tsx, over one tally type', () => {
+    const band = readFileSync(join(repo, 'src/app/rest-band.tsx'), 'utf8')
+    expect(band).toMatch(/export function RestTile\(\{ tally \}: \{ tally: RestTally \}\)/)
+    expect(band).toMatch(/export function RestBand\(/)
   })
 })

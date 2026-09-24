@@ -8,6 +8,13 @@
  * renders eleven. So children 3, 5, 7, 9 and 11 landed in column ONE, underneath a sticky
  * full-height rail, and the home page became unreadable.
  *
+ * THE CHROME IS A TOP BAR NOW (2026-09-18), and this file had to be told: it asserted
+ * `nav.side`, a selector the redesign deleted, so **35 checks failed on seven pages that
+ * were laid out correctly** while nothing in here could ever have caught a top bar that
+ * covered the content. A harness pinned to a deleted element is worth less than no harness,
+ * because its failures are noise a reader learns to skip. Everything below now measures
+ * `nav.topbar`; the properties are unchanged, only the element they are about.
+ *
  * THE FALSE CLAIM. It shipped because the verification asked whether the rail was PRESENT,
  * whether a link was marked active, whether the JS chunks loaded and whether an error boundary
  * appeared. **All five passed on a page whose layout was destroyed.** `globals.css` then
@@ -88,7 +95,7 @@ const INTERNAL_LABELS = ['(test target)', '(rehearsal target)', '(trial)']
 
 const VIEWPORTS = [
   { name: 'wide', width: 1440, height: 900 },
-  // Below the 60rem breakpoint, where the rail becomes a horizontal strip.
+  // Narrow, where the bar's nav strip starts scrolling inside itself rather than wrapping.
   { name: 'narrow', width: 800, height: 900 },
 ]
 
@@ -124,7 +131,7 @@ function check(ok: boolean, label: string, extra = '') {
 async function measure(page: Page) {
   return page.evaluate(() => {
     const main = document.querySelector('main')
-    const railEl = document.querySelector('nav.side')
+    const railEl = document.querySelector('nav.topbar')
 
     const railRect = railEl ? railEl.getBoundingClientRect() : null
     const mainRect = main ? main.getBoundingClientRect() : null
@@ -348,16 +355,16 @@ async function main() {
        * browser for a value only our own CSS sets, so a served-but-ignored file still fails.
        */
       const styled = await page.evaluate(() => {
-        const rail = document.querySelector('nav.side')
-        return rail ? getComputedStyle(rail).display : ''
+        const bar = document.querySelector('nav.topbar')
+        return bar ? getComputedStyle(bar).display : ''
       })
-      check(styled === 'flex', 'our stylesheet is actually applied', `nav.side display: "${styled}"`)
+      check(styled === 'grid', 'our stylesheet is actually applied', `nav.topbar display: "${styled}"`)
 
       check(!m.hasErrorBoundary, 'no error boundary')
       // `pageText`, not `text`: the rail lists every page NAME, so checking the whole body
       // made this assertion satisfied by the sidebar on all nine pages — unfailable.
       check(m.pageText.includes(p.heading), `renders its own heading "${p.heading}"`)
-      check(m.rail !== null, 'the sidebar is present')
+      check(m.rail !== null, 'the top bar is present')
 
       if (m.rail && m.main) {
         /**
@@ -377,7 +384,7 @@ async function main() {
         const overlapping = m.children.filter((c) => c.width > 0 && c.height > 0 && intersects(m.rail!, c))
         check(
           overlapping.length === 0,
-          `all ${m.children.length} content blocks clear the rail`,
+          `all ${m.children.length} content blocks clear the top bar`,
           overlapping.map((c) => `${c.tag}.${c.cls} at ${Math.round(c.x)},${Math.round(c.y)}`).join(' · '),
         )
 
@@ -389,7 +396,7 @@ async function main() {
          */
         check(
           m.probe !== null && !intersects(m.rail, m.probe),
-          'a block added to this page would clear the rail too',
+          'a block added to this page would clear the top bar too',
           m.probe ? `probe landed at ${Math.round(m.probe.x)},${Math.round(m.probe.y)}` : 'no probe',
         )
       }

@@ -104,10 +104,16 @@ export function OnDemandPanel({ accounts, channels }: { accounts: OnDemandSender
 
   return (
     <section className="ondemand">
-      <h2>
-        Send a message now
-        <span className="h2-note">pick an account and a channel — overrides the usual spacing, with a warning</span>
-      </h2>
+      {/*
+        NO HEADING OF ITS OWN. On Autopilot this panel sits inside a disclosure whose summary
+        already reads "Send a message now", and a box repeating its own container's title is
+        the duplication this dashboard keeps producing. The sentence that WAS a span inside
+        that heading — and rendered as "Send a message nowpick an account", the `.h2note`
+        trap at a call site the margin rule never matched — is the panel's opening line now.
+      */}
+      <p className="page-sub">
+        Pick an account and a channel &mdash; overrides the usual spacing, with a warning.
+      </p>
 
       <div className="ondemand-row">
         <label>

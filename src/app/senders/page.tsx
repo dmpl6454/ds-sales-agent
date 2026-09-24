@@ -6,6 +6,7 @@ import { readPresence } from '@/agent'
 import { Nav } from '../nav'
 import { PageHead } from '../page-head'
 import { AccountGroupView } from '../accounts/group'
+import { SenderLadder } from './ladder'
 import { LoginQueue } from '../accounts/login/queue'
 import { AddSenderForm } from './add-form'
 import { RemoveSenderForm } from './remove-form'
@@ -124,6 +125,16 @@ export default async function SendersPage({ searchParams }: { searchParams: Prom
         </ul>
 
         {/*
+          THE FLEET AS ONE LADDER, above the setup prose and the grouped cards.
+
+          The tiles above say how the fleet SPLITS; this says which account is in which part,
+          which is the question the split provokes and the one a person actually arrives with.
+          It carries at most one control per row and never a control the groups below would
+          offer differently — see ladder.tsx for why it is one list rather than four.
+        */}
+        <SenderLadder groups={v.groups} />
+
+        {/*
           ── ONBOARDING A NEW SENDING MAC — AT THE TOP (2026-09-02) ────────────
           This lived at the BOTTOM, below seven account cards and two forms, and Tabish
           could not find the download button ("Where is the download button? How would an
@@ -131,18 +142,28 @@ export default async function SendersPage({ searchParams }: { searchParams: Prom
           to get a Mac sending, so it goes first — and urgent when no Mac is online, because
           then nothing can send at all and this is the only thing to do.
         */}
-        <section className="group">
-          <h2>{devices.length === 0 ? 'Start here — set up a sending Mac' : 'Add another sending Mac'}</h2>
+        {/*
+          A DISCLOSURE, AND IT IS OPEN WHEN NOTHING CAN SEND. Folded away this is three lines
+          of chrome; folded away on a dashboard with no Mac online it is the only actionable
+          thing on the page, hidden. So `open` is derived from whether a Mac is actually
+          beating — the summary changes wording with it, and the two agree because they read
+          the same fact.
+        */}
+        <details className="setup-fold" open={devices.length === 0}>
+          <summary>
+            <span aria-hidden="true">+</span>{' '}
+            {devices.length === 0 ? 'Start here — set up a sending Mac' : 'Set up another sending Mac'}
+          </summary>
           {devices.length === 0 ? (
             <p>
               Sending runs on a Mac with the accounts signed in on it — never on this server, so{' '}
               <strong>no account can send until a Mac is set up</strong>. Three steps:{' '}
               <strong>1.</strong> download the installer below and open it on the Mac that will send —
               double-click the app; it is signed and notarised by Apple, so nothing is blocked.{' '}
-              <strong>2.</strong> a browser tab opens on this dashboard: check the code and key match the
+              <strong>2.</strong>{' '}a browser tab opens on this dashboard: check the code and key match the
               Mac&rsquo;s dialog and click <strong>Approve this Mac</strong>. No database details or key files
               change hands — the Mac makes its own key and is handed what it needs, once.{' '}
-              <strong>3.</strong> when its agent is running it shows up here; press <strong>Connect</strong> on
+              <strong>3.</strong> when its agent is running it shows up here; press <strong>Connect</strong>{' '}on
               each account — the Instagram sign-in opens on that Mac, and it sends from that person&rsquo;s home
               internet.
             </p>
@@ -176,7 +197,7 @@ export default async function SendersPage({ searchParams }: { searchParams: Prom
           <span className="muted">
             {devices.length > 0 ? `Online now: ${devices.join(', ')}.` : 'No sending Mac is online yet.'}
           </span>
-        </section>
+        </details>
 
         {/*
           ── A MAC WAITING TO BE APPROVED IS ON SCREEN NOW (2026-09-04) ──────
@@ -386,7 +407,16 @@ export default async function SendersPage({ searchParams }: { searchParams: Prom
           Last on the page deliberately: the question this page answers is "can my accounts
           send", and adding one is the rarer act.
         */}
-        <AddSenderForm fleets={fleets.map((f) => ({ slug: f.slug, name: f.name }))} />
+        {/*
+          ── MANAGE ACCOUNTS, FOLDED (the mockup's shape) ──────────────────────
+          Adding and removing are the two rarest acts on this page and they were the two
+          longest blocks on it. Folded, the page answers its own question — can my accounts
+          send — without scrolling past two forms nobody uses most days. Nothing is removed:
+          both forms are inside, and each keeps its own confirmation.
+        */}
+        <details className="fold">
+          <summary>Manage accounts</summary>
+          <AddSenderForm fleets={fleets.map((f) => ({ slug: f.slug, name: f.name }))} />
 
         {/*
           Removal, with the queue handed off by rotation — see remove-form.tsx. Only
@@ -403,8 +433,22 @@ export default async function SendersPage({ searchParams }: { searchParams: Prom
           */
           handles={v.groups.flatMap((g) => g.rows.map((r) => r.handle))}
         />
+        </details>
 
-        {team && <TeamPanel users={team} />}
+        {/*
+          Team access, folded and COUNTED on the closed summary — a disclosure that hides
+          whether it has contents is one nobody opens, and "2 people" is most of what a
+          reader wanted from it anyway. Operators only: `team` is null for a viewer, so the
+          disclosure does not render at all rather than opening on an empty list.
+        */}
+        {team && (
+          <details className="fold">
+            <summary>
+              Team access — {team.length} {team.length === 1 ? 'person' : 'people'}
+            </summary>
+            <TeamPanel users={team} />
+          </details>
+        )}
       </div>
     </>
   )

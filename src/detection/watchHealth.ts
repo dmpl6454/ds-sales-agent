@@ -146,6 +146,33 @@ function minutesBetween(from: Date, to: Date): number {
  * severity and the words must not be able to disagree — a red box saying something mild
  * is how a warning stops being read.
  */
+/**
+ * THE SAME FACT IN ONE LINE, for the hero card.
+ *
+ * `watchHealthSentence` is the whole argument — what was missed, how long the feed window
+ * is, how many hours remain — and it belongs where a person reads detail: the blocker list,
+ * which already carries this alarm with its own verdict and remedy. Set in 22px bold at the
+ * top of the page it was sixty words of prose shouting one thing, and the reader met the
+ * same thing again forty pixels below. This says WHICH state, in a clause; nothing is lost,
+ * because the blocker under it is the fuller copy and the CLI still prints the long form.
+ */
+export function watchHealthHeadline(health: WatchHealth): string | null {
+  switch (health.severity) {
+    case 'ok':
+      return null
+    case 'at-risk':
+      return `Detection has stopped — about ${health.estimatedPostsMissed} post${health.estimatedPostsMissed === 1 ? '' : 's'} missed so far, all still recoverable`
+    case 'losing-posts':
+      return health.downMinutes === null
+        ? 'Detection has never run — no channel has ever been read'
+        : `Detection has been stopped long enough to lose posts permanently — about ${health.estimatedPostsLost} already gone`
+    default: {
+      const exhaustive: never = health.severity
+      return exhaustive
+    }
+  }
+}
+
 export function watchHealthSentence(health: WatchHealth): string | null {
   switch (health.severity) {
     case 'ok':

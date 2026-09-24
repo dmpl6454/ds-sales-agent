@@ -3,50 +3,50 @@ import { prisma } from '@/lib/db'
 import { sessionIsUsable } from './view-model/session-view'
 import { getSettings } from '@/lib/settings'
 import { replyHaltFloor } from '@/outreach/replyHalt'
-import { daysAgo } from '@/lib/time'
 import { detectionCutoff } from '@/lib/cutoff'
 import { visibleChannelFilter } from '@/detection/visibleChannels'
 import { readHeartbeat } from '@/worker/scheduler'
 import { buildVersion } from '@/lib/buildVersion'
 import { BuildWatch } from './build-watch'
 import { SignOutButton } from './sign-out-button'
-import { RailToggle } from './chrome'
+import { ThemeToggle } from './chrome'
 
 /**
- * The shell's navigation — a SIDEBAR, since 2026-08-05.
+ * The shell's navigation — a TOP BAR, since the DS Sales Agent redesign.
  *
- * ── WHY IT CHANGED ────────────────────────────────────────────────────────
+ * ── WHY IT CHANGED BACK ───────────────────────────────────────────────────
  *
- * It was a horizontal bar of five links. Tabish's words: the dashboard is *"confusing to use
- * and quite dull"*. Three specific things were wrong and a bar cannot fix any of them:
+ * It was a bar of five links, then a rail with groups, and it is a bar again. That is not a
+ * circle: the three faults the rail was built to fix were real, and the bar only gets to
+ * return because each of them has an answer that does not need a sidebar.
  *
- *   no sense of place  Five words in a row say what exists, not where you are or how the
- *                      parts relate. A rail with GROUPS says both, because the grouping is
- *                      itself information: this system genuinely has an outreach half, a
- *                      fleet half, and setup.
- *   nowhere for state  "Three accounts need signing in" has no home in a bar. Counts and an
- *                      attention marker belong beside the destination they concern, which
- *                      removes the need for a to-do list — and the old "Needs you" list was
- *                      deleted for putting shell commands on screen, with nothing replacing
- *                      the idea.
- *   no room to grow    The plan splits `/` and `/messages` into nine single-job pages. Nine
- *                      items across the top is a second flat list to read.
+ *   no sense of place  Five words in a row said what exists, not where you are. Each entry
+ *                      now owns a HUE — carried through to the page's own accent and the
+ *                      wash behind it — so the whole screen says which section you are in,
+ *                      not just the highlighted word.
+ *   nowhere for state  Counts and the attention marker sit on the entry they concern,
+ *                      exactly as they did in the rail. Nothing was dropped to fit.
+ *   no room to grow    The nine-page plan settled at SEVEN, and seven fits across the top
+ *                      without wrapping. The grouping the rail carried was only worth a
+ *                      column of chrome while there were nine.
+ *
+ * What the bar buys back is the full width of the window for the content, on a console whose
+ * widest objects are tables of sends.
  *
  * ── COUNTS ARE FETCHED HERE, DELIBERATELY ─────────────────────────────────
  *
  * This is an async server component, so every page keeps rendering `<Nav current="/x" />`
- * unchanged and none of them has to thread counts through. That was the constraint on this
- * step: the shell must not touch page logic, because the risk in this redesign is a warning
- * losing its home, and moving content is what does that.
+ * unchanged and none of them has to thread counts through. That was the constraint on the
+ * step that introduced them and it still holds: the shell must not touch page logic, because
+ * the risk in a redesign is a warning losing its home, and moving content is what does that.
  *
  * The queries are counts on indexed columns and every page is already `force-dynamic`.
  *
- * ── NINE ENTRIES, ALL OF THEM BUILT ───────────────────────────────────────
+ * ── SEVEN ENTRIES, ALL OF THEM BUILT ──────────────────────────────────────
  *
- * `GROUPS` is the single source of the IA. It listed six while Conversations, Channels and Paid
- * posts were agreed but not built, deliberately — a rail entry that 404s is worse than one that
- * is missing, and half a page is worse than either. Steps C and D built all three, and
- * `pnpm ig:layout` opens every one of them in a real browser and fails on a 404.
+ * `ENTRIES` is the single source of the IA. A bar entry that 404s is worse than one that is
+ * missing, and half a page is worse than either — `pnpm ig:layout` opens every one of them in
+ * a real browser and fails on a 404.
  */
 
 interface NavCounts {
@@ -153,12 +153,18 @@ interface Entry {
   href: string
   label: string
   /**
-   * The two-letter code shown in the rail, and the only thing left when the rail is
-   * collapsed. Deliberately NOT an icon set: an icon is a second vocabulary to learn
-   * and to keep consistent, and at 10px "PP" is unambiguous where a glyph for "paid
-   * posts" is a guess. It also cannot drift from the label the way a picture can.
+   * The key the stylesheet matches on to set `--accent` for the whole page, via
+   * `body:has([data-page='…'])`. It is a separate field from `href` rather than derived from
+   * it because `/` cannot be a CSS identifier and `/paid-posts` would have to be un-slashed
+   * anyway — deriving it would be two transformations to keep in step with one list.
    */
-  code: string
+  page: string
+  /**
+   * The destination's hue. This is the entry's IDENTITY, not decoration: it tints the active
+   * pill, the page's headings, every panel's lit edge and the wash behind the whole screen,
+   * which is the thing that replaced the rail's grouping as the answer to "where am I".
+   */
+  dot: string
   /** Which count to show, if any. */
   count?: (c: NavCounts) => number
   /** True when the count means "this wants you", not "this is how many there are". */
@@ -177,64 +183,16 @@ interface Entry {
  * Accounts and Sign-ins; the queue and replies fold into Autopilot; history and the
  * old Today numbers live on Analytics. Rules is where the rationale prose went.
  */
-const GROUPS = [
-  {
-    label: null,
-    entries: [{ href: '/', label: 'Autopilot', code: 'AU', count: (c) => c.needsAttention, attention: true }],
-  },
-  {
-    label: 'Outreach',
-    entries: [
-      { href: '/targets', label: 'Targets', code: 'TG', count: (c) => c.prospects },
-      { href: '/paid-posts', label: 'Paid posts', code: 'PP', count: (c) => c.paidPosts },
-      { href: '/analytics', label: 'Analytics', code: 'AN' },
-    ],
-  },
-  {
-    label: 'The fleet',
-    // The count is a REQUEST, not a volume: how many accounts need signing in.
-    entries: [{ href: '/senders', label: 'Senders', code: 'SE', count: (c) => c.needSignIn, attention: true }],
-  },
-  {
-    label: null,
-    entries: [
-      { href: '/rules', label: 'Rules', code: 'RU' },
-      { href: '/cost', label: 'Cost', code: 'CO' },
-    ],
-  },
-] as const satisfies ReadonlyArray<{ label: string | null; entries: readonly Entry[] }>
-
-/**
- * `email` is optional so a page that has not been converted yet still compiles, and its absence
- * simply means no sign-out control — never a broken one. `tests/shell.test.ts` asserts every
- * authenticated page passes it, so "optional" does not become "forgotten".
- */
-/**
- * The rail's own geometry, in one place, because the sliding active marker needs to know
- * where each row sits and there is no honest source for that but the layout itself.
- *
- * These four numbers are the ONLY duplication between this file and `globals.css`, and a
- * mismatch is visible instantly (the marker sits beside the wrong row) rather than silently,
- * which is why it is acceptable to state them here rather than measure in the browser.
- * Measuring would mean a client component and a layout pass to draw two pixels.
- */
-const ROW_H = 34
-const GROUP_LABEL_H = 26
-const GROUP_GAP_H = 16
-
-/** Where the marker goes, walked exactly the way the rows are rendered below. */
-function indicatorTop(activeHref: string | undefined): number | null {
-  let y = 0
-  for (const [i, group] of GROUPS.entries()) {
-    if (i > 0) y += GROUP_GAP_H
-    if (group.label) y += GROUP_LABEL_H
-    for (const e of group.entries) {
-      if (e.href === activeHref) return y
-      y += ROW_H
-    }
-  }
-  return null
-}
+const ENTRIES = [
+  { href: '/', label: 'Autopilot', page: 'autopilot', dot: '#22d3ee', count: (c) => c.needsAttention, attention: true },
+  { href: '/targets', label: 'Targets', page: 'targets', dot: '#ec4899', count: (c) => c.prospects },
+  { href: '/paid-posts', label: 'Paid posts', page: 'paid-posts', dot: '#fb923c', count: (c) => c.paidPosts },
+  { href: '/analytics', label: 'Analytics', page: 'analytics', dot: '#a78bfa' },
+  // The count is a REQUEST, not a volume: how many accounts need signing in.
+  { href: '/senders', label: 'Senders', page: 'senders', dot: '#f472b6', count: (c) => c.needSignIn, attention: true },
+  { href: '/rules', label: 'Rules', page: 'rules', dot: '#facc15' },
+  { href: '/cost', label: 'Cost', page: 'cost', dot: '#34d399' },
+] as const satisfies readonly Entry[]
 
 /**
  * `email` is optional so a page that has not been converted yet still compiles, and its absence
@@ -248,103 +206,88 @@ export async function Nav({ current, email }: { current: string; email?: string 
    * `/accounts/login` starts with `/accounts`, so a bare `startsWith` lights both. Longest
    * match wins, which is the only version that survives nested routes being added.
    */
-  const activeHref = GROUPS.flatMap((g) => g.entries.map((e) => e.href))
+  const activeHref = ENTRIES.map((e) => e.href)
     .filter((h) => (h === '/' ? current === '/' : current === h || current.startsWith(h + '/')))
     .sort((a, b) => b.length - a.length)[0]
 
-  const top = indicatorTop(activeHref)
+  /**
+   * The accent key for the WHOLE page, published on the bar because the stylesheet reaches it
+   * from `body` with `:has()`. A route nobody matched keeps Autopilot's cyan rather than
+   * falling through to an unset accent — an unset custom property resolves to nothing and
+   * would paint the panels' lit edge black.
+   */
+  const page = ENTRIES.find((e) => e.href === activeHref)?.page ?? 'autopilot'
+
+  /**
+   * THE HEARTBEAT, ON EVERY SCREEN. A toggle that promises behaviour must show whether
+   * anything is behind it: for a day this dashboard reported "Autopilot is ON — messages go
+   * out at 11:00" with no process on earth able to send one, and on 2026-08-08 nothing ran
+   * for twenty hours while the page said nothing at all.
+   *
+   * FRESHNESS IS NOT LIVENESS, so this reports what `readHeartbeat` measured and not a guess:
+   * a beat older than its window is red, and "we have never seen one" is its own sentence
+   * rather than a very old one. The mockup's word for the healthy state is "watching"; the
+   * unhealthy states keep their full sentence, because that is the case where the operator
+   * needs to know how stale rather than merely that it is.
+   */
+  const watching = heartbeat?.fresh === true
+  const watchLabel =
+    heartbeat === null
+      ? 'never run'
+      : heartbeat.fresh
+        ? 'watching'
+        : `last ran ${minutesAgo(new Date(heartbeat.beat.at))}`
 
   return (
-    <nav className="side" aria-label="Sections">
-      <div className="rail-top">
-        <Link href="/" className="rail-brand rail-when-open">
-          Instagram Outreach
-        </Link>
-        <RailToggle />
+    <nav className="topbar" data-page={page} aria-label="Sections">
+      <div className="topbar-brand">
+        <Link href="/">AI Sales Agent</Link>
       </div>
 
-      <div className="rail-nav">
-        {/* Hidden from assistive tech: `aria-current` on the row already says which is
-            active, and a decorative bar announcing itself would say it twice. */}
-        {top !== null && <div className="rail-indicator" style={{ top }} aria-hidden="true" />}
-
-        {GROUPS.map((group, i) => (
-          <div key={group.label ?? `group-${i}`}>
-            {i > 0 && <div className="rail-gap" aria-hidden="true" />}
-            {group.label && <p className="rail-group-label rail-when-open">{group.label}</p>}
-            {group.entries.map((e) => {
-              // `in` narrows the union that `as const` produces — every entry has a
-              // different shape, so optional-chaining a key not all of them declare
-              // does not typecheck. This keeps the literal routes AND the checks.
-              const n = 'count' in e ? e.count(counts) : undefined
-              const attention = 'attention' in e && e.attention === true
-              const active = e.href === activeHref
-              return (
-                <Link
-                  key={e.href}
-                  href={e.href}
-                  className="rail-item"
-                  title={e.label}
-                  aria-current={active ? 'page' : undefined}
-                >
-                  <span className="rail-item-main">
-                    <span className="rail-icon" aria-hidden="true">
-                      {e.code}
-                    </span>
-                    <span className="rail-label rail-when-open">{e.label}</span>
-                  </span>
-                  {n !== undefined && n > 0 && (
-                    <span className={attention ? 'rail-count attention' : 'rail-count'}>{n}</span>
-                  )}
-                </Link>
-              )
-            })}
-          </div>
-        ))}
+      <div className="topbar-nav">
+        {ENTRIES.map((e) => {
+          // `in` narrows the union that `as const` produces — every entry has a
+          // different shape, so optional-chaining a key not all of them declare
+          // does not typecheck. This keeps the literal routes AND the checks.
+          const n = 'count' in e ? e.count(counts) : undefined
+          const attention = 'attention' in e && e.attention === true
+          const active = e.href === activeHref
+          return (
+            <Link
+              key={e.href}
+              href={e.href}
+              className="topbar-item"
+              // The hue is data, not a class: seven of them would be seven near-identical
+              // rules, and the value is already stated once in ENTRIES.
+              style={{ ['--dot' as string]: e.dot }}
+              title={e.label}
+              aria-current={active ? 'page' : undefined}
+            >
+              <span className="topbar-pip" aria-hidden="true" />
+              {e.label}
+              {n !== undefined && n > 0 && (
+                <span className={attention ? 'rail-count attention' : 'rail-count'}>{n}</span>
+              )}
+            </Link>
+          )
+        })}
       </div>
 
-      <div className="rail-foot">
-        <div className="rail-status rail-when-open">
-          <p className="rail-group-label">Right now</p>
-
+      <div className="topbar-right">
+        <div className="topbar-pulse" title={`Build ${buildVersion()}`}>
+          <span className={`dot ${watching ? 'dot-good' : 'dot-bad'}`} />
+          <span style={watching ? undefined : { color: 'var(--bad)' }}>{watchLabel}</span>
           {/*
-            WHICH BUILD IS THIS SCREEN (2026-09-08). The hosted dashboard served yesterday's build
-            for a day while the worker ran today's, and nothing said so. Baked in at build time
-            (DS_BUILD_SHA), so it names the commit the bundle came from — not the server's disk.
+            WHICH BUILD IS THIS SCREEN (2026-09-08). The hosted dashboard served yesterday's
+            build for a day while the worker ran today's, and nothing said so. Baked in at
+            build time (DS_BUILD_SHA), so it names the commit the bundle came from — not the
+            server's disk. Every authenticated page reloads itself after a deploy, so no
+            button ever calls a dead action id.
           */}
-          <div className="rail-status-row">
-            <span className="dot dot-idle" />
-            <span className="muted">Build {buildVersion()}</span>
-            {/* Every authenticated page reloads itself after a deploy, so no button ever calls a dead action id. */}
-            <BuildWatch rendered={buildVersion()} />
-          </div>
-
-          {/*
-            THE HEARTBEAT, ON EVERY SCREEN. A toggle that promises behaviour must show
-            whether anything is behind it: for a day this dashboard reported "Autopilot is
-            ON — messages go out at 11:00" with no process on earth able to send one, and
-            on 2026-08-08 nothing ran for twenty hours while the page said nothing at all.
-
-            FRESHNESS IS NOT LIVENESS, so this reports what `readHeartbeat` measured and
-            not a guess: a beat older than its window is red, and "we have never seen one"
-            is its own sentence rather than a very old one.
-          */}
-          <div className="rail-status-row">
-            <span className={`dot ${heartbeat?.fresh ? 'dot-good' : 'dot-bad'}`} />
-            <span className={heartbeat?.fresh ? 'muted' : undefined} style={heartbeat?.fresh ? undefined : { color: 'var(--bad)' }}>
-              {heartbeat === null
-                ? 'The watch has never run'
-                : heartbeat.fresh
-                  ? 'The watch is running'
-                  : `The watch last ran ${minutesAgo(new Date(heartbeat.beat.at))}`}
-            </span>
-          </div>
-
-          <div className="rail-status-row">
-            <span className="dot dot-idle" />
-            <span className="muted">Sending is clear to run</span>
-          </div>
+          <BuildWatch rendered={buildVersion()} />
         </div>
+
+        <ThemeToggle />
 
         {/*
           SIGN OUT LIVES HERE, since step C.
@@ -352,17 +295,14 @@ export async function Nav({ current, email }: { current: string; email?: string 
           It was inside `/`'s health card — the one whose border and dot go amber or red. So
           whenever a draft was waiting, which is the ordinary state, the dashboard rendered an
           amber alarm box containing a dot, a warning sentence, "Last check read 168 posts" and
-          Sign out. Two separate faults in one container: neutral facts wearing an alarm's colour,
-          and a piece of furniture inside a control that is supposed to mean something is wrong.
+          Sign out. Two separate faults in one container: neutral facts wearing an alarm's
+          colour, and a piece of furniture inside a control that is supposed to mean something
+          is wrong.
 
-          A container that changes colour must contain only things that colour is about. Sign-out
-          is chrome, so it belongs with the navigation, at the bottom, out of the reading path.
+          A container that changes colour must contain only things that colour is about.
+          Sign-out is chrome, so it belongs with the navigation, out of the reading path.
         */}
-        {email && (
-          <div className="rail-user">
-            <SignOutButton email={email} />
-          </div>
-        )}
+        {email && <SignOutButton email={email} />}
       </div>
     </nav>
   )

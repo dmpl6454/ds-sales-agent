@@ -23,7 +23,7 @@ export function BlockerList({ blockers, summary }: { blockers: Blocker[]; summar
   return (
     <section>
       <h2>What is stopping it</h2>
-      <p className="blurb">{summary}</p>
+      <p className="blurb lede">{summary}</p>
 
       {blockers.length === 0 ? (
         /*

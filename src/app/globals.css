@@ -53,14 +53,35 @@
    behind body text; the contrast is measured for foreground use.                */
 
 :root {
-  --bg-0: #f3f5f9;
-  --bg-1: #ffffff;
-  --ln-1: #dde3ec;
-  --ln-2: #b3bcca;
-  --tx-0: #0f1319;
-  --tx-1: #4a5566;
-  --tx-2: #5f6a7d;
-  --ac: #0369a1;
+  /* The mockup's palette, stated once per theme. Light is the bare `:root`
+     default and dark is applied twice — once for the system preference and once
+     for an explicit choice — so the toggle wins in BOTH directions. */
+  --bg: #eef1f4;
+  --panel: rgba(255, 255, 255, 0.68);
+  --panel-alt: rgba(255, 255, 255, 0.55);
+  --border: rgba(20, 30, 50, 0.10);
+  --border-strong: rgba(20, 30, 50, 0.20);
+  --text: #171b22;
+  --text-soft: #414855;
+  --text-muted: #6b7180;
+  --text-dim: #9298a6;
+  --accent: #0ea5c4;
+  --pending: #a97f1f;
+  --shadow: 0 1px 2px rgba(20, 40, 60, 0.06), 0 14px 30px -18px rgba(20, 40, 60, 0.16);
+
+  /* The older vocabulary, kept as ALIASES rather than second definitions.
+     Roughly 280 selectors in this file were written against these names; a
+     colour that exists twice is a theme that switches partially, which is the
+     specific thing this file was rewritten to stop. */
+  --bg-0: var(--bg);
+  --bg-1: var(--panel);
+  --ln-1: var(--border);
+  --ln-2: var(--border-strong);
+  --tx-0: var(--text);
+  --tx-1: var(--text-soft);
+  --tx-2: var(--text-muted);
+  --ac: var(--accent);
+
   --good: #177245;
   --good-sub: rgba(23, 114, 69, 0.10);
   --warn: #8a5a00;
@@ -70,50 +91,147 @@
   --idle: #5f6a7d;
   --idle-sub: rgba(95, 106, 125, 0.10);
 
-  --rail-w: 248px;
-  --rail-w-collapsed: 76px;
-  --r: 6px;
+  --bar-h: 52px;
+  --r: 10px;
+  --r-lg: 14px;
   --ease: 160ms ease;
+
+  /* ── NAVBAR CONTRAST, LIGHT THEME ONLY (2026-09-24) ──────────────────────
+     Two of the bar's rules quietly assumed a DARK `--bg`, because they were
+     written and only ever eyeballed in dark mode:
+
+       `.topbar-item` (inactive) used `--text-muted` directly — a mid grey that
+       clears AA against a dark panel by a wide margin and clears it against a
+       light one by almost none, on 9.5px uppercase text where the margin
+       matters most.
+
+       The active pill's text and its own count badge both read `color:
+       var(--bg)` on the theory that the active fill and the page background
+       are always opposite ends of the scale — true in dark mode (`--bg` is
+       near-black, so the active pill reads as dark text on a bright hue) and
+       backwards in light mode, where `--bg` is near-WHITE: the active tab
+       rendered near-white text on a pastel tint of the same hue, which is the
+       worst-contrast combination the bar can produce and happened to land on
+       whichever page you were standing on.
+
+     Both are fixed by giving the bar its OWN foreground tokens rather than
+     reaching for `--text-muted` / `--bg` and hoping the theme cooperates.
+     Dark mode's values below are the exact colours it already used — nothing
+     there changes; only light mode's numbers move, and only for the bar. */
+  --nav-fg: #333a48;
+  --nav-badge-bg: rgba(20, 30, 50, 0.12);
+  --nav-badge-fg: #232834;
+  --nav-active-fg: #14161c;
 }
 
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme='light']) {
-    --bg-0: #0a0c10;
-    --bg-1: #12151c;
-    --ln-1: #222834;
-    --ln-2: #39414f;
-    --tx-0: #e9edf4;
-    --tx-1: #a7b1c2;
-    --tx-2: #8790a3;
-    --ac: #4cc2f1;
-    --good: #3fd07f;
-    --good-sub: rgba(63, 208, 127, 0.12);
+    --bg: #0b0e14;
+    --panel: rgba(24, 26, 34, 0.68);
+    --panel-alt: rgba(30, 32, 42, 0.60);
+    --border: rgba(255, 255, 255, 0.09);
+    --border-strong: rgba(255, 255, 255, 0.16);
+    --text: #f1f2f6;
+    --text-soft: #c7cad4;
+    --text-muted: #979bab;
+    --text-dim: #6d7182;
+    --accent: #22d3ee;
+    --pending: #d1a954;
+    --shadow: 0 1px 2px rgba(0, 0, 0, 0.35), 0 14px 30px -18px rgba(0, 0, 0, 0.6);
+
+    --good: #34d399;
+    --good-sub: rgba(52, 211, 153, 0.12);
     --warn: #f0b429;
     --warn-sub: rgba(240, 180, 41, 0.12);
     --bad: #ff6259;
     --bad-sub: rgba(255, 98, 89, 0.12);
     --idle: #8790a3;
     --idle-sub: rgba(135, 144, 163, 0.12);
+
+    /* Unchanged from the values that were previously hardcoded inline — see the
+       comment on the light-mode definitions above. */
+    --nav-fg: var(--text-muted);
+    --nav-badge-bg: var(--panel-alt);
+    --nav-badge-fg: var(--text-muted);
+    --nav-active-fg: var(--bg);
   }
 }
 
 :root[data-theme='dark'] {
-  --bg-0: #0a0c10;
-  --bg-1: #12151c;
-  --ln-1: #222834;
-  --ln-2: #39414f;
-  --tx-0: #e9edf4;
-  --tx-1: #a7b1c2;
-  --tx-2: #8790a3;
-  --ac: #4cc2f1;
-  --good: #3fd07f;
-  --good-sub: rgba(63, 208, 127, 0.12);
+  --bg: #0b0e14;
+  --panel: rgba(24, 26, 34, 0.68);
+  --panel-alt: rgba(30, 32, 42, 0.60);
+  --border: rgba(255, 255, 255, 0.09);
+  --border-strong: rgba(255, 255, 255, 0.16);
+  --text: #f1f2f6;
+  --text-soft: #c7cad4;
+  --text-muted: #979bab;
+  --text-dim: #6d7182;
+  --accent: #22d3ee;
+  --pending: #d1a954;
+  --shadow: 0 1px 2px rgba(0, 0, 0, 0.35), 0 14px 30px -18px rgba(0, 0, 0, 0.6);
+
+  --good: #34d399;
+  --good-sub: rgba(52, 211, 153, 0.12);
   --warn: #f0b429;
   --warn-sub: rgba(240, 180, 41, 0.12);
   --bad: #ff6259;
   --bad-sub: rgba(255, 98, 89, 0.12);
   --idle: #8790a3;
   --idle-sub: rgba(135, 144, 163, 0.12);
+
+  /* Unchanged from the values that were previously hardcoded inline — see the
+     comment on the light-mode definitions in the base `:root` block. */
+  --nav-fg: var(--text-muted);
+  --nav-badge-bg: var(--panel-alt);
+  --nav-badge-fg: var(--text-muted);
+  --nav-active-fg: var(--bg);
+}
+
+/* ── THE SECTION'S HUE ───────────────────────────────────────────────────────
+   Each destination owns a colour, and it is IDENTITY rather than decoration:
+   it tints the heading, every panel's lit edge, the wash behind each surface
+   and the corner of the page itself. That is what replaced the rail's grouping
+   as the answer to "where am I". The bar publishes the key; the accent is set
+   on `body` so it reaches the whole document, headings included.
+
+   The values are stated in `nav.tsx` as well, on the pill's own dot. They are
+   the only duplication between that file and this one, and a mismatch is
+   visible in one glance rather than silent.                                    */
+
+body:has(.topbar[data-page='autopilot'])  { --accent: #22d3ee; }
+body:has(.topbar[data-page='targets'])    { --accent: #ec4899; }
+body:has(.topbar[data-page='paid-posts']) { --accent: #fb923c; }
+body:has(.topbar[data-page='analytics'])  { --accent: #a78bfa; }
+body:has(.topbar[data-page='senders'])    { --accent: #f472b6; }
+body:has(.topbar[data-page='rules'])      { --accent: #facc15; }
+body:has(.topbar[data-page='cost'])       { --accent: #34d399; }
+
+/* ── THE PANEL RECIPE, DECLARED ON `body` AND NOT ON `:root` ────────────────
+   Every surface on every screen is this shadow: the page's own light through
+   the top edge, and the section's hue bled off the corner. Stating it once is
+   what keeps seven screens looking like one product.
+
+   IT MUST BE DECLARED WHEREVER `--accent` IS, and that is the whole reason
+   these two live down here rather than beside the other tokens. A custom
+   property's `var()` references resolve against the element the property is
+   DECLARED on — not the element it is eventually used on. Declared on `:root`,
+   `--lit` froze to `:root`'s cyan and inherited that literal everywhere, so
+   `/targets` (pink), `/paid-posts` (orange), `/rules` (yellow) and the rest all
+   drew CYAN-glowing panels under a pink or orange heading. Measured: the card
+   on `/targets` computed `--accent: #ec4899` and a box-shadow at oklch hue
+   211.5, which is the cyan.
+
+   The accent overrides above set `--accent` on `body`, so declaring these on
+   `body` too is what makes the hue actually travel.                           */
+body {
+  /* The alias too, and for the same reason: `--ac` is what ~280 older selectors
+     were written against, and the analytics chart passes `var(--ac)` as the
+     "paid" series colour. Frozen at `:root` it drew cyan bars on a violet page. */
+  --ac: var(--accent);
+  --lit: var(--shadow), inset 0 2px 0 0 color-mix(in oklch, var(--accent) 85%, transparent),
+    0 0 24px -8px color-mix(in oklch, var(--accent) 55%, transparent);
+  --wash: radial-gradient(circle at 100% 0%, color-mix(in oklch, var(--accent) 9%, var(--panel)) 0%, var(--panel) 55%);
 }
 
 /* ── BASE ────────────────────────────────────────────────────────────────── */
@@ -176,188 +294,269 @@ a:hover { color: var(--tx-0); }
 }
 
 /* ── THE SHELL ───────────────────────────────────────────────────────────────
-   `main` is deliberately NOT a grid or a flex container. It was given
-   `grid-template-columns: 15rem 1fr` once for a sidebar, and every page
-   rendered two children except `/`, which rendered eleven — so children 3, 5,
-   7, 9 and 11 landed in column one underneath a full-height rail. A fixed rail
-   plus a margin cannot care how many children a page renders, which is the
-   whole point. `pnpm ig:layout` asserts this by APPENDING a probe child and
-   checking it clears the rail, rather than by checking today's arrangement.     */
+   A TOP BAR, since the DS Sales Agent redesign. `main` is deliberately NOT a
+   grid or a flex container. It was given `grid-template-columns: 15rem 1fr`
+   once for the rail, and every page rendered two children except `/`, which
+   rendered eleven — so children 3, 5, 7, 9 and 11 landed in column one
+   underneath it. Fixed chrome plus a padding cannot care how many children a
+   page renders, which is the whole point. `pnpm ig:layout` asserts this by
+   APPENDING a probe child and checking it clears the chrome, rather than by
+   checking today's arrangement.
 
-.side {
-  position: fixed;
+   What the bar buys back is the full width of the window for the content, on a
+   console whose widest objects are tables of sends.                            */
+
+.topbar {
+  box-sizing: border-box;
+  position: sticky;
   top: 0;
   left: 0;
-  height: 100vh;
-  width: var(--rail-w);
-  display: flex;
-  flex-direction: column;
-  padding: 20px 16px;
-  border-right: 1px solid var(--ln-1);
-  background: var(--bg-0);
-  overflow-y: auto;
-  overflow-x: hidden;
-  transition: width var(--ease);
+  right: 0;
+  min-height: var(--bar-h);
+  display: grid;
+  /*
+    THE OUTER TWO COLUMNS SHARE A FLOOR, so the nav's true centre stops
+    depending on how much heavier the right-side chrome is than the brand.
+
+    Both used to be a bare `auto` — sized to exactly their own content — which
+    put the nav's centre at the midpoint between the BRAND's right edge and
+    the RIGHT block's left edge, not at the bar's own centre. Those two
+    midpoints only coincide when the two side blocks happen to be the same
+    width, and they never are here: the brand is one link (~144px); the right
+    side carries the heartbeat, the theme toggle, the signed-in email and
+    Sign out (~340-360px, and it can run longer still — a stale heartbeat's
+    full sentence is longer than the healthy "watching"). Measured, that put
+    the nav's centre ~106px left of the bar's true centre at 1024px wide.
+
+    A floor on BOTH columns — not matching the right side exactly, which
+    would chase a width that moves with the heartbeat text and a signed-in
+    email's length — cuts that offset by roughly half while only reserving
+    a modest, fixed amount of quiet space after the logo. `minmax(_, auto)`
+    means it is a MINIMUM: the right column still simply grows to fit its own
+    content whenever that content exceeds the floor, exactly as `auto` always
+    did, so nothing about its behaviour changes there.
+
+    240px, not something closer to the right side's ~357px: the seven pills
+    need ~475px at rest, so `.topbar-nav`'s own `overflow-x: auto` is ALREADY
+    the thing keeping the bar usable below roughly 1120px wide, floor or no
+    floor — measured with no floor at all, 1080px wide already scrolls the
+    nav (531px available against 559px needed) and 1140px does not. Every
+    pixel added to the floor raises that same threshold by the same amount,
+    so 240px (adding ~96px beyond the brand's own ~144px) moves it to roughly
+    1200-1220px. That is comfortably inside ordinary desktop widths, which is
+    the trade this file is willing to state plainly: a real width exists
+    where the floor costs the nav room it would otherwise have had, and it
+    was chosen to be the width past most of this app's real usage rather
+    than the narrowest one the bar can still lay out at.
+  */
+  grid-template-columns: minmax(240px, auto) minmax(0, 1fr) minmax(240px, auto);
+  align-items: center;
+  gap: 10px;
+  padding: 0 14px;
+  background: color-mix(in oklch, var(--panel) 82%, transparent);
+  backdrop-filter: blur(14px);
+  border-bottom: 1px solid var(--border);
   z-index: 20;
 }
 
-main {
-  margin-left: var(--rail-w);
-  padding: 32px 40px 80px;
-  min-height: 100vh;
-  transition: margin-left var(--ease);
-}
-
-:root[data-rail='collapsed'] .side { width: var(--rail-w-collapsed); }
-:root[data-rail='collapsed'] main { margin-left: var(--rail-w-collapsed); }
-:root[data-rail='collapsed'] .rail-when-open { display: none; }
-
-.rail-top {
+.topbar-brand {
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-  height: 32px;
-  margin-bottom: 20px;
-}
-.rail-brand {
-  font-weight: 600;
-  letter-spacing: -0.01em;
-  text-decoration: none;
-  color: var(--tx-0);
-  white-space: nowrap;
-}
-.rail-brand:hover { color: var(--tx-0); }
-
-.rail-toggle {
-  font: inherit;
-  font-size: 12.5px;
-  width: 28px;
-  height: 28px;
-  border-radius: var(--r);
-  border: 1px solid var(--ln-1);
-  background: none;
-  color: var(--tx-2);
-  cursor: pointer;
+  flex-direction: column;
+  gap: 1px;
   flex: 0 0 auto;
-  transition: color var(--ease), border-color var(--ease);
+  padding-right: 12px;
+  border-right: 1px solid var(--border);
 }
-.rail-toggle:hover { color: var(--tx-0); border-color: var(--ln-2); }
-
-.rail-nav { position: relative; }
-
-/* The active marker SLIDES rather than swapping, which is the one place motion
-   in the rail earns its place: it shows where you came from. `top` is set
-   inline from the item's measured offset, because the rail's own geometry is
-   the only honest source for it. */
-.rail-indicator {
-  position: absolute;
-  left: 0;
-  width: 2px;
-  height: 34px;
-  background: var(--ac);
-  border-radius: 999px;
-  transition: top var(--ease);
+.topbar-brand a {
+  font-family: var(--font-display), var(--font-sans), sans-serif;
+  font-weight: 600;
+  font-size: 18px;
+  letter-spacing: -0.01em;
+  color: var(--text);
+  line-height: 1.1;
+  text-decoration: none;
+  text-shadow: 0 0 18px color-mix(in oklch, var(--accent) 60%, transparent);
 }
+.topbar-brand a:hover { color: var(--text); }
 
-.rail-gap { height: 16px; }
-
-.eyebrow,
-.rail-group-label {
-  margin: 0;
-  font-family: var(--font-mono), ui-monospace, monospace;
-  font-size: 11px;
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
-  color: var(--tx-2);
-  font-weight: 400;
-}
-.rail-group-label { height: 22px; padding-bottom: 4px; }
-
-.rail-item {
-  width: 100%;
-  height: 34px;
+.topbar-nav {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-  font: inherit;
-  padding: 0 10px;
-  border: 0;
-  border-radius: var(--r);
-  background: none;
-  color: var(--tx-1);
-  cursor: pointer;
-  text-decoration: none;
-  transition: color var(--ease), background-color var(--ease);
+  justify-content: center;
+  gap: 2px;
+  flex-wrap: nowrap;
+  overflow-x: auto;
+  min-width: 0;
 }
-.rail-item:hover { color: var(--tx-0); background: var(--idle-sub); }
-.rail-item[aria-current='page'] { color: var(--tx-0); font-weight: 500; }
 
-.rail-item-main { display: inline-flex; align-items: center; gap: 11px; min-width: 0; }
+/* Each entry carries its destination's hue in `--dot`, set inline from the one
+   list in `nav.tsx`. The active pill wears that hue; the rest wear the page's
+   own text colours, so exactly one thing on the bar is coloured at a time. */
+/*
+  THE ACTIVE PILL IS A FILLED CHIP, NOT A TINT, and the difference is the whole
+  legibility of the bar. Read off the mockup's own computed styles:
 
-/* Two-letter codes, not icons. An icon set is a second vocabulary to learn and
-   to keep consistent; a code is unambiguous at 10px and needs no legend. */
-.rail-icon {
+    active    background  color-mix(in oklch, <hue> 55%, var(--panel))
+              color       var(--nav-active-fg)  <- DARK text on the hue
+              border      1px solid <hue>      <- the hue at full strength
+              shadow      0 0 0 1px <hue>, 0 0 8px 0 <hue @35%>
+              pip         var(--bg)            <- reads as a hole in the chip
+    inactive  background  transparent
+              color       var(--nav-fg)
+              border      1px solid var(--border-strong)   <- VISIBLE outline
+              shadow      none
+              pip         the destination's own hue, at full strength
+
+  Two things had drifted and both cost contrast: the active chip was a 16% wash
+  with LIGHT text (so it barely separated from the bar), and inactive chips had
+  a transparent border (so the seven destinations ran together as one strip of
+  text instead of reading as seven controls).
+
+  A THIRD DRIFTED LATER, ONLY IN LIGHT MODE (2026-09-24): both `color` values
+  above were originally `var(--bg)` and `var(--text-muted)` — reasonable names
+  right up until someone switched the bar to light and found the active tab's
+  text was near-white on a pastel tint of its own hue, and every inactive
+  label was a grey that barely cleared the bar's own near-white backdrop.
+  `--nav-fg` and `--nav-active-fg` (see the tokens block) are DARK in light
+  mode and resolve back to the exact old values in dark mode, so nothing
+  above changes there.
+
+  The pip is deliberately NOT dimmed on inactive items. Its only job is to carry
+  the destination's hue, and a hue at 55% opacity is a different colour.
+*/
+.topbar-item {
+  display: flex;
+  align-items: center;
+  /* Fixed height, not content-derived: an entry carrying a count badge (the
+     badge is a flat 18px) used to measure ~3px taller than one that does not,
+     because the flex row's own height was whatever its tallest child needed.
+     Four of the seven entries had a badge on the day this was measured, so
+     the bar's buttons visibly stepped up and down across the row. */
+  height: 30px;
+  gap: 4px;
+  padding: 0 7px;
+  border-radius: 8px;
+  border: 1px solid var(--border-strong);
+  background: transparent;
+  color: var(--nav-fg);
+  font-size: 9.5px;
+  letter-spacing: 0.01em;
+  text-transform: uppercase;
+  font-weight: 600;
+  text-decoration: none;
+  white-space: nowrap;
+  flex: 0 0 auto;
+  transition: background var(--ease), border-color var(--ease), color var(--ease);
+}
+.topbar-item:hover {
+  color: var(--text);
+  background: color-mix(in oklch, var(--dot, var(--accent)) 12%, transparent);
+}
+.topbar-item[aria-current='page'],
+.topbar-item[aria-current='page']:hover {
+  background: color-mix(in oklch, var(--dot, var(--accent)) 55%, var(--panel));
+  color: var(--nav-active-fg);
+  border-color: var(--dot, var(--accent));
+  box-shadow:
+    0 0 0 1px var(--dot, var(--accent)),
+    0 0 8px 0 color-mix(in oklch, var(--dot, var(--accent)) 35%, transparent);
+}
+
+.topbar-pip {
+  width: 6px;
+  height: 6px;
+  border-radius: 1px;
+  background: var(--dot, var(--accent));
+  flex: 0 0 auto;
+}
+/* Deliberately still `var(--bg)`, not `--nav-active-fg`: this is the page
+   background peeking through a punched-out hole in the filled pill, an
+   entirely different job from rendering legible text, and it is correct in
+   both themes precisely because `--bg` differs between them. */
+.topbar-item[aria-current='page'] .topbar-pip { background: var(--bg); }
+
+.topbar-right {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 0 auto;
+}
+
+/* THE HEARTBEAT, ON EVERY SCREEN. A toggle that promises behaviour must show
+   whether anything is behind it. Healthy is one quiet word; anything else keeps
+   its full sentence, because that is the case where the operator needs to know
+   how stale rather than merely that it is. */
+.topbar-pulse {
+  display: flex;
+  align-items: center;
+  gap: 5px;
   font-family: var(--font-mono), ui-monospace, monospace;
   font-size: 10px;
-  letter-spacing: 0.02em;
-  width: 24px;
-  flex: 0 0 auto;
-  text-align: center;
-  color: var(--tx-2);
+  color: var(--nav-fg);
+  white-space: nowrap;
 }
-.rail-item[aria-current='page'] .rail-icon { color: var(--ac); }
-.rail-label { white-space: nowrap; }
 
-/* A count is either a QUANTITY or a REQUEST, and they must not look alike.
-   "12 targets" is furniture; "2 accounts need signing in" is a job. */
-.rail-count {
+.topbar-email {
   font-family: var(--font-mono), ui-monospace, monospace;
-  font-size: 11px;
-  color: var(--tx-1);
-  border: 1px solid var(--ln-1);
-  padding: 0 7px;
-  border-radius: 999px;
-}
-.rail-count.attention {
-  color: var(--bg-0);
-  background: var(--bad);
-  border-color: var(--bad);
-  font-weight: 500;
-  padding: 1px 7px;
-}
-
-.rail-foot {
-  margin-top: auto;
-  display: grid;
-  gap: 10px;
-  padding-top: 18px;
-  border-top: 1px solid var(--ln-1);
-}
-.rail-status { display: grid; gap: 7px; font-size: 12.5px; }
-.rail-status-row { display: flex; align-items: center; gap: 9px; }
-.rail-note {
-  margin: 0;
-  font-size: 12.5px;
-  color: var(--tx-1);
-  border-top: 1px solid var(--ln-1);
-  padding-top: 12px;
-}
-.rail-user {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  border-top: 1px solid var(--ln-1);
-  padding-top: 12px;
-}
-.rail-email {
-  font-size: 12.5px;
-  color: var(--tx-2);
+  font-size: 10px;
+  color: var(--text-dim);
+  max-width: 16ch;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* The count badge. Named for the rail it arrived with — the markup still says
+   `rail-count`, and renaming a class across seven pages to match a deleted
+   sidebar is churn with a regression attached. */
+.rail-count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 700;
+  /* `--nav-badge-bg`/`--nav-badge-fg`, not `--panel-alt`/`--text-muted` directly:
+     in light mode `--panel-alt` is a near-white wash that all but disappeared
+     against the bar's own near-white backdrop, so a count like "481" read as
+     a faint smudge rather than a number. See the token comment in the tokens
+     block for what each theme resolves it to. */
+  background: var(--nav-badge-bg);
+  color: var(--nav-badge-fg);
+}
+/* On the active chip the badge sits ON the hue, so it darkens rather than
+   tints — the mockup's `rgba(0,0,0,0.2)` over dark text. */
+.topbar-item[aria-current='page'] .rail-count {
+  background: rgba(0, 0, 0, 0.2);
+  color: var(--nav-active-fg);
+}
+/* An alarm count is the one badge that is FILLED: a number nobody has dealt
+   with must not read the same as a number that is merely large. Untouched by
+   the contrast pass above — `--bad` mixed toward `--text` is dark in both
+   themes and `--bg` is the correctly-contrasting text colour against it
+   either way, which is the one place the old `var(--bg)` shortcut was never
+   actually wrong. */
+.rail-count.attention,
+.topbar-item[aria-current='page'] .rail-count.attention {
+  background: color-mix(in oklch, var(--bad) 90%, var(--text));
+  color: var(--bg);
+}
+
+main {
+  padding: 0 0 80px;
+  min-height: 100vh;
+}
+
+/* Every page's own content sits in `.page`, which the bar is not part of. The
+   padding is the mockup's: it breathes at desktop width and does not waste a
+   gutter on a phone. */
+.page {
+  box-sizing: border-box;
+  width: 100%;
+  padding: clamp(16px, 4vw, 32px) clamp(14px, 4vw, 36px) 0;
 }
 
 /* ── PAGE FURNITURE ──────────────────────────────────────────────────────── */
@@ -595,6 +794,53 @@ label { display: block; }
 */
 .rowitem > * { min-width: 0; overflow-wrap: anywhere; }
 
+/* A control that reads as a link is drawn as a link: accent, no rule under it
+   until the pointer is on it. A permanent underline on every row turned a quiet
+   affordance into the loudest thing in the card. */
+.link-quiet, .link-btn {
+  font-size: 11.5px;
+  color: var(--accent);
+  text-decoration: none;
+}
+.link-quiet:hover, .link-btn:hover { color: var(--text); text-decoration: underline; }
+
+/*
+  A COLLAPSIBLE GROUP HEADING IS A HEADING, not a button.
+
+  `.group-head` carries `.groupbtn` so it is focusable and clickable, and the
+  control vocabulary below styled it as a full-width uppercase pill — two of them
+  stacked read as two large buttons rather than as the two halves of one list. It
+  keeps the affordance (pointer, focus ring, the +/- at the end) and loses the
+  chrome.
+*/
+.group-head.groupbtn {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  width: 100%;
+  text-align: left;
+  padding: 0 0 6px;
+  margin: 0 0 10px;
+  border: 0;
+  border-bottom: 1px solid var(--border);
+  border-radius: 0;
+  background: none;
+  text-transform: none;
+  letter-spacing: 0;
+  color: var(--text);
+}
+.group-head.groupbtn:hover { background: none; color: var(--accent); }
+.group-head .group-count {
+  font-family: var(--font-mono), ui-monospace, monospace;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-dim);
+  min-width: 1.4rem;
+}
+.group-head .group-title { font-size: 18px; font-weight: 600; }
+.group-head .group-toggle { margin-left: auto; color: var(--text-dim); font-size: 14px; }
+.group-broken .group-count { color: var(--bad); }
+
 /* ── EVIDENCE ────────────────────────────────────────────────────────────────
    A drafted message body, a recorded reply, the text read off a video frame.
    Rendered as-is, never re-wrapped or summarised — this is the thing the send
@@ -691,6 +937,7 @@ label { display: block; }
   grid-template-columns: 34px 1fr;
 }
 .chartbox > figcaption,
+.chartbox > .chartbox-head,
 .chartbox > .chart-legend,
 .chartbox > .blurb,
 .chartbox > .reason,
@@ -702,11 +949,53 @@ label { display: block; }
 .chartbox figcaption { margin-bottom: 2px; }
 .chartbox figcaption p { margin: 2px 0 0; }
 
+/* A rotated y-axis title (StackedBars' `yAxisLabel`) gets its own slim column ahead of the
+   numeral gutter. Everything else about the grid is unchanged, and `.chart-full` (the
+   `hideAxis` case) still spans `1 / -1` correctly whether there are 2 columns or 3. */
+.chartbox-ylabel { grid-template-columns: 16px 34px 1fr; }
+.chartbox-ylabel .chart-axis-title { grid-column: 1; }
+.chartbox-ylabel .chart-axis-y { grid-column: 2; }
+.chartbox-ylabel .chart { grid-column: 3; }
+
 .chart { display: block; width: 100%; overflow: visible; grid-column: 2; }
+/* Under `hideAxis` (StackedBars) nothing is ever drawn in the 34px y-axis-label column,
+   so the plot spans the full card instead of losing that width to an empty gutter — see
+   the comment on the `<svg>` in charts.tsx. */
+.chart-full { grid-column: 1 / -1; }
 .chart-grid { stroke: var(--ln-1); }
 
+/* A bar reacts to the pointer so a reader discovers — without being told — that the
+   number in its tooltip (the native `<title>`) is there to be found. Kept understated:
+   a touch of brightness and a matching lift in the outlined ("not judged") series' own
+   stroke, never a colour change, because the legend below is the only place a colour is
+   allowed to mean something. `outline: none` on the hovered/focused state suppresses the
+   default focus ring an SVG rect otherwise draws in some browsers, which reads as a stray
+   blue rectangle rather than a hover cue. */
+.chart-bar { transition: filter 0.12s ease, opacity 0.12s ease; }
+.chart-bar:hover,
+.chart-bar:focus-visible { filter: brightness(1.16); opacity: 1; cursor: pointer; outline: none; }
+
+/* ONE combined tooltip per day (StackedBars' `showBucketTooltip`): a transparent, full-
+   height rect drawn on top of each day's bars carries a single `<title>` naming every
+   series and the day's total, so hovering anywhere in that day's column — not just the
+   exact pixel row of one segment — answers "what happened this day". It would otherwise
+   swallow the segments' own `:hover` (it sits above them and takes the pointer), so the
+   brighten-on-hover cue is re-attached here via `:has()`, landing on the real bars rather
+   than on the invisible rect that triggered it. */
+.chart-hit { cursor: pointer; }
+.chart-bucket:has(.chart-hit:hover) .chart-bar { filter: brightness(1.16); }
+
 /* The scale lives in HTML, not in the SVG: the plot stretches with
-   `preserveAspectRatio="none"` and would distort any text inside it. */
+   `preserveAspectRatio="none"` and would distort any text inside it.
+
+   `grid-row: 2` IS LOAD-BEARING, not a leftover. `<figcaption>` (and the optional
+   `chart-summary` beside it — see `.chartbox-head` in charts.tsx) are wrapped as ONE grid
+   item precisely so row 2 is always the plot's row; without an explicit pin here, grid
+   auto-placement's cursor only ever moves forward, so this column's own search for "the
+   next free row" can land one row later than the chart beside it the moment anything
+   upstream changes — which is exactly what removing this pin did to the cost page's chart
+   the first time it was tried. Pin both the axis and the title (below) to the same row
+   rather than trust three independent auto-searches to agree. */
 .chart-axis-y {
   grid-column: 1;
   grid-row: 2;
@@ -719,6 +1008,23 @@ label { display: block; }
   font-size: 10px;
   color: var(--tx-2);
 }
+/* The rotated title beside it. `writing-mode` turns the text a quarter-turn; the
+   `rotate(180deg)` on top of that is what makes it read top-to-bottom rather than
+   bottom-to-top, which is the direction `vertical-rl` gives you by default. */
+.chart-axis-title {
+  grid-row: 2;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  writing-mode: vertical-rl;
+  transform: rotate(180deg);
+  font-family: var(--font-mono), ui-monospace, monospace;
+  font-size: 9.5px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--tx-2);
+  white-space: nowrap;
+}
 .chart-axis-x {
   grid-column: 1 / -1;
   display: flex;
@@ -729,9 +1035,41 @@ label { display: block; }
 }
 .chart-axis-x span { flex: 1 1 0; text-align: center; white-space: nowrap; }
 
-.chart-legend { display: flex; gap: 16px; flex-wrap: wrap; font-size: 12.5px; color: var(--tx-1); }
-.chart-key { display: inline-flex; align-items: center; gap: 7px; }
-.chart-swatch { width: 10px; height: 10px; border-radius: 2px; flex: 0 0 auto; }
+/* StackedBars' `showSummary`: the window's own totals, read straight off the same
+   `buckets` the bars are drawn from. Deliberately plain — no card-within-a-card, no
+   background tint — a thin rule underneath is enough to separate it from the plot, the
+   same device `.chart-legend` already uses above the legend. `.chart-swatch` is reused
+   verbatim so a colour here means exactly what it means in the legend below the bars. */
+.chart-summary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 18px;
+  font-size: 12px;
+  color: var(--tx-1);
+  padding-bottom: 8px;
+  margin-bottom: 2px;
+  border-bottom: 1px solid var(--ln-1);
+}
+.chart-summary-item { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
+.chart-summary-item strong { color: var(--tx-0); font-weight: 600; }
+.chart-summary-total strong { color: var(--ac); }
+
+/* A thin rule and a little top air separate the legend from the plot above it — without
+   it the legend read as one more row of bars rather than the key explaining them,
+   especially now that the bars themselves run edge to edge under `.chart-full`. */
+.chart-legend {
+  display: flex;
+  gap: 8px 22px;
+  flex-wrap: wrap;
+  font-size: 12.5px;
+  color: var(--tx-1);
+  padding-top: 10px;
+  margin-top: 2px;
+  border-top: 1px solid var(--ln-1);
+}
+.chart-key { display: inline-flex; align-items: center; gap: 8px; }
+.chart-swatch { width: 11px; height: 11px; border-radius: 3px; flex: 0 0 auto; }
 
 /* One cell per run. `grid-auto-columns: 1fr` so 48 runs and 6 runs both fill the width —
    a strip that shrinks as history accumulates would make a bad week look smaller. */
@@ -995,14 +1333,46 @@ label { display: block; }
 .statgrid span { font-size: 12.5px; color: var(--tx-1); margin-top: 2px; }
 .statgrid li.bad strong { color: var(--bad); }
 
-.ladder { border: 1px solid var(--ln-1); border-radius: var(--r); overflow: hidden; background: var(--bg-1); }
-.ladder-row { display: flex; align-items: center; gap: 16px; padding: 12px 16px; font-size: 12.5px; }
+/*
+  `.ladder`/`.ladder-row` serve TWO unrelated rows under one name: the cohort soak-progress
+  rows in the Sign-ins section (`.ladder-name`/`.ladder-counts`/`.ladder-bar`/`.ladder-state`,
+  each with its own fixed width) and the Accounts list in `ladder.tsx` (a status dot, an
+  identity block, and one action on the right). `justify-content: space-between` below is
+  safe for both: the cohort row already has a `flex: 1` bar soaking up every free pixel, so
+  there is never anything left for `space-between` to redistribute there.
+*/
+.ladder { width: 100%; border: 1px solid var(--ln-1); border-radius: var(--r); overflow: hidden; background: var(--bg-1); }
+.ladder-row { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 14px 20px; font-size: 12.5px; }
 .ladder-row + .ladder-row { border-top: 1px solid var(--ln-1); }
 .ladder-name { font-weight: 500; width: 88px; flex: 0 0 auto; }
 .ladder-counts { width: 190px; flex: 0 0 auto; color: var(--tx-1); font-variant-numeric: tabular-nums; }
 .ladder-bar { flex: 1; height: 6px; border: 1px solid var(--ln-1); border-radius: 999px; overflow: hidden; }
 .ladder-bar span { display: block; height: 100%; background: var(--ac); }
 .ladder-state { width: 280px; flex: 0 0 auto; text-align: right; color: var(--tx-1); }
+
+/*
+  ── THE ACCOUNTS ROW, PROPERLY (2026-09-23) ──────────────────────────────────
+  `.ladder-left` is the identity cluster (dot + name + status) as ONE flex item that grows
+  to fill the row and shrinks/truncates before the action on the right ever moves. Without
+  it, the dot and `.sender-main` were two independent items in the same row as the pill/
+  button, so nothing made the identity block claim the row's width — `.sender-main`'s own
+  two children (the name line and the status sentence) then sat side by side as two narrow,
+  independently word-wrapping columns instead of one clean stacked block. That is the exact
+  layout in the screenshot this was reported against.
+*/
+.ladder-left { display: flex; align-items: center; gap: 12px; min-width: 0; flex: 1 1 auto; }
+.ladder-row .pill,
+.ladder-row .btn { flex: 0 0 auto; white-space: nowrap; }
+
+/* Small screens: let the action drop to its own line under the identity block rather than
+   crushing either one. `pnpm ig:layout`'s "no sideways scroll" rule is why this is a wrap,
+   never a shrink-to-fit that clips the handle. */
+@media (max-width: 560px) {
+  .ladder-row { flex-wrap: wrap; row-gap: 10px; }
+  .ladder-left { flex-basis: 100%; }
+  .ladder-row .pill,
+  .ladder-row .btn { margin-left: auto; }
+}
 
 /* ═══════════════════════════════════════════════════════════════════════════
    THE BRIDGE — legacy class names, mapped onto the new tokens.
@@ -1082,6 +1452,78 @@ a.btn { text-decoration: none; display: inline-block; }
 .fleet-control p { flex-basis: 100%; margin: 0.25rem 0 0; }
 .account-message { margin: 0.6rem 0 0; font-size: 12.5px; color: var(--tx-1); }
 .account-message.bad { color: var(--bad); }
+
+/* The surface an add form types into. The heading and its explanation stay page
+   text; only the controls get a panel, which is how the design draws every one. */
+.formbox {
+  border: 1px solid var(--border);
+  border-radius: var(--r);
+  background: var(--panel);
+  padding: 16px 18px;
+  display: grid;
+  gap: 10px;
+}
+.formbox > .account-actions { margin-top: 0; }
+
+/* A page-level sentence is prose and takes a measure; it was running the full
+   width of a 1440px window, which is unreadable at 12px. */
+.page-meta { font-size: 12px; color: var(--text-muted); margin: 0 0 18px; max-width: 78ch; }
+.page-meta strong { color: var(--text); font-weight: 600; }
+.channel-filter { margin: 0 0 20px; gap: 8px; }
+
+/*
+  THE MOCKUP'S "ADD TARGETS" ROW IS ONE LINE: a text field, a role select, an Add button,
+  side by side. The base rule two blocks up sets `input`/`select` to `width: 100%` so a
+  field never overflows its own column — right for a stacked `.field`, and it defeats flex
+  sizing entirely here: every child wants 100% of the row's width, so each one wraps onto
+  its own line regardless of how much space is free. Reset to `width: auto` and size by
+  flex-basis instead, exactly as the mockup's inline styles do.
+*/
+.addrow input,
+.addrow select { width: auto; }
+.addrow input { flex: 1 1 240px; min-width: 0; }
+.addrow select { flex: 0 0 auto; }
+.addrow button { flex: 0 0 auto; white-space: nowrap; }
+.nowrap { white-space: nowrap; }
+
+/*
+  THE STAT TILES, as the design draws them everywhere else on the dashboard: four
+  separate lit panels with a gap, not one four-cell strip.
+
+  The strip was `repeat(4, 1fr)` against a list of THREE, so it rendered a fourth
+  empty cell with a hairline round it — a tile reading nothing, which is worse than
+  a missing tile because it looks like a figure that failed to load. `auto-fit`
+  collapses the track that has no item in it.
+*/
+.statgrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(11rem, 100%), 1fr));
+  gap: 12px;
+  background: none;
+  border: 0;
+  border-radius: 0;
+  overflow: visible;
+  margin: 0 0 18px;
+}
+.statgrid li {
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  background: var(--wash);
+  backdrop-filter: blur(16px);
+  box-shadow: var(--lit);
+  padding: 18px;
+}
+.statgrid strong {
+  font-family: var(--font-sans), system-ui, sans-serif;
+  font-size: 28px;
+  font-weight: 700;
+  line-height: 1.1;
+  letter-spacing: -0.02em;
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+}
+.statgrid span { font-size: 11px; color: var(--text-muted); margin-top: 2px; }
+.statgrid li.bad strong { color: var(--bad); }
 .acc-name { font-weight: 500; }
 .acc-handle { color: var(--tx-2); font-size: 12.5px; }
 .acc-note { color: var(--tx-1); font-size: 12.5px; }
@@ -1140,18 +1582,20 @@ a.btn { text-decoration: none; display: inline-block; }
 .sent-table .row-replied td { background: var(--good-sub); }
 
 /* status header — the health card. Colour ONLY, never furniture. */
-.status { border: 1px solid var(--ln-1); border-radius: var(--r); padding: 16px 18px; background: var(--bg-1); display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
-.status .dot { width: 10px; height: 10px; }
-.status-healthy { border-color: color-mix(in srgb, var(--good) 40%, var(--ln-1)); }
-.status-healthy .dot { background: var(--good); }
-.status-attention { border-color: color-mix(in srgb, var(--warn) 45%, var(--ln-1)); }
-.status-attention .dot { background: var(--warn); }
-.status-broken { border-color: color-mix(in srgb, var(--bad) 50%, var(--ln-1)); }
-.status-broken .dot { background: var(--bad); }
+/*
+  THE RAIL-ERA `.status` BLOCK THAT USED TO LIVE HERE IS DELETED, NOT LEFT AS DEAD
+  WEIGHT. Every property it set is restated by the mockup-accurate block below
+  EXCEPT one: `.status-healthy`/`-attention`/`-broken` set the `border-color`
+  SHORTHAND (all four sides), and the new rules only ever set `border-left-color`
+  — so the shorthand's top/right/bottom values kept coming from here, tinting
+  three hairline edges the mockup draws neutral (`border: 1px solid var(--border)`,
+  colour carried by the LEFT edge alone, at 4px). Leaving the block "since it's
+  mostly overridden anyway" is exactly how this leaked: a rule can be 90% dead
+  and still be the one that wins the property nobody restated.
+*/
 
 /* autopilot card */
 .autopilot { border: 1px solid var(--ln-1); background: var(--bg-1); padding: 18px 20px; }
-.autopilot.live { border-color: color-mix(in srgb, var(--good) 45%, var(--ln-1)); }
 .autopilot-top { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; flex-wrap: wrap; }
 .autopilot-title { font-size: 18px; font-weight: 600; letter-spacing: -0.01em; }
 .autopilot.live .autopilot-title { color: var(--good); }
@@ -1198,20 +1642,27 @@ a.btn { text-decoration: none; display: inline-block; }
 .addform label { display: flex; flex-direction: column; gap: 5px; flex: 1 1 170px; }
 .addform label span { font-size: 12.5px; color: var(--tx-1); }
 /*
-  The CSV export filters. Its own grid rather than `.addform-row`, because that row's
-  children size to their content and TWO of these cannot: a `<select>` takes the width of
-  its widest option ("Everything (drafts and failures too)") and `<input type="date">` has
-  a wide intrinsic size. Together they pushed /analytics 108px past an 800px viewport —
-  caught by `pnpm ig:layout`, which is exactly what that check is for.
+  THE CSV EXPORT FILTERS — the mockup draws one inline row of compact, content-sized
+  controls with no labels above them (`select` "Every account" · two date inputs ·
+  `select` "Delivered only" · the Download button, all sitting on one line). This used to
+  be a GRID of equal-fraction columns with a caption stacked above every field, which is
+  why it rendered as four columns of drastically different visual weight — the account
+  and rows selects stretched to their own grid cell's full share of the row while the two
+  date inputs sat in narrower cells, nothing lined up with the mockup's evenly-compact row.
 
-  `minmax(0, …)` and `min-width: 0` are the load-bearing part: a grid or flex child
-  defaults to `min-width: auto`, which means "never shrink below your content", and that
-  default is what turns one long option into a horizontally scrolling page.
+  `display:flex` with NO explicit width on the controls gets the mockup's look — each one
+  sizes to its own content, in a line, wrapping only if the viewport is too narrow to hold
+  them all. `min-width: 0` on every child is still the load-bearing part carried over from
+  the grid version: a flex child defaults to `min-width: auto` (never shrink below your
+  content), and that default is what once let a `<select>` holding "Everything (drafts and
+  failures too)" push /analytics 108px past an 800px viewport, caught by `pnpm ig:layout`.
+  Labels are visually hidden (`.vh`), not removed — the mockup shows no caption text, but a
+  bare `<select>`/`<input type="date">` needs one for a screen reader.
 */
-.exportform { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(11rem, 100%), 1fr)); gap: 0.75rem; align-items: end; }
-.exportform label { display: flex; flex-direction: column; gap: 5px; min-width: 0; font-size: 12.5px; color: var(--tx-1); }
-.exportform input, .exportform select { min-width: 0; max-width: 100%; }
-.exportform .btn-primary { align-self: end; text-align: center; text-decoration: none; }
+.exportform { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.exportform label { display: flex; align-items: center; min-width: 0; max-width: 100%; font-size: 12.5px; color: var(--tx-1); }
+.exportform input, .exportform select { min-width: 0; max-width: 100%; width: auto; }
+.exportform .btn-primary { text-align: center; text-decoration: none; white-space: nowrap; }
 
 .setting { margin-bottom: 1.6rem; }
 .setting label { display: block; font-weight: 600; font-size: 12.5px; margin-bottom: 0.35rem; }
@@ -1323,9 +1774,19 @@ a.btn { text-decoration: none; display: inline-block; }
   push the page sideways; `pnpm ig:layout` refuses a body that scrolls horizontally.
 */
 .channel-filter { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin: 0 0 10px; }
+/*
+  `select { width: 100%; ... }` in the base form rules (sized for a stacked `.field`) was
+  still winning here, the same bug `.addrow` was fixed for on the Targets page: with no
+  `width` of its own, this select inherited 100% of the flex row and left nothing for the
+  search box beside it, so the two wrapped onto separate lines instead of sitting side by
+  side the way the mockup draws them. `input[type=search]` escapes the base rule already
+  (it selects `input[type=text]`/`input:not([type])`, not `search`), which is why only the
+  select needed the same `width: auto` + flex-basis treatment.
+*/
 .channel-filter select {
   font: inherit; color: var(--tx-0); background: var(--bg-1);
-  border: 1px solid var(--ln-1); border-radius: var(--r); padding: 4px 8px; max-width: 100%;
+  border: 1px solid var(--ln-1); border-radius: var(--r); padding: 4px 8px;
+  width: auto; flex: 0 1 16rem; max-width: 100%;
 }
 .channel-filter button {
   font: inherit; background: none; border: 1px solid var(--ln-1);
@@ -1346,3 +1807,1388 @@ a.btn { text-decoration: none; display: inline-block; }
 .replies-fold > summary { cursor: pointer; font-weight: 600; font-size: 14px; }
 .replies-fold > summary::marker { color: var(--tx-1); }
 .replies-fold[open] > summary { margin-bottom: 10px; }
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   DS SALES AGENT — the design the TSX was already written against.
+
+   Ported from `DS Sales Agent Mockups.dc.html`. The markup for all seven
+   screens was converted to this vocabulary in an earlier pass and the
+   stylesheet was not, so every class below was being RENDERED and none of it
+   was being STYLED: the bar came out as default blue underlined links and the
+   page furniture fell back to browser defaults. That is the whole of what
+   "it went back to looking like this" was.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+/*
+  THE PAGE SURFACE IS FLAT `--bg`, AND THAT IS WHAT THE MOCKUP RENDERS.
+
+  The design file puts a three-stop mesh (cyan / #a78bfa / #f472b6) on `body`
+  with `background-attachment: fixed` — and then paints an OPAQUE
+  `background: var(--bg)` wrapper over the whole viewport
+  (`min-height:100vh`, the element every screen's content lives in). Measured on
+  the mockup itself: the visible page surface computes to `rgb(11, 14, 20)`,
+  solid. The mesh is never seen on a dashboard screen; it is the LOADER's
+  backdrop, and `.boot` below still carries it.
+
+  Porting the mesh to `body` here without that opaque wrapper is what made every
+  screen read magenta-and-violet where the design is near-black — the accents
+  then sat on a coloured field instead of a neutral one, so every hue on the
+  page shifted with it. Colour in this system is a budget spent on the one thing
+  that is live or wrong; a permanently tinted page spends it on nothing.
+*/
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+a { color: var(--accent); text-decoration: none; }
+a:hover { color: var(--text); text-decoration: underline; }
+
+/*
+  SCROLLBARS ARE HIDDEN, as the design file has them.
+
+  Not decoration: the top bar's nav strip scrolls horizontally when the window is
+  narrow, and a platform scrollbar under it reads as a broken border across the
+  full width of the chrome. Scrolling itself is untouched — wheel, trackpad,
+  keyboard and the scroll position all behave exactly as before; only the painted
+  thumb goes.
+*/
+* { scrollbar-width: none; }
+*::-webkit-scrollbar { width: 0; height: 0; display: none; }
+
+.page { max-width: none; }
+
+.page-head { align-items: baseline; gap: 20px; margin-bottom: 20px; }
+.page-head h1,
+.page h1 {
+  margin: 0 0 4px;
+  font-family: var(--font-display), var(--font-sans), sans-serif;
+  font-weight: 600;
+  font-size: 32px;
+  letter-spacing: -0.02em;
+  text-shadow: 0 0 24px color-mix(in oklch, var(--accent) 45%, transparent);
+}
+.page-head-aside,
+.page-sub { font-size: 11px; color: var(--text-dim); }
+.page-head-aside { white-space: nowrap; flex: 0 0 auto; }
+
+h2, .h-sec { font-family: var(--font-sans), sans-serif; font-size: 18px; font-weight: 600; letter-spacing: 0; margin: 0 0 10px; }
+h3 { font-size: 16px; font-weight: 600; }
+
+.eyebrow {
+  font-family: var(--font-mono), ui-monospace, monospace;
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+}
+
+/* A section's explanatory sentence takes a measure, but 70ch at 12px is ~420px —
+   narrow enough to leave a one-word last line under a full-width heading. 78ch is
+   the measure the rest of this design uses. */
+.blurb, .prose { color: var(--text-muted); font-size: 12px; max-width: 78ch; }
+.muted { color: var(--text-muted); font-size: 12px; }
+.dim { color: var(--text-dim); }
+.lede { color: var(--text-soft); font-size: 13px; }
+.plain { color: var(--text-soft); }
+.page section + section { margin-top: 20px; }
+
+/* The paid-posts pager row: "Showing N–M of T" on the left, "page X of Y" + Newer/Older
+   on the right, sharing one line. `.posts-pageline-count` gets `flex: 1 1 auto; min-width: 0`
+   so a long "matching ..." / "from @handle" suffix can wrap or truncate without shoving the
+   pager off the row; `.posts-pageline-pager` (`.seg`) stays `flex: 0 0 auto` so its links
+   never get crushed. Below 560px it wraps to two lines — count on top, pager below, right-
+   aligned — rather than squeezing both onto one line on a phone. */
+.posts-pageline {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 6px 16px;
+  margin-top: 10px;
+}
+.posts-pageline-count { margin: 0; flex: 1 1 auto; min-width: 0; }
+.posts-pageline-pager { flex: 0 0 auto; }
+@media (max-width: 560px) {
+  .posts-pageline { justify-content: flex-start; }
+  .posts-pageline-pager { margin-left: auto; }
+}
+
+/*
+  A SECTION IN A COLUMN IS NOT A SECTION UNDER ANOTHER ONE.
+
+  `section + section` is the rule that spaces STACKED sections apart, and it was
+  also matching the second `<section>` of every side-by-side pair — `.grid-2`
+  lays them out as columns, so the rule pushed the right-hand column down by its
+  own gutter. Measured on `/paid-posts`: "Detection breakdown" and "By channel"
+  are the same row of the same grid and their headings sat 20px apart, with the
+  two cards stepped down to match. The mockup has both headings on one baseline
+  and both cards on the next.
+
+  Resetting it inside the grid containers is narrower than rewriting the rule as
+  `.page > section + section`: pages here do nest a stacked section one level
+  deep, and those must keep their spacing. The grid's own `gap` is what separates
+  columns, and it already does.
+*/
+.cards > section + section,
+.grid-2 > section + section,
+.grid-3 > section + section { margin-top: 0; }
+
+/*
+  Both cards of a pair reach the same depth. A grid row stretches its ITEMS, so
+  the two `<section>`s were already equal height and the cards inside them were
+  not — which is the one place the eye actually reads the alignment, because the
+  card is the thing with a border on it.
+*/
+.grid-2 > section,
+.grid-3 > section,
+.cards > section { display: flex; flex-direction: column; }
+.grid-2 > section > .card,
+.grid-3 > section > .card,
+.cards > section > .card { flex: 1 1 auto; }
+/* The heading and whatever control belongs to it sit at the two ends of the
+   line, as the design has them — a range picker tucked against its own <h2> on
+   the left reads as part of the title rather than as a control over the card
+   below it. */
+.sec-head { justify-content: space-between; flex-wrap: wrap; margin-bottom: 10px; }
+
+/* ── THE PANEL ──────────────────────────────────────────────────────────────
+   One recipe, everywhere: a hairline, the page's own light through the top
+   edge, and the section's hue bled off the corner as a glow — `--lit`, which is
+   the mockup's box-shadow verbatim.
+
+   THE FILL IS FLAT `--panel`, AND ONLY `.card-tint` GETS THE WASH. Measured on
+   the mockup: its ordinary cards compute to `rgba(24,26,34,0.68)` with
+   `background-image: none`, and exactly ONE card on the Autopilot screen — the
+   "New companies today" strip — carries the accent radial. Putting `--wash` on
+   every panel tinted every surface on every screen toward that screen's hue, so
+   nothing on the page could read as neutral and the one card meant to stand out
+   no longer did. A tint that is everywhere is not a tint.                      */
+
+.card,
+.chartbox,
+.blocker,
+.reply,
+.settingrow {
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  background: var(--panel);
+  backdrop-filter: blur(16px);
+  box-shadow: var(--lit);
+  padding: 20px;
+}
+
+/* A ROW IS NOT A CARD, and the mockup separates them by two pixels of radius
+   and by the fill. The big cards at the top of a screen are 14px and flat; the
+   stacked rows below — blockers, replies — are 10px, and only the replies carry
+   the wash, because a reply is the one row on the screen that somebody has to
+   do something about. */
+.blocker, .reply { border-radius: var(--r); padding: 14px 18px; }
+.reply { background: var(--wash); }
+
+/* THE LEFT RULE IS THE ROW'S WHOLE COLOUR BUDGET, and it is 4px — the hairline
+   the panel recipe gives every edge is 1px, so a "coloured border" that only
+   changed the hairline's hue was invisible at reading distance and the rows all
+   read the same. Ranked lists are what these screens are: the rule is how you
+   see, without reading, that the thing at the top is a different KIND of
+   problem from the thing under it.
+
+   `--pending` rather than `--warn` for the middle tone: it is the design's own
+   token for "waiting on a person", and the mockup uses it on exactly this row. */
+.blocker { border-left: 4px solid var(--text-dim); }
+.blocker-bad  { border-left-color: var(--bad); }
+.blocker-warn { border-left-color: var(--pending); }
+.blocker-good { border-left-color: var(--accent); }
+.blocker-idle { border-left-color: var(--text-dim); }
+.reply { border-left: 4px solid var(--good); }
+
+.card-tint { background: var(--wash); }
+.card-good { border-left: 4px solid var(--good); }
+.card-warn { border-left: 4px solid var(--warn); }
+.card-bad  { border-left: 4px solid var(--bad); }
+.card-idle { border-left: 4px solid var(--text-dim); }
+
+.cards  { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(22rem, 100%), 1fr)); gap: 12px; }
+.grid-2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(24rem, 100%), 1fr)); gap: 12px; }
+.grid-3 { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(16rem, 100%), 1fr)); gap: 12px; }
+.grid-4 { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(11rem, 100%), 1fr)); gap: 12px; }
+
+/* 78ch is this design's measure for a sentence that qualifies a section. The older
+   70ch at 12.5px is ~440px, which under a full-width table leaves three-word last
+   lines and reads as a column of text pinned to the left edge. */
+.cardnote, .hint, .h2-note, .setting-why, .login-note, .undecided-why, .brandcap {
+  font-size: 12px;
+  color: var(--text-muted);
+  max-width: 78ch;
+}
+/* `margin-left` is NOT optional and this rule has eaten it once already: the
+   `margin` shorthand below reset the 0.5rem the older rule set, and the heading
+   rendered as "Brandsnewest 40 of 477 confirmed". JSX drops the whitespace
+   between a text node and an element on the next line, so the gap here is the
+   only gap there is. */
+.h2note { font-size: 12px; color: var(--text-muted); margin: 0 0 0 0.5rem; }
+/*
+  A SECTION IS A HEADING AND ITS ROWS, NOT A BOX AROUND THEM.
+
+  `.group` was in the panel recipe above, which put a lit, blurred surface around a
+  heading, a note and a stack of cards that each already had one — a panel inside a
+  panel, twice the border weight of anything the design draws. In the mockup every
+  section on every screen is bare: a heading, a sentence, then the rows. The surface
+  belongs to the ROW.
+*/
+.group { border: 0; border-radius: 0; background: none; backdrop-filter: none; box-shadow: none; padding: 0; margin: 0 0 20px; }
+.group > h2, .group-title {
+  margin: 0 0 4px;
+  font-family: var(--font-sans), system-ui, sans-serif;
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--text);
+}
+.group-head { margin-bottom: 4px; }
+.group-rows { display: grid; gap: 10px; }
+.group-blurb { font-size: 12px; color: var(--text-muted); margin: 0 0 10px; max-width: 78ch; }
+
+/*
+  ONE ROW, ONE CARD — the shape the design gives a watched page, a company and a
+  sending account alike: a hairline, a hue down the leading edge, and the section's
+  own light bled off the top-right corner.
+*/
+.message, .account, .login-card {
+  border: 1px solid var(--border);
+  border-left: 4px solid var(--row-accent, var(--text-dim));
+  border-radius: var(--r);
+  padding: 14px 18px;
+  background: var(--wash);
+}
+.message-head, .account-main {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px 12px;
+  flex-wrap: wrap;
+  margin-bottom: 0;
+  font-family: var(--font-sans), system-ui, sans-serif;
+  font-size: 14px;
+  font-weight: 600;
+}
+.message-head .muted, .account-name { font-weight: 400; color: var(--text-dim); font-size: 11px; }
+.account-message { margin: 9px 0 0; font-size: 12px; color: var(--text-muted); }
+.account-message.bad { color: var(--bad); }
+
+/* ── FIGURES ────────────────────────────────────────────────────────────────
+   A number is the loudest thing on a screen, so there is one size of one.     */
+
+.stat-n, .tile-n, .donut-n, .pace-figure {
+  font-family: var(--font-sans), sans-serif;
+  font-size: 28px;
+  font-weight: 700;
+  color: var(--text);
+  line-height: 1.1;
+}
+.stat-l, .tile-sub, .donut-l, .verdict-l { font-size: 11px; color: var(--text-muted); margin-top: 2px; }
+.tile-sub.bad { color: var(--bad); }
+.stat-n-good { color: var(--good); }
+.stat-n-lit {
+  background: linear-gradient(135deg, var(--accent), var(--pending));
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  font-weight: 800;
+}
+.stat-sentence { font-size: 14px; color: var(--text-soft); }
+.stat-sentence strong { font-size: 22px; color: var(--text); }
+.statcards { margin-bottom: 10px; }
+
+/*
+  FOUR COUNTS THAT PARTITION ONE THING, drawn as the design draws them: one
+  bordered object with hairlines between the cells, rather than four bare numbers
+  floating over the page with nothing saying they belong together. The cells are
+  narrower than the page's headline tiles because they qualify the list beneath
+  them rather than heading the page.
+*/
+.statcells {
+  grid-template-columns: repeat(auto-fit, minmax(min(9rem, 100%), 1fr));
+  gap: 1px;
+  background: var(--border);
+  border: 1px solid var(--border);
+  border-radius: var(--r);
+  overflow: hidden;
+  margin-bottom: 12px;
+}
+.statcells .stat { display: grid; gap: 2px; background: var(--panel); padding: 12px 14px; }
+.statcells .stat-n { font-size: 20px; font-weight: 700; white-space: nowrap; }
+.statcells .stat-l { font-size: 10px; }
+.pace-figure-of { color: var(--text-dim); font-size: 14px; font-weight: 600; }
+
+/* ── ROWS AND TABLES ────────────────────────────────────────────────────── */
+
+.table-wrap {
+  border: 1px solid var(--border);
+  border-radius: var(--r);
+  background: var(--wash);
+  overflow-x: auto;
+}
+.table { border-collapse: collapse; width: 100%; }
+.table th {
+  background: var(--panel);
+  padding: 12px 14px;
+  font-family: var(--font-mono), ui-monospace, monospace;
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+  font-weight: 500;
+  text-align: left;
+  white-space: nowrap;
+}
+.table td { padding: 11px 14px; border-top: 1px solid var(--border); font-size: 12px; }
+.table tr:last-child td { border-bottom: 0; }
+
+/*
+  A LIST OF LIKE THINGS IS ONE SURFACE WITH HAIRLINES, not a stack of cards.
+
+  The design uses two row shapes and they mean different things. A delivered
+  message, a queued draft, a paired Mac, an activity line — these are ENTRIES in
+  one record, so they share a single bordered panel and are separated by a rule.
+  A watched page or a company is a SUBJECT in its own right, so it gets its own
+  card (see `.message` above). `.rows` briefly carried the card shape and turned
+  the delivered list into eight floating boxes, which reads as eight objects
+  rather than one history.
+*/
+.rows {
+  display: grid;
+  gap: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--r);
+  background: var(--wash);
+  overflow: hidden;
+}
+.rows > * + * { border-top: 1px solid var(--border); }
+.rowitem {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 10px 18px;
+  border: 0;
+  border-radius: 0;
+  background: none;
+  font-size: 12.5px;
+  color: var(--text-soft);
+}
+/* Prose wraps; a flex child would otherwise refuse to shrink below its content
+   and push the whole row — and then the page — sideways. */
+.rowitem > * { min-width: 0; overflow-wrap: anywhere; }
+
+/* ── THE QUEUE ──────────────────────────────────────────────────────────────
+   The header is the only place the columns are named, so the grid is declared
+   per variant rather than left to `auto`: a long recipient handle must not be
+   able to push "Frees up" off the right edge.                                 */
+
+/* The mockup draws both the "Up next" and the "Resting" table on the wash, not on a
+   flat panel — matching `.reply` and the "New companies today" tile, the other
+   surfaces that carry a live figure rather than settled history. */
+.qrows { display: grid; gap: 0; border: 1px solid var(--border); border-radius: var(--r); background: var(--wash); overflow: hidden; }
+/*
+  The design gives the identity columns a FIXED width and lets the reason take what
+  is left. Two `1fr` handle columns on a wide window pushed "From" and "To" half a
+  screen apart with nothing between them, which reads as two unrelated lists.
+*/
+.qhead, .qrow {
+  display: grid;
+  grid-template-columns: minmax(8rem, 10rem) minmax(8rem, 10rem) minmax(0, 1fr) auto;
+  align-items: baseline;
+  gap: 14px;
+  padding: 10px 18px;
+}
+.qrows-held-3 .qhead, .qrows-held-3 .qrow { grid-template-columns: minmax(8rem, 10rem) minmax(0, 1fr) auto; }
+/*
+  COST's "By channel" — three columns (Channel, Posts judged, Spend), the mockup's own
+  row shape minus the two it deliberately omits (Cache-hit is a fleet-wide figure, not a
+  per-channel one, and Judged duplicates Calls for a detector that is one call per post —
+  see the comment in cost/page.tsx). This was a plain `<table>` — the older, unstyled
+  surface every other list on this page had already moved off of, which is what made Cost
+  the one screen still reading as the pre-redesign product next to Paid Posts and Senders.
+  Same `.qrows` wash panel as everywhere else; the numeric columns right-align like any
+  other figure column on these pages (`.qright`).
+*/
+.qrows-cost .qhead, .qrows-cost .qrow { grid-template-columns: minmax(0, 1fr) 140px 120px; }
+.qrows-next .qhead, .qrows-next .qrow { grid-template-columns: 1.5rem minmax(8rem, 11rem) minmax(0, 1fr) auto; }
+.qhead {
+  background: var(--panel-alt);
+  font-family: var(--font-mono), ui-monospace, monospace;
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+}
+.qrow { border-top: 1px solid var(--border); font-size: 12px; }
+.qhandle { font-family: var(--font-mono), ui-monospace, monospace; font-size: 11.5px; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.qwhy { color: var(--text-muted); }
+.qright { text-align: right; white-space: nowrap; }
+.qpos { font-family: var(--font-mono), ui-monospace, monospace; font-size: 11px; color: var(--text-dim); }
+.held-head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; margin-bottom: 8px; }
+
+/*
+  THE POSTS TABLE — seven tracks, declared, and the panel scrolls rather than the page.
+
+  `.prows` declared FOUR tracks against a header of seven spans, so cells five to
+  seven wrapped onto a second grid row: the header read "Posted Channel Brand
+  Verdict" then "We message  Message sent" underneath, and every post rendered as
+  two rows that looked like two posts. Wide content gets a min width and its own
+  `overflow-x`, exactly as the design draws it — a body that scrolls sideways takes
+  the top bar with it.
+
+  ── THE COLUMNS, TWICE REVISED (2026-09-23) ─────────────────────────────────
+
+  Round one used real `fr` tracks and let Brand / We-message / Message-sent absorb
+  every spare pixel of the panel — on a wide monitor a short string like
+  "@royalcanin.india" sat in a 400px cell with acres of dead air either side, which
+  read as spread out and unfinished.
+
+  Round two went the other way: bounded `minmax(min, max)` tracks with NO `fr`
+  anywhere, so nothing grows past its ceiling and the row settles at its own
+  natural width. That fixed the dead air INSIDE the row and moved it outside the
+  row instead — the whole table now sits flush-left in the panel with a wide
+  blank strip between "Message sent" and the panel's own right edge, and the
+  actions column floats in the middle distance rather than sitting beside its row.
+
+  What actually matches the mockup's INTENT — a table that reads as one dense
+  surface, not a row that data has been checked against a mockup and neither
+  overflows text NOR leaves the panel half empty — is `fr` tracks used correctly:
+  give them ONLY to the two columns whose content is genuinely variable-length
+  (We-message, Message-sent — the two that can hold several dated deliveries),
+  each with a floor so it never collapses, and keep every other track — including
+  Actions — a fixed pixel width so it can never be the one that absorbs the
+  leftover space by accident (that accident, with `auto` on Actions, is the bug
+  fixed two revisions ago). Overflow inside Brand / We-message / Recipients is
+  handled below (`.prow-brand`, `.prow-recipients`) regardless of how wide their
+  track grows, so filling the row is now safe in a way it was not the first time.
+*/
+.rows.prows {
+  display: grid;
+  gap: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--r);
+  background: var(--wash);
+  overflow-x: auto;
+  padding: 0;
+}
+.prows .qhead, .prows .qrow {
+  min-width: 860px;
+  /*
+    `auto` on the trailing actions column was the earlier bug: with no `fr` track anywhere
+    in the row, an `auto` track is the one CSS grid stretches to soak up whatever space is
+    left in the container (`justify-content: normal` behaves as `stretch` against an
+    indeterminate `auto` track) -- so it silently became a 700-900px column on a wide
+    screen and "open / not paid" floated off at the panel's far right edge, stranded past
+    a field of empty grid. A fixed width is determinate and is never stretched, which is
+    why Actions stays fixed even now that two OTHER columns are deliberately `fr` again.
+  */
+  grid-template-columns: 110px 140px minmax(80px, 130px) 100px minmax(140px, 1fr) minmax(200px, 1.6fr) 140px;
+  align-items: baseline;
+}
+/*
+  `.prow-brand`: same treatment as `.qhandle` two columns over, and for the same reason.
+  A grid item's automatic minimum width is content-sized when `overflow` is `visible` --
+  so with no rule of its own, a brand name longer than its track (the common case at
+  narrower widths, where the Brand track shrinks toward its 80px floor) did not truncate,
+  it OVERFLOWED past the track boundary and rendered on top of the Verdict cell beside it.
+  `overflow: hidden` here is not decoration; it is what lets the grid item shrink to its
+  track at all, and the ellipsis is what makes the truncation legible rather than a
+  post's brand name silently getting cut off mid-word against the next column's text.
+*/
+.prow-brand { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+/*
+  The Verdict cell carries an optional trailing phrase ("- from the footage: ...") that
+  should stay readable rather than clip, so it wraps instead of truncating -- but it still
+  needs `min-width: 0`, or a single unbroken token in that phrase (a brand handle with no
+  spaces) hits the exact overflow this whole pass is fixing, one column along.
+*/
+.prow-verdict { min-width: 0; overflow-wrap: anywhere; }
+/*
+  THE COMMENT ABOVE THIS CELL IN page.tsx SAYS "ONE LINE, CLIPPED" AND THE RULE THAT WAS
+  SUPPOSED TO DO IT WAS NEVER WRITTEN. `.prow-recipients` set only a text colour, so a
+  post naming two or more companies wrapped onto a second line exactly as the comment
+  says it must not -- turning one row of the table into two, and misaligning every
+  column beside it for the rest of that row's height. Same fix as `.prow-brand` and
+  `.qhandle`: `nowrap` plus the shrink-to-fit that `overflow: hidden` grants a grid item.
+*/
+.prow-recipients { color: var(--text-soft); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+/*
+  ONE DELIVERY PER LINE. `.prow-sent` was `display: inline` by default, and the cell can
+  hold several -- one per message ever claimed against a post. Adjacent inline spans with
+  no separator between them render as one run-on line: "...4 days ago@bollywoodchronicle
+  -> @royalcare191 12 days ago...", which is the actual cause of the "messy" table, not the
+  column widths. `block` puts each delivery on its own line; the small gap keeps a
+  multi-delivery cell readable against the single-line cells beside it.
+*/
+.prow-sent { display: block; font-size: 11.5px; color: var(--text-muted); }
+.prow-sent + .prow-sent { margin-top: 3px; }
+.prow-late { color: var(--warn); font-size: 11px; }
+.prow-actions { display: flex; gap: 6px; align-items: center; }
+.message-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+
+/* ── CONTROLS ───────────────────────────────────────────────────────────────
+   One shape for everything that can be pressed, and colour only on the one
+   button that commits something.                                             */
+
+.btn, .btn-quiet, .groupbtn {
+  font-family: var(--font-sans), sans-serif;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  padding: 7px 14px;
+  border-radius: var(--r);
+  border: 1px solid var(--border-strong);
+  background: none;
+  color: var(--text);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background var(--ease), border-color var(--ease);
+}
+.btn:hover, .btn-quiet:hover, .groupbtn:hover { background: color-mix(in oklch, var(--accent) 10%, transparent); }
+.btn-primary, .btn.primary {
+  font-family: var(--font-sans), sans-serif;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  padding: 8px 14px;
+  border-radius: var(--r);
+  border: 1px solid var(--accent);
+  background: var(--accent);
+  color: var(--bg);
+  cursor: pointer;
+}
+.btn-primary:hover { background: color-mix(in oklch, var(--accent) 85%, var(--text)); }
+.btn-danger { border-color: var(--bad); color: var(--bad); background: none; }
+.ack-breaker { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 10px; }
+
+input[type='text'], input[type='search'], input[type='email'], input[type='password'], select, textarea {
+  font: inherit;
+  font-size: 12px;
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--r);
+  padding: 7px 10px;
+  min-width: 0;
+}
+/*
+  `inline-flex`, not `flex`. `<nav class="seg">` is a block element by default, and every
+  OTHER use of `.seg` (the 7/30/90-day range picker) happens to sit inside a flex parent
+  of its own (`.sec-head`), where a block child's width is governed by flex sizing rather
+  than by its own display -- so it looked fine there and hid the bug. The paid-posts pager
+  has a plain `<section>` for a parent, so as a block-level flex CONTAINER it stretched to
+  the full row width regardless of its three short children, drawing a tall, mostly-empty
+  bordered box with "Newest / Newer / page 3 of 3" stranded in the top-left corner.
+  `inline-flex` makes it shrink-to-fit in every context, which is what a segmented control
+  must always do.
+*/
+/* `align-items: center`, not the flex default of `stretch`: the paid-posts pager mixes
+   `<a>` children (their own `padding: 6px 11px` keeps their text centered regardless) with
+   a plain `<span>` ("page X of Y", `padding: 0 8px` — no vertical padding). Stretch pulled
+   that span's box up to the anchors' full height, and its one line of text sat at the TOP
+   of the taller box rather than centered in it — "page 1 of 3" rode noticeably higher than
+   "Older ›" and "Oldest »" beside it. Centering the row's cross-axis fixes exactly that,
+   without touching any child's own padding, gap or size. */
+.seg { display: inline-flex; align-items: center; gap: 4px; padding: 3px; border: 1px solid var(--border); border-radius: var(--r); }
+.seg button, .seg a {
+  font-family: var(--font-sans), sans-serif;
+  font-size: 10.5px;
+  font-weight: 600;
+  padding: 6px 11px;
+  border-radius: 6px;
+  border: none;
+  background: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  text-decoration: none;
+}
+.seg button[aria-pressed='true'], .seg a[aria-current='page'] { background: var(--accent); color: var(--bg); }
+
+.pill, .chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--border-strong);
+  color: var(--text-muted);
+}
+.pill-good { border-color: var(--good); color: var(--good); }
+.pill-warn { border-color: var(--warn); color: var(--warn); }
+.pill-bad  { border-color: var(--bad); color: var(--bad); }
+.pill-ac   { border-color: var(--accent); color: var(--accent); }
+
+.dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; flex: 0 0 auto; }
+.dot-good { background: var(--good); box-shadow: 0 0 0 3px color-mix(in oklch, var(--good) 20%, transparent), 0 0 10px 1px color-mix(in oklch, var(--good) 70%, transparent); }
+.dot-warn { background: var(--warn); }
+.dot-bad  { background: var(--bad); }
+.dot-idle { background: var(--text-dim); }
+
+/* ── AUTOPILOT ──────────────────────────────────────────────────────────── */
+
+.autopilot-top { display: flex; align-items: center; gap: 18px; }
+.autopilot-title { font-family: var(--font-sans), sans-serif; font-size: 17px; font-weight: 600; }
+.autopilot-sub { margin: 12px 0 0; font-size: 14px; line-height: 1.55; color: var(--text-muted); }
+.autopilot-foot {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 12px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+  font-size: 11px;
+  color: var(--text-dim);
+}
+.bigswitch {
+  position: relative;
+  width: 64px;
+  height: 36px;
+  border-radius: 999px;
+  padding: 0;
+  flex: 0 0 auto;
+  border: 1px solid var(--border-strong);
+  background: var(--panel-alt);
+  cursor: pointer;
+}
+/* The mockup's own computed style on this element: `rgba(52,211,153,0.14)` — a wash,
+   not a fill. Measured against the live mockup rather than guessed at, because the
+   30% this replaces was visibly heavier than the reference. */
+.bigswitch[aria-checked='true'] { border-color: var(--good); background: color-mix(in oklch, var(--good) 14%, transparent); }
+.bigswitch-knob {
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  background: var(--text-dim);
+  transition: left 160ms ease, background 160ms ease;
+}
+.bigswitch[aria-checked='true'] .bigswitch-knob { left: 33px; background: var(--good); }
+
+/*
+  THE DAY BAND, as the mockup draws it: a 22px bordered trough, the elapsed part
+  a cyan-to-violet gradient rather than a flat fill, and the `now` marker a
+  2px rule that OVERHANGS the trough top and bottom so it reads as a position on
+  a timeline instead of the end of a progress bar.
+
+  It had been ported as an 8px pill with a solid `--accent 35%` fill, which is
+  the shape of a progress meter — and this is not progress: the day advancing is
+  not the fleet achieving anything, and drawing it as a filling bar said the
+  opposite of what the number beside it says.
+*/
+/*
+  `.paceband` is the POSITIONED box and the three spans inside it are absolute
+  against it — the mockup's structure exactly. It was `display: grid` with the
+  track as a grid item, which left `.pace-elapsed` and `.pace-now` resolving
+  their `position: absolute` against whatever ancestor happened to be
+  positioned further up: the fill stretched the full width of the card and read
+  as "the day is over" at every hour of the day.
+*/
+.paceband { position: relative; height: 22px; }
+.pace-track {
+  position: absolute;
+  inset: 0;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--panel-alt);
+}
+.pace-elapsed {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  border-radius: 10px 0 0 4px;
+  background: linear-gradient(
+    90deg,
+    color-mix(in oklch, var(--accent) 20%, transparent),
+    color-mix(in oklch, #a78bfa 35%, transparent)
+  );
+}
+.pace-now {
+  position: absolute;
+  top: -5px;
+  bottom: -5px;
+  height: auto;
+  width: 2px;
+  background: var(--accent);
+  box-shadow: 0 0 8px 1px color-mix(in oklch, var(--accent) 70%, transparent);
+}
+.pace-scale { display: flex; justify-content: space-between; font-size: 10px; color: var(--text-dim); margin-top: 2px; }
+
+
+/* ── METERS, DONUTS AND FUNNELS ─────────────────────────────────────────── */
+
+.meter, .funnel-track, .chan-track, .brandbar-track, .progress-bar, .ladder-bar {
+  height: 8px;
+  border-radius: 999px;
+  background: var(--panel-alt);
+  overflow: hidden;
+}
+/*
+  TWO KINDS OF BAR, and the design distinguishes them.
+
+  A bar that shows ONE quantity against the largest of its peers — a sending page's
+  volume, a channel's post count — is a solid accent fill: nothing about it is a
+  progression. A bar that shows a STAGE of a funnel, or a brand's share of a total,
+  runs from `--pending` to `--accent` and carries the glow, because the gradient is
+  the movement it is describing.
+*/
+.meter-fill, .progress-bar span, .ladder-bar span {
+  display: block;
+  height: 100%;
+  border-radius: 999px;
+  background: var(--accent);
+}
+.funnel-bar, .brandbar-track > span {
+  display: block;
+  height: 100%;
+  border-radius: 999px;
+  background: linear-gradient(90deg, var(--pending), var(--accent));
+  box-shadow: 0 0 10px -2px color-mix(in oklch, var(--accent) 60%, transparent);
+}
+.funnel-line { font-size: 12.5px; color: var(--text-soft); max-width: 70ch; }
+
+/* The design sets the ring and its key side by side — the key reads as the ring's
+   labels that way, and stacked underneath it reads as a caption. It wraps under at
+   narrow widths, where side-by-side would squeeze both. */
+.donut-card { display: flex; align-items: center; gap: 20px; flex-wrap: wrap; }
+.donut {
+  position: relative;
+  width: 120px;
+  height: 120px;
+  border-radius: 50%;
+  background: conic-gradient(
+    var(--accent) 0% var(--paid-end, 0%),
+    var(--border-strong) var(--paid-end, 0%) var(--ordinary-end, 0%),
+    color-mix(in oklch, var(--text-dim) 55%, transparent) var(--ordinary-end, 0%) 100%
+  );
+  display: grid;
+  place-items: center;
+}
+/* `var(--panel)`, not `var(--bg)` — the mockup's hole shows the CARD's own surface,
+   not a punch through to the page behind it. On `.card-tint`'s wash background the
+   difference is real: `--bg` is the opaque page colour and reads as a hole cut clean
+   through the card; `--panel` reads as the ring sitting on top of the card's surface,
+   which is what the reference draws. */
+.donut-hole { width: 76px; height: 76px; border-radius: 50%; background: var(--panel); display: grid; place-items: center; text-align: center; }
+.donut-n { font-size: 24px; }
+.donut-key { display: flex; flex-direction: column; gap: 8px; font-size: 12px; color: var(--text-muted); }
+.donut-key > span { display: flex; align-items: center; }
+/*
+  A SWATCH IS A BOX, so it must not be an inline element.
+
+  `.chart-swatch` set a width and a height and nothing else, which works inside
+  `.chart-legend` only because that container is a flex box and blockifies its
+  children. In the donut's key the parent was not, so three 10px squares collapsed
+  to nothing and the key named three colours with no colours beside them.
+*/
+.chart-swatch { display: inline-block; vertical-align: middle; margin-right: 8px; }
+
+/* A channel's bar. It shares the track with every other bar on the dashboard and
+   had no FILL rule of its own, so the track rendered and the quantity did not. */
+.chan-track > span { display: block; height: 100%; border-radius: 999px; background: var(--accent); }
+.chan-track { height: 9px; }
+/*
+  THE VERDICT TILES. Two numbers, and the page's subject is the smaller one — so
+  `paid` carries the lit gradient the design reserves for the figure a screen is
+  ABOUT, and `ordinary` is set in soft text at the same size. `.verdict-n` had no
+  rule at all and was rendering at body size beside its own label.
+*/
+.verdict-tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(13rem, 100%), 1fr)); gap: 12px; margin-bottom: 16px; }
+.verdict-n {
+  font-family: var(--font-sans), system-ui, sans-serif;
+  font-size: 34px;
+  font-weight: 700;
+  line-height: 1.1;
+  letter-spacing: -0.02em;
+  color: var(--text-soft);
+  font-variant-numeric: tabular-nums;
+}
+.verdict-n-paid {
+  font-weight: 800;
+  background: linear-gradient(135deg, var(--accent), var(--pending));
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+/* ── CHANNELS, SENDERS, BRANDS, ACCOUNTS ────────────────────────────────── */
+
+.chan-card { display: grid; gap: 8px; }
+.chan-top { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+.chan-note { font-size: 11px; color: var(--text-muted); margin: 0; }
+
+/*
+  A WATCHED CHANNEL'S CARD, in the shape the design gives a watch row: the page and
+  its size on one baseline, its week's figures as a single meta line under it, and
+  the note last. The three facts were a `<dl>` stacked as three label-above-value
+  blocks, which reads as a form — and a channel card is a statement, not an entry.
+*/
+.card > .card-top {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 6px 12px;
+  flex-wrap: wrap;
+  font-family: var(--font-sans), system-ui, sans-serif;
+  font-size: 14px;
+  font-weight: 600;
+}
+.card > .card-top a { color: var(--text); text-decoration: none; }
+.card > .card-top a:hover { color: var(--accent); text-decoration: underline; }
+.followers { font-weight: 400; color: var(--text-dim); font-size: 11px; }
+
+.card > dl {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 18px;
+  margin: 8px 0 0;
+  font-size: 11px;
+}
+.card > dl > div { display: flex; align-items: baseline; gap: 6px; min-width: 0; }
+.card > dl dt { color: var(--text-dim); }
+.card > dl dd { margin: 0; color: var(--text-soft); font-size: 12px; }
+
+/*
+  ONE SENDING PAGE, OPENABLE.
+
+  `.sender-row` is a `<details>`, and it was given `display: flex` — which makes the
+  summary and the open paragraph two flex ITEMS side by side, and `padding: 12px 0`
+  left the text hard against the panel's edge with the disclosure triangle stranded
+  on a line of its own. It is a block; the summary carries the inset, as the design
+  draws every row inside a panel.
+*/
+.sender-row { display: block; padding: 0; border: 0; }
+.sender-row > summary {
+  cursor: pointer;
+  list-style: none;
+  padding: 10px 18px;
+  display: grid;
+  gap: 6px;
+}
+.sender-row > summary::-webkit-details-marker { display: none; }
+.sender-row > summary:hover { background: color-mix(in oklch, var(--accent) 6%, transparent); }
+.sender-row > .blurb { margin: 0; padding: 0 18px 12px; font-size: 11.5px; color: var(--text-dim); }
+.sender-row-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+  font-size: 12.5px;
+  color: var(--text-soft);
+}
+.sender-row-head .muted { color: var(--text-dim); white-space: nowrap; }
+.sender-row-head strong { color: var(--text); font-weight: 600; }
+
+.account-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 12px 18px;
+}
+.account-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  font-family: var(--font-mono), ui-monospace, monospace;
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+}
+
+/* The run strip, lit the way the design draws it: each cell rounded and carrying a
+   little of its own colour into the page, so a red run is visible at a glance in a
+   strip a person is scanning rather than reading. */
+.runstrip { gap: 3px; height: 24px; align-items: flex-end; }
+.runcell { border-radius: 2px; }
+.run-ok { box-shadow: 0 0 6px -1px var(--good); }
+.run-partial { box-shadow: 0 0 6px -1px var(--warn); }
+.run-failed { box-shadow: 0 0 6px -1px var(--bad); }
+/*
+  STACKED, NOT SIDE BY SIDE. This was `display: flex; align-items: center` — a HORIZONTAL
+  row — so its two children (the handle/name line and the status sentence) sat as two
+  cramped columns each wrapping its own text independently, rather than the handle sitting
+  on its own line with the status sentence running the full width beneath it. `column` plus
+  a small gap is the stacked block every other two-line row on this page already uses.
+*/
+.sender-main { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.sender-name, .account-handle { font-family: var(--font-mono), ui-monospace, monospace; font-size: 12px; color: var(--text); }
+/*
+  The handle stays PROMINENT and on ONE line — a long handle+name pair truncates with an
+  ellipsis rather than wrapping and pushing the status sentence down unpredictably.
+  `.account-handle` (a bare inline mention elsewhere) is untouched; this shape is only for
+  the row's own identity line.
+*/
+.sender-name {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+  font-weight: 600;
+}
+.sender-real { font-family: var(--font-sans), sans-serif; font-size: 11.5px; font-weight: 400; color: var(--text-dim); }
+/*
+  `.sender-sub` HAD NO RULE AT ALL — the status sentence was rendering in whatever text
+  colour it happened to inherit, and the "warn" variant (a real problem: "signed out, needs
+  you now") could not be told apart from the ordinary "N sent this week" sentence by colour,
+  only by which words it happened to contain. It also needs to be free to WRAP (it is a full
+  sentence, unlike the handle line above it), which `.sender-main`'s new `min-width: 0` is
+  what actually permits.
+*/
+.sender-sub { font-size: 12px; line-height: 1.45; color: var(--text-muted); }
+.sender-sub-warn { color: var(--warn); }
+
+.brandbars { display: grid; gap: 9px; }
+.brandbar { display: grid; gap: 4px; }
+.brandbar.retired { opacity: 0.55; }
+.brandbar-meta { display: flex; justify-content: space-between; gap: 10px; font-size: 11.5px; color: var(--text-muted); }
+.brandbar-handle { font-family: var(--font-mono), ui-monospace, monospace; color: var(--text); }
+.brandbar-name { color: var(--text-soft); }
+.brandbar-note { font-size: 11px; color: var(--text-dim); }
+.brandbar-track { height: 7px; }
+
+/* ── RULES ──────────────────────────────────────────────────────────────── */
+
+/*
+  The rules read as ARGUMENTS, so each group is a numbered claim with its
+  qualifications set against a coloured rule — the mockup's own shape. The list is
+  NOT a bordered table: a table says "these rows are alike", and a headline plus
+  the sentences that qualify it are not alike.
+*/
+.rule-list { display: grid; gap: 28px; max-width: 78ch; margin: 0 0 44px; }
+.rule-group { display: grid; grid-template-columns: 28px minmax(0, 1fr); gap: 12px; }
+.rule-index {
+  font-family: var(--font-mono), ui-monospace, monospace;
+  font-size: 11px;
+  color: var(--rule, var(--text-dim));
+  letter-spacing: 0.04em;
+  padding-top: 2px;
+}
+.rule-group > div { min-width: 0; }
+.rule-group h2 { margin: 0 0 10px; font-family: var(--font-sans), system-ui, sans-serif; font-size: 16px; font-weight: 600; color: var(--text); }
+.rule-body {
+  border-left: 2px solid var(--rule, var(--accent));
+  padding-left: 18px;
+  display: grid;
+  gap: 10px;
+  margin: 0;
+  max-width: none;
+}
+/* A paragraph of prose, never a grid row — `.rule-line` is a <p>. */
+.rule-line { margin: 0; font-size: 13.5px; line-height: 1.65; color: var(--text-muted); }
+.rule-headline { margin: 0; font-size: 16px; font-weight: 600; line-height: 1.45; color: var(--text); }
+
+/*
+  A boundary is a MEMBERSHIP TEST — in the set or not, no line qualifying another —
+  so these two are ticked and crossed lists side by side, wide enough that a
+  sentence is not broken across four lines.
+*/
+.bounds-head { margin: 0 0 14px; font-family: var(--font-sans), system-ui, sans-serif; font-size: 16px; font-weight: 600; color: var(--text); }
+.grid-2:has(> .bounds) { grid-template-columns: repeat(auto-fit, minmax(min(38rem, 100%), 1fr)); }
+.bounds { border: 1px solid var(--border); border-radius: var(--r-lg); background: var(--panel); padding: 0; overflow: hidden; }
+.bounds-title { padding: 16px 20px; border-bottom: 1px solid var(--border); }
+.bounds-name { font-size: 14px; font-weight: 600; margin-bottom: 4px; }
+.bounds-permit .bounds-name { color: var(--good); }
+.bounds-deny .bounds-name { color: var(--bad); }
+.bounds-intro { margin: 0; font-size: 12.5px; color: var(--text-muted); }
+.bounds-item {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+  padding: 13px 20px;
+  border-bottom: 1px solid var(--border);
+}
+.bounds-item:last-child { border-bottom: 0; }
+.bounds-item p { margin: 0; font-size: 13.5px; line-height: 1.55; color: var(--text-soft); }
+.bounds-mark {
+  flex: 0 0 auto;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  font-size: 11px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-top: 1px;
+}
+.bounds-permit .bounds-mark { background: color-mix(in oklch, var(--good) 14%, transparent); color: var(--good); }
+.bounds-deny .bounds-mark { background: color-mix(in oklch, var(--bad) 14%, transparent); color: var(--bad); }
+
+/* ── COST ───────────────────────────────────────────────────────────────── */
+
+.purpose { border: 1px solid var(--border); border-left: 4px solid var(--rule, var(--text-dim)); border-radius: var(--r); padding: 14px 18px; background: var(--wash); }
+.purpose-top { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; }
+.purpose-name { font-family: var(--font-sans), sans-serif; font-weight: 600; font-size: 14px; }
+.purpose-status { font-family: var(--font-mono), ui-monospace, monospace; font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--text-dim); }
+.purpose-note { margin: 6px 0 0; font-size: 12px; color: var(--text-muted); }
+.purpose-figures { margin-top: 8px; font-family: var(--font-mono), ui-monospace, monospace; font-size: 11.5px; color: var(--text-soft); }
+
+.reply-who { font-family: var(--font-mono), ui-monospace, monospace; font-size: 12px; color: var(--text); }
+.msg { font-size: 12.5px; color: var(--text-soft); white-space: pre-wrap; }
+
+/* ── FOLDS ──────────────────────────────────────────────────────────────────
+   A fold is the page saying "there is more, and you do not need it yet".      */
+
+/*
+  A DISCLOSURE IS A BOX, not a horizontal rule with a word above it.
+
+  The design gives every one of them a hairline and a radius, and gives the ONE that
+  asks a person to go and do something on another machine a DASHED edge — the border
+  that says "not part of the page yet". Content is padded inside the box, so an open
+  fold reads as one object rather than as loose paragraphs after a heading.
+*/
+.fold, .replies-fold {
+  border: 1px solid var(--border);
+  border-radius: var(--r);
+  margin: 0 0 12px;
+  padding: 0;
+}
+.setup-fold {
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--r);
+  margin: 0 0 20px;
+  padding: 0;
+}
+.fold > summary, .setup-fold > summary, .replies-fold > summary {
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 16px;
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-soft);
+  list-style: none;
+}
+.fold > summary::-webkit-details-marker,
+.setup-fold > summary::-webkit-details-marker,
+.replies-fold > summary::-webkit-details-marker { display: none; }
+.fold > summary:hover, .setup-fold > summary:hover, .replies-fold > summary:hover { color: var(--text); }
+/* Everything after the summary is the body, and the body is inset. */
+.fold > :not(summary), .setup-fold > :not(summary), .replies-fold > :not(summary) { margin-left: 16px; margin-right: 16px; }
+.fold > :last-child, .setup-fold > :last-child, .replies-fold > :last-child { margin-bottom: 14px; }
+
+/* ── THE BOOT SCREEN ────────────────────────────────────────────────────────
+   What a person sees while the first render is still on the wire. It is the
+   only thing in the product that animates on a loop, and it stops the moment
+   there is something to read.                                                 */
+
+.boot {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: grid;
+  place-items: center;
+  background:
+    radial-gradient(circle at 15% -10%, color-mix(in oklch, var(--accent) 26%, var(--bg)) 0%, transparent 42%),
+    radial-gradient(circle at 90% 20%, color-mix(in oklch, #a78bfa 24%, var(--bg)) 0%, transparent 48%),
+    /* The third stop. The boot screen is the ONE place the design's mesh is
+       actually seen, and it is a three-colour mesh — dropping the pink left the
+       bottom-left corner flat where the design warms it. */
+    radial-gradient(circle at 30% 105%, color-mix(in oklch, #f472b6 16%, var(--bg)) 0%, transparent 42%),
+    var(--bg);
+}
+.boot::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background-image: radial-gradient(circle, color-mix(in oklch, var(--text) 8%, transparent) 1px, transparent 1px);
+  background-size: 32px 32px;
+}
+.boot-inner { position: relative; display: flex; flex-direction: column; align-items: center; gap: 28px; }
+.boot-ring { position: relative; width: 120px; height: 120px; display: grid; place-items: center; }
+/*
+  `:not(.boot-word)` IS LOAD-BEARING, NOT DEFENSIVE STYLE. The mark is a fourth
+  `<span>` inside this same container, and a bare `.boot-ring > span` selector
+  reaches it too — at specificity (0,1,1), which beats `.boot-word`'s own
+  (0,1,0) rule for the SAME property. That forced `position: absolute; inset: 0`
+  onto the mark, silently overriding the `position: relative` below, and a
+  span stretched to the full 120px box has no centering of its own: its text
+  rendered at the box's top-left corner, outside the circle the rings draw —
+  "DS" beside the loader rather than inside it.
+
+  The three rings stay absolute-and-inset because they are decoration meant to
+  fill the box exactly; the mark stays an ordinary grid item so `place-items:
+  center` on `.boot-ring` — the thing already responsible for centring it —
+  is what centres it, on every viewport and at every frame of the animation,
+  with no offset of any kind.
+*/
+.boot-ring > span:not(.boot-word) { position: absolute; inset: 0; border-radius: 50%; }
+.boot-ring > span:nth-child(1) { background: radial-gradient(circle, color-mix(in oklch, var(--accent) 35%, transparent), transparent 70%); animation: bootpulse 2.2s ease-in-out infinite; }
+.boot-ring > span:nth-child(2) { border: 2px solid var(--border); }
+.boot-ring > span:nth-child(3) { border: 2px solid transparent; border-top-color: var(--accent); border-right-color: #a78bfa; animation: bootspin 1.1s linear infinite; box-shadow: 0 0 20px -2px color-mix(in oklch, var(--accent) 60%, transparent); }
+.boot-word {
+  position: relative;
+  z-index: 1;
+  display: block;
+  line-height: 1;
+  font-family: var(--font-mono), ui-monospace, monospace;
+  font-size: 22px;
+  font-weight: 600;
+  color: var(--text);
+  text-shadow: 0 0 18px color-mix(in oklch, var(--accent) 60%, transparent);
+}
+.boot-name { display: flex; flex-direction: column; align-items: center; gap: 4px; }
+.boot-name strong { font-family: var(--font-display), var(--font-sans), sans-serif; font-weight: 600; font-size: 24px; letter-spacing: -0.01em; text-shadow: 0 0 24px color-mix(in oklch, var(--accent) 50%, transparent); }
+.boot-name span { font-family: var(--font-mono), ui-monospace, monospace; font-size: 10px; letter-spacing: 0.16em; text-transform: uppercase; color: var(--text-muted); }
+/* The track is a lightening of whatever is behind it, not a panel: `--panel-alt`
+   is a near-opaque dark grey, so on the boot screen's mesh the bar read as a
+   black slot rather than as a dimmed rail. The design uses white at 8%. */
+.boot-bar { width: 220px; height: 3px; border-radius: 999px; background: color-mix(in oklch, var(--text) 8%, transparent); overflow: hidden; }
+/* The mockup drives this with `width:{{ loadProgress }}%; transition:width 0.15s linear`
+   — a fill tracking a live number, not a looping sweep. `loading.tsx` now supplies that
+   number as an inline style, so the width here is the STARTING point only; there is no
+   keyframe animation on this element any more. */
+.boot-bar > span { display: block; height: 100%; width: 0%; border-radius: 999px; background: linear-gradient(90deg, var(--accent), #a78bfa); box-shadow: 0 0 12px 1px color-mix(in oklch, var(--accent) 70%, transparent); transition: width 150ms linear; }
+
+@keyframes bootspin { to { transform: rotate(360deg); } }
+@keyframes bootpulse { 0%, 100% { opacity: 0.5; transform: scale(1); } 50% { opacity: 1; transform: scale(1.06); } }
+
+/* Available to a screen reader, invisible to everyone else. Two names because
+   both spellings already exist in the markup. */
+.sr-only, .vh {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* ── WHERE THE OLD SYSTEM STILL SPEAKS LOUDER ───────────────────────────────
+   A handful of selectors from the rail-era sheet are more specific than the
+   ones above, so they win on specificity rather than on order. They are
+   re-stated here at matching specificity rather than edited in place, so the
+   two systems stay legible as two systems until the last of the old one goes.  */
+
+.autopilot { display: block; padding: 22px; }
+/*
+  `justify-content: flex-start` IS LOAD-BEARING, NOT A DEFAULT LEFT IN FOR CLARITY.
+  The rail-era `.autopilot-top` (a single-class selector, specificity 0,1,0) sets
+  `justify-content: space-between` and this descendant selector (0,2,0) never
+  restated it — a higher-specificity rule only wins the properties it actually
+  sets, so the old value kept applying to the one it left out. The switch and its
+  title were rendering at opposite ends of the card, with nothing between them,
+  instead of sitting together the way the mockup's `gap: 18px` row does.
+*/
+.autopilot .autopilot-top { display: flex; align-items: center; justify-content: flex-start; gap: 18px; }
+/* The card keeps the neutral hairline every other panel has — the mockup's
+   switch card is `1px solid var(--border)` whether autopilot is on or off. The
+   state is said by the TITLE and by the switch itself, which are the two things
+   on the card the state is about; colouring the container as well is the
+   "a container that changes colour must contain only things that colour is
+   about" rule failing in miniature. */
+.autopilot.live .autopilot-title { color: var(--good); }
+
+.table td { border-bottom: 0; color: var(--text-soft); vertical-align: middle; }
+.table th { border-bottom: 0; }
+
+/* The pace card's own figure is smaller than a tile's, deliberately: it is one
+   number inside a sentence about the hour, not a headline. */
+.pace-figures .stat-n { font-size: 20px; }
+
+/* A status band is a container that changes colour, so it may hold only things
+   that colour is about — the dot and the sentence, and nothing else. */
+/*
+  THE HERO. One row: the lit dot, the sentence at heading weight, and the one
+  control that acts on what the sentence is about, pushed to the far end. It wraps
+  rather than truncates, because the sentence is the point and a clipped alarm is
+  worse than a two-line one.
+*/
+.status {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 14px 20px;
+  border: 1px solid var(--border);
+  border-left: 4px solid var(--accent);
+  border-radius: var(--r-lg);
+  background: var(--panel);
+  backdrop-filter: blur(16px);
+  box-shadow: var(--lit);
+  padding: 22px 26px;
+}
+.status .headline {
+  font-family: var(--font-sans), system-ui, sans-serif;
+  font-size: 22px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: var(--text);
+  min-width: 0;
+}
+.status .dot {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  flex: 0 0 auto;
+  background: var(--accent);
+  box-shadow:
+    0 0 0 4px color-mix(in oklch, var(--accent) 20%, transparent),
+    0 0 14px 2px color-mix(in oklch, var(--accent) 70%, transparent);
+}
+/* The dot and the sentence are one thought; the control is the other. */
+.status .dot { margin-right: -6px; }
+.status > :last-child { margin-left: auto; }
+/*
+  THE MOCKUP'S HERO CARRIES NO HEALTH COLOUR AT ALL — its dot and left edge are a
+  literal, unconditional `var(--accent)`, the page's own hue, with nothing in the
+  markup that varies it by state. Severity is said by the SENTENCE and by the
+  ranked list underneath it (each blocker carries its own tone), never by the
+  band itself. `.status-healthy`/`-attention`/`-broken` used to retint the dot
+  and the left edge green/amber/red, which is a reasonable idea on its own and
+  is not what was asked for: it read as blue on the mockup's reference and
+  orange on this page for the identical "nothing is wrong yet" content. The
+  classes stay on the element (nothing here removes `v.health` from the markup)
+  so a future reading of THIS rule is one class away from being reinstated —
+  they simply no longer paint anything, and the base `.status` rule's accent
+  applies unconditionally, matching the reference.
+*/
+
+/* The one control the hero carries, drawn as the design draws it: a quiet pill,
+   never a primary button. It answers the figure below the card, it does not
+   compete with the sentence above it. */
+.status .sync { gap: 12px; }
+.status .sync-result { font-size: 11px; color: var(--text-muted); }
+.status .sync button {
+  font-family: var(--font-sans), system-ui, sans-serif;
+  font-size: 11px;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-muted);
+  border: 1px solid var(--border-strong);
+  background: none;
+  padding: 6px 12px;
+  border-radius: 10px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: color var(--ease), background var(--ease);
+}
+.status .sync button:hover:not(:disabled) { color: var(--text); background: color-mix(in oklch, var(--accent) 10%, transparent); }
+.status .sync button:disabled { opacity: 0.55; cursor: default; }
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   RESPONSIVE — the same system, laid out to fit.
+
+   Nothing below changes a colour, a radius, a shadow or a component's shape —
+   every token and every class above still means exactly what it means at
+   1440px. What changes is which axis wraps when the viewport cannot hold a
+   row that was sized for a desktop console.
+
+   Two real bugs justified this section, both measured at 375px rather than
+   guessed at: `.page-head-aside` is `white-space: nowrap`, which is correct
+   at desktop width (a date-and-countdown string reads worse broken mid-word)
+   and is what pushed the WHOLE PAGE to 508px in a 375px viewport once it had
+   nowhere left to shrink; and `.topbar-right` (pulse · theme · email ·
+   sign out) is four `auto`-width items in a grid track that cannot shrink
+   below its content, which the desktop bar never has to prove because
+   nothing there wraps. Both are the exact "a column that cannot shrink
+   scrolls the page, not itself" trap this file already names for `.stack`
+   and `.grid-2` — arriving in the chrome instead of a card.
+
+   `overflow-x: hidden` on `body` is the backstop, not the fix: it is what
+   stands between a future fixed-width addition and a sideways-scrolling
+   dashboard, the way `--lit`/`--wash` stand between a new page and a
+   hand-rolled glow. The two rules above it are the actual fix — a backstop
+   that only hides overflow still leaves the content that caused it clipped
+   and unreadable.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+body { overflow-x: hidden; }
+
+@media (max-width: 860px) {
+  /* Two equal columns is a desktop assumption on its own: below tablet width
+     the form column had nowhere to shrink to and every word in it wrapped —
+     "Sign" and "in" on separate lines, an input narrower than its own
+     placeholder. Stacked, the claim becomes a strap line above the form
+     instead of a column beside it. */
+  .auth { grid-template-columns: 1fr; min-height: 0; }
+  .auth-aside {
+    border-right: 0;
+    border-bottom: 1px solid var(--ln-1);
+    padding: 32px 24px;
+    /* `space-between` is what spreads three stacked children the full height
+       of a column sized for a claim ALONGSIDE a form, not above one — stacked,
+       it read as the eyebrow, then most of a screen of empty space, then the
+       fact paragraph pinned to the bottom of a div nobody scrolled to. */
+    justify-content: flex-start;
+    gap: 10px;
+  }
+  .auth-claim { max-width: none; font-size: 26px; }
+  /* `<main class="auth-main">` is itself a `<main>` element nested inside the
+     shell's own `<main>`, so it inherits that tag's `min-height: 100vh` — a
+     full screen of vertical centring that makes sense for a column standing
+     beside the claim and produces a screen of blank space above the form
+     once the two are stacked instead. */
+  .auth-main { padding: 32px 24px; min-height: 0; }
+
+  .page-head { flex-wrap: wrap; row-gap: 6px; }
+  .page-head-aside { white-space: normal; text-align: left; }
+
+  /* Four-across summary strips read as illegible slivers under ~430px of
+     real estate; two-across keeps every figure and its label on one line
+     without introducing a second grid vocabulary. */
+  .grid-4,
+  .statgrid,
+  .summary-row { grid-template-columns: repeat(2, 1fr); }
+}
+
+@media (max-width: 640px) {
+  /* The bar becomes two rows rather than shedding anything: brand and the
+     controls that must stay reachable (theme, sign out) keep the top row,
+     the section pills — already a horizontally-scrolling strip at any
+     width — take the second on their own line. */
+  .topbar {
+    grid-template-columns: 1fr auto;
+    grid-template-areas: 'brand right' 'nav nav';
+    row-gap: 8px;
+    padding: 8px 14px;
+  }
+  .topbar-brand { grid-area: brand; border-right: 0; padding-right: 0; }
+  .topbar-right { grid-area: right; }
+  .topbar-nav { grid-area: nav; justify-content: flex-start; }
+
+  /* An address nobody can act on is the lowest-value thing in that row; the
+     pulse, the theme switch and sign-out earn their space back instead. */
+  .topbar-email { display: none; }
+}
+
+@media (max-width: 420px) {
+  .grid-4,
+  .statgrid,
+  .summary-row { grid-template-columns: 1fr; }
+}
+
+/* The watched-page row's own figure — the mockup's exact `font-size:11px;
+   color:var(--text-dim)`, distinct from the slightly larger `.muted` every other
+   note on this row uses, and never wrapped: two short clauses read worse broken
+   mid-line than they do slightly tight. */
+.watch-stats { font-size: 11px; color: var(--text-dim); white-space: nowrap; }
+
+/* The paid-posts table's own verdict colour — the mockup's literal, hardcoded
+   `#a78bfa` on every "paid" row regardless of the page's own orange accent, the
+   same violet the design already uses as a decorative secondary hue elsewhere
+   (the Analytics accent, the pace bar's gradient stop). `.prow-paid` existed on
+   the row and had no rule at all, so it fell through to plain body text. */
+.prow-paid { color: #a78bfa; }

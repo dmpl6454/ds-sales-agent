@@ -1,5 +1,5 @@
 import type { Metadata } from 'next'
-import { Public_Sans, Martian_Mono } from 'next/font/google'
+import { Lexend, Work_Sans, IBM_Plex_Mono } from 'next/font/google'
 import './globals.css'
 
 /**
@@ -15,15 +15,27 @@ import './globals.css'
  *
  * `next/font/google` downloads at BUILD time and serves from our own origin, so
  * the bytes are identical and the request is not.
+ *
+ * Three faces, each with a job the other two cannot do: Lexend sets the page
+ * titles and the wordmark, Work Sans sets everything a person reads, and IBM
+ * Plex Mono sets the labels, timestamps and figures that must not change width
+ * as they change value.
  */
-const sans = Public_Sans({
+const display = Lexend({
   subsets: ['latin'],
-  weight: ['400', '500', '600'],
+  weight: ['500', '600', '700'],
+  variable: '--font-display',
+  display: 'swap',
+})
+
+const sans = Work_Sans({
+  subsets: ['latin'],
+  weight: ['400', '500', '600', '700'],
   variable: '--font-sans',
   display: 'swap',
 })
 
-const mono = Martian_Mono({
+const mono = IBM_Plex_Mono({
   subsets: ['latin'],
   weight: ['400', '500'],
   variable: '--font-mono',
@@ -31,8 +43,8 @@ const mono = Martian_Mono({
 })
 
 export const metadata: Metadata = {
-  title: 'Instagram Outreach',
-  description: 'Paid-campaign watch and partnership outreach',
+  title: 'AI Sales Agent',
+  description: 'Paid-campaign watch and partnership outreach, by Digital Sukoon',
 }
 
 /**
@@ -62,27 +74,30 @@ const BOOT = `
 try {
   var t = localStorage.getItem('ds-theme');
   if (t === 'dark' || t === 'light') document.documentElement.dataset.theme = t;
-  if (localStorage.getItem('ds-rail') === 'collapsed') document.documentElement.dataset.rail = 'collapsed';
 } catch (e) {}
 `
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="en" className={`${sans.variable} ${mono.variable}`} suppressHydrationWarning>
+    <html
+      lang="en"
+      className={`${display.variable} ${sans.variable} ${mono.variable}`}
+      suppressHydrationWarning
+    >
       <head>
         <script dangerouslySetInnerHTML={{ __html: BOOT }} />
       </head>
       {/*
-        `main` wraps everything, the rail included. That looks odd and is deliberate: the
-        rail is `position: fixed`, so it is out of flow wherever it sits, and keeping the
+        `main` wraps everything, the top bar included. That looks odd and is deliberate: the
+        bar is `position: fixed`, so it is out of flow wherever it sits, and keeping the
         structure the pages already produce means `pnpm ig:layout`'s geometry assertions
         keep testing the same thing they were written against.
 
         `main` is NOT a grid or a flex container, and must not become one. It was given
-        `grid-template-columns: 15rem 1fr` once, and every page rendered two children
-        except `/`, which rendered eleven — so children 3, 5, 7, 9 and 11 landed in column
-        one underneath a full-height rail. A fixed rail plus a margin cannot care how many
-        children a page renders.
+        `grid-template-columns: 15rem 1fr` once, back when the chrome was a rail, and every
+        page rendered two children except `/`, which rendered eleven — so children 3, 5, 7,
+        9 and 11 landed in column one underneath it. Fixed chrome plus a padding cannot care
+        how many children a page renders, which is the whole point.
       */}
       <body>
         <main>{children}</main>

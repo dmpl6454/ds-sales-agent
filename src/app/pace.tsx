@@ -118,11 +118,22 @@ export function PaceBand({
 
   return (
     <figure className="chartbox pacebox">
-      <figcaption>
+      <figcaption className="row-between">
         <h3>The pace</h3>
-        <p className="page-sub">
-          Why &ldquo;on&rdquo; does not mean &ldquo;now&rdquo;. <a href="/rules">The rules behind it</a>.
-        </p>
+        {/*
+          THE HOUR AS ONE FIGURE, on the caption's own line — the design's shape.
+
+          It replaced a row of pips. Pips are the better drawing of a small allowance and they
+          need one: with `fleetMaxPerHour` unset (Tabish, 2026-08-18) there is nothing to fill,
+          so the row rendered a label and a sentence and no picture at all. A bare count is
+          honest at any setting, and the denominator appears only when a real one exists —
+          drawing "/∞" or a bounded row for an unbounded rule is the `Infinity` mistake that
+          took this page to HTTP 500.
+        */}
+        <span className="pace-figure">
+          {sentThisHour}
+          {pips > 0 ? <span className="pace-figure-of">/{pips}</span> : null}
+        </span>
       </figcaption>
 
       <div className="paceband" role="img" aria-label={label}>
@@ -131,92 +142,30 @@ export function PaceBand({
         {inside && <span className="pace-now" style={{ left: `${pos}%` }} />}
       </div>
       <div className="pace-scale" aria-hidden="true">
-        <span>{fromHour}:00</span>
+        <span>{String(fromHour).padStart(2, '0')}:00</span>
         <span className={inside ? 'note-good' : 'note-warn'}>
-          {inside ? `now ${clock}` : `${clock} — outside`}
+          now {clock}
         </span>
-        <span>{allDay ? '24:00' : `${toHour}:00`}</span>
+        <span>{allDay ? '24:00' : `${String(toHour).padStart(2, '0')}:00`}</span>
       </div>
 
       {/*
-        The allowance drawn as pips rather than "2/3", WHEN THERE IS ONE. A fraction has to
-        be read; three boxes with two filled is understood without reading.
+        ── ONE LINE UNDER THE BAR, AND IT IS THE TWO FACTS THAT MOVE ──────────
 
-        With no hourly allowance (2026-08-18) there is nothing to fill, so the row states
-        what actually paces instead — the minimum gap and the ceiling it implies. Drawing
-        an empty or unbounded row would be a picture of a rule that is not in force.
-      */}
-      <div className="pace-allowance">
-        <span className="eyebrow">This hour</span>
-        {pips > 0 && (
-          <span className="pips" aria-hidden="true">
-            {Array.from({ length: pips }, (_, i) => (
-              <span key={i} className={i < sentThisHour ? 'pip pip-on' : 'pip'} />
-            ))}
-          </span>
-        )}
-        <span className="muted">{usedPhrase}</span>
-      </div>
+        The day's total and what the last tick did, in the design's single row. What was here
+        before: a "This hour" row, a "Today" row, a paragraph deriving the hourly rate from the
+        gap, and a sentence about the last tick — four blocks for two numbers, on the card whose
+        whole job is answering "so why has nothing gone out in the last minute?".
 
-      {/*
-        TODAY'S TOTAL — the figure the operator actually asks for, and the reason this row
-        exists rather than living only in the aria-label.
-
-        Deliberately beside "This hour" and not a `stat` tile: it is the same measurement at a
-        different boundary, from the same call, and putting it anywhere else on the page would
-        make two elements answer one question — which is the duplication this dashboard was
-        halved to remove. No pips: there is no daily allowance to fill (`fleetMaxPerDay` is
-        unset by Tabish's decision), and drawing a bounded row would be a picture of a rule
-        that is not in force — the exact `Infinity` mistake that took `/` to HTTP 500.
-      */}
-      <div className="pace-allowance">
-        <span className="eyebrow">Today</span>
-        <span className="muted">{todayPhrase}</span>
-      </div>
-
-      {!capped && (
-        /**
-         * THE ARITHMETIC, ON THE PAGE (2026-08-21).
-         *
-         * This used to say the rate "settles around 25-35 an hour, not 60" — true as an
-         * observation and useless as an explanation, which is why Tabish had to ask why. The
-         * cause was that the gap was measured from a send's COMPLETION, so the ~47s drive was
-         * added to every gap and the period was 107s at a 1-minute setting. The gap is a
-         * PERIOD now, so the sentence can state the rule and the one thing that still eats
-         * into it rather than quoting a number nobody could derive.
-         */
-        <p className="cardnote">
-          One message every {minGapMinutes} minute{minGapMinutes === 1 ? '' : 's'}, measured from the moment a send
-          starts &mdash; any time of day, so about {Math.floor(60 / Math.max(minGapMinutes, 1))} an hour when the queue
-          is deep. A send itself takes roughly 45 seconds, so a gap under a minute is floored by the browser rather
-          than by this rule, and the reply sweep pauses sending while it reads a conversation.
-        </p>
-      )}
-
-      {/*
-        ── THE THREE CONSTANTS MOVED TO /rules (2026-08-17) ──────────────────────
-        `DISPATCH_INTERVAL_MINUTES`, `FLEET_MIN_GAP_MINUTES` and `MAX_SENDS_PER_TICK` were
-        drawn here as three stats — six numerals, no control — and `/rules` already states
-        all three from the same imports, as rules, with the reason attached. They were a
-        DUPLICATE, and duplication is a failure of the same kind as silence: a reader who
-        sees a fact twice learns to skip it, so the copy on the busiest page was costing the
-        copy that explains itself.
-
-        MOVED, not deleted — the distinction the simplification brief insists on. The link in
-        the caption above is the click, and what stays here is the part that is not a
-        constant: WHERE NOW SITS in the window, how much of this hour's allowance is gone,
-        and what the last tick actually did.
-      */}
-
-      {/*
-        WHAT THE LAST TICK DID, always. "Nothing happened" with no explanation is the
-        failure this entire panel exists to prevent, and a dispatcher that holds silently
-        would reintroduce it four times an hour.
+        The arithmetic paragraph went to /rules, which already states the gap and the interval
+        from the modules that enforce them. The last tick STAYS: "nothing happened" with no
+        explanation is the failure this panel exists to prevent, and a dispatcher that holds
+        silently would reintroduce it four times an hour.
       */}
       <p className="blurb">
-        {lastTick === null
-          ? 'The dispatcher has not run yet on this machine.'
-          : `The last tick: ${lastTick}`}
+        {todayPhrase}
+        {' · '}
+        {lastTick === null ? 'the dispatcher has not run yet on this machine' : `last tick: ${lastTick}`}
       </p>
     </figure>
   )

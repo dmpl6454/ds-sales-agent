@@ -14,7 +14,7 @@ import { DELIVERED_STATUSES } from '@/lib/constants'
 import { Nav } from '../nav'
 import { PageHead } from '../page-head'
 import { AutoRefresh } from '../auto-refresh'
-import { StackedBars, RunStrip, Funnel, WatchWindow, type Series } from '../charts'
+import { StackedBars, RunStrip, Funnel, WatchWindow, SendsTrend, type Series } from '../charts'
 
 export const dynamic = 'force-dynamic'
 
@@ -50,11 +50,18 @@ function senderHandleLooksReal(v: string): boolean {
   return /^[a-z0-9._]{1,40}$/i.test(v)
 }
 
+/*
+  THREE, POSITIONALLY MATCHING `order` IN buildVerdictBars. "Worth a look" was the REVIEW
+  verdict, deleted 17 Aug 2026 — see the note on that array. A legend entry for a state
+  the system cannot produce is a promise the page cannot keep.
+*/
 const VERDICT_SERIES: Series[] = [
-  { key: 'paid', label: 'Paid', color: 'var(--ac)' },
-  { key: 'ordinary', label: 'Ordinary', color: 'var(--idle)' },
-  { key: 'borderline', label: 'Worth a look', color: 'var(--warn)' },
-  { key: 'unjudged', label: 'Not judged', color: 'var(--ln-2)', outline: true },
+  { key: 'paid', label: 'paid', color: 'var(--ac)' },
+  { key: 'ordinary', label: 'ordinary', color: 'var(--ln-2)' },
+  /* The dashed key is the only one drawn as a line rather than a fill, so it needs a
+     colour a hairline can be seen at: `--border-strong` is 16% white and vanishes as a
+     1px dash. The design uses the dim TEXT colour for this swatch, not a border colour. */
+  { key: 'unjudged', label: 'not judged', color: 'var(--text-dim)', outline: true },
 ]
 
 export default async function AnalyticsPage({
@@ -151,6 +158,9 @@ export default async function AnalyticsPage({
     .map((s) => ({ handle: s.handle, sent: sentById.get(s.id) ?? 0, replied: repliedById.get(s.id) ?? 0 }))
     .filter((r) => r.sent > 0)
     .sort((a, b) => b.sent - a.sent)
+  /* The bar under each row is relative to the busiest page, never to a constant: a fixed
+     scale makes a fleet that all send similar volumes read as four full bars. */
+  const topSent = Math.max(0, ...perAccount.map((r) => r.sent))
 
   /**
    * Null, not 0%: "nothing sent" and "nobody replied" are different facts.
@@ -171,20 +181,26 @@ export default async function AnalyticsPage({
         <PageHead title="Analytics" sub="Last 7 days, and the whole history underneath." />
 
         <section>
-          <div className="grid-4">
-            <div className="stat">
+          {/*
+            FOUR CARDS, not four bare figures. The design gives each its own surface, and
+            two of them their own colour: messages sent is the gradient this product uses
+            for the number a page is ABOUT, and replies is the good-news green. The other
+            two are plain, because a page where every figure is lit has no emphasis at all.
+          */}
+          <div className="grid-4 statcards">
+            <div className="card card-tint stat">
               <span className="stat-n">{v.week.detected}</span>
               <span className="stat-l">paid campaigns spotted</span>
             </div>
-            <div className="stat">
-              <span className="stat-n">{v.week.sent}</span>
+            <div className="card card-tint stat">
+              <span className="stat-n stat-n-lit">{v.week.sent}</span>
               <span className="stat-l">messages sent</span>
             </div>
-            <div className="stat">
-              <span className="stat-n">{v.week.replies}</span>
+            <div className="card card-tint stat">
+              <span className="stat-n stat-n-good">{v.week.replies}</span>
               <span className="stat-l">replies</span>
             </div>
-            <div className="stat">
+            <div className="card card-tint stat">
               <span className="stat-n">{replyRate === null ? '—' : `${replyRate}%`}</span>
               <span className="stat-l">
                 reply rate, of {v.week.checked} checked
@@ -203,8 +219,14 @@ export default async function AnalyticsPage({
             CONTINUES onto the next line loses the space — five instances of that have reached
             a live dashboard here ("768requests", "16 companys", "watch2 channels").
           */}
+          {/*
+            NO "Last 7 days." PREFIX: the page subtitle two lines above already reads
+            "Last 7 days, and the whole history underneath", and the four tiles it
+            qualifies sit between them. This sentence is about TODAY, which is the one
+            window the tiles do not cover.
+          */}
           <p className="blurb">
-            Last 7 days. Since midnight IST, <strong>{usage.today}</strong>{' '}
+            Since midnight IST, <strong>{usage.today}</strong>{' '}
             {usage.today === 1 ? 'message has' : 'messages have'} gone out
             {/* Only when it is a SUBSET: "1 message has gone out, 1 of them in this hour" is
                 what reading the rendered line looks like otherwise — clumsy at 1, and simply
@@ -215,22 +237,6 @@ export default async function AnalyticsPage({
             .
           </p>
 
-          {/* The qualifier travels with the number it qualifies, always. */}
-          <CoverageNote detection={v.detection} channelCount={v.channelCount} showLink />
-
-          {/*
-            THE REPLY RATE IS AN UPPER BOUND AND MUST SAY SO. It is computed over messages
-            we have sent, but a reply is only known about if somebody read the thread — and
-            reply checking is capped. A thread never read reports "no reply", which is
-            indistinguishable from silence and quietly flatters this number.
-          */}
-          {c.coverage.open > 0 && c.coverage.neverChecked > 0 ? (
-            <p className="reason reason-warn">
-              <strong>Read as an upper bound.</strong> {c.coverage.neverChecked} of{' '}
-              {c.coverage.open} open conversations have never been read, so a reply in one of
-              them would not be counted here yet.
-            </p>
-          ) : null}
         </section>
 
         <section>
@@ -260,8 +266,18 @@ export default async function AnalyticsPage({
               series={VERDICT_SERIES}
               buckets={charts.verdicts.buckets}
               caption="Posts per day, by what we decided"
+              /* The <h2> and the range control sit on the line above this card; a caption
+                 inside it as well is the same sentence twice, forty pixels apart. */
+              captionHidden
               description={`${picked.label} · "not judged" is drawn as an outline because it is not a verdict`}
-              labelEvery={picked.days > 30 ? 7 : 3}
+              /* ~6 evenly-spread dates regardless of the range picked (7/30/90 days), rather
+                 than a fixed "every 3rd" that crowds a 90-day view and under-labels a 7-day
+                 one. Rounds up so a short window still gets at least one label. */
+              labelEvery={Math.max(1, Math.round(charts.verdicts.buckets.length / 6))}
+              yAxisLabel="Detections"
+              showSummary
+              showBucketTooltip
+              hideLegend
             />
           ) : (
             <p className="empty">
@@ -270,57 +286,70 @@ export default async function AnalyticsPage({
           )}
         </section>
 
+        {/*
+          MESSAGES SENT, LAST 14 DAYS. Fixed at 14 whatever the range selector says, and the
+          section states that in its own description rather than leaving a reader to assume
+          the toggle above governs it — a chart silently ignoring a control next to it is the
+          same defect as a number that describes a different window than its heading.
+        */}
+        <section>
+          {/* The heading is the section's, as everywhere else on this page and in the
+              design; the chart keeps the same words for its accessible name. */}
+          <h2>Messages sent, last 14 days</h2>
+          <SendsTrend
+            points={charts.sends.points}
+            peak={charts.sends.peak}
+            total={charts.sends.total}
+            caption="Messages sent, last 14 days"
+            captionHidden
+            description={`${charts.sends.total} delivered · always 14 days, whatever the range above says`}
+          />
+        </section>
+
         {perAccount.length > 0 && (
           <section>
-            <h2>Messages sent, by account</h2>
+            <h2>By sender</h2>
             <p className="blurb">
-              Lifetime, per sending page: how many have gone out, how many came back, and exactly which
-              companies each page has written to — open a row to read the list. Message-by-message detail is
-              the history table below and the CSV export.
+              Lifetime, per sending page &mdash; open a row to see exactly who it wrote to.
             </p>
-            <table className="table">
-              <thead>
-                <tr>
-                  <th>From account</th>
-                  <th>Sent</th>
-                  <th>Replied</th>
-                  <th>Written to</th>
-                </tr>
-              </thead>
-              <tbody>
-                {perAccount.map((r) => {
-                  const to = recipientsBySender.get(r.handle) ?? []
-                  return (
-                    <tr key={r.handle}>
-                      <td>@{r.handle}</td>
-                      <td>{r.sent}</td>
-                      <td>{r.replied > 0 ? <span className="note-good">{r.replied}</span> : 0}</td>
-                      <td>
-                        {/*
-                          `<details>` keeps this page a SERVER component — a client toggle
-                          would pull the recipient lists into the browser bundle, which is the
-                          `waiting.tsx -> gate.ts -> better-sqlite3` trap that returned HTTP
-                          500 on every route. The COUNT is on the closed summary, because a
-                          collapsible that hides whether it has contents is one nobody opens.
-                        */}
-                        {to.length === 0 ? (
-                          <span className="muted">—</span>
-                        ) : (
-                          <details>
-                            <summary className="muted">
-                              {to.length} {to.length === 1 ? 'company' : 'companies'}
-                            </summary>
-                            <p className="blurb" style={{ margin: '6px 0 0' }}>
-                              {to.map((h) => `@${h}`).join(', ')}
-                            </p>
-                          </details>
-                        )}
-                      </td>
-                    </tr>
-                  )
-                })}
-              </tbody>
-            </table>
+            {/*
+              A ROW PER ACCOUNT, AND THE BAR IS THE COMPARISON. The table this replaced put
+              three numbers in three columns and left the reader to rank them; the bar is
+              relative to the busiest page, so "who is doing the work" is answerable without
+              reading a digit.
+
+              `<details>` rather than a client toggle, for the reason this codebase has paid
+              for once: `waiting.tsx` -> `gate.ts` -> `better-sqlite3` pulled the database into
+              the browser bundle and returned HTTP 500 on every route, with typecheck passing
+              throughout. The COUNT stays on the closed summary — a collapsible that hides
+              whether it has contents is one nobody opens.
+            */}
+            <div className="rows">
+              {perAccount.map((r) => {
+                const to = recipientsBySender.get(r.handle) ?? []
+                const pct = topSent > 0 ? Math.round((r.sent / topSent) * 100) : 0
+                return (
+                  <details className="sender-row" key={r.handle}>
+                    <summary>
+                      <div className="sender-row-head">
+                        <span>@{r.handle}</span>
+                        <span className="muted">
+                          <strong>{r.sent}</strong> sent &middot;{' '}
+                          <span className="note-good">{r.replied}</span> replied &middot; {to.length}{' '}
+                          {to.length === 1 ? 'company' : 'companies'}
+                        </span>
+                      </div>
+                      <div className="meter">
+                        <span className="meter-fill" style={{ width: `${pct}%` }} />
+                      </div>
+                    </summary>
+                    <p className="blurb">
+                      {to.length === 0 ? 'No recipient is recorded against this page.' : to.map((h) => `@${h}`).join(', ')}
+                    </p>
+                  </details>
+                )
+              })}
+            </div>
           </section>
         )}
 
@@ -344,8 +373,16 @@ export default async function AnalyticsPage({
         <section className="grid-2">
           <div>
             <h2>Open conversations ({c.open.length})</h2>
+            {/*
+              ONE PANEL, FOUR CELLS DIVIDED BY A HAIRLINE — not four separate cards. The
+              design draws the headline row at the top of the page as cards and THIS as a
+              joined block, and the difference carries meaning: those four are independent
+              measures of a week, these four are four readings of one thing (how far behind
+              the reply sweep is). Smaller figures too, because they qualify the list under
+              them rather than heading the page.
+            */}
             {c.coverage.open > 0 && (
-              <div className="grid-4" style={{ margin: '12px 0' }}>
+              <div className="grid-4 statcells" style={{ margin: '12px 0' }}>
                 <div className="stat">
                   <span className="stat-n">{c.coverage.open}</span>
                   <span className="stat-l">open threads</span>
@@ -444,6 +481,39 @@ export default async function AnalyticsPage({
           `replyHandledAt` had no writer left, so this section could only ever render empty —
           a heading that is structurally unable to have content is worse than no heading.
         */}
+
+        {/*
+          THE TWO CAVEATS ON THE FIGURES ABOVE, FOLDED.
+
+          Neither is droppable and neither belongs between the tiles and the first chart,
+          which is where the design puts the chart. The coverage note says WHICH channels
+          the counts cover; the upper-bound note says the reply rate is computed over
+          messages we sent while a reply is only known about if somebody read the thread.
+
+          The second one is also, in miniature, already on screen: the reply-rate tile's
+          own label reads "reply rate, of N checked", which is the denominator the warning
+          spells out. A full-width amber box repeating the tile beside it is the
+          duplication this dashboard keeps producing.
+        */}
+        <details className="fold">
+          <summary>What these figures do and do not cover</summary>
+          {/* The qualifier travels with the number it qualifies, always. */}
+          <CoverageNote detection={v.detection} channelCount={v.channelCount} showLink />
+
+          {/*
+            THE REPLY RATE IS AN UPPER BOUND AND MUST SAY SO. It is computed over messages
+            we have sent, but a reply is only known about if somebody read the thread — and
+            reply checking is capped. A thread never read reports "no reply", which is
+            indistinguishable from silence and quietly flatters this number.
+          */}
+          {c.coverage.open > 0 && c.coverage.neverChecked > 0 ? (
+            <p className="reason reason-warn">
+              <strong>Read as an upper bound.</strong> {c.coverage.neverChecked} of{' '}
+              {c.coverage.open} open conversations have never been read, so a reply in one of
+              them would not be counted here yet.
+            </p>
+          ) : null}
+        </details>
 
         <ExportPanel senders={senderHandles} />
 
