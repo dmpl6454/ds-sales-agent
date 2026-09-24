@@ -29,6 +29,13 @@ import type { BrandsPanel } from './view-model'
  */
 export function BrandsPanelView({ brands }: { brands: BrandsPanel }) {
   const capLeft = Math.max(0, brands.newTouchCap - brands.newTouchesUsedToday)
+  /*
+    The denominator for every bar, computed ONCE from the rows actually rendered. A bar
+    scaled per-row against itself would draw every brand full, which is a chart that
+    cannot be read; scaled against a total nobody can see it would draw every brand
+    empty. The busiest row in the list is the only honest full bar.
+  */
+  const busiest = Math.max(0, ...brands.confirmed.map((b) => b.sent))
 
   if (brands.confirmed.length === 0 && brands.autoDecided.length === 0) {
     return (
@@ -64,19 +71,49 @@ export function BrandsPanelView({ brands }: { brands: BrandsPanel }) {
         The cap is stated even when nothing is blocked by it. A limit that only appears at
         the moment it bites reads as a malfunction; stated up front it reads as a plan.
       */}
-      <p className="brandcap">
-        {capLeft > 0
-          ? `${capLeft} new brand${capLeft === 1 ? '' : 's'} may be contacted for the first time today.`
-          : `Today's new-brand allowance is used. Follow-ups are unaffected.`}
-      </p>
+      {/*
+        AN UNLIMITED CAP IS NOT A NUMBER, and printing it as one put the word "Infinity"
+        on the page: `maxNewBrandTouchesPerDay` is a Setting that may be unset, and unset
+        means no ceiling rather than a very large one. `capLeft` is then `Infinity`, which
+        `${}` renders literally. The line is dropped entirely when there is no cap — a
+        limit that does not exist has nothing to say, and "unlimited new brands may be
+        contacted today" reads as a boast about the one number this page should be quiet
+        about.
+      */}
+      {Number.isFinite(brands.newTouchCap) ? (
+        <p className="brandcap">
+          {capLeft > 0
+            ? `${capLeft} new brand${capLeft === 1 ? '' : 's'} may be contacted for the first time today.`
+            : `Today's new-brand allowance is used. Follow-ups are unaffected.`}
+        </p>
+      ) : null}
 
-      {brands.confirmed.map((b) => (
-        <ConfirmedBrand key={b.handle} brand={b} />
-      ))}
+      {/*
+        ONE PANEL OF BARS, which is the design's shape and the reason it is worth having:
+        the list was thirty identical two-column rows, so nothing on it said which company
+        mattered. The bar is MESSAGES SENT, scaled against the busiest brand in the list.
 
+        Deliberately not "posts": the design's fixture says "3 posts", and a per-brand post
+        count is a query nobody has written. A bar drawn from a number we do not hold would
+        be a magnitude with nothing behind it, on the one page whose job is telling the
+        truth about the numbers. A brand nobody has written to yet gets an empty track and
+        says so in words beside it.
+      */}
+      <div className="card card-tint brandbars">
+        {brands.confirmed.map((b) => (
+          <ConfirmedBrand key={b.handle} brand={b} max={busiest} />
+        ))}
+      </div>
+
+      {/*
+        THE RECORD OF WHAT WAS DECIDED AUTOMATICALLY, folded. It is not a queue and has not
+        been one since 2026-08-08 — nobody has to act on it — but it must stay reachable,
+        because a prospect a model created months ago still has to be explicable today. The
+        design draws brands and stops; this is the explanation behind them, one click down.
+      */}
       {brands.autoDecided.length > 0 && (
-        <section>
-          <h3>Decided automatically</h3>
+        <details className="fold">
+          <summary>How {brands.autoDecided.length} of these were decided</summary>
           {/*
             WHY this list exists at all, in the reader's terms. The old heading was "Instagram
             could not tell us what these are", which named the cause and left a job to do; this
@@ -105,7 +142,7 @@ export function BrandsPanelView({ brands }: { brands: BrandsPanel }) {
               </li>
             ))}
           </ul>
-        </section>
+        </details>
       )}
     </section>
   )
@@ -119,24 +156,38 @@ export function BrandsPanelView({ brands }: { brands: BrandsPanel }) {
  * (`routeAllowed`) and they are created automatically, so "no route on" has stopped being a state
  * a person can put a brand into.
  */
-function ConfirmedBrand({ brand }: { brand: BrandsPanel['confirmed'][number] }) {
+function ConfirmedBrand({ brand, max }: { brand: BrandsPanel['confirmed'][number]; max: number }) {
+  const pct = max > 0 ? Math.round((brand.sent / max) * 100) : 0
   return (
-    <div className={`brandrow${brand.retired ? ' retired' : ''}`}>
-      <div className="brandmain">
-        <a href={`https://www.instagram.com/${brand.handle}/`} target="_blank" rel="noreferrer" className="brandname">
+    <div className={`brandbar${brand.retired ? ' retired' : ''}`}>
+      <div className="brandbar-name">
+        <a href={`https://www.instagram.com/${brand.handle}/`} target="_blank" rel="noreferrer">
           {brand.name}
         </a>
-        <span className="brandhandle">@{brand.handle}</span>
-        {brand.retired ? <span className="pill">retired</span> : null}
+        {brand.retired ? <span className="pill"> retired</span> : null}
       </div>
-      <div className="brandmeta">
-        {brand.category ? <span>{brand.category}</span> : null}
-        {brand.discoveredOn ? <span>found in a paid post on {brand.discoveredOn}</span> : null}
-        {brand.sent > 0 ? (
-          <span>
-            {brand.sent} message{brand.sent === 1 ? '' : 's'} sent
-          </span>
-        ) : null}
+      <div className="brandbar-meta">
+        <span className="brandbar-handle">@{brand.handle}</span>
+        <span className="brandbar-note">
+          {/*
+            WHAT THE BAR IS, in words, on every row. A bar with no unit beside it is a
+            proportion of something unstated, and this one is messages rather than the
+            posts the design's fixture shows. `{' '}` is load-bearing: JSX drops the bare
+            space between an expression and the next line's text, and that bug reached
+            this dashboard once already ("themunder").
+          */}
+          {brand.sent > 0 ? (
+            <>
+              {brand.sent} message{brand.sent === 1 ? '' : 's'} sent
+            </>
+          ) : (
+            <>not written to yet</>
+          )}
+          {brand.discoveredOn ? <> &middot; found {brand.discoveredOn}</> : null}
+        </span>
+      </div>
+      <div className="brandbar-track">
+        <span style={{ width: `${pct}%` }} />
       </div>
     </div>
   )

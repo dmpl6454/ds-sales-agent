@@ -78,13 +78,22 @@ export async function buildVerdictChart(days = 30): Promise<VerdictChart> {
     select: { postedAt: true, verdict: true },
   })
 
-  const order = ['CAMPAIGN', 'ORGANIC', 'REVIEW', 'UNCLASSIFIED']
+  /*
+    REVIEW IS GONE, AND CARRYING IT HERE DREW A FOURTH BAR FOR A STATE THAT CANNOT EXIST.
+    The third verdict was deleted on 17 Aug 2026 — `VERDICTS` is CAMPAIGN | ORGANIC |
+    UNCLASSIFIED, the model's REVIEW is mapped to CAMPAIGN at the boundary, and the live
+    corpus holds 0 rows of it (measured: 117 / 209 / 30). It stayed in this array and in
+    the chart's legend, so /analytics advertised a "Worth a look" category the product had
+    removed. The slots are POSITIONAL — the series list in analytics/page.tsx reads these
+    by index — so the two must be changed together and are.
+  */
+  const order = ['CAMPAIGN', 'ORGANIC', 'UNCLASSIFIED']
   const byDay = new Map<string, number[]>()
   for (const r of rows) {
     const key = istDateKey(r.postedAt)
     const slot = order.indexOf(r.verdict)
     if (slot < 0) continue
-    const arr = byDay.get(key) ?? [0, 0, 0, 0]
+    const arr = byDay.get(key) ?? [0, 0, 0]
     arr[slot] = (arr[slot] ?? 0) + 1
     byDay.set(key, arr)
   }
@@ -94,7 +103,7 @@ export async function buildVerdictChart(days = 30): Promise<VerdictChart> {
     buckets: emptyDays(days).map((d) => ({
       key: d.key,
       label: d.label,
-      values: byDay.get(d.key) ?? [0, 0, 0, 0],
+      values: byDay.get(d.key) ?? [0, 0, 0],
     })),
   }
 }
@@ -322,13 +331,16 @@ export async function buildAnalyticsCharts(days = 30) {
 }
 
 async function computeAnalyticsCharts(days = 30) {
-  const [verdicts, runs, funnel, watch] = await Promise.all([
+  const [verdicts, runs, funnel, watch, sends] = await Promise.all([
     buildVerdictChart(days),
     buildRunStrip(48),
     buildSendFunnel(days),
     buildWatchChart(),
+    /* 14 days regardless of the range selector: the trend answers "is it sending at all,
+       lately", and stretching it to 90 flattens the only part anyone reads. */
+    buildSendsTrend(14),
   ])
-  return { verdicts, runs, funnel, watch, days }
+  return { verdicts, runs, funnel, watch, sends, days }
 }
 
 /** Kept beside the others so a future caller does not reach for `IN_FLIGHT_STATUSES` here by accident. */
@@ -408,4 +420,45 @@ export async function buildCostCharts(days = 30) {
 async function computeCostCharts(days = 30) {
   const [spend, cache] = await Promise.all([buildSpendChart(days), buildCacheChart(days)])
   return { spend, cache, days }
+}
+
+export interface SendsTrend {
+  points: Array<{ key: string; label: string; n: number }>
+  /** The busiest day in the window — the scale every point is drawn against. */
+  peak: number
+  total: number
+  /** Nothing delivered in the window: the page says so in words rather than drawing a flat line at zero. */
+  any: boolean
+}
+
+/**
+ * DELIVERED MESSAGES PER IST DAY, for the area chart on `/analytics`.
+ *
+ * Two things this must not be confused with. It counts DELIVERED rows by `sentAt`, not
+ * drafts by `queuedAt` — the funnel above already answers what was written, and a trend
+ * line of drafts would rise on a day nothing reached anybody. And `REPLIED` replaces
+ * `SENT` rather than adding to it, so the filter is the shared `DELIVERED_STATUSES`; a
+ * bare `status: 'SENT'` would make a day's total fall when somebody answered, which is
+ * this file's oldest counting mistake.
+ *
+ * Bucketed in JS against `istDateKey` for the reason at the top of this file: the day
+ * boundary is Mumbai's, and the server is not on IST.
+ */
+export async function buildSendsTrend(days = 14): Promise<SendsTrend> {
+  const since = daysAgo(days)
+  const rows = await prisma.outreachAttempt.findMany({
+    where: { status: { in: [...DELIVERED_STATUSES] }, sentAt: { gte: since } },
+    select: { sentAt: true },
+  })
+
+  const byDay = new Map<string, number>()
+  for (const r of rows) {
+    if (!r.sentAt) continue
+    const k = istDateKey(r.sentAt)
+    byDay.set(k, (byDay.get(k) ?? 0) + 1)
+  }
+
+  const points = emptyDays(days).map((d) => ({ key: d.key, label: d.label, n: byDay.get(d.key) ?? 0 }))
+  const total = points.reduce((a, p) => a + p.n, 0)
+  return { points, peak: Math.max(0, ...points.map((p) => p.n)), total, any: total > 0 }
 }

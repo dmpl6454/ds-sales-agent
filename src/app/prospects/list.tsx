@@ -3,6 +3,13 @@
 import { useState } from 'react'
 import { setTargetWatch } from '../actions'
 import type { ProspectRow } from '../view-model/prospects-page'
+import type { ChannelCard } from '../view-model'
+
+/** Handle → the two counts the mockup states for a watched page. Built once per render,
+ *  not once per row — `channels` is at most a handful of rows. */
+function statsByHandle(channels: ChannelCard[]): Map<string, ChannelCard> {
+  return new Map(channels.map((c) => [c.handle, c]))
+}
 
 /**
  * Everyone we might write to, and the ONE decision a person still makes about each: do we
@@ -27,12 +34,23 @@ export function ProspectList({
   prospects,
   sendersAble,
   messagedTotal,
+  channels = [],
 }: {
   prospects: ProspectRow[]
   sendersAble: number
   /** The messaged group's FULL count — the rows in hand are one page of it (2026-09-04). */
   messagedTotal: number
+  /**
+   * WHAT A WATCHED PAGE'S OWN ROW SAYS (2026-09-21). The mockup's "Pages we watch" row is
+   * `@handle followers … N posts read this week · M paid this week`, and this list had no
+   * such figure to show — `ProspectRow` carries `nextSenderSentence`, a fact about SENDING,
+   * which is a category error on a row that is never sent to. `ChannelsPanel` computes
+   * exactly these two counts already (`buildChannelsView`, run beside `buildProspectsPage`
+   * in `targets/page.tsx`); passed down here rather than queried twice.
+   */
+  channels?: ChannelCard[]
 }) {
+  const stats = statsByHandle(channels)
   if (prospects.length === 0) {
     return (
       <section className="group">
@@ -78,6 +96,7 @@ export function ProspectList({
         note="We read their feed to find paid posts. They are never messaged — several are competitors."
         rows={watched}
         sendersAble={sendersAble}
+        stats={stats}
       />
       <Group
         title="Companies we message"
@@ -85,6 +104,7 @@ export function ProspectList({
         rows={messaged}
         total={messagedTotal}
         sendersAble={sendersAble}
+        stats={stats}
       />
     </>
   )
@@ -96,6 +116,7 @@ function Group({
   rows,
   total,
   sendersAble,
+  stats,
 }: {
   title: string
   note: string
@@ -103,6 +124,7 @@ function Group({
   /** When the rows are ONE PAGE of a larger group, the heading names the group's total. */
   total?: number
   sendersAble: number
+  stats: Map<string, ChannelCard>
 }) {
   if (rows.length === 0 && !total) return null
   /* Every row here is live: retired targets are excluded at the query (2026-08-25, Tabish),
@@ -116,14 +138,45 @@ function Group({
       <p className="group-blurb">{note}</p>
       <div className="group-rows">
         {rows.map((p) => (
-          <Row key={p.handle} p={p} sendersAble={sendersAble} />
+          <Row key={p.handle} p={p} sendersAble={sendersAble} channel={stats.get(p.handle) ?? null} />
         ))}
       </div>
     </section>
   )
 }
 
-function Row({ p, sendersAble }: { p: ProspectRow; sendersAble: number }) {
+/**
+ * ── THE ROW'S OWN COLOUR — WIRED, NOT JUST DECLARED ─────────────────────────
+ *
+ * `--row-accent` has existed on `.message`'s CSS since the redesign (`border-left: 4px
+ * solid var(--row-accent, var(--text-dim))`) and nothing here ever SET it — every row,
+ * watch page and message company alike, fell through to the one dim fallback. The
+ * mockup colours each company row by what is about to happen to it (green once a
+ * sender will actually write, gold while a reply holds it, dim otherwise); ours drew
+ * all of them identically, which is the CSS half of a feature shipping with no caller.
+ *
+ * A watch page is deliberately excluded from all of this: it is never messaged, so
+ * nothing here is a fact about it, and the mockup draws every one of its rows in the
+ * same neutral `--text-dim` regardless of how much it has posted.
+ */
+function rowAccent(p: ProspectRow): string {
+  if (p.role === 'WATCH') return 'var(--text-dim)'
+  if (p.retired) return 'var(--text-dim)'
+  if (p.replied) return 'var(--pending)'
+  if (p.nextSenderWillWrite) return 'var(--good)'
+  return 'var(--text-dim)'
+}
+
+function Row({
+  p,
+  sendersAble,
+  channel,
+}: {
+  p: ProspectRow
+  sendersAble: number
+  /** Only ever set for a `role === 'WATCH'` row — see `ProspectList`'s `channels` prop. */
+  channel: ChannelCard | null
+}) {
   const [busy, setBusy] = useState<'watch' | null>(null)
   const [msg, setMsg] = useState<string | null>(null)
 
@@ -139,7 +192,7 @@ function Row({ p, sendersAble }: { p: ProspectRow; sendersAble: number }) {
   }
 
   return (
-    <div className="message">
+    <div className="message" style={{ ['--row-accent' as string]: rowAccent(p) }}>
       <div className="message-head">
         <div>
           <strong>@{p.handle}</strong>{' '}
@@ -162,6 +215,17 @@ function Row({ p, sendersAble }: { p: ProspectRow; sendersAble: number }) {
             {c}
           </span>
         ))}
+        {/*
+          THE MOCKUP'S OWN FIGURE FOR A WATCHED PAGE — posts read, and how many were paid —
+          in place of a sending fact that does not apply to it. `channel` is only ever set
+          for a `role === 'WATCH'` row (see `ProspectList`).
+        */}
+        {channel ? (
+          <span className="muted watch-stats">
+            {channel.postsThisWeek} post{channel.postsThisWeek === 1 ? '' : 's'} read this week
+            {channel.unclassified ? ' · not classified' : ` · ${channel.campaignsThisWeek} paid this week`}
+          </span>
+        ) : null}
       </div>
 
       {/*
@@ -223,11 +287,22 @@ function Row({ p, sendersAble }: { p: ProspectRow; sendersAble: number }) {
         the planner's own refusal, and "N accounts can send" is dropped with it — a capacity
         figure beside a refusal re-reads as a promise.
       */}
-      <p className="muted">
-        {p.nextSenderWillWrite
-          ? `${p.nextSenderSentence} ${sendersAble} account${sendersAble === 1 ? '' : 's'} in the fleet can send right now.`
-          : p.nextSenderSentence}
-      </p>
+      {/*
+        A WATCH ROW IS NEVER SENT TO, SO A SENTENCE ABOUT WHO SENDS NEXT IS A CATEGORY
+        ERROR ON IT (2026-09-21) — `routes.ts` refuses to create a route to one at all,
+        which is why `nextSenderSentence` always resolved to "No account is in the
+        rotation for them, so nothing will be written": true, and about the wrong
+        question. The mockup never asks it of a watched page; the stats line above
+        answers the question this row actually raises, which is whether reading it is
+        working.
+      */}
+      {p.role === 'WATCH' ? null : (
+        <p className="muted">
+          {p.nextSenderWillWrite
+            ? `${p.nextSenderSentence} ${sendersAble} account${sendersAble === 1 ? '' : 's'} in the fleet can send right now.`
+            : p.nextSenderSentence}
+        </p>
+      )}
 
       <div className="account-actions">
         {/*

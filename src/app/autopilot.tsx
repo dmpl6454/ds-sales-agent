@@ -2,7 +2,6 @@
 
 import { useState } from 'react'
 import { isStaleServerAction, reloadForStaleBuild, STALE_BUILD_MESSAGE } from './stale-build'
-import Link from 'next/link'
 import { setAutopilot } from './actions'
 import type { AutopilotState } from './view-model'
 
@@ -78,93 +77,73 @@ export function AutopilotPanel({ state }: { state: AutopilotState }) {
             <span className="bigswitch-knob" />
           </button>
 
-          <div>
-            <div className="autopilot-title">
-              {state.on
-                ? !state.sendingMac.selected
-                  ? 'Autopilot is ON, but no Mac is selected to send'
-                  : !state.sendingMac.online
-                    ? `Autopilot is ON, but ${state.sendingMac.selected} — the sending Mac — is not online`
-                    : covered > 0
-                      ? `Autopilot is ON — ${state.sendingMac.selected} sends by itself`
-                      : 'Autopilot is ON, but no account is ready to use it'
-                : 'Autopilot is OFF — messages wait for you'}
-            </div>
-            {/*
-              ── THE SWITCH STATES ITS CONTRACT ─────────────────────────────────
-
-              ONE SWITCH, 2026-08-08. This used to describe the SLOTS and name the accounts it
-              covered, on the assumption that a reader had already armed some of them. With the
-              per-account toggle gone, this sentence IS the product: it has to say what turning
-              it on causes, end to end, because there is nothing else left to configure.
-
-              Tabish: *"Automated mode must simply send the messages."* So the ON copy names the
-              whole chain — find, decide, write, send — and the pacing, because "on" must not read
-              as "immediately and continuously". The OFF copy states the one thing an operator
-              needs to trust: nothing is dropped, drafts keep their Send buttons.
-            */}
-            <div className="autopilot-sub">
-              {state.on
-                ? !state.sendingMac.selected
-                  ? 'Nothing sends anywhere until a Mac is chosen under Senders → Sending Mac. Paid posts are still found and messages are still written.'
-                  : !state.sendingMac.online
-                    ? `Nothing sends until ${state.sendingMac.selected} is back online — open its lid, or choose another Mac under Senders. Paid posts are still found and messages are still written.`
-                    : covered > 0
-                      ? `It finds paid posts, decides which brands are worth writing to, writes the messages, and sends them from ${state.sendingMac.selected} — ${state.paceClause}. Every other Mac holds.`
-                      : 'It finds paid posts, decides brands and writes messages — but no account can send yet, so everything waits. Sign one in and it starts on its own.'
-                : 'Nothing sends. Paid posts are still found and messages are still written — drafts keep their Send buttons.'}
-            </div>
-          </div>
-
-          {/*
-            THE FLOOR THE PAGE CANNOT CROSS, stated beside the control rather than in a
-            footnote. `AUTOPILOT_ENABLED` lives in the environment precisely so a web page
-            cannot widen its own access — same reasoning as `SIGNUP_INVITE_CODE` — and a
-            reader who cannot find why the switch is refusing them would otherwise go
-            looking for a second switch that does not exist.
-          */}
-          <div className="autopilot-env">
-            <p className="eyebrow">Permitted by the machine</p>
-            <p className="autopilot-envnote">
-              {state.allowedByEnv
-                ? 'This deployment allows unattended sending. The switch is yours.'
-                : 'This machine never sends itself — the signed-in Macs do. The switch controls the whole fleet, including them.'}
-            </p>
-            {busy ? <p className="autopilot-envnote muted">Saving…</p> : null}
+          <div className="autopilot-title">
+            {state.on
+              ? !state.sendingMac.selected
+                ? 'Autopilot is ON, but no Mac is selected to send'
+                : !state.sendingMac.online
+                  ? `Autopilot is ON, but ${state.sendingMac.selected} — the sending Mac — is not online`
+                  : covered > 0
+                    ? `Autopilot is ON — ${state.sendingMac.selected} sends by itself`
+                    : 'Autopilot is ON, but no account is ready to use it'
+              : 'Autopilot is OFF — messages wait for you'}
           </div>
         </div>
 
         {/*
-          The scheduler is what turns the toggle into behaviour. Autopilot ON with
-          nothing scheduled is a promise the system cannot keep, and that exact state
-          existed unmentioned for a day — the page said messages go out at 11:00
-          while no process existed to send one.
+          ── THE SWITCH STATES ITS CONTRACT ─────────────────────────────────
+
+          ONE SWITCH, 2026-08-08. This used to describe the SLOTS and name the accounts it
+          covered, on the assumption that a reader had already armed some of them. With the
+          per-account toggle gone, this sentence IS the product: it has to say what turning
+          it on causes, end to end, because there is nothing else left to configure.
+
+          Tabish: *"Automated mode must simply send the messages."* So the ON copy names the
+          whole chain — find, decide, write, send — and the pacing, because "on" must not read
+          as "immediately and continuously". The OFF copy states the one thing an operator
+          needs to trust: nothing is dropped, drafts keep their Send buttons.
+        */}
+        <p className="autopilot-sub">
+          {state.on
+            ? !state.sendingMac.selected
+              ? 'Nothing sends anywhere until a Mac is chosen under Senders → Sending Mac. Paid posts are still found and messages are still written.'
+              : !state.sendingMac.online
+                ? `Nothing sends until ${state.sendingMac.selected} is back online — open its lid, or choose another Mac under Senders. Paid posts are still found and messages are still written.`
+                : covered > 0
+                  ? `It finds paid posts, decides which brands are worth writing to, writes the messages, and sends them from ${state.sendingMac.selected} — ${state.paceClause}. Every other Mac holds.`
+                  : 'It finds paid posts, decides brands and writes messages — but no account can send yet, so everything waits. Sign one in and it starts on its own.'
+            : 'Nothing sends. Paid posts are still found and messages are still written — drafts keep their Send buttons.'}
+        </p>
+
+        {/*
+          ── THE HAIRLINE FOOTER: IS ANYTHING ACTUALLY BEHIND THE SWITCH ─────
+
+          The scheduler is what turns the toggle into behaviour. Autopilot ON with nothing
+          scheduled is a promise the system cannot keep, and that exact state existed
+          unmentioned for a day — the page said messages go out at 11:00 while no process
+          existed to send one. One line when it is running, a refusal when it is not.
         */}
         {state.scheduler.running ? (
-          <p className="cardnote">
-            <span className="pill good">watch running</span>{' '}
+          <p className="autopilot-foot">
+            <span className="dot dot-good" aria-hidden />
+            heartbeat {state.scheduler.lastBeatLabel}{' '}&mdash; slots fire on their own
             {/*
-              WHERE, not just WHAT. This read `host === 'dashboard'` and said "inside this
-              dashboard" — true of the machine that is beating, and the reader is usually
-              somewhere else. The hosted deployment beats `host: 'dashboard'` from the
-              Linode, so a Mac dashboard (which correctly declines to schedule anything)
-              told its reader the watch was inside it. Someone deciding whether they may
-              close this window got the wrong answer, on the one card that exists because
-              a watch stopped for twenty hours and nothing said so.
+              WHERE, not just WHAT — but only when it is somewhere else. This used to name the
+              host on every render, and "inside this dashboard" was wrong on a Mac reading a
+              Linode's heartbeat. Said only when the answer is not "here", which is the only
+              time it changes what a reader may do (close this window).
             */}
-            {!state.scheduler.here
-              ? `on another machine${state.scheduler.machine ? ` (${state.scheduler.machine})` : ''}, not this one`
-              : state.scheduler.host === 'dashboard'
-                ? 'inside this dashboard'
-                : 'in a separate worker on this machine'}{' '}
-            — last heartbeat {state.scheduler.lastBeatLabel}. Slots will fire on their own
-            {state.scheduler.here ? '' : ' whether or not this window is open'}.
+            {state.scheduler.here ? null : (
+              <>
+                {' '}
+                on {state.scheduler.machine ?? 'another machine'}, whether or not this window is open
+              </>
+            )}
           </p>
         ) : (
           /*
             The one case where this panel is a LIE if it stays quiet: autopilot reading ON with
-            nothing scheduled is a promise the system cannot keep, and that exact state existed
-            unmentioned for a day. `.reason.bad` because it is the most severe thing this card can
+            nothing scheduled. `.reason.bad` because it is the most severe thing this card can
             say — not a delay, an impossibility.
           */
           <p className="reason bad">
@@ -174,55 +153,28 @@ export function AutopilotPanel({ state }: { state: AutopilotState }) {
           </p>
         )}
 
-        {/*
-          The environment floor USED TO BE RESTATED HERE as well as beside the switch. It
-          is now said once, in the panel above, where the control it constrains actually
-          is. A reader who sees the same fact twice on one screen learns to skip both.
-        */}
+        {busy ? <p className="cardnote muted">Saving…</p> : null}
 
         {/*
-          `.reason` rather than an inline colour. Step F: every "why this will not happen" on the
-          dashboard now carries the same left severity stripe, so it is recognisable as a refusal
-          before a word of it is read. Inline `style={{ color }}` was six different treatments for
-          one idea.
+          ── WHAT WAS REMOVED FROM THIS CARD, AND WHERE IT WENT ──────────────
+
+          Four blocks used to sit below the sentence and made this the tallest thing on the
+          page. Every one of them was a SECOND copy:
+
+          · the "@x is not signed in" list — `BlockerList` already carries it, ranked, with the
+            time a real send found the account logged out and a link straight to Senders. Two
+            copies of one fault on one screen, and the blocker is the better one.
+          · "An account sends unattended when three things are true…" — that is a rule, and
+            /rules states every stop from the module that enforces it. This page reports.
+          · "This deployment allows unattended sending. The switch is yours." — true on every
+            deployment a person can reach this page from, so it told nobody anything. The
+            interesting half (this machine never sends; the Macs do) is in the sentence above
+            whenever it is the reason nothing is going out.
+          · the environment floor, restated a third time.
+
+          Nothing is hidden by their absence: a fault that is actually stopping sending is a
+          blocker, and a rule is on /rules.
         */}
-        {/*
-          ONE SWITCH, 2026-08-08: this read "@x is ALLOWED to send on its own but is not signed
-          in". "Allowed" was the per-account bit, and it no longer exists — so the sentence would
-          have named a permission a reader could not find, about the very accounts it is telling
-          them to go and fix. Being signed in IS the permission now.
-
-          `needLoginHandles` also widened with the bit's removal, deliberately: it used to list
-          only accounts somebody had armed, which meant a signed-out account nobody had flipped
-          was invisible on the one card that explains why nothing is sending.
-        */}
-        {state.needLoginHandles.length > 0 ? (
-          <p className="reason">
-            {state.needLoginHandles.map((h) => '@' + h).join(', ')}{' '}
-            {state.needLoginHandles.length === 1 ? 'is' : 'are'} not signed in, so{' '}
-            {state.needLoginHandles.length === 1 ? 'it' : 'they'} cannot send and{' '}
-            {state.needLoginHandles.length === 1 ? 'its' : 'their'} messages will keep waiting for you.{' '}
-            <Link href="/senders">Sign {state.needLoginHandles.length === 1 ? 'it' : 'them'} in</Link>.
-          </p>
-        ) : null}
-
-        {/*
-          "Signed in but not yet allowed to send on their own" USED TO RENDER HERE, listing
-          accounts whose per-account switch was off. There is no such switch (one switch,
-          2026-08-08), so the state it described cannot exist and the sentence would have sent a
-          reader to the Senders page looking for a control that is not there.
-
-          Nothing replaces it, because nothing is hidden by its absence: a signed-in, healthy
-          account is now covered by the switch above and appears in that sentence's own count,
-          and an account that CANNOT send says so on its own row.
-        */}
-
-        <p className="cardnote">
-          An account sends unattended when three things are true: this switch is on, someone signed that account in by
-          hand, and Instagram has not flagged it. If any is missing the message is still written — it waits for you
-          instead of being dropped. New accounts also serve a settling-in period before they join in, which is
-          automatic; nothing needs switching on.
-        </p>
       </div>
 
       {msg ? (

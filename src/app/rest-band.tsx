@@ -30,6 +30,32 @@ import { istPostedLabel, istTimeKey } from '@/lib/time'
  * halt, a paid post releases a company mid-afternoon. It is computed at render, so the honest
  * caption is the time it was read, and the page re-renders every 30-45 s on its own.
  */
+/**
+ * The same fact as `RestBand`, as one labelled figure.
+ *
+ * `/targets` opens with a count of the list, and the very next question that count provokes is
+ * "so how many of those can we actually write to today?". A tile answers it in one line, where
+ * the full band answers "and why, broken down by rule" — which is the right depth on Autopilot
+ * and is furniture directly under a page title.
+ *
+ * It states the SHAPE of the answer, not just the number: on cooldown or at a cap is a rule
+ * releasing itself, and saying so is what stops 469 of 477 reading as an outage. Both come from
+ * the same tally, so the tile and the band can never disagree.
+ */
+export function RestTile({ tally }: { tally: RestTally }) {
+  const { total, resting } = tally
+  if (total === 0) return null
+
+  return (
+    <div className="card" style={{ marginBottom: 20 }}>
+      <div className="eyebrow">Resting</div>
+      <p className="stat-sentence">
+        <strong>{resting}</strong>/{total} are on cooldown or the daily cap — not a queue depth problem
+      </p>
+    </div>
+  )
+}
+
 export function RestBand({ tally, showBreakdown = true }: { tally: RestTally; showBreakdown?: boolean }) {
   const { total, resting, clear, queued, retired, watched, byReason, needingAPerson } = tally
 
@@ -132,7 +158,7 @@ export function RestBand({ tally, showBreakdown = true }: { tally: RestTally; sh
       ) : null}
 
       <p className="cardnote muted">
-        Measured {istTimeKey(tally.measuredAt)} IST, and it moves all day: a message re-starts that
+        Measured {istTimeKey(tally.measuredAt)}{' '}IST, and it moves all day: a message re-starts that
         company&apos;s week, a reply starts a fresh seven days, and a new paid post releases one immediately.
         {retired > 0 || watched > 0 ? (
           <>

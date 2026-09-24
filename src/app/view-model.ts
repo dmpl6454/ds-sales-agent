@@ -53,7 +53,7 @@ export function detectionBlind(
   if (!passes.throttledUntil) return false
   return passes.feedOkAt === null || now - passes.feedOkAt.getTime() > DETECTION_FAILOVER_AFTER_MS
 }
-import { assessWatch, watchHealthSentence } from '@/detection/watchHealth'
+import { assessWatch, watchHealthHeadline } from '@/detection/watchHealth'
 import { getDetector } from '@/detection/detectors'
 /**
  * The SAME function the planner's guard calls, deliberately. A page that computed
@@ -677,10 +677,10 @@ async function computeCeoView(): Promise<CeoView> {
 
   if (challenged.length > 0) {
     health = 'broken'
-    headline = `Instagram has locked ${challenged.map((s) => operatorName(s.displayName)).join(' and ')}. Open the account and clear the prompt.`
+    headline = `Instagram has locked ${challenged.map((s) => operatorName(s.displayName)).join(' and ')}`
   } else if (personaBroken.length > 0) {
     health = 'broken'
-    headline = `Contact details on ${operatorName(personaBroken[0]!.displayName)} are incomplete, so nothing can be written.`
+    headline = `Contact details on ${operatorName(personaBroken[0]!.displayName)} are incomplete`
   } else if (watch.severity !== 'ok') {
     /**
      * ABOVE the replies and the waiting drafts, deliberately. A missed paid post is the
@@ -692,7 +692,7 @@ async function computeCeoView(): Promise<CeoView> {
      * failure this replaces is that the previous, milder wording was true and ignored.
      */
     health = 'broken'
-    headline = watchHealthSentence(watch) ?? 'The watch is not running.'
+    headline = watchHealthHeadline(watch) ?? 'The watch is not running'
   } else if (detectionBlind(passes)) {
     /**
      * OUTPUT, not liveness (7 Sept 2026). For three days the pass ran on time, threw
@@ -707,10 +707,8 @@ async function computeCeoView(): Promise<CeoView> {
     const lastOk = passes.feedOkAt
     const minutes = lastOk ? Math.round((Date.now() - lastOk.getTime()) / 60_000) : null
     headline =
-      `Instagram is refusing anonymous reads from the server, so no paid posts are being found — ` +
-      `last successful read ${minutes !== null ? `${minutes} minutes ago` : 'unknown'}` +
-      `${passes.throttledUntil ? `; the next attempt is at ${istStamp(passes.throttledUntil)}` : ''}. ` +
-      `Sending is not affected. Nothing new is discovered until it clears, and it clears by itself.`
+      `Instagram is refusing anonymous reads — no paid posts are being found` +
+      `${minutes !== null ? ` since ${minutes} min ago` : ''}`
   } else if (passes.detectStale || passes.planStale) {
     /**
      * Below the dead-process rung (that one is unrecoverable loss; this one is work
@@ -728,22 +726,22 @@ async function computeCeoView(): Promise<CeoView> {
     const lastOk = passes.detectStale ? passes.detectOkAt : passes.planOkAt
     const minutes = lastOk ? Math.round((Date.now() - lastOk.getTime()) / 60_000) : null
     headline =
-      `The watch process is running, but ${failing} keeps failing — last succeeded ` +
-      `${minutes !== null ? `${minutes} minutes ago` : 'unknown'}. The server's own log says why.`
+      `The watch is running, but ${failing} keeps failing` +
+      `${minutes !== null ? ` — last succeeded ${minutes} min ago` : ''}`
   } else if (passes.throttledUntil) {
     // The server is refused but a paired Mac is reading the feeds in its place (feedOkAt is
     // fresh, or `detectionBlind` above would have fired). Worth knowing, not broken.
     health = 'attention'
     const minutes = passes.feedOkAt ? Math.round((Date.now() - passes.feedOkAt.getTime()) / 60_000) : null
     headline =
-      `Instagram is refusing anonymous reads from the server until ${istStamp(passes.throttledUntil)}; ` +
-      `a paired Mac is reading the feeds in its place (last read ${minutes ?? '?'} minutes ago). Nothing to do.`
+      `A paired Mac is reading the feeds while the server is refused` +
+      `${minutes !== null ? ` — last read ${minutes} min ago` : ''}`
   } else if (unreadReplies.length > 0) {
     // A reply outranks a waiting draft: it is the only event here that is revenue.
     health = 'attention'
     headline =
       unreadReplies.length === 1
-        ? `${operatorName(unreadReplies[0]!.pair.target.displayName)} replied. Outreach to them is on hold until you have answered.`
+        ? `${operatorName(unreadReplies[0]!.pair.target.displayName)} replied — outreach to them is paused`
         : /**
              ── ROWS ARE NOT RECIPIENTS, AND THESE ARE NEVER CHANNELS (2026-08-26) ──
              This read `${unreadReplies.length} channels replied` and was wrong twice.
@@ -753,10 +751,10 @@ async function computeCeoView(): Promise<CeoView> {
              `role: 'WATCH'` publisher we read and never message (`TARGET_IS_WATCH_ONLY`).
              Every row in this set is a PROSPECT. The panel 40px below already said 63.
            */
-          `${new Set(unreadReplies.map((r) => r.pair.targetId)).size} recipients replied. Outreach to them is on hold.`
+          `${new Set(unreadReplies.map((r) => r.pair.targetId)).size} recipients replied — outreach to them is paused`
   } else if (awaitingRaw.length > 0) {
     health = 'attention'
-    headline = `${awaitingRaw.length} message${awaitingRaw.length === 1 ? '' : 's'} written and ready to send.`
+    headline = `${awaitingRaw.length} draft${awaitingRaw.length === 1 ? '' : 's'} queued — nothing is blocked`
   } else if (env.DRY_RUN) {
     health = 'attention'
     headline = 'Practice mode: watching and deciding, but writing nothing to send.'

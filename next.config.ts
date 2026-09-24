@@ -52,6 +52,16 @@ const nextConfig: NextConfig = {
     'patchright-core',
   ],
   typedRoutes: true,
+  // Turbopack walks upward for lockfiles to guess the workspace root, and on this
+  // machine it finds one two directories up (in the Windows user profile) before
+  // reaching this project's own pnpm-workspace.yaml — so it silently roots itself
+  // there instead. Routing then resolves against the wrong tree: middleware still
+  // runs (it needs no file resolution), but every app page 404s, including ones
+  // that exist and compile fine. Pin the root explicitly, as Next's own warning
+  // instructs, rather than guessing.
+  turbopack: {
+    root: process.cwd(),
+  },
   experimental: {
     // Server Actions are how the dashboard confirms sends; keep bodies small.
     serverActions: { bodySizeLimit: '1mb' },

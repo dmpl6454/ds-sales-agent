@@ -53,22 +53,84 @@ export interface Bucket {
  * chart with a clipped baseline exaggerates differences, which on a page about whether a
  * safety limit is being approached is not a stylistic choice.
  */
+/**
+ * WHEN THE SECTION'S OWN <h2> ALREADY SAYS IT.
+ *
+ * Every chart here states its subject in its own `figcaption`, which is right when the
+ * chart IS the section. On the pages where the design puts an <h2> above the card —
+ * usually because a control sits on the same line as it — that caption becomes a second
+ * copy of the heading directly under it.
+ *
+ * `captionHidden` moves the <h3> out of SIGHT and leaves it everywhere else: it stays in
+ * the accessibility tree, it stays the `aria-label` and the SVG `<title>`, and a screen
+ * reader still meets a titled figure. It is NOT `display: none`, which would take the
+ * figure's accessible name away and leave a chart announced as nothing at all.
+ */
 export function StackedBars({
   series,
   buckets,
   caption,
   description,
+  captionHidden = false,
   unit = '',
   labelEvery = 3,
   height = 200,
+  hideAxis = false,
+  yAxisLabel,
+  showSummary = false,
+  showBucketTooltip = false,
+  hideLegend = false,
 }: {
   series: Series[]
   buckets: Bucket[]
   caption: string
   description: string
+  captionHidden?: boolean
   unit?: string
   labelEvery?: number
   height?: number
+  /**
+   * MATCH THE MOCKUP'S "What detection found" EXACTLY: bars against a bare panel, a
+   * legend underneath, and nothing else — no gridlines, no numeral scale, no date row.
+   * The numbers and dates are not lost; they still ride in `aria-label`/`<desc>` and on
+   * each bar's own `<title>`, so a screen reader and a hover both still get them. This
+   * flag exists because `StackedBars` is also the cost page's "spend by purpose" chart,
+   * which has no mockup counterpart and keeps its scale — the two must be able to differ.
+   */
+  hideAxis?: boolean
+  /**
+   * A short vertical title for the y-axis label column, e.g. "Detections" — set on the
+   * detection chart alone (2026-09-24), never on the cost chart, which has no unit-of-
+   * measure ambiguity a title would resolve. Rendered rotated inside its own slim column
+   * so it costs almost no horizontal room; see `.chart-axis-title` in globals.css. Has no
+   * effect under `hideAxis` — a title for an axis nobody draws is a caption for nothing.
+   */
+  yAxisLabel?: string
+  /**
+   * A compact "Total N · paid A · ordinary B · not judged C" row above the plot, summing
+   * exactly the `buckets` already passed in — no second query, so it can never disagree
+   * with what the bars themselves show for this window.
+   */
+  showSummary?: boolean
+  /**
+   * ONE combined tooltip per day instead of one per coloured segment. Per-segment
+   * `<title>`s (below) already carry every number and are the accessible source of truth;
+   * this adds a full-height, transparent hit target drawn ON TOP of each day's bars whose
+   * single `<title>` reads the whole day at once — date, every series, and the total —
+   * which is what a reader hovering a stacked column actually wants, rather than having to
+   * find the exact pixel row of the segment they are curious about. The visible brighten-
+   * on-hover still lands on the real bars underneath via `:has()` (see `.chart-bucket` in
+   * globals.css), so covering them with an invisible rect does not mute that feedback.
+   */
+  showBucketTooltip?: boolean
+  /**
+   * `showSummary` already states every series' total, with the same swatches, right above
+   * the plot — repeating that as a legend underneath it is the same fact a third time
+   * (the bars themselves being the second), which is what a reader learns to stop reading.
+   * Set on the detection chart alone; the cost chart has no summary row of its own, so its
+   * legend is still the only place its colours are named.
+   */
+  hideLegend?: boolean
 }) {
   if (buckets.length === 0) {
     return <p className="empty">Nothing has been recorded yet, so there is nothing to plot.</p>
@@ -78,25 +140,77 @@ export function StackedBars({
   const peak = Math.max(...totals, 1)
   const top = niceCeiling(peak)
 
-  const padL = 34
+  /* Matches `.chartbox-ylabel`'s extra 16px column in globals.css: the x-axis label row
+     spans the whole card, so it must skip the same gutter width the rotated title takes
+     up, or every date would sit ~16px left of the bar it names. */
+  const padL = yAxisLabel ? 34 + 16 : 34
   const padB = 20
   const padT = 8
   const plot = height - padB - padT
   const step = 100 / buckets.length
-  const barW = step * 0.62
+  /* 0.62 -> 0.7: a wider bar reads as more deliberate at a glance, and the gap it gives up
+     was already generous — at 0.62 two neighbouring bars had nearly as much air between
+     them as either bar's own width. */
+  const barW = step * 0.7
   const scale = (v: number) => (v / top) * plot
 
   const ticks = [0, top / 2, top]
 
+  /* Per-series lifetime-of-the-window totals, for the summary row. Reduced straight from
+     `buckets` — the same array the bars are drawn from — so the row can never show a
+     number the chart beside it disagrees with. */
+  const seriesTotals = series.map((s, si) => buckets.reduce((a, b) => a + (b.values[si] ?? 0), 0))
+  const grandTotal = seriesTotals.reduce((a, n) => a + n, 0)
+
   return (
-    <figure className="chartbox">
-      <figcaption>
-        <h3>{caption}</h3>
-        <p className="page-sub">{description}</p>
-      </figcaption>
+    <figure className={yAxisLabel ? 'chartbox chartbox-ylabel' : 'chartbox'}>
+      {/*
+        THE CAPTION AND THE (OPTIONAL) SUMMARY ARE ONE GRID ITEM, NOT TWO.
+
+        `.chart-axis-y` pins itself to row 2 (see globals.css) on the assumption that
+        exactly one row of "header" content comes before the plot — true when the header
+        was always a bare `<figcaption>`. `showSummary` adds a second header line, and grid
+        auto-placement's cursor only ever moves FORWARD: once the summary row claims row 2,
+        the axis's later, unrelated auto-search for "the next free row" does not backtrack
+        into row 2 even though its own column there is still empty — it lands one row too
+        low, off by exactly the summary's height. Wrapping both lines in one `<div>` keeps
+        the header to a single grid row (row 1) regardless of whether the summary renders,
+        so row 2 is always the plot's row and this pin never has to know how tall the
+        header above it is.
+      */}
+      <div className="chartbox-head">
+        <figcaption>
+          <h3 className={captionHidden ? 'vh' : undefined}>{caption}</h3>
+          <p className="page-sub">{description}</p>
+        </figcaption>
+
+        {showSummary && (
+          <div className="chart-summary" role="group" aria-label={`Totals for ${description}`}>
+            <span className="chart-summary-item chart-summary-total">
+              <strong>{grandTotal.toLocaleString('en-GB')}</strong>
+              {unit === '$' ? ' total $' : ' total'}
+            </span>
+            {series.map((s, si) => (
+              <span className="chart-summary-item" key={s.key}>
+                <span
+                  className="chart-swatch"
+                  style={s.outline ? { border: `1px dashed ${s.color}`, background: 'none' } : { background: s.color }}
+                />
+                {s.label}: <strong>{seriesTotals[si]!.toLocaleString('en-GB')}</strong>
+              </span>
+            ))}
+          </div>
+        )}
+      </div>
 
       <svg
-        className="chart"
+        /* `chart-full` under `hideAxis`: the grid's left column is the y-axis label
+           gutter (34px), reserved by `grid-template-columns` whether or not anything
+           is drawn there. With the axis hidden nothing ever occupies it, so without
+           this the plot rendered ~46px narrower than the card for no reason visible
+           on screen — the bars, and the reader's sense of how full the card is,
+           both lost that width to a column with nothing in it. */
+        className={hideAxis ? 'chart chart-full' : 'chart'}
         viewBox={`0 0 100 ${height}`}
         preserveAspectRatio="none"
         role="img"
@@ -106,21 +220,22 @@ export function StackedBars({
         <title>{caption}</title>
         <desc>{describeStack(series, buckets, unit)}</desc>
 
-        {ticks.map((t) => (
-          <line
-            key={t}
-            className="chart-grid"
-            x1={0}
-            x2={100}
-            y1={padT + plot - scale(t)}
-            y2={padT + plot - scale(t)}
-            vectorEffect="non-scaling-stroke"
-          />
-        ))}
+        {!hideAxis &&
+          ticks.map((t) => (
+            <line
+              key={t}
+              className="chart-grid"
+              x1={0}
+              x2={100}
+              y1={padT + plot - scale(t)}
+              y2={padT + plot - scale(t)}
+              vectorEffect="non-scaling-stroke"
+            />
+          ))}
 
         {buckets.map((b, i) => {
           let acc = 0
-          return series.map((s, si) => {
+          const segments = series.map((s, si) => {
             const v = b.values[si] ?? 0
             const h = scale(v)
             const y = padT + plot - acc - h
@@ -129,6 +244,11 @@ export function StackedBars({
             return (
               <rect
                 key={`${b.key}-${s.key}`}
+                /* Hover/focus feedback only — see `.chart-bar` in globals.css. The `<title>`
+                   below is the real tooltip content (every value already rides in it and in
+                   `aria-label`/`<desc>`, per this file's own rule); the CSS just gives the
+                   segment a visible reaction so a reader discovers it is inspectable at all. */
+                className="chart-bar"
                 x={i * step + (step - barW) / 2}
                 y={y}
                 width={barW}
@@ -142,24 +262,60 @@ export function StackedBars({
               </rect>
             )
           })
+
+          if (!showBucketTooltip) return segments
+
+          const dayTotal = b.values.reduce((a, v) => a + (v ?? 0), 0)
+          const perSeries = series.map((s, si) => `${s.label} ${b.values[si] ?? 0}${unit}`).join(', ')
+          return (
+            <g className="chart-bucket" key={b.key}>
+              {segments}
+              {/* Spans the whole DAY (not just the bar) and the full plot height, so the
+                  combined tooltip fires from the gap either side of the bar too — a reader
+                  should not have to land on a 0.7-fraction-wide column to get the date. */}
+              <rect
+                className="chart-hit"
+                x={i * step}
+                y={padT}
+                width={step}
+                height={plot}
+                fill="transparent"
+              >
+                <title>{`${b.label} — ${perSeries} · total ${dayTotal}${unit}`}</title>
+              </rect>
+            </g>
+          )
         })}
       </svg>
 
       {/* The axis labels sit OUTSIDE the SVG. The chart stretches with
           `preserveAspectRatio="none"`, which would distort any text inside it — so the
-          scale is drawn in HTML, where it stays the size it was designed at. */}
-      <div className="chart-axis-y" aria-hidden="true" style={{ height }}>
-        {[...ticks].reverse().map((t) => (
-          <span key={t}>{formatTick(t, unit)}</span>
-        ))}
-      </div>
-      <div className="chart-axis-x" aria-hidden="true" style={{ paddingLeft: padL }}>
-        {buckets.map((b, i) => (
-          <span key={b.key}>{i % labelEvery === 0 ? b.label : ''}</span>
-        ))}
-      </div>
+          scale is drawn in HTML, where it stays the size it was designed at.
 
-      <Legend series={series} />
+          Skipped entirely under `hideAxis` — the numbers are not lost, they are still in
+          `aria-label`, `<desc>` and each bar's own `<title>` above; this only removes what
+          a sighted reader sees, to match the mockup's bare-panel-plus-legend drawing. */}
+      {!hideAxis && (
+        <>
+          {yAxisLabel && (
+            <span className="chart-axis-title" aria-hidden="true" style={{ height }}>
+              {yAxisLabel}
+            </span>
+          )}
+          <div className="chart-axis-y" aria-hidden="true" style={{ height }}>
+            {[...ticks].reverse().map((t) => (
+              <span key={t}>{formatTick(t, unit)}</span>
+            ))}
+          </div>
+          <div className="chart-axis-x" aria-hidden="true" style={{ paddingLeft: padL }}>
+            {buckets.map((b, i) => (
+              <span key={b.key}>{i % labelEvery === 0 ? b.label : ''}</span>
+            ))}
+          </div>
+        </>
+      )}
+
+      {!hideLegend && <Legend series={series} />}
     </figure>
   )
 }
@@ -442,6 +598,7 @@ export function BandedLine({
   bandHigh,
   caption,
   description,
+  captionHidden = false,
   note,
   height = 150,
 }: {
@@ -450,6 +607,8 @@ export function BandedLine({
   bandHigh: number
   caption: string
   description: string
+  /** See the note on StackedBars: the section's own heading already says it. */
+  captionHidden?: boolean
   note?: { text: string; tone: 'good' | 'warn' | 'bad' } | null
   height?: number
 }) {
@@ -489,7 +648,7 @@ export function BandedLine({
   return (
     <figure className="chartbox">
       <figcaption>
-        <h3>{caption}</h3>
+        <h3 className={captionHidden ? 'vh' : undefined}>{caption}</h3>
         <p className="page-sub">{description}</p>
       </figcaption>
 
@@ -527,6 +686,114 @@ export function BandedLine({
       </div>
 
       {note ? <p className={`blurb note-${note.tone}`}>{note.text}</p> : null}
+    </figure>
+  )
+}
+
+/**
+ * MESSAGES SENT, LAST 14 DAYS — an area chart, which is what the design asks for here.
+ *
+ * ── WHY THIS ONE IS AN AREA AND THE OTHERS ARE NOT ──────────────────────────
+ *
+ * Every other chart on this page reports a COMPOSITION (what a day's posts were judged to
+ * be, where the funnel lost people) and a filled area under a single line would invite the
+ * reader to add two series that must not be added. This one is a single quantity over
+ * time, so the fill carries no claim beyond the line itself — it is emphasis, not a second
+ * number.
+ *
+ * The gradient is defined with a document-unique id. Two of these on one page sharing
+ * `url(#trendFill)` would silently take the first one's stops, which renders correctly
+ * until the day somebody adds a second trend and then looks like a colour bug.
+ *
+ * A DAY WITH NOTHING SENT IS A ZERO, NOT A GAP. `BandedLine` above breaks its line at a
+ * null because "no calls were made, so there is no rate" is genuinely unmeasurable; a day
+ * on which nothing was delivered is a measured zero and drawing it as a hole would hide
+ * exactly the outage this chart exists to show.
+ */
+export function SendsTrend({
+  points,
+  peak,
+  total,
+  caption,
+  description,
+  captionHidden = false,
+  height = 100,
+}: {
+  points: Array<{ key: string; label: string; n: number }>
+  peak: number
+  total: number
+  caption: string
+  description: string
+  /** See the note on StackedBars: the section's own heading already says it. */
+  captionHidden?: boolean
+  height?: number
+}) {
+  /* A SERVER component, so there is no `useId` to reach for — the slug comes from the
+     caption, which is what actually distinguishes two of these on one page. */
+  const id = caption.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'sends'
+  if (points.length === 0 || total === 0) {
+    return (
+      <figure className="chartbox">
+        <figcaption>
+          <h3>{caption}</h3>
+          <p className="page-sub">{description}</p>
+        </figcaption>
+        <p className="empty">Nothing has been delivered in the last {points.length} days, so there is no trend to plot.</p>
+      </figure>
+    )
+  }
+
+  const w = Math.max(1, points.length - 1)
+  /* The scale is the window's own busiest day, never a constant: a fixed ceiling makes a
+     quiet fortnight read as a flat line at the floor and a busy one clip. */
+  const top = Math.max(1, peak)
+  const x = (i: number) => (i / w) * 100
+  const y = (n: number) => height - (n / top) * height
+
+  const line = points.map((p, i) => `${round(x(i))},${round(y(p.n))}`).join(' ')
+  const area = `M 0,${height} L ${points.map((p, i) => `${round(x(i))},${round(y(p.n))}`).join(' L ')} L 100,${height} Z`
+
+  const busiest = points.reduce((a, b) => (b.n > a.n ? b : a))
+
+  return (
+    <figure className="chartbox">
+      <figcaption>
+        <h3 className={captionHidden ? 'vh' : undefined}>{caption}</h3>
+        <p className="page-sub">{description}</p>
+      </figcaption>
+
+      <svg
+        className="chart"
+        viewBox={`0 0 100 ${height}`}
+        preserveAspectRatio="none"
+        role="img"
+        aria-label={`${caption}. ${total} delivered over ${points.length} days, busiest ${busiest.label} with ${busiest.n}.`}
+        style={{ height }}
+      >
+        <title>{caption}</title>
+        <desc>{`${total} messages delivered across ${points.length} days. The busiest was ${busiest.label} with ${busiest.n}.`}</desc>
+        <defs>
+          <linearGradient id={`trend-${id}`} x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stopColor="var(--ac)" stopOpacity="0.35" />
+            <stop offset="100%" stopColor="var(--ac)" stopOpacity="0" />
+          </linearGradient>
+        </defs>
+        <path d={area} fill={`url(#trend-${id})`} />
+        <polyline
+          points={line}
+          fill="none"
+          stroke="var(--ac)"
+          strokeWidth={2}
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          vectorEffect="non-scaling-stroke"
+        />
+      </svg>
+
+      <div className="chart-axis-x" aria-hidden="true">
+        <span>{points[0]?.label}</span>
+        <span>today</span>
+      </div>
     </figure>
   )
 }

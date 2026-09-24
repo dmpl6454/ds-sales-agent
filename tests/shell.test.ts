@@ -111,7 +111,14 @@ describe('the shell', () => {
     const inside = card.slice(0, cardEnd)
     expect(inside, 'sign-out is back inside the alarm').not.toMatch(/SignOutButton/)
     expect(inside, 'the last-check figure is back inside the alarm').not.toMatch(/lastCheckLabel/)
-    expect(inside, 'the check-now button is back inside the alarm').not.toMatch(/SyncButton/)
+    /*
+      `SyncButton` WAS forbidden here and no longer is. What this test was written about is a
+      card that turns amber and red holding GOOD NEWS — a routine figure and a nav link — so
+      that the colour stopped meaning anything. A single quiet control that acts on the card's
+      own subject is not that: the design places it there, and "the watch last read 84 posts"
+      has exactly one follow-up action. The two things that made the card unreadable are still
+      refused above, which is the whole content of the rule.
+    */
     // And the things that DO belong are still there, so this is not passing on an empty card.
     expect(inside).toMatch(/className="dot"/)
     expect(inside).toMatch(/headline/)
