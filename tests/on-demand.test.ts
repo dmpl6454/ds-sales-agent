@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest'
-import { describeOnDemand, type OnDemandFacts } from '@/outreach/onDemand'
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
+import { describeOnDemand, replyWrittenAt, type OnDemandFacts } from '@/outreach/onDemand'
 import { RESEND_BLOCKS, OVERRIDABLE_BLOCKS } from '@/outreach/gate'
 
 const NOW = new Date('2026-08-03T10:00:00Z')
@@ -84,6 +86,28 @@ describe('describeOnDemand — warnings', () => {
     const v = describeOnDemand({ ...clean(), targetRepliedAt: new Date('2026-08-01T10:00:00Z') })
     expect(reasons(v.warnings)).toContain(RESEND_BLOCKS.TARGET_REPLIED)
     expect(v.warnings[0]!.text).toContain('2 days ago')
+    /* What is paused is THIS page (the query is `replyHaltWhere`, pair by default), and nothing
+       waits for a person — the pause has released itself since 2026-08-07 (audit H9). */
+    expect(v.warnings[0]!.text).toMatch(/from this page/)
+    expect(v.warnings[0]!.text).not.toMatch(/take over|outreach to them is halted/)
+  })
+
+  /**
+   * The age is told from when they WROTE, the halt's own clock — not from when the sweep SAW it.
+   * A reply written four days ago and found yesterday is four days old to the person who sent it.
+   */
+  it('dates the reply from when it was written, not when it was seen', () => {
+    const repliedAt = new Date('2026-08-02T10:00:00Z') // seen 1 day before NOW
+    const replyPostedAt = new Date('2026-07-30T10:00:00Z') // written 4 days before NOW
+    const at = replyWrittenAt({ repliedAt, replyPostedAt })
+    expect(at).toEqual(replyPostedAt)
+    const v = describeOnDemand({ ...clean(), targetRepliedAt: at })
+    expect(v.warnings[0]!.text).toContain('4 days ago')
+    expect(replyWrittenAt(null)).toBeNull()
+    /* And the dialog's fact-gatherer asks it — the pure choice is worthless if the caller bypasses it. */
+    const src = readFileSync(join(__dirname, '../src/outreach/onDemand.ts'), 'utf8')
+    expect(src).toMatch(/targetRepliedAt: replyWrittenAt\(replied\)/)
+    expect(src).toMatch(/select: \{ repliedAt: true, replyPostedAt: true \}/)
   })
 
   it('puts the reply warning first — it is the most consequential', () => {

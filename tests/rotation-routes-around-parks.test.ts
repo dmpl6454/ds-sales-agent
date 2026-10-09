@@ -154,6 +154,10 @@ describe('the plumbing', () => {
     expect(tally).not.toMatch(/bump\(\s*SKIP_REASONS\.UNCERTAIN_DELIVERY/)
     // And it routes around a reply the same way, or the panel names a page the planner skips.
     expect(tally).toMatch(/settings\.replyHaltScope === 'pair'/)
-    expect(tally).toMatch(/they replied to this page, so it is holding for a week/)
+    // …with the planner's own sentence: both ask `replyRouteReason`, which reads the window from
+    // the Setting rather than saying "a week" (audit H9).
+    expect(tally).toMatch(/blockRoute\(r\.pair\.targetId, r\.pair\.senderId, replyRouteReason\(settings\.replyResumeHours\)\)/)
+    const cat = readFileSync(join(repo, 'src/outreach/categories.ts'), 'utf8')
+    expect(cat).toMatch(/put\(r\.pair\.targetId, r\.pair\.senderId, replyRouteReason\(replyHalt\.resumeHours\)\)/)
   })
 })

@@ -9,6 +9,7 @@ import { BRAND_BLOCKS, checkRecipientIsNotAPerson } from '@/outreach/brandGuards
 import { materialAllowance, campaignsNamingHandleRows } from '@/outreach/materialAllowance'
 import { crossSpacingVerdict } from '@/outreach/crossSpacing'
 import { replyHaltFloor, replyHaltKey } from '@/outreach/replyHalt'
+import { replyHaltSpan, replyRouteReason, restReplyLabel } from '@/outreach/replyHaltCopy'
 import { eligibleFleetSenders, readSenderAvailability } from '@/outreach/availability'
 import { fleetRingOrder, nextSender } from '@/outreach/rotation'
 import { categoriesFor, readCategoryMemberships, ringMembersFor, unavailableForTarget } from '@/outreach/categories'
@@ -190,7 +191,13 @@ const REST_RULES: Record<string, { label: string; needsAPerson: boolean; clock?:
     clock: 'tomorrow',
   },
   [SKIP_REASONS.TARGET_REPLIED]: {
-    label: 'they replied — every one of our pages pauses for seven days from the date they wrote, then resumes on its own',
+    /**
+     * A placeholder for the totality test — the RENDERED label is `restReplyLabel(scope, hours)`,
+     * substituted where `byReason` is built, because it depends on the scope and the window (both
+     * Settings) and this table is a constant. Under `target` every page pauses; under `pair` a
+     * company lands here only when every page in its rotation is reply-paused (audit H9).
+     */
+    label: 'they replied — see restReplyLabel',
     needsAPerson: false,
   },
   [SKIP_REASONS.TARGET_RECENTLY_CONTACTED]: {
@@ -245,8 +252,14 @@ const REST_RULES: Record<string, { label: string; needsAPerson: boolean; clock?:
      * person hunting a broken sign-in that does not exist. The same defect this file already
      * records for `empty-ring`, one bucket over.
      */
+    /*
+     * And a fourth since the pair-scoped halt (audit H9): a page paused because they replied to it.
+     * A ring paused by replies ALONE is not stuck — it frees itself, and is counted under
+     * TARGET_REPLIED with its release time below — so this sentence is for MIXED causes, where a
+     * reply is one of the reasons and a sign-in or a park is another.
+     */
     label:
-      'not one of our pages can write to them — each page in their rotation is signed out, flagged, or holding an earlier send that may already have reached them',
+      'not one of our pages can write to them — each page in their rotation is signed out, flagged, holding an earlier send that may already have reached them, or paused because they replied to it',
     needsAPerson: true,
   },
   [NO_PAGE_FOR_FLEET]: {
@@ -322,6 +335,11 @@ export interface RestTally {
   needingAPerson: number
   /** When this was read. The figure moves all day, so a screen must be able to say when. */
   measuredAt: Date
+  /**
+   * How long a reply pauses, in words, from the Setting (`replyResumeHours`) — so the band's
+   * "a reply starts a fresh …" cannot hard-code a window the enforcer does not hold (audit H9).
+   */
+  replyHaltSpan: string
   /**
    * Companies whose per-pair check was skipped because the bound below was reached. Counted
    * into `clear`, and REPORTED: a bounded pass that hides what it skipped reads as "covered
@@ -633,7 +651,14 @@ async function computeRestTally(now: Date): Promise<RestTally> {
     m.set(senderId, why)
     blockedRoutes.set(targetId, m)
   }
+  /**
+   * Parked routes, kept APART from `blockedRoutes`: the reply loop below overwrites a parked
+   * route's reason with the reply's, so "is this route reply-paused and nothing else?" cannot be
+   * read back from that map (audit H9).
+   */
+  const parkedRouteKeys = new Set<string>()
   for (const p of parked) {
+    parkedRouteKeys.add(`${p.pair.targetId}:${p.pair.senderId}`)
     blockRoute(
       p.pair.targetId,
       p.pair.senderId,
@@ -661,7 +686,7 @@ async function computeRestTally(now: Date): Promise<RestTally> {
        `replyHandledAt: null`, which is the same `where` the gate builds from `replyHaltWhere`. */
     for (const r of replies) {
       if (!r.replyPostedAt) continue
-      blockRoute(r.pair.targetId, r.pair.senderId, 'they replied to this page, so it is holding for a week')
+      blockRoute(r.pair.targetId, r.pair.senderId, replyRouteReason(settings.replyResumeHours))
     }
   }
 
@@ -736,6 +761,29 @@ async function computeRestTally(now: Date): Promise<RestTally> {
     if (halt) {
       bump(SKIP_REASONS.TARGET_REPLIED, halt)
       continue
+    }
+
+    /**
+     * ── EVERY PAGE IN THEIR ROTATION IS REPLY-PAUSED (audit H9) ─────────────────
+     *
+     * Under the pair scope a reply blocks its page's ROUTE, so the elected-halt check above can
+     * never fire — rotation never elects a reply-paused page. A recipient whose every page they
+     * replied to is therefore `all-unavailable`, and fell into ROTATION_STUCK: "needs a person",
+     * "not on a clock", sending somebody hunting a sign-in fault for a hold that frees ITSELF when
+     * the first page's halt ends — the @wowmomos shape the ROTATION_STUCK label records, one cause
+     * along. Counted as replied, released at the soonest page's halt, but ONLY when replies are the
+     * whole cause: a page also signed out, flagged or parked is a mixed case and stays stuck.
+     */
+    if (settings.replyHaltScope === 'pair' && !turn.ok && turn.reason === 'all-unavailable' && ring.length > 0) {
+      const frees = ring.map((m) =>
+        unavailable.has(m.senderId) || parkedRouteKeys.has(`${p.id}:${m.senderId}`)
+          ? undefined
+          : haltUntil.get(replyHaltKey('pair', { senderId: m.senderId, targetId: p.id })),
+      )
+      if (frees.every((d): d is Date => d !== undefined)) {
+        bump(SKIP_REASONS.TARGET_REPLIED, new Date(Math.min(...frees.map((d) => d.getTime()))))
+        continue
+      }
     }
 
     /* ALREADY WRITTEN, so not resting — see `resting` on the interface. Counted and skipped
@@ -931,7 +979,11 @@ async function computeRestTally(now: Date): Promise<RestTally> {
          showing nothing, and fail the test that should have caught it. */
       return {
         reason,
-        label: rule?.label ?? `held by ${reason}`,
+        /* The reply bucket's sentence depends on two Settings — see its REST_RULES entry. */
+        label:
+          reason === SKIP_REASONS.TARGET_REPLIED
+            ? restReplyLabel(settings.replyHaltScope, settings.replyResumeHours)
+            : (rule?.label ?? `held by ${reason}`),
         count: b.count,
         needsAPerson: rule?.needsAPerson ?? true,
         nextReleaseAt: b.next,
@@ -958,5 +1010,6 @@ async function computeRestTally(now: Date): Promise<RestTally> {
     needingAPerson: byReason.filter((r) => r.needsAPerson).reduce((n, r) => n + r.count, 0),
     pairChecksSkipped,
     measuredAt: now,
+    replyHaltSpan: replyHaltSpan(settings.replyResumeHours),
   }
 }

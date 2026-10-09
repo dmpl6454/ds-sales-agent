@@ -1,4 +1,5 @@
 import type { MessagesPageView } from '../view-model/messages-page'
+import { motionHoldReason, motionWaitsFor, type QueueMotion } from '../view-model/queue-motion'
 
 /**
  * THE QUEUE: "UP NEXT" FIRST, THEN THE PER-SENDER COUNTS.
@@ -9,15 +10,22 @@ import type { MessagesPageView } from '../view-model/messages-page'
  *
  * The order shown is the dispatcher's own pick order (oldest draft first), read by the
  * same query — never a re-derivation, so this panel can never name a different "next"
- * than the one that actually sends. The head row carries the live gate verdict from
- * `recheckBeforeSend`, the same call the dispatcher makes: when the front of the queue
- * is held, the reason is the enforcer's own sentence, on the row it is about.
+ * than the one that actually sends. The head row carries the live gate verdict — the same
+ * gate the dispatcher asks, with the SENDING Mac's signed-in accounts as its witness
+ * (`predictResendForQueue`, audit H8): when the front of the queue is held, the reason is
+ * the enforcer's own sentence, on the row it is about.
  *
  * The per-draft card wall stays gone (2026-08-18): every draft is the same standard
  * template, so beyond WHO sends to WHOM next there is nothing per-row to show.
  */
 const whenIst = (d: Date) =>
   d.toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })
+
+/**
+ * A held row's "Frees up" cell. NULL is a real answer, not a missing date: an account that is not
+ * signed in on the sending Mac is released by a person signing it in there, never by a clock.
+ */
+const freesUp = (d: Date | null) => (d === null ? 'once signed in there' : `${whenIst(d)} IST`)
 
 /**
  * The RESTING half of the queue, each row with the enforcer's own sentence and when it
@@ -82,7 +90,7 @@ function HeldList({
             <span className="qhandle">@{row.senderHandle}</span>
             <span className="qhandle">@{row.targetHandle}</span>
             {oneReason ? null : <span className="qwhy">{row.why}</span>}
-            <span className="qright dim">{whenIst(row.resumesAt)} IST</span>
+            <span className="qright dim">{freesUp(row.resumesAt)}</span>
           </div>
         ))}
       </div>
@@ -93,7 +101,7 @@ function HeldList({
       ) : null}
       {heldWaiting > heldUpNext.length ? (
         <p className="cardnote">
-          {heldWaiting - heldUpNext.length} more are resting behind these, on the same two rules.
+          {heldWaiting - heldUpNext.length} more are resting behind these, on these rules.
         </p>
       ) : null}
     </>
@@ -105,7 +113,7 @@ export function WaitingList({
   heldWaiting,
   heldUpNext,
   total,
-  autopilotOn,
+  motion,
   resting,
 }: {
   upNext: MessagesPageView['upNext']
@@ -115,15 +123,21 @@ export function WaitingList({
   /** Fleet-wide resting companies, for the heading above the held rows — see `HeldList`. */
   resting: { resting: number; total: number } | null
   /**
-   * With this false the dispatcher holds every tick on `autopilot-off` and NOTHING in this
-   * list is going anywhere. The panel used to render ETAs and "clear to send on the next
-   * tick" regardless, so a deliberately-paused fleet read as a stuck one — the queue looked
-   * frozen on every refresh while the page insisted it was draining.
+   * WILL THE QUEUE MOVE — the SAME `queueMotion(v.autopilot)` the switch card above renders from,
+   * computed once in page.tsx (audit H8). Only `moving` shows a countdown or "will actually go":
+   * with the switch off, no Mac chosen, the chosen Mac asleep or no account ready, nothing in
+   * this list is going anywhere, and the panel used to render ETAs regardless — a paused fleet
+   * reading as a stuck one (2026-08-20), and on the hosted page "Autopilot is off" under a card
+   * saying ON, because it read this host's env-floored value instead of the fleet's switch.
    */
-  autopilotOn: boolean
+  motion: QueueMotion
 }) {
   const sendable = total - heldWaiting
-  const firstFree = heldUpNext[0]
+  /* The first row a CLOCK frees; a row waiting on a sign-in has no time to promise. */
+  const firstFree = heldUpNext.find((r) => r.resumesAt !== null)
+  const moving = motion.kind === 'moving'
+  const waitsFor = motionWaitsFor(motion)
+  const holdReason = motionHoldReason(motion)
   return (
     <section>
       <h2>Up next ({total} waiting)</h2>
@@ -134,11 +148,14 @@ export function WaitingList({
       ) : upNext.length === 0 ? (
         <>
           <p className="cardnote">
-            Nothing is sendable right now{firstFree ? <> until {whenIst(firstFree.resumesAt)} IST</> : null} &mdash; all{' '}
-            {total} waiting {total === 1 ? 'draft is' : 'drafts are'} resting (spacing or a reply). Not a fault:{' '}
-            {autopilotOn
+            Nothing is sendable right now{firstFree?.resumesAt ? <> until {whenIst(firstFree.resumesAt)} IST</> : null}{' '}
+            &mdash; all {total} waiting {total === 1 ? 'draft is' : 'drafts are'} resting (spacing, a reply, the
+            material rule, or not signed in on the sending Mac). Not a fault:{' '}
+            {moving
               ? 'Autopilot is on and the dispatcher checks every minute, so each draft below sends itself when its window clears.'
-              : 'each draft below is waiting for its window to clear AND for Autopilot to be switched back on.'}
+              : motion.kind === 'switch-off'
+                ? 'each draft below is waiting for its window to clear AND for Autopilot to be switched back on.'
+                : `each draft below is waiting for its window to clear — and even then nothing goes out while ${holdReason}.`}
           </p>
           <HeldList heldUpNext={heldUpNext} heldWaiting={heldWaiting} resting={resting} />
         </>
@@ -157,27 +174,38 @@ export function WaitingList({
                 <span className="qhandle">@{row.senderHandle}</span>
                 <span className="qhandle">@{row.targetHandle}</span>
                 <span className="dim">
-                  {row.etaMinutes === null
-                    ? 'when Autopilot is on'
-                    : row.etaMinutes <= 0
-                      ? 'next tick'
-                      : `in ~${row.etaMinutes} min`}
+                  {/* A countdown is a promise; only a moving queue keeps one. */}
+                  {waitsFor !== null ? waitsFor.eta : row.etaMinutes <= 0 ? 'next tick' : `in ~${row.etaMinutes} min`}
                   {row.note ? (
                     <span className={row.held ? ' note-warn' : ' note-good'}> &mdash; {row.note}</span>
+                  ) : row.clear ? (
+                    <span className="note-good">
+                      {' '}
+                      &mdash;{' '}
+                      {waitsFor !== null
+                        ? `every check passes — waiting only for ${waitsFor.until}`
+                        : 'clear to send on the next tick'}
+                    </span>
                   ) : null}
                 </span>
               </div>
             ))}
           </div>
           <p className="cardnote lede">
-            {autopilotOn ? (
+            {moving ? (
               <>
                 These are the drafts that will actually go, oldest first &mdash; one every minute, any time of day.{' '}
               </>
-            ) : (
+            ) : motion.kind === 'switch-off' ? (
               <>
                 <strong>Autopilot is off, so none of these are going out.</strong> They are cleared to send and will
                 start moving, oldest first, the moment you switch it on &mdash; or you can send any of them by hand.{' '}
+              </>
+            ) : (
+              <>
+                {/* The switch card's own reason — the same `QueueMotion` it renders from. */}
+                <strong>Nothing is going out: {holdReason}.</strong> These are next in line, oldest first, and start
+                moving once that changes.{' '}
               </>
             )}
             {sendable > upNext.length ? <>{sendable - upNext.length} more are clear behind them. </> : null}

@@ -162,7 +162,9 @@ function Group({
 function rowAccent(p: ProspectRow): string {
   if (p.role === 'WATCH') return 'var(--text-dim)'
   if (p.retired) return 'var(--text-dim)'
-  if (p.replied) return 'var(--pending)'
+  /* Gold only when the reply actually holds them: under the pair scope another page may still
+     write, and then the row is green like any other the rotation is about to reach (audit H9). */
+  if (p.replied && !p.nextSenderWillWrite) return 'var(--pending)'
   if (p.nextSenderWillWrite) return 'var(--good)'
   return 'var(--text-dim)'
 }
@@ -229,12 +231,11 @@ function Row({
       </div>
 
       {/*
-        The reply halt, said in full rather than as a chip alone. It stops every account
-        from writing to this person, which is a bigger fact than a badge implies.
+        The reply halt, said in full rather than as a chip alone — WHICH pages it pauses and until
+        when, in the scope's own words from the view model (audit H9). It said "messaging pauses
+        for seven days" on the same row that named the next page writing to them.
       */}
-      {p.replied && (
-        <p className="account-message">They replied — messaging pauses for seven days, then resumes on its own.</p>
-      )}
+      {p.replyNote && <p className="account-message">{p.replyNote}</p>}
 
       {/*
         NOTHING IS JUDGING THEIR POSTS. Bad, not muted: a watched channel on a detector that

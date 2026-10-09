@@ -1,4 +1,7 @@
 import type { Remedy } from '../messages/remedy'
+import { motionHoldReason, type QueueMotion } from './queue-motion'
+import type { ReplyHaltScope } from '@/outreach/replyHalt'
+import { replyBlockerCopy } from '@/outreach/replyHaltCopy'
 
 /**
  * WHAT IS STOPPING IT — ranked by what cannot be recovered.
@@ -74,8 +77,16 @@ export interface BlockerInput {
   breaker: { reason: string } | null
   /** A person pressed pause, and who. Null when nobody has. */
   pausedBy: { at: string; by: string; reason?: string } | null
-  /** Replies waiting for a person to take over. */
+  /** Distinct recipients whose reply is holding a halt right now. */
   repliesWaiting: number
+  /**
+   * WHAT A REPLY PAUSES, AND FOR HOW LONG — REQUIRED (audit H9), so the compiler names every
+   * caller. The verdict below used to say a reply "pauses every account writing to that recipient
+   * for seven days" a month after Tabish chose the PAIR scope (only the page they answered), with
+   * the window hard-coded while it is a Setting. A required field rather than a default, because a
+   * defaulted scope is exactly how the sentence drifted from the rule.
+   */
+  replyHalt: { scope: ReplyHaltScope; resumeHours: number }
   /** Drafts written and waiting. */
   draftsWaiting: number
   /**
@@ -162,15 +173,13 @@ export function rankBlockers(input: BlockerInput): Blocker[] {
 
   /* ── 3. someone is waiting on a person ──────────────────────────────────── */
   if (input.repliesWaiting > 0) {
+    /* The scope's own sentence, from the one copy owner — never written here. */
+    const copy = replyBlockerCopy(input.replyHalt.scope, input.repliesWaiting, input.replyHalt.resumeHours)
     out.push({
       key: 'replies',
       rank: 'Replies',
-      headline:
-        input.repliesWaiting === 1
-          ? 'One recipient replied and is on hold'
-          : `${input.repliesWaiting} recipients replied and are on hold`,
-      verdict:
-        'A reply pauses every account writing to that recipient for seven days, then messaging resumes by itself. Nothing needs pressing — the reply is kept either way.',
+      headline: copy.headline,
+      verdict: copy.verdict,
       remedy: null,
       tone: 'warn',
     })
@@ -212,17 +221,22 @@ export function rankBlockers(input: BlockerInput): Blocker[] {
 /**
  * The sentence above the list, and the empty state.
  *
- * "Nothing is stopping it" is only true if autopilot is actually ON — with the switch off,
+ * "Nothing is stopping it" is only true if the queue is actually MOVING — with the switch off,
  * an empty blocker list means every OTHER condition is clear, which is a different and much
  * weaker claim. Collapsing the two would put "nothing is stopping it" above a fleet that
  * cannot send a single message, which is the exact shape of failure this page exists to
  * prevent.
+ *
+ * And "on" is not "moving" (audit H8): with the switch ON and no Mac selected, or the selected
+ * Mac asleep, the switch card directly above says nothing sends — so this takes the SAME
+ * `QueueMotion` the card and the queue read, and names the card's own reason.
  */
-export function blockersSummary(blockers: Blocker[], autopilotOn: boolean): string {
+export function blockersSummary(blockers: Blocker[], motion: QueueMotion): string {
   if (blockers.length === 0) {
-    return autopilotOn
-      ? 'Nothing is stopping it. Messages go out under the pace below.'
-      : 'Every check below is clear. Autopilot itself is off, so nothing goes out on its own.'
+    if (motion.kind === 'moving') return 'Nothing is stopping it. Messages go out under the pace below.'
+    if (motion.kind === 'switch-off')
+      return 'Every check below is clear. Autopilot itself is off, so nothing goes out on its own.'
+    return `Every check below is clear, but nothing goes out: ${motionHoldReason(motion)}.`
   }
   const worst = blockers[0]
   return worst?.tone === 'bad'

@@ -5,6 +5,7 @@ import { buildRestTally } from './view-model/rest-tally'
 import { buildConversationsPage } from './view-model/conversations-page'
 import { buildWatchChart } from './view-model/charts'
 import { rankBlockers, blockersSummary } from './view-model/blockers'
+import { queueMotion } from './view-model/queue-motion'
 import { SyncButton } from './sync-button'
 import { AutoRefresh } from './auto-refresh'
 import { AutopilotPanel } from './autopilot'
@@ -27,6 +28,7 @@ import { currentUser } from '@/lib/session'
 import { Nav } from './nav'
 import { PageHead } from './page-head'
 import { istHourOfDay, istTimeKey } from '@/lib/time'
+import { replyLede } from '@/outreach/replyHaltCopy'
 
 /**
  * What to call the default fleet on screen, and ONLY when a second one exists — with one
@@ -112,18 +114,30 @@ export default async function AutopilotPage() {
     breaker: m.dispatch.breaker.tripped ? { reason: m.dispatch.breaker.detail } : null,
     pausedBy: m.pause,
     /**
-     * DISTINCT RECIPIENTS, not reply rows — the headline this feeds says "N recipients replied
-     * and are on hold", and the halt is per RECIPIENT (a reply stops every one of our pages
-     * writing to them). MEASURED 2026-08-24: 65 unhandled replies across 51 distinct
-     * recipients, so the old `c.replies.length` overstated the number of held recipients by
-     * 30% — a screen reporting one rule by a different rule, which is the most repeated defect
-     * in this project's history. Several recipients have replied more than once, and
-     * @keshavamband four times.
+     * DISTINCT RECIPIENTS, not reply rows — the headline this feeds counts recipients who
+     * replied. MEASURED 2026-08-24: 65 unhandled replies across 51 distinct recipients, so the
+     * old `c.replies.length` overstated the count by 30% — a screen reporting one rule by a
+     * different rule, which is the most repeated defect in this project's history. Several
+     * recipients have replied more than once, and @keshavamband four times.
+     *
+     * What the halt COVERS is the scope's business (pair by default since 2026-09-01: only the
+     * page they answered), so the copy comes from replyHaltCopy.ts with the scope in hand
+     * (audit H9) — the headline used to say every page was paused while rotation passed the turn.
      */
     repliesWaiting: new Set(c.replies.map((r) => r.targetHandle)).size,
+    replyHalt: { scope: settings.replyHaltScope, resumeHours: settings.replyResumeHours },
     draftsWaiting: m.waitingTotal,
     topRefusal,
   })
+
+  /**
+   * WILL THE QUEUE MOVE — derived ONCE, from the switch card's own state (audit H8), and handed to
+   * the summary and the queue. The card, the summary and the queue each used to decide "is the
+   * fleet on" for themselves from two different values, and on the hosted page the queue said
+   * "Autopilot is off" under a card saying ON. Never from `m` or `settings`: `v.autopilot` is the
+   * one derivation the card renders.
+   */
+  const motion = queueMotion(v.autopilot)
 
   const now = new Date()
   const istMinute = Number(istTimeKey(now).slice(3, 5))
@@ -197,20 +211,18 @@ export default async function AutopilotPage() {
         </section>
 
         {/* The answer to the page's question, ranked by what cannot be undone. */}
-        <BlockerList blockers={blockers} summary={blockersSummary(blockers, v.autopilot.on)} />
+        <BlockerList blockers={blockers} summary={blockersSummary(blockers, motion)} />
 
-        {/* A reply halts every account writing to that recipient until someone takes over. */}
         {/*
           THE EXPLANATION MOVED TO /rules (2026-08-17), THE REPLIES DID NOT.
 
-          Two sentences used to sit here saying a reply halts every account, resumes after
-          a day, and that "I have replied" releases it sooner. `/rules` already states both
-          of those from the modules that enforce them — so this was the second copy, on the
-          page a person looks at most, which is how a reader learns to skip both.
+          Two sentences used to sit here explaining the halt and its early release. `/rules`
+          already states the rule from the modules that enforce it — so this was the second
+          copy, on the page a person looks at most, which is how a reader learns to skip both.
 
-          What stays is the reply itself and the control that releases it. The heading now
-          carries the one-clause version, because a reader who has never seen this before
-          still needs to know the halt is fleet-wide, and a link cannot say that in situ.
+          What stays is the reply itself and a one-clause statement of WHAT IT PAUSES, because a
+          reader who has never seen this before needs to know that in situ — and that clause is
+          the SCOPE's (pair by default since 2026-09-01), from replyHaltCopy.ts (audit H9).
         */}
         {c.replies.length > 0 && (
           <section>
@@ -218,13 +230,14 @@ export default async function AutopilotPage() {
             <RepliesPanel replies={c.replies} />
             {/*
               THE HEADING IS THE DESIGN'S ("They replied — paused") AND THE CLAUSE IT DROPPED
-              LANDED HERE, not nowhere. "Paused" alone does not say the halt covers EVERY page
-              writing to that recipient, and that is the part a reader meeting this for the
-              first time would otherwise have to guess at — a link cannot say it in situ.
+              LANDED HERE, not nowhere. "Paused" alone does not say WHICH pages are paused, and
+              that is the part a reader meeting this for the first time would otherwise have to
+              guess at. It said "every account … not just the one they answered" until audit H9 —
+              the target scope, a month after Tabish chose the pair scope — so it is now asked of
+              the scope rather than written here.
             */}
             <p className="cardnote lede">
-              Every account writing to them is paused, not just the one they answered.{' '}
-              <a href="/rules">How the pause works</a>
+              {replyLede(settings.replyHaltScope)} <a href="/rules">How the pause works</a>
             </p>
           </section>
         )}
@@ -276,7 +289,7 @@ export default async function AutopilotPage() {
           heldWaiting={m.heldWaiting}
           heldUpNext={m.heldUpNext}
           total={m.waitingTotal}
-          autopilotOn={m.autopilotOn}
+          motion={motion}
           resting={rest.total > 0 ? { resting: rest.resting, total: rest.total } : null}
         />
 

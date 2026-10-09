@@ -4,6 +4,7 @@ import { useState } from 'react'
 import { isStaleServerAction, reloadForStaleBuild, STALE_BUILD_MESSAGE } from './stale-build'
 import { setAutopilot } from './actions'
 import type { AutopilotState } from './view-model'
+import { queueMotion } from './view-model/queue-motion'
 
 /**
  * THE switch. Since 2026-08-08 there is no other one.
@@ -43,6 +44,12 @@ export function AutopilotPanel({ state }: { state: AutopilotState }) {
   }
 
   const covered = state.readyHandles.length
+  /**
+   * The branch order below is `queueMotion`'s, not this file's own: the queue and the summary
+   * on the same page ask the same function, so the card cannot say "nothing sends" over a queue
+   * promising ETAs (audit H8). The wording stays here because this is the card it belongs to.
+   */
+  const motion = queueMotion(state)
 
   return (
     <section>
@@ -78,15 +85,15 @@ export function AutopilotPanel({ state }: { state: AutopilotState }) {
           </button>
 
           <div className="autopilot-title">
-            {state.on
-              ? !state.sendingMac.selected
+            {motion.kind === 'switch-off'
+              ? 'Autopilot is OFF — messages wait for you'
+              : motion.kind === 'no-mac'
                 ? 'Autopilot is ON, but no Mac is selected to send'
-                : !state.sendingMac.online
-                  ? `Autopilot is ON, but ${state.sendingMac.selected} — the sending Mac — is not online`
-                  : covered > 0
-                    ? `Autopilot is ON — ${state.sendingMac.selected} sends by itself`
-                    : 'Autopilot is ON, but no account is ready to use it'
-              : 'Autopilot is OFF — messages wait for you'}
+                : motion.kind === 'mac-offline'
+                  ? `Autopilot is ON, but ${motion.mac} — the sending Mac — is not online`
+                  : motion.kind === 'moving'
+                    ? `Autopilot is ON — ${motion.mac} sends by itself`
+                    : 'Autopilot is ON, but no account is ready to use it'}
           </div>
         </div>
 
@@ -104,15 +111,15 @@ export function AutopilotPanel({ state }: { state: AutopilotState }) {
           needs to trust: nothing is dropped, drafts keep their Send buttons.
         */}
         <p className="autopilot-sub">
-          {state.on
-            ? !state.sendingMac.selected
+          {motion.kind === 'switch-off'
+            ? 'Nothing sends. Paid posts are still found and messages are still written — drafts keep their Send buttons.'
+            : motion.kind === 'no-mac'
               ? 'Nothing sends anywhere until a Mac is chosen under Senders → Sending Mac. Paid posts are still found and messages are still written.'
-              : !state.sendingMac.online
-                ? `Nothing sends until ${state.sendingMac.selected} is back online — open its lid, or choose another Mac under Senders. Paid posts are still found and messages are still written.`
-                : covered > 0
-                  ? `It finds paid posts, decides which brands are worth writing to, writes the messages, and sends them from ${state.sendingMac.selected} — ${state.paceClause}. Every other Mac holds.`
-                  : 'It finds paid posts, decides brands and writes messages — but no account can send yet, so everything waits. Sign one in and it starts on its own.'
-            : 'Nothing sends. Paid posts are still found and messages are still written — drafts keep their Send buttons.'}
+              : motion.kind === 'mac-offline'
+                ? `Nothing sends until ${motion.mac} is back online — open its lid, or choose another Mac under Senders. Paid posts are still found and messages are still written.`
+                : motion.kind === 'moving'
+                  ? `It finds paid posts, decides which brands are worth writing to, writes the messages, and sends them from ${motion.mac} — ${state.paceClause}. Every other Mac holds.`
+                  : 'It finds paid posts, decides brands and writes messages — but no account can send yet, so everything waits. Sign one in and it starts on its own.'}
         </p>
 
         {/*

@@ -429,9 +429,10 @@ export function evaluatePair(input: GovernorInput): GovernorDecision {
     }
   }
 
-  // A reply means a human conversation has started. Continuing to fire templated
-  // pitches at them from three accounts would be actively damaging, so this
-  // halts every sender to this target — not just the one that got the reply.
+  // A reply means a human conversation has started, and continuing to fire templated
+  // pitches into it would be actively damaging. WHICH senders it halts is the scope's: the
+  // caller's `targetRepliedAt` comes from `replyHaltWhere`, so under `pair` (Tabish's choice
+  // since 2026-09-01) only the page that got the reply, under `target` every page.
   if (input.targetRepliedAt !== null) {
     return {
       eligible: false,

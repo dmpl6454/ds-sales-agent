@@ -763,9 +763,11 @@ export async function editAttemptBody(attemptId: string, body: string): Promise<
  * Turning it ON means: at each slot, any armed account with a logged-in Chrome
  * profile sends its permitted message by itself, with no human present.
  *
- * `AUTOPILOT_ENABLED` in `.env` is a hard floor and is checked here rather than
- * only in the reader. A dashboard is a web page: anyone who can reach it can call
- * this action. The environment variable is the boundary a page cannot cross.
+ * `AUTOPILOT_ENABLED` in `.env` is a hard floor, and it is NOT checked here (see below):
+ * it is enforced by every reader of the env-floored `settings.autopilotEnabled` and by
+ * `SEND_ENABLED` inside `withSendLock`, so a floored machine may write the shared row and
+ * still cannot send. Restoring a floor check in this action would make the hosted dashboard
+ * the one place the fleet can never be armed — the 2026-09-02 bug.
  */
 export async function setAutopilot(on: boolean): Promise<{ ok: boolean; message: string }> {
   const user = await requireOperator()

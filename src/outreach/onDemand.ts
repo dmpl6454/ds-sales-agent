@@ -81,6 +81,11 @@ export interface OnDemandFacts {
 
   /** Warning inputs — everything the governor would have refused on. */
   touchesSoFar: number
+  /**
+   * When the reply holding this page was WRITTEN (`replyWrittenAt`), not when we saw it. The halt
+   * counts from the written date, so "they replied 2 days ago" off the observation clock could
+   * understate a reply written five days ago (audit H9).
+   */
   targetRepliedAt: Date | null
   pendingAttemptCount: number
   unusedCampaignCount: number
@@ -131,6 +136,17 @@ export const CROSSABLE_RULES = {
 export type CrossableRule = (typeof CROSSABLE_RULES)[keyof typeof CROSSABLE_RULES]
 
 const MS_PER_DAY = 86_400_000
+
+/**
+ * The date a reply's age is told from: when it was WRITTEN (`replyPostedAt`, the halt's own clock),
+ * falling back to when we saw it only for a row that carries no written date — which the halt's
+ * query never returns, since it filters on `replyPostedAt`. PURE, so the choice is tested rather
+ * than trusted (audit H9).
+ */
+export function replyWrittenAt(row: { replyPostedAt: Date | null; repliedAt: Date | null } | null): Date | null {
+  if (row === null) return null
+  return row.replyPostedAt ?? row.repliedAt
+}
 
 /** "3 days ago" / "today" — the dialog needs plain English, not an ISO string. */
 function agoLabel(now: Date, then: Date): string {
@@ -205,7 +221,10 @@ export function describeOnDemand(f: OnDemandFacts): OnDemandVerdict {
   if (f.targetRepliedAt !== null) {
     warnings.push({
       reason: CROSSABLE_RULES.TARGET_REPLIED,
-      text: `They replied ${agoLabel(f.now, f.targetRepliedAt)}. Automated outreach to them is halted so a person can take over — sending now adds another message to a live conversation.`,
+      /* True in both scopes — the query is `replyHaltWhere`, so this page is paused either way —
+         and no longer "so a person can take over": the pause has released itself since 2026-08-07
+         (audit H9). */
+      text: `They replied ${agoLabel(f.now, f.targetRepliedAt)}. Automated messages from this page to them are paused — sending now adds another message to a live conversation.`,
     })
   }
 
@@ -309,8 +328,9 @@ export async function prepareOnDemand(senderHandle: string, targetHandle: string
           targetId: target.id,
           resumeHours: settings.replyResumeHours,
         }),
-        orderBy: { repliedAt: 'desc' },
-        select: { repliedAt: true },
+        /* The newest WRITTEN reply — the one the halt counts from. */
+        orderBy: { replyPostedAt: 'desc' },
+        select: { repliedAt: true, replyPostedAt: true },
       }),
       // The one volume rule left: five per day from THIS account to THIS recipient.
       pair
@@ -366,7 +386,7 @@ export async function prepareOnDemand(senderHandle: string, targetHandle: string
     isSelfSend: sender.handle === target.handle,
     followUpTemplateSet: followUpTemplate.ok,
     touchesSoFar: touches,
-    targetRepliedAt: replied?.repliedAt ?? null,
+    targetRepliedAt: replyWrittenAt(replied),
     pendingAttemptCount: pending,
     unusedCampaignCount: unusedCampaigns,
     totalInFlight,

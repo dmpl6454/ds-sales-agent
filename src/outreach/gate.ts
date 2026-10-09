@@ -4,6 +4,7 @@ import { istDayStart } from '@/lib/time'
 import { getSettings } from '@/lib/settings'
 import { mayArmAccount } from './cohorts'
 import { replyHaltWhere } from './replyHalt'
+import { replyHeldDetail } from './replyHaltCopy'
 import { sameCategory, crossCategoryDetail } from './senderCategories'
 import { isStandardMessageBody, templateForSettings, type FleetTemplate } from './fleetTemplate'
 import {
@@ -612,13 +613,15 @@ export function evaluateResend(input: ResendInput): ResendResult {
   }
 
   // A reply means a human conversation started. Continuing to fire a queued cold
-  // pitch into it is the single most damaging thing this system could do, so it halts
-  // every sender to this target, not just the one that got the reply.
+  // pitch into it is the single most damaging thing this system could do. WHICH pages it
+  // halts is the scope's (`replyHaltWhere` built the query that set `targetRepliedAt`): this
+  // page only under `pair`, Tabish's choice since 2026-09-01; every page under `target`. The
+  // detail is true in both — this page is paused either way (audit H9).
   if (input.targetRepliedAt !== null && !allowed.has(RESEND_BLOCKS.TARGET_REPLIED)) {
     return {
       ok: false,
       reason: RESEND_BLOCKS.TARGET_REPLIED,
-      detail: `they replied (written ${input.targetRepliedAt.toISOString()}) — messaging them pauses for seven days from that date, then resumes on its own`,
+      detail: replyHeldDetail(input.targetRepliedAt.toISOString()),
     }
   }
 
@@ -774,15 +777,34 @@ export interface ResendAttempt {
 }
 
 /**
+ * WHOSE DISK ANSWERS "does this account hold a signed-in profile?" (audit H8, 2026-10-09).
+ *
+ * `this-disk` is the only answer an ENFORCER may use: the Mac about to drive a browser asks
+ * its own `~/.ds-sales-agent`, because that is the profile it will open. `sending-mac` is the
+ * selected Mac's published presence (`DevicePresence.handles`, at most `PRESENCE_FRESH_MS`
+ * old) and exists for ONE reader, the queue's head row on a dashboard that holds no profiles
+ * at all — on the hosted Linode `this-disk` is false for every account, so the head row could
+ * only ever say "account is not connected" under a switch card saying the fleet sends.
+ */
+export type QueueWitness =
+  | { kind: 'this-disk' }
+  | { kind: 'sending-mac'; device: string; handles: readonly string[] }
+
+/**
  * Gathers the live inputs and applies `evaluateResend`.
  *
  * Kept separate from the decision so the rules stay unit-testable. This half is
  * queries only — if you find yourself adding an `if` here, it belongs in
  * `evaluateResend` with a test.
+ *
+ * `witness` defaults to THIS disk and no enforcement caller passes one —
+ * `tests/autopilot-display-source.test.ts` fails if any call site passes a third argument.
+ * The only other witness comes in through `predictResendForQueue`, below.
  */
 export async function recheckBeforeSend(
   attempt: ResendAttempt,
   opts: { unattended: boolean; overrides?: readonly string[] },
+  witness: QueueWitness = { kind: 'this-disk' },
 ): Promise<ResendResult> {
   const settings = await getSettings()
   const dayStart = istDayStart()
@@ -936,7 +958,10 @@ export async function recheckBeforeSend(
      * its remedy are unchanged.
      */
     senderHasSession: sessionUsable({
-      hasSessionOnDisk: profileStatus(sender.handle).hasSession,
+      /* THIS disk for every enforcer; the sending Mac's published handles only for the
+         dashboard's prediction (QueueWitness). `sessionInvalidAt` folds in either way. */
+      hasSessionOnDisk:
+        witness.kind === 'this-disk' ? profileStatus(sender.handle).hasSession : witness.handles.includes(sender.handle),
       sessionInvalidAt: senderRow?.sessionInvalidAt ?? null,
     }),
     targetOptedOut: target.optedOut,
@@ -1006,4 +1031,25 @@ export async function recheckBeforeSend(
     }),
     overrides: opts.overrides,
   })
+}
+
+/**
+ * WHAT THE SENDING MAC'S NEXT TICK WOULD SAY ABOUT THIS DRAFT — DISPLAY ONLY (audit H8).
+ *
+ * The same gate, asked unattended (as the dispatcher asks it), with the sending Mac's
+ * published handles standing in for this machine's disk. It exists so the queue's head row on
+ * a dashboard with no profiles can name the real next refusal instead of "account is not
+ * connected" over a fleet that is sending.
+ *
+ * **NEVER USE THIS TO PERMIT A DRIVE.** The witness is a heartbeat up to `PRESENCE_FRESH_MS`
+ * old about ANOTHER machine's disk. A Send button that trusted it on a Mac without the profile
+ * would open a login form and write `sessionInvalidAt` on a live session — the §3.5 cascade,
+ * on evidence nobody gathered. `tests/autopilot-display-source.test.ts` pins its callers to
+ * the queue's view model alone.
+ */
+export async function predictResendForQueue(
+  attempt: ResendAttempt,
+  w: { device: string; handles: readonly string[] },
+): Promise<ResendResult> {
+  return recheckBeforeSend(attempt, { unattended: true }, { kind: 'sending-mac', device: w.device, handles: w.handles })
 }

@@ -3,6 +3,7 @@ import { currentUser } from '@/lib/session'
 import { prisma } from '@/lib/db'
 import { env } from '@/lib/env'
 import { getSettings } from '@/lib/settings'
+import { replyHaltRule } from '@/outreach/replyHaltCopy'
 import {
   ACTIVE_FROM_HOUR,
   ACTIVE_TO_HOUR,
@@ -179,7 +180,9 @@ export default async function RulesPage() {
       accent: '#34d399',
       kind: 'prose',
       lines: [
-        'A reply halts every account writing to that recipient for seven days, counted from when they wrote, then messaging resumes by itself.',
+        /* The SCOPE's sentence (pair by default since 2026-09-01) with the window from the Setting —
+           this line said "halts every account … for seven days" until audit H9. */
+        replyHaltRule(settings.replyHaltScope, settings.replyResumeHours),
         'Before a follow-up is sent, its own conversation is read; a thread that cannot be read fully holds the send.',
         'A reply is the outcome we want — it is never treated as “do not contact”.',
       ],

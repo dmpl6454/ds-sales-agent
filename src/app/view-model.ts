@@ -30,13 +30,14 @@ import { normaliseSearch, searchTerms } from '@/lib/searchTerms'
 import { attributedPostIdsForRecipients, messagedUnderElsewhere } from './view-model/recipient-search'
 import { isConnecting } from '@/outreach/browser/connect'
 import { getSettings } from '@/lib/settings'
-import { readPresence } from '@/outreach/devicePresence'
+import { readPresenceForView } from './view-model/presence'
 import { assessDispatch } from '@/outreach/dispatchHealth'
 import { visibleChannelFilter, ourOwnPageHandles } from '@/detection/visibleChannels'
 import { removalVerdict, type RemovalVerdict } from './remove-target-message'
 import { detectionCutoff } from '@/lib/cutoff'
 import { readLabelledSet } from '@/detection/labels'
 import { replyHaltFloor } from '@/outreach/replyHalt'
+import { replyAlarmHeadline, replyFeedSentence } from '@/outreach/replyHaltCopy'
 import { mentionsHandleExactly, brandStringsNameProspect } from '@/outreach/materialAllowance'
 // A publisher's own watermark/series code is not a third party — see ownMarks.ts.
 import { stripOwnMarksFromBrands } from '@/detection/ownMarks'
@@ -180,9 +181,11 @@ export interface AutopilotState {
    */
   sendingMac: { selected: string | null; online: boolean }
   /**
-   * AUTOPILOT_ENABLED in .env. A hard floor — with this false the toggle cannot be
-   * switched on at all, so a compromised or misclicked dashboard cannot start
-   * unattended sending on a deployment that never opted in.
+   * AUTOPILOT_ENABLED in .env — a fact about THIS machine, used only for the switch's tooltip.
+   * It does NOT disable the toggle: since 2026-09-02 the switch is the fleet-wide row and is
+   * writable from any dashboard (`setAutopilot`). The floor is enforced where it matters — by
+   * every reader of the floored `settings.autopilotEnabled` and by `SEND_ENABLED` inside
+   * `withSendLock` — so a floored host may arm the fleet without being able to send itself.
    */
   allowedByEnv: boolean
   /**
@@ -653,7 +656,7 @@ async function computeCeoView(): Promise<CeoView> {
    * stamp is the signature. Presence is read ONCE here and reused for the sending-Mac card
    * below, and the stamp rides in `readPassHealth`'s query, so this rung costs no query.
    */
-  const presence = settings.activeDevice !== null ? await readPresence() : []
+  const presence = settings.activeDevice !== null ? await readPresenceForView() : []
   const dispatch = assessDispatch({
     selected: settings.activeDevice,
     selectedBeating: presence.some((d) => d.device === settings.activeDevice),
@@ -777,19 +780,22 @@ async function computeCeoView(): Promise<CeoView> {
   } else if (unreadReplies.length > 0) {
     // A reply outranks a waiting draft: it is the only event here that is revenue.
     health = 'attention'
-    headline =
-      unreadReplies.length === 1
-        ? `${operatorName(unreadReplies[0]!.pair.target.displayName)} replied — outreach to them is paused`
-        : /**
-             ── ROWS ARE NOT RECIPIENTS, AND THESE ARE NEVER CHANNELS (2026-08-26) ──
-             This read `${unreadReplies.length} channels replied` and was wrong twice.
-             `unreadReplies` is one row per REPLY, and 78 rows spanned 63 distinct
-             recipients — a 24% overstatement of how many parties are held. And "channel"
-             names the one role that structurally cannot appear here: a channel is a
-             `role: 'WATCH'` publisher we read and never message (`TARGET_IS_WATCH_ONLY`).
-             Every row in this set is a PROSPECT. The panel 40px below already said 63.
-           */
-          `${new Set(unreadReplies.map((r) => r.pair.targetId)).size} recipients replied — outreach to them is paused`
+    /**
+     * ── ROWS ARE NOT RECIPIENTS, AND THESE ARE NEVER CHANNELS (2026-08-26) ──
+     * This read `${unreadReplies.length} channels replied` and was wrong twice. `unreadReplies`
+     * is one row per REPLY, and 78 rows spanned 63 distinct recipients — a 24% overstatement of
+     * how many parties are held. And "channel" names the one role that structurally cannot
+     * appear here: a channel is a `role: 'WATCH'` publisher we read and never message
+     * (`TARGET_IS_WATCH_ONLY`). Every row in this set is a PROSPECT.
+     *
+     * AND WHAT IS PAUSED IS THE SCOPE'S (audit H9): "outreach to them is paused" is the target
+     * scope, and under the pair scope Tabish chose only the page they answered pauses.
+     */
+    const repliedRecipients = new Set(unreadReplies.map((r) => r.pair.targetId)).size
+    headline = replyAlarmHeadline(settings.replyHaltScope, {
+      count: unreadReplies.length === 1 ? 1 : repliedRecipients,
+      name: operatorName(unreadReplies[0]!.pair.target.displayName),
+    })
   } else if (awaitingRaw.length > 0) {
     health = 'attention'
     /*
@@ -864,16 +870,25 @@ async function computeCeoView(): Promise<CeoView> {
   const replyFloor = replyHaltFloor(settings.replyResumeHours)
   for (const r of repliesInWindow) {
     if (!r.repliedAt) continue
-    const holding =
-      r.replyHandledAt === null && r.replyPostedAt !== null && r.replyPostedAt >= replyFloor
+    /* THREE states (audit H9): an UNDATED reply halts nothing (replyHalt.ts), so the old
+       "released" branch was describing a pause that never happened. */
+    const state =
+      r.replyPostedAt === null
+        ? 'undated'
+        : r.replyHandledAt === null && r.replyPostedAt >= replyFloor
+          ? 'holding'
+          : 'released'
     events.push({
       at: r.repliedAt,
       event: {
         timeLabel: timeOnly(r.repliedAt),
         kind: 'reply',
-        sentence: holding
-          ? `${operatorName(r.pair.target.displayName)} replied — all outreach to them is on hold`
-          : `${operatorName(r.pair.target.displayName)} replied — the seven-day pause has since released`,
+        sentence: replyFeedSentence(settings.replyHaltScope, {
+          target: operatorName(r.pair.target.displayName),
+          senderHandle: r.pair.sender.handle,
+          state,
+          hours: settings.replyResumeHours,
+        }),
       },
     })
   }

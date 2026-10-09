@@ -112,6 +112,19 @@ describe('the resting tally', () => {
     expect(table).not.toMatch(/every paid post we have seen from them/)
   })
 
+  /**
+   * A page paused because they replied to it is one of the causes of a stuck ring (audit H9) —
+   * the sentence used to name signed out, flagged and parked only, so a mixed ring read as a
+   * sign-in fault. A ring paused by replies ALONE is counted as replied, with its release
+   * (tests/reply-halt-live.test.ts drives that against a real database).
+   */
+  it('the stuck-ring sentence names a reply among its causes', () => {
+    const table = src.slice(src.indexOf('const REST_RULES'), src.indexOf('/** One rule, how many'))
+    const stuck = table.slice(table.indexOf('[ROTATION_STUCK]'), table.indexOf('[NO_PAGE_FOR_FLEET]'))
+    /* The LABEL string itself, not the docblock above it — a comment saying so is not a sentence on screen. */
+    expect(stuck).toMatch(/label:\s*'[^']*paused because they replied to it'/)
+  })
+
   it('every reason it reports is a real governor reason, not an invented one', () => {
     const known = Object.keys(SKIP_REASONS)
     for (const key of new Set(bumpedKeys())) {

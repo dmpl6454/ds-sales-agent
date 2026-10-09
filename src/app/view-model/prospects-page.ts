@@ -4,6 +4,8 @@ import { normaliseSearch, targetNameClauses } from '@/lib/searchTerms'
 import { DELIVERED_STATUSES } from '@/lib/constants'
 import { getSettings } from '@/lib/settings'
 import { replyHaltFloor } from '@/outreach/replyHalt'
+import { prospectReplyNote, prospectTargetHaltSentence, replyBlocksEveryPage } from '@/outreach/replyHaltCopy'
+import { istStamp } from '@/lib/time'
 // Never a raw `displayName` — see the note on the import in `view-model.ts`.
 import { operatorName } from '@/outreach/render'
 /**
@@ -134,8 +136,16 @@ export interface ProspectRow {
   categories: string[]
   /** Messages actually delivered to them, ever. Counted the way the enforcer counts. */
   delivered: number
-  /** Set once anyone answers. Halts every sender to them until a person takes over. */
+  /**
+   * A reply to ANY of our pages is holding a halt right now — the chip. What the halt COVERS is the
+   * scope's (pair by default since 2026-09-01: only the page they answered), and `replyNote` says it.
+   */
   replied: boolean
+  /**
+   * The reply line, in the scope's own words (audit H9) — which pages are paused and until when.
+   * A string, so the client list imports nothing. Null when no reply is holding them.
+   */
+  replyNote: string | null
   importNote: string | null
   /** "verified · 1.2M followers", with a review suffix when the audit rule flags it. Null = never looked. */
   legitimacy: string | null
@@ -205,7 +215,8 @@ export async function buildProspectsPage(input?: ProspectsInput): Promise<Prospe
 }
 
 async function computeProspectsPage(input?: ProspectsInput): Promise<ProspectsPageView> {
-  // The "they replied" chip means "halted NOW", so it needs the halt's own window.
+  // The "they replied" chip means "halted NOW", so it needs the halt's own window — and its
+  // scope, because what a reply pauses is the scope's (audit H9).
   const settings = await getSettings()
 
   /**
@@ -307,15 +318,26 @@ async function computeProspectsPage(input?: ProspectsInput): Promise<ProspectsPa
     }),
     prisma.outreachAttempt.findMany({
       // ACTIVE halts only — the chip says messaging is stopped, so it must use the same
-      // one-day window the gate does (Tabish, 2026-08-07; see outreach/replyHalt.ts).
+      // window the gate does (see outreach/replyHalt.ts).
       where: { replyPostedAt: { gte: replyHaltFloor(settings.replyResumeHours) }, replyHandledAt: null },
-      select: { targetId: true },
-      distinct: ['targetId'],
+      /* No longer `distinct` (audit H9): the row names WHICH pages a reply paused and when the last
+         of them frees, so it needs one row per reply — still ONE query, low hundreds of rows. */
+      select: { targetId: true, replyPostedAt: true, pair: { select: { sender: { select: { handle: true } } } } },
     }),
   ])
   const targets = [...watchRows, ...pageRows]
   const deliveredBy = new Map(deliveredRows.map((r) => [r.targetId, r._count._all]))
-  const repliedSet = new Set(repliedRows.map((r) => r.targetId))
+  /** target → the pages its active replies reached, and when the LAST of those halts frees. */
+  const repliesByTarget = new Map<string, { senderHandles: string[]; frees: Date }>()
+  for (const r of repliedRows) {
+    if (r.replyPostedAt === null) continue
+    const frees = new Date(r.replyPostedAt.getTime() + settings.replyResumeHours * 3_600_000)
+    const cur = repliesByTarget.get(r.targetId) ?? { senderHandles: [], frees }
+    if (!cur.senderHandles.includes(r.pair.sender.handle)) cur.senderHandles.push(r.pair.sender.handle)
+    if (frees > cur.frees) cur.frees = frees
+    repliesByTarget.set(r.targetId, cur)
+  }
+  const repliedSet = new Set(repliesByTarget.keys())
 
   /**
    * Whose turn it is, for every recipient at once.
@@ -373,6 +395,17 @@ async function computeProspectsPage(input?: ProspectsInput): Promise<ProspectsPa
       campaignTalent: t.campaignTalent,
     })
     if (!person.ok) return { sentence: person.detail ?? 'Nothing is written to them.', willWrite: false }
+
+    /**
+     * UNDER A FLEET-WIDE HALT NO PAGE IS NEXT (audit H9). Rotation writes no reply blocker under
+     * the `target` scope (`readBlockedRoutes`: a halt covering every page has no clear page to pass
+     * to), so the turn below would name "@X writes next" while the gate holds every page — the
+     * mirror image of the pair-scope defect this row used to have.
+     */
+    const reply = repliesByTarget.get(t.id)
+    if (reply && replyBlocksEveryPage(settings.replyHaltScope)) {
+      return { sentence: prospectTargetHaltSentence(istStamp(reply.frees)), willWrite: false }
+    }
 
     const turn = turns.get(t.id)
     if (turn === undefined) return { sentence: 'Whose turn it is could not be read.', willWrite: false }
@@ -457,6 +490,7 @@ async function computeProspectsPage(input?: ProspectsInput): Promise<ProspectsPa
 
   const prospects: ProspectRow[] = targets.map((t) => {
     const next = nextSenderSentence(t)
+    const reply = repliesByTarget.get(t.id)
     return {
     handle: t.handle,
     displayName: operatorName(t.displayName),
@@ -476,6 +510,12 @@ async function computeProspectsPage(input?: ProspectsInput): Promise<ProspectsPa
     categories: t.categories.filter((c) => c.enabled).map((c) => c.category.name),
     delivered: deliveredBy.get(t.id) ?? 0,
     replied: repliedSet.has(t.id),
+    /* "our other pages may still write to them" only when THIS row's own turn says one will. */
+    replyNote: prospectReplyNote(
+      settings.replyHaltScope,
+      reply ? { senderHandles: reply.senderHandles, freesIst: istStamp(reply.frees) } : null,
+      next.willWrite,
+    ),
     importNote: t.importNote,
     legitimacy: legitimacy(t),
     }

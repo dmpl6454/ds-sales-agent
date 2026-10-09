@@ -4,6 +4,7 @@ import { DELIVERED_STATUSES } from '@/lib/constants'
 import { fleetRingOrder, nextSender, type RingMember, type RotationChoice } from './rotation'
 import { categoriesFor, fleetMembersFor, type CategoryMemberships } from './senderCategories'
 import { replyHaltFloor, type ReplyHaltScope } from './replyHalt'
+import { replyRouteReason } from './replyHaltCopy'
 import { getSettings } from '@/lib/settings'
 import { parkBlocksRoute } from './parkedRows'
 
@@ -331,7 +332,7 @@ export async function readBlockedRoutes(args: {
   /* Written AFTER the parked rows so a reply wins where both apply: "they replied to this page"
      is the more specific fact about this recipient, and it is the one with a release date. */
   for (const r of repliedRows) {
-    put(r.pair.targetId, r.pair.senderId, 'they replied to this page, so it is holding for a week')
+    put(r.pair.targetId, r.pair.senderId, replyRouteReason(replyHalt.resumeHours))
   }
   return out
 }

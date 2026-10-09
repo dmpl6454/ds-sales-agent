@@ -162,7 +162,7 @@ export function RestBand({ tally, showBreakdown = true }: { tally: RestTally; sh
 
       <p className="cardnote muted">
         Measured {istTimeKey(tally.measuredAt)}{' '}IST, and it moves all day: a message re-starts that
-        company&apos;s week, a reply starts a fresh seven days, and a new paid post releases one immediately.
+        company&apos;s week, a reply starts a fresh {tally.replyHaltSpan}, and a new paid post releases one immediately.
         {retired > 0 || watched > 0 ? (
           <>
             {' '}

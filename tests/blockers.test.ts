@@ -16,6 +16,7 @@ const CLEAR: BlockerInput = {
   breaker: null,
   pausedBy: null,
   repliesWaiting: 0,
+  replyHalt: { scope: 'pair', resumeHours: 168 },
   draftsWaiting: 0,
   topRefusal: null,
 }
@@ -25,6 +26,7 @@ const EVERYTHING: BlockerInput = {
   breaker: { reason: 'An account was questioned by Instagram in the last 24 hours.' },
   pausedBy: null,
   repliesWaiting: 1,
+  replyHalt: { scope: 'pair', resumeHours: 168 },
   draftsWaiting: 3,
   topRefusal: {
     detail: 'This account has no working Instagram session.',
@@ -50,12 +52,58 @@ describe('what is stopping it', () => {
    * a fleet that cannot send a single message is the failure mode, not a wording nit.
    */
   it('does not claim "nothing is stopping it" while autopilot is off', () => {
-    const off = blockersSummary([], false)
-    const on = blockersSummary([], true)
+    const off = blockersSummary([], { kind: 'switch-off' })
+    const on = blockersSummary([], { kind: 'moving', mac: 'Studio' })
 
     expect(off).not.toMatch(/nothing is stopping it/i)
     expect(off).toMatch(/autopilot itself is off/i)
     expect(on).toMatch(/nothing is stopping it/i)
+  })
+
+  /**
+   * AND "ON" IS NOT "MOVING" (audit H8). With the switch ON and no Mac chosen, or the chosen Mac
+   * asleep, the switch card directly above says nothing sends — so an empty list must not say
+   * "nothing is stopping it" under it. Keyed on `motion.kind !== 'switch-off'` this fails.
+   */
+  it.each([
+    [{ kind: 'no-mac' } as const, /no Mac is selected/],
+    [{ kind: 'mac-offline', mac: 'Studio' } as const, /Studio — the sending Mac — is not online/],
+    [{ kind: 'no-account-ready', mac: 'Studio' } as const, /no account is ready/],
+  ])('says nothing goes out, and why, when the switch is ON but the queue cannot move (%o)', (motion, reason) => {
+    const s = blockersSummary([], motion)
+    expect(s).not.toMatch(/nothing is stopping it/i)
+    expect(s).toMatch(/nothing goes out/i)
+    expect(s).toMatch(reason)
+  })
+
+  /**
+   * WHAT A REPLY PAUSES IS THE SCOPE'S (audit H9). Under `pair` — Tabish's choice since 2026-09-01
+   * — only the page they answered stops, and rotation hands the turn on; the verdict said every
+   * account stopped for seven days. Both scopes are driven so the switched-off one stays honest.
+   */
+  it('the reply item says what the halt actually covers, in both scopes, with the window from the Setting', () => {
+    const pair = rankBlockers({ ...CLEAR, repliesWaiting: 2, replyHalt: { scope: 'pair', resumeHours: 168 } }).find(
+      (b) => b.key === 'replies',
+    )!
+    expect(pair.verdict).toMatch(/only the page/)
+    expect(pair.verdict).not.toMatch(/every account|every one of our pages/i)
+    expect(pair.headline).not.toMatch(/are on hold$/)
+    expect(pair.verdict).toMatch(/seven days/)
+
+    const target = rankBlockers({ ...CLEAR, repliesWaiting: 2, replyHalt: { scope: 'target', resumeHours: 48 } }).find(
+      (b) => b.key === 'replies',
+    )!
+    expect(target.verdict).toMatch(/every one of our pages/)
+    expect(target.verdict).toMatch(/two days/)
+    expect(target.verdict).not.toMatch(/seven days/)
+  })
+
+  it('the breaker headline is the same in both scopes — it IS fleet-wide', () => {
+    const breaker = { reason: 'An account was questioned by Instagram.' }
+    const a = rankBlockers({ ...CLEAR, breaker, replyHalt: { scope: 'pair', resumeHours: 168 } })[0]!
+    const b = rankBlockers({ ...CLEAR, breaker, replyHalt: { scope: 'target', resumeHours: 168 } })[0]!
+    expect(a.headline).toBe('Every account is halted, not just one')
+    expect(b.headline).toBe(a.headline)
   })
 
   it('carries the gate’s refusal through verbatim, never re-worded', () => {

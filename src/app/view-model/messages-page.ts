@@ -17,8 +17,15 @@ import { getSettings } from '@/lib/settings'
  * new-brand cap itself).
  */
 import { readNewBrandTouchCounts } from '@/outreach/brandTouchCounts'
-import { recheckBeforeSend } from '@/outreach/gate'
+/**
+ * `predictResendForQueue`, NEVER `recheckBeforeSend` (audit H8): this page renders on hosts with no
+ * Chrome profiles at all, so the head row asks the gate with the SENDING Mac's published handles
+ * standing in for this disk. Display only — see its docblock in gate.ts.
+ */
+import { predictResendForQueue } from '@/outreach/gate'
+import { readPresenceForView } from './presence'
 import { replyHaltFloor, replyHaltKey } from '@/outreach/replyHalt'
+import { replyQueueHold } from '@/outreach/replyHaltCopy'
 import { crossSpacingVerdict, crossSpacingDetail } from '@/outreach/crossSpacing'
 import { materialAllowance, materialAllowanceDetail, campaignsNamingHandle } from '@/outreach/materialAllowance'
 import { eligibleFleetSenders } from '@/outreach/availability'
@@ -70,14 +77,25 @@ export interface UpNextRow {
   senderHandle: string
   targetHandle: string
   /**
-   * Minutes until this row's turn at the current pace — NULL when Autopilot is off,
-   * because a countdown is a promise and with the switch off nothing is counting down.
+   * Minutes until this row's turn AT THE CURRENT PACE — an estimate, always a number.
+   *
+   * It used to be nulled here when `settings.autopilotEnabled` was false, and that value is
+   * the ENV-FLOORED enforcement switch: false on the hosted Linode by design, so the hosted
+   * queue said "when Autopilot is on" under a switch card saying it was ON (audit H8). Whether
+   * a countdown may be SHOWN is the screen's decision, made from `QueueMotion` — the same
+   * derivation the switch card reads — so this view model carries no autopilot flag at all.
    */
-  etaMinutes: number | null
-  /** Head of the queue only: the gate's verdict right now. Null further down. */
+  etaMinutes: number
+  /** Head of the queue only: the gate's REFUSAL right now, verbatim. Null when clear or further down. */
   note: string | null
   /** Head only: whether that verdict was a refusal. */
   held: boolean
+  /**
+   * Head only: the sending Mac's next tick would pass every check (`predictResendForQueue`).
+   * The wording ("clear to send on the next tick" / "every check passes — waiting for …") is
+   * waiting.tsx's, because only the screen knows whether the queue is moving.
+   */
+  clear: boolean
 }
 
 export interface SentMessage {
@@ -116,7 +134,11 @@ export interface HeldRow {
   senderHandle: string
   targetHandle: string
   why: string
-  resumesAt: Date
+  /**
+   * When it frees up, or NULL when no clock releases it: an account that is not signed in on
+   * the sending Mac waits for a person to sign it in there (audit H8). Sorted last.
+   */
+  resumesAt: Date | null
 }
 
 export interface MessagesPageView {
@@ -124,24 +146,22 @@ export interface MessagesPageView {
   queueBySender: QueueBySender[]
   /** The SENDABLE front of the queue in dispatch order, with the head's live gate verdict. */
   upNext: UpNextRow[]
-  /** Drafts waiting but held right now for cross-page spacing or a reply. */
+  /**
+   * Drafts waiting but held right now — spacing, a reply, the material rule, or (audit H8) an
+   * account the sending Mac holds no signed-in profile for.
+   */
   heldWaiting: number
   /** The first held drafts, soonest release first — so "33 waiting" is never an invisible list. */
   heldUpNext: HeldRow[]
-  /**
-   * IS AUTOPILOT ON? The queue panel needs it, and rendering the panel without it was a
-   * page claiming a send the enforcer refuses.
-   *
-   * MEASURED 2026-08-20: Tabish switched Autopilot OFF, the dispatcher correctly held
-   * every tick on `autopilot-off` — and "Up next" went on showing "clear to send on the
-   * next tick" over 8 rows with "in ~1 min" ETAs. The gate cannot catch this: AUTO_SEND_OFF
-   * was deleted in the one-switch change (2026-08-08), so `recheckBeforeSend` says nothing
-   * about the switch and answers `ok` for a draft nothing will send. The queue then looks
-   * FROZEN — the same eight rows on every refresh — while the page insists they are going
-   * out, which is exactly the "reports a limit by a different rule than the one enforcing
-   * it" failure this file's history is full of.
+  /*
+   * `autopilotOn` WAS HERE AND IS GONE (audit H8, 2026-10-09). It was `settings.autopilotEnabled`
+   * — the env-floored ENFORCEMENT value, false on the hosted Linode by design — so the hosted
+   * queue said "Autopilot is off, so none of these are going out" a screen below a switch card
+   * saying ON. Whether the queue moves is now ONE derivation, `queueMotion` (queue-motion.ts),
+   * taken from the switch card's own state by page.tsx; the 2026-08-20 lesson this field carried
+   * (a countdown is a promise) moved there with it. `tests/autopilot-display-source.test.ts`
+   * fails if any screen reads the floored value again.
    */
-  autopilotOn: boolean
   waitingTotal: number
   /**
    * Failures the retry cap gave up on — and NOTHING ELSE (2026-08-24, Tabish: *"the 'Check
@@ -407,7 +427,7 @@ async function computeMessagesPage(): Promise<MessagesPageView> {
    */
   const now = new Date()
   const cooldownFloor = new Date(now.getTime() - settings.defaultCooldownDays * 24 * 60 * 60 * 1000)
-  const [recentDeliveries, repliedRows, eligibleFleet, memberships] = await Promise.all([
+  const [recentDeliveries, repliedRows, eligibleFleet, memberships, presence] = await Promise.all([
     prisma.outreachAttempt.findMany({
       where: { status: { in: [...DELIVERED_STATUSES] }, sentAt: { gte: cooldownFloor } },
       select: { targetId: true, sentAt: true, pair: { select: { senderId: true, sender: { select: { handle: true } } } } },
@@ -425,7 +445,24 @@ async function computeMessagesPage(): Promise<MessagesPageView> {
     }),
     eligibleFleetSenders(),
     readCategoryMemberships(),
+    /**
+     * WHICH ACCOUNTS THE SENDING MAC CAN DRIVE (audit H8). The same request-cached read the
+     * switch card makes (view-model.ts), so `/` pays for it once, and only when a Mac is chosen
+     * — exactly the condition the card reads it under.
+     */
+    settings.activeDevice !== null ? readPresenceForView() : Promise.resolve([]),
   ])
+  /**
+   * THE SENDING MAC, AS THE SWITCH CARD DERIVES IT — the selected Mac, if it is beating.
+   *
+   * Its `handles` are the accounts it holds a signed-in profile for, which is what its own
+   * dispatcher checks BEFORE the gate (deliver.ts: "this Mac holds no signed-in profile for @x")
+   * and what every dashboard can read. Without it the hosted queue gave ETAs to drafts the
+   * sending Mac skips on every tick — the 2026-08-21 "Up next shows drafts the enforcer holds"
+   * class, one host along.
+   */
+  const sendingMac = presence.find((d) => d.device === settings.activeDevice)
+  const sendingMacHolds = new Set(Array.isArray(sendingMac?.handles) ? sendingMac.handles : [])
   /** target → (senderId → that page's newest in-window delivery). Asc order: later rows win. */
   const deliveriesByTarget = new Map<string, Map<string, { sentAt: Date; handle: string }>>()
   for (const r of recentDeliveries) {
@@ -515,13 +552,8 @@ async function computeMessagesPage(): Promise<MessagesPageView> {
       replyHaltKey(settings.replyHaltScope, { senderId: draft.senderId, targetId: draft.targetId }),
     )
     if (replyResume !== undefined) {
-      return {
-        why:
-          settings.replyHaltScope === 'pair'
-            ? 'they replied to this page — it resumes on its own seven days after they wrote'
-            : 'they replied — resumes on its own seven days after they wrote',
-        resumesAt: replyResume,
-      }
+      /* The scope's sentence, with the window from the Setting rather than "seven days" (audit H9). */
+      return { why: replyQueueHold(settings.replyHaltScope, settings.replyResumeHours), resumesAt: replyResume }
     }
     const material = draft.targetHandle ? materialHolds.get(draft.targetHandle) : undefined
     if (material !== undefined) {
@@ -553,27 +585,57 @@ async function computeMessagesPage(): Promise<MessagesPageView> {
   const heldRows: HeldRow[] = []
   for (const a of upNextRaw) {
     const hold = holdFor({ senderId: a.senderId, targetId: a.targetId, targetHandle: a.pair.target.handle })
-    if (hold === null) sendableDrafts.push(a)
-    else
+    if (hold !== null) {
       heldRows.push({
         senderHandle: a.pair.sender.handle,
         targetHandle: a.pair.target.handle,
         why: hold.why,
         resumesAt: hold.resumesAt,
       })
+      continue
+    }
+    /**
+     * NOT SIGNED IN ON THE SENDING MAC — the dispatcher's own pre-gate hold (deliver.ts), asked of
+     * the Mac that will actually send rather than of this host's disk. Only when a sending Mac is
+     * beating: with none there is no tick to skip anything, and the motion sentence says why.
+     */
+    if (sendingMac && !sendingMacHolds.has(a.pair.sender.handle)) {
+      heldRows.push({
+        senderHandle: a.pair.sender.handle,
+        targetHandle: a.pair.target.handle,
+        why: `@${a.pair.sender.handle} is not signed in on ${sendingMac.device}, the sending Mac — it sends only from accounts signed in there`,
+        resumesAt: null,
+      })
+      continue
+    }
+    sendableDrafts.push(a)
   }
   const heldWaiting = heldRows.length
-  /** Soonest-releasing first: the row a reader wants is "what frees up next". */
-  heldRows.sort((a, b) => a.resumesAt.getTime() - b.resumesAt.getTime())
+  /** Soonest-releasing first: the row a reader wants is "what frees up next". No clock sorts last. */
+  heldRows.sort((a, b) =>
+    a.resumesAt === null ? (b.resumesAt === null ? 0 : 1) : b.resumesAt === null ? -1 : a.resumesAt.getTime() - b.resumesAt.getTime(),
+  )
   const heldUpNext = heldRows.slice(0, 8)
 
   /**
-   * The head SENDABLE draft through the REAL gate — the same call the dispatcher makes on
-   * its next tick, so the panel's status is the enforcer's own words and catches the rarer
-   * holds (cohort, dead session) the two bulk checks above do not. One draft only.
+   * The head SENDABLE draft through the REAL gate — asked unattended, as the dispatcher asks it on
+   * its next tick, so the panel's status is the enforcer's own words and catches the rarer holds
+   * (cohort, dead session) the bulk checks above do not. One draft only.
+   *
+   * WITH THE SENDING MAC'S WITNESS, NOT THIS DISK (audit H8). `recheckBeforeSend` reads this host's
+   * `~/.ds-sales-agent`, which on the hosted Linode holds no profile at all — so the head row could
+   * only ever read "account is not connected" under a switch card saying the Studio sends.
+   * `predictResendForQueue` is the same gate with the sending Mac's published handles in that one
+   * input; with no beating sending Mac there is no verdict to predict, and the motion sentence
+   * waiting.tsx renders carries the reason instead.
    */
   const headVerdict =
-    sendableDrafts.length > 0 ? await recheckBeforeSend(sendableDrafts[0]!, { unattended: true }) : null
+    sendingMac && sendableDrafts.length > 0
+      ? await predictResendForQueue(sendableDrafts[0]!, {
+          device: sendingMac.device,
+          handles: [...sendingMacHolds],
+        })
+      : null
 
   /**
    * When each row's turn comes at the current pace. An estimate, and presented as one: the
@@ -586,22 +648,16 @@ async function computeMessagesPage(): Promise<MessagesPageView> {
     lastSendRow?.sentAt == null ? null : Math.floor((Date.now() - lastSendRow.sentAt.getTime()) / 60_000)
   const headWait = sinceLastSend === null ? 0 : Math.max(0, gapMinutes - sinceLastSend)
 
+  /* The pace estimate, always. Whether a countdown may be SHOWN is waiting.tsx's call, from
+     `QueueMotion` — a countdown is a promise and only a moving queue keeps one (2026-08-20). */
   const upNext: UpNextRow[] = sendableDrafts.slice(0, 8).map((a, i) => ({
     position: i + 1,
     senderHandle: a.pair.sender.handle,
     targetHandle: a.pair.target.handle,
-    // A countdown is a promise. With the switch off nothing is counting down, so the
-    // panel is given nothing to count rather than a number that will not arrive.
-    etaMinutes: settings.autopilotEnabled ? headWait + i * gapMinutes : null,
-    note:
-      i === 0 && headVerdict
-        ? headVerdict.ok
-          ? settings.autopilotEnabled
-            ? 'clear to send on the next tick'
-            : 'every check passes — waiting only for Autopilot to be switched on'
-          : (headVerdict.detail ?? headVerdict.reason)
-        : null,
+    etaMinutes: headWait + i * gapMinutes,
+    note: i === 0 && headVerdict !== null && !headVerdict.ok ? (headVerdict.detail ?? headVerdict.reason) : null,
     held: i === 0 && headVerdict !== null && !headVerdict.ok,
+    clear: i === 0 && headVerdict?.ok === true,
   }))
 
   /** Handles for the per-sender queue counts — one lookup for the whole group. */
@@ -622,7 +678,6 @@ async function computeMessagesPage(): Promise<MessagesPageView> {
     upNext,
     heldWaiting,
     heldUpNext,
-    autopilotOn: settings.autopilotEnabled,
     queueBySender: waitingBySenderRaw
       .map((r) => ({ handle: senderHandles.get(r.senderId) ?? r.senderId, count: r._count._all }))
       .sort((a, b) => b.count - a.count),
