@@ -262,13 +262,23 @@ export function decideEnrolName(args: {
  * The sentence a refused Mac shows. PUBLIC — `start` needs no session — so it never says WHICH
  * kind of holder it found (paired, waiting, online, selected to send): that would let anyone
  * guessing names learn which Mac sends.
+ *
+ * SO IT NAMES EVERY WAY A NAME FREES UP, NOT ONE (2026-10-09). It promised "remove it under
+ * Senders → Paired Macs, and the name frees up" — false when the holder is the selected sending
+ * Mac (revoking a key does not change the selection) or a Mac known only by its heartbeat, such as
+ * one paired by a hand key (nothing of it is listed there). Whoever is told a remedy that does
+ * nothing concludes the dashboard is broken. The figures come from the rules that enforce them.
  */
 export function nameTakenReason(name: string, suggestion: string | null): string {
+  const days = Math.round(NAME_RESERVED_MS / (24 * 60 * 60_000))
+  const minutes = Math.round(ENROL_TTL_MS / 60_000)
   return (
     `The name “${name}” is already used by another Mac on this dashboard. Two Macs with one name would ` +
     `both act as that Mac, so this one needs its own — open DS Sales Agent and give it a different name` +
     `${suggestion ? ` (for example “${suggestion}”)` : ''}. If that other Mac is gone for good, whoever ` +
-    'runs the dashboard can remove it under Senders → Paired Macs, and the name frees up.'
+    'runs the dashboard can free the name under Senders: remove it from Paired Macs, and if it was the ' +
+    `Sending Mac, choose a different one. A Mac not listed under Paired Macs gives its name up by itself ` +
+    `${days} days after it last reported, or within ${minutes} minutes if it was only asking to be paired.`
   )
 }
 

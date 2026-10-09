@@ -262,7 +262,11 @@ describe('startEnrolment refuses a second Mac under a name', () => {
     for (const reason of reasons) {
       expect(reason).toMatch(/another Mac/)
       // Which kind of holder it found — paired, waiting, online, selected — is not said publicly.
-      expect(reason).not.toMatch(/\b(selected|online|sending|waiting)\b/i)
+      // This was a word list (selected|online|sending|waiting) until the sentence had to name every
+      // remedy, one of which is choosing a different Sending Mac; the property is now asserted
+      // directly — the sentence is built from the name and suggestion alone, and the remedy block
+      // below shows it is the same for all four kinds of holder.
+      expect(reason).toBe(enrol.nameTakenReason('Mac Studio', 'Mac Studio 2'))
       expect(reason).not.toMatch(/already paired|is paired/i)
     }
   })
@@ -279,6 +283,78 @@ describe('startEnrolment refuses a second Mac under a name', () => {
       rmSync(AK_FILE, { recursive: true, force: true })
       writeFileSync(AK_FILE, '')
     }
+  })
+})
+
+/**
+ * ── THE REFUSAL'S REMEDY MUST WORK FOR WHATEVER HOLDS THE NAME (2026-10-09) ──
+ *
+ * The sentence promised "remove it under Senders → Paired Macs, and the name frees up". MEASURED by
+ * the review: when the holder is the selected sending Mac, or a Mac known only by its heartbeat (the
+ * maintainer's hand-key Mac), there is nothing under Paired Macs to remove and the name stays taken.
+ * Each case here holds the name one way, follows the remedy the sentence offers for that way, and
+ * the same newcomer must then be accepted. The sentence itself must be the same in every case — it
+ * is public, and which kind of holder exists is not something a stranger guessing names may learn.
+ */
+describe('the taken-name sentence offers a remedy that frees the name, whatever holds it', () => {
+  const DAY = 24 * 3_600_000
+  const setPresence = (at: string) =>
+    prisma.setting.upsert({
+      where: { key: 'devicePresence' },
+      update: { value: JSON.stringify([{ device: 'Mac Studio', at, handles: [] }]) },
+      create: { key: 'devicePresence', value: JSON.stringify([{ device: 'Mac Studio', at, handles: [] }]) },
+    })
+  const cases: Array<{ holder: string; hold: () => Promise<unknown>; remedy: RegExp; follow: () => Promise<unknown> }> = [
+    {
+      holder: 'a paired Mac',
+      hold: async () => writeFileSync(AK_FILE, authorizedKeyLine(K1, 'Mac Studio') + '\n'),
+      remedy: /Paired Macs/,
+      follow: () => enrol.revokePairedDevice(keyFingerprint(K1)),
+    },
+    {
+      holder: 'the selected sending Mac',
+      hold: () => prisma.setting.create({ data: { key: 'activeDevice', value: 'Mac Studio' } }),
+      remedy: /Sending Mac/,
+      follow: () => prisma.setting.update({ where: { key: 'activeDevice' }, data: { value: 'Office' } }),
+    },
+    {
+      holder: 'a Mac known only by its heartbeat',
+      hold: () => setPresence(new Date(Date.now() - 3_600_000).toISOString()),
+      remedy: new RegExp(`${NAME_RESERVED_MS / DAY} days`),
+      follow: () => setPresence(new Date(Date.now() - NAME_RESERVED_MS - DAY).toISOString()),
+    },
+    {
+      holder: 'a Mac still asking to be paired',
+      hold: () => startEnrolment({ deviceName: 'Mac Studio', publicKey: K1 }),
+      remedy: /15 minutes/,
+      follow: async () => {
+        const [row] = await enrolRows()
+        await prisma.setting.update({
+          where: { key: `deviceEnrol:${row!.userCode}` },
+          data: { value: JSON.stringify({ ...row, createdAt: new Date(Date.now() - 16 * 60_000).toISOString() }) },
+        })
+      },
+    },
+  ]
+
+  it('each holder: the sentence names its remedy, and following it frees the name', async () => {
+    const reasons: string[] = []
+    for (const c of cases) {
+      await prisma.setting.deleteMany()
+      writeFileSync(AK_FILE, '')
+      await c.hold()
+      const refused = await startEnrolment({ deviceName: 'Mac Studio', publicKey: K2 })
+      expect(refused.ok, c.holder).toBe(false)
+      if (refused.ok) throw new Error('unreachable')
+      expect(refused.code, c.holder).toBe('name-taken')
+      reasons.push(refused.reason)
+      expect(refused.reason, c.holder).toMatch(c.remedy)
+      await c.follow()
+      const accepted = await startEnrolment({ deviceName: 'Mac Studio', publicKey: K2 })
+      expect(accepted.ok, `${c.holder}, after its remedy`).toBe(true)
+    }
+    // One sentence for every holder: which kind exists is not said to the public.
+    expect(new Set(reasons).size).toBe(1)
   })
 })
 

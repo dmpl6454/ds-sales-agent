@@ -1,3 +1,4 @@
+import os from 'node:os'
 import { prisma } from '@/lib/db'
 import { browserShutdownRequested } from './shutdown'
 import { deviceId, deviceIsBeating, hostId } from './devicePresence'
@@ -257,6 +258,45 @@ export function pidAlive(pid: number): boolean {
   }
 }
 
+/**
+ * ── A ROW WRITTEN BEFORE THIS MACHINE STARTED BELONGS TO NO LIVE PROCESS (2026-10-09) ──
+ *
+ * `pidAlive` reads EPERM as alive, and the local branch of `decideSendLock` never steps over a
+ * live holder. Together they wedged the fleet across a reboot: an agent killed by a power cut or
+ * a SIGKILL leaves its row behind, the row survives the restart, and after boot its pid can belong
+ * to a root daemon — `kill(pid, 0)` answers EPERM, every lock user (dispatcher, Send button, reply
+ * sweep, CLI) is refused for that daemon's lifetime, and nothing deletes the row. Even before EPERM
+ * meant alive, the same row wedged it whenever the pid went to another process of our own user.
+ *
+ * A process on this machine cannot have written a row before the machine booted, so such a row is
+ * dead whatever its pid answers. EPERM stays alive for a row written since boot: two users on one
+ * Mac is the case that rule exists for, and it is unchanged.
+ *
+ * THE MARGIN POINTS THE SAFE WAY. A wall-clock step forward after a row was written makes it look
+ * older than it is, and reading a LIVE row as pre-boot would step over a live drive — message A
+ * into thread B. So a row counts as pre-boot only when it is older than boot by more than the
+ * margin; a row the margin cannot place keeps the old rule, whose worst case is a wait (and the
+ * "running for a long time" alarm), never a double drive.
+ */
+export const BOOT_MARGIN_MS = 60_000
+
+/**
+ * When this machine booted, in epoch ms — or null when the OS gave no usable uptime. Null must
+ * never become "now": every local row would then read as pre-boot and every live holder would be
+ * stepped over. Read through `os.uptime` at call time, so a test can stand in for a reboot.
+ */
+export function machineBootMs(nowMs: number = Date.now()): number | null {
+  const up = os.uptime()
+  return Number.isFinite(up) && up > 0 ? nowMs - up * 1000 : null
+}
+
+/** PURE. Was this lock row written before the machine booted, beyond the margin? Unknown is no. */
+export function writtenBeforeBoot(at: string, bootMs: number | null, marginMs: number = BOOT_MARGIN_MS): boolean {
+  if (bootMs === null) return false
+  const written = new Date(at).getTime()
+  return Number.isFinite(written) && written < bootMs - marginMs
+}
+
 async function acquireSendLock(what: string): Promise<string | null> {
   const ourDevice = deviceId()
   const ourHost = hostId()
@@ -295,9 +335,11 @@ async function acquireSendLock(what: string): Promise<string | null> {
   // The presence read costs a query, so it happens only on the path where it decides anything:
   // a foreign holder whose lock has gone stale. A fresh foreign lock is honoured unread.
   const foreignAndStale = held !== null && !holderIsLocal && ageMs >= SEND_LOCK_STALE_MS
+  // Asked of a LOCAL holder only: another Mac's row says nothing about when THIS one booted.
+  const predatesBoot = holderIsLocal && held !== null && writtenBeforeBoot(held.at, machineBootMs())
   const verdict = decideSendLock({
     held,
-    holderAlive: holderIsLocal && held !== null && pidAlive(held.pid),
+    holderAlive: holderIsLocal && held !== null && !predatesBoot && pidAlive(held.pid),
     holderIsLocal,
     holderDeviceFresh: foreignAndStale ? await deviceIsBeating(held?.device, held?.host) : true,
     ourPid: process.pid,
@@ -352,6 +394,11 @@ async function acquireSendLock(what: string): Promise<string | null> {
    */
   if (held === null) {
     log.step('the send lock held an unreadable value — replacing it')
+  } else if (predatesBoot) {
+    // Its own line, and ahead of the own-pid one: a row from before boot is never ours even when
+    // the pid was reused for us, and its pid may still answer as alive — "a process that is gone"
+    // would send whoever reads it looking for a crash in a process that is running.
+    log.step('taking over a send lock written before this Mac last started', { previousPid: held.pid, writtenAt: held.at })
   } else if (holderIsLocal && held.pid === process.pid) {
     log.step('reclaiming a send lock this process left behind', { doing: held.what })
   } else if (holderIsLocal) {

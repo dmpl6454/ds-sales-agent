@@ -1,7 +1,7 @@
-import { describe, it, expect, beforeEach, afterAll, afterEach } from 'vitest'
+import { describe, it, expect, beforeEach, afterAll, afterEach, vi } from 'vitest'
 import Database from 'better-sqlite3'
 import { mkdtempSync, rmSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import os, { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 /**
@@ -246,6 +246,55 @@ describe('a name shared by two Macs does not let one step over the other', () =>
     await select('this-mac')
     const during = await withSendLock('dispatch:device', () => lockRow())
     expect(during?.value).toMatch(/"host":"host-b"/)
+  })
+})
+
+/**
+ * ── A ROW WRITTEN BEFORE THIS MAC STARTED CANNOT BELONG TO A LIVE PROCESS (2026-10-09) ──
+ *
+ * C4 made EPERM read as "alive" (another user's process on this Mac), and the local branch never
+ * steps over a live holder. A row left by an agent killed by a power cut survives the reboot; after
+ * boot its pid can belong to a root daemon, `kill(pid, 0)` answers EPERM, and every lock user was
+ * refused for that daemon's lifetime with nothing able to delete the row. `os.uptime` and
+ * `process.kill` stand in for the reboot and the daemon here.
+ */
+describe('a local row from before this Mac booted does not wedge the fleet', () => {
+  const DAEMON_PID = 424_242
+  const realKill = process.kill.bind(process)
+  const HOUR = 3_600_000
+  let restore: Array<{ mockRestore(): void }> = []
+  beforeEach(() => {
+    restore = [
+      // Booted one hour ago.
+      vi.spyOn(os, 'uptime').mockReturnValue(3600),
+      // The pid now belongs to a process of another user: `kill(pid, 0)` answers EPERM.
+      vi.spyOn(process, 'kill').mockImplementation(((pid: number, signal?: string | number) => {
+        if (pid === DAEMON_PID) throw Object.assign(new Error('kill EPERM'), { code: 'EPERM' })
+        return realKill(pid, signal)
+      }) as typeof process.kill),
+    ]
+  })
+  afterEach(() => {
+    for (const r of restore) r.mockRestore()
+  })
+  const local = (atMsAgo: number) =>
+    JSON.stringify({ pid: DAEMON_PID, device: 'this-mac', what: 'dispatch:device', at: new Date(Date.now() - atMsAgo).toISOString() })
+
+  it('a row written before boot is taken over, though its pid answers EPERM', async () => {
+    await select('this-mac')
+    await prisma.setting.create({ data: { key: 'sendLock', value: local(3 * HOUR) } })
+    expect(await withSendLock('dispatch:device', async () => 'ran')).toBe('ran')
+    expect(await lockRow()).toBeNull()
+  })
+
+  it('a row written after boot whose pid answers EPERM is still honoured — another user on this Mac', async () => {
+    await select('this-mac')
+    const live = local(20_000)
+    await prisma.setting.create({ data: { key: 'sendLock', value: live } })
+    let ran = false
+    expect(await withSendLock('dispatch:device', async () => (ran = true))).toBeNull()
+    expect(ran).toBe(false)
+    expect((await lockRow())?.value).toBe(live)
   })
 })
 

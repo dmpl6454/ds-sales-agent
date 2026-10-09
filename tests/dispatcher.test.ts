@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from 'vitest'
-import { decideSendLock, holderIsSameMachine, pidAlive } from '@/outreach/dispatcher'
+import os from 'node:os'
+import { BOOT_MARGIN_MS, decideSendLock, holderIsSameMachine, machineBootMs, pidAlive, writtenBeforeBoot } from '@/outreach/dispatcher'
 
 /**
  * The send-lock decision, in every direction.
@@ -200,5 +201,46 @@ describe('pidAlive — EPERM is a live process, not a dead one', () => {
 
   it('this process is alive', () => {
     expect(pidAlive(process.pid)).toBe(true)
+  })
+})
+
+/**
+ * A row written before this machine booted belongs to no live process, whatever its pid answers
+ * (2026-10-09). The margin and the unknown-uptime case both point at the safe side: misreading a
+ * LIVE row as pre-boot would step over a drive, so anything the rule cannot place is "not pre-boot".
+ */
+describe('writtenBeforeBoot / machineBootMs', () => {
+  const BOOT = Date.parse('2026-10-09T08:00:00Z')
+  const at = (msFromBoot: number) => new Date(BOOT + msFromBoot).toISOString()
+
+  it('a row older than boot by more than the margin is pre-boot', () => {
+    expect(writtenBeforeBoot(at(-3 * 3_600_000), BOOT)).toBe(true)
+    expect(writtenBeforeBoot(at(-BOOT_MARGIN_MS - 1), BOOT)).toBe(true)
+  })
+
+  it('a row inside the margin, or written after boot, is not — a clock step must not free a live row', () => {
+    expect(writtenBeforeBoot(at(-BOOT_MARGIN_MS), BOOT)).toBe(false)
+    expect(writtenBeforeBoot(at(-1_000), BOOT)).toBe(false)
+    expect(writtenBeforeBoot(at(20_000), BOOT)).toBe(false)
+  })
+
+  it('an unknown boot time or an unreadable timestamp is never pre-boot', () => {
+    expect(writtenBeforeBoot(at(-3 * 3_600_000), null)).toBe(false)
+    expect(writtenBeforeBoot('not a date', BOOT)).toBe(false)
+  })
+
+  it('boot time is now minus uptime, and no usable uptime is null — never "now"', () => {
+    const now = BOOT + 3_600_000
+    const spy = vi.spyOn(os, 'uptime')
+    try {
+      spy.mockReturnValue(3600)
+      expect(machineBootMs(now)).toBe(BOOT)
+      for (const bad of [0, -5, Number.NaN, Number.POSITIVE_INFINITY]) {
+        spy.mockReturnValue(bad)
+        expect(machineBootMs(now)).toBeNull()
+      }
+    } finally {
+      spy.mockRestore()
+    }
   })
 })
