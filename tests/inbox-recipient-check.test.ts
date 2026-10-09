@@ -23,6 +23,14 @@ const ENTRY = 'src/outreach/browser/messageEntry.ts'
 const SEND = 'src/outreach/browser/sendDm.ts'
 const READ = 'src/outreach/browser/readThread.ts'
 
+/**
+ * The dead-page gate as code: `gone` IS the visibility answer (nothing ANDed in front of the
+ * await), and the very next statement returns on it. Run on comment-stripped source only —
+ * the first occurrence of the sentence in sendDm.ts is a comment.
+ */
+const DEAD_PAGE_GATE =
+  /const gone = await page\.getByText\("Sorry, this page isn't available", \{ exact: false \}\)\.first\(\)\.isVisible\(\)\.catch\(\(\) => false\)\s*if \(gone\) \{\s*return \{/
+
 /** The body of `export async function <name>(` up to the next top-level `export`. */
 function body(src: string, name: string): string {
   const start = src.indexOf(`export async function ${name}(`)
@@ -100,11 +108,24 @@ describe('the read path turns a refusal into unreadable, and nothing else', () =
   const s = stripComments(read(READ))
   const fn = body(s, 'openAndReadThread')
 
+  /**
+   * The GATE, not the string. This used to ask only where "Sorry, this page isn't available"
+   * appears, which `const gone = false && …` satisfies while disabling the guard (run, and it
+   * passed). Now: the visibility check is what `gone` is assigned, and `if (gone)` returns
+   * before the inbox call. `tests/profile-gone.test.ts` drives both paths behaviourally; this
+   * pins the shape so a refactor that keeps the behaviour by accident still reads as a gate.
+   */
   it('checks for a dead page before the inbox route, exactly as the send path does', () => {
-    const gone = fn.indexOf("Sorry, this page isn't available")
-    const inbox = fn.indexOf('await openThreadViaInbox(page, targetHandle, senderHandle)')
-    expect(gone).toBeGreaterThan(-1)
-    expect(inbox).toBeGreaterThan(gone)
+    for (const [file, code] of [
+      [SEND, body(stripComments(read(SEND)), 'sendDm')],
+      [READ, fn],
+    ] as const) {
+      const gate = DEAD_PAGE_GATE.exec(code)
+      const inbox = code.indexOf('await openThreadViaInbox(page, targetHandle, senderHandle)')
+      expect(gate, `${file}: no dead-page gate (\`const gone = await …isVisible()\` then \`if (gone) return\`)`).not.toBeNull()
+      expect(inbox, `${file}: the inbox route is gone`).toBeGreaterThan(-1)
+      expect(inbox, `${file}: the dead-page gate must come before the inbox route`).toBeGreaterThan(gate!.index)
+    }
   })
 
   /**

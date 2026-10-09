@@ -19,12 +19,18 @@ import { join, relative } from 'node:path'
  * onto another page and so turned a follow-up into that page's first message (`handOff.ts`).
  * It releases them now. This pins the invariant rather than the one call site, because the
  * failure mode is a re-point somebody writes next year: no `update` / `updateMany` data block,
- * and no `upsert` update block, may name any of the three columns. Creating a row with them is
- * of course allowed.
+ * and no `upsert` update block, may name any of the three columns — or the `pair`, `sender` and
+ * `target` relations, which write those columns just as well. Creating a row with them is of
+ * course allowed.
  */
 
 const SRC = join(process.cwd(), 'src')
-const ROUTE_KEYS = ['pairId', 'senderId', 'targetId'] as const
+/**
+ * The three scalar columns, AND the three relations that write them. Prisma accepts the route
+ * either way — `pairId: x` or `pair: { connect: { id: x } }` — so a checker that knows only the
+ * scalars passes the relation form of the very re-point it exists to refuse.
+ */
+const ROUTE_KEYS = ['pairId', 'senderId', 'targetId', 'pair', 'sender', 'target'] as const
 
 /* Newlines kept, so a finding names the right line. */
 const stripComments = (t: string) =>
@@ -133,7 +139,7 @@ function localLiteral(src: string, name: string): string | null {
 }
 
 describe("an attempt's route is never rewritten", () => {
-  it('no update in src names pairId, senderId or targetId', () => {
+  it('no update in src names pairId, senderId or targetId, or writes the pair, sender or target relation', () => {
     let checked = 0
     const findings: Finding[] = []
     for (const f of sourceFiles(SRC)) {
@@ -182,6 +188,64 @@ describe("an attempt's route is never rewritten", () => {
       'it spreads a variable into its data, so it cannot be checked',
       'it spreads a variable into its data, so it cannot be checked',
     ])
+  })
+
+  /**
+   * The same re-point written as a RELATION write. `pair: { connect: { id } }` moves the row
+   * exactly as `pairId: id` does, and the scalar-only checker let it through (run, and it
+   * passed). Every nested operation on the three relations is refused, not just `connect`:
+   * connectOrCreate / create / upsert can point the row at a new route, disconnect / set
+   * unhook it, and the one harmless op (a nested `update` of the related row) is written
+   * just as well through that row's own model — telling them apart textually is not worth
+   * the risk of reading one wrong.
+   */
+  it('catches a re-point written as a relation write, for every nested operation', () => {
+    const ops = {
+      connect: '{ connect: { id: newPair.id } }',
+      connectOrCreate: "{ connectOrCreate: { where: { id: x }, create: { handle: 'h' } } }",
+      disconnect: '{ disconnect: true }',
+      set: '{ set: [{ id: x }] }',
+    }
+    for (const [op, value] of Object.entries(ops)) {
+      for (const rel of ['pair', 'sender', 'target']) {
+        for (const [method, block] of [
+          ['update', 'data'],
+          ['updateMany', 'data'],
+          ['upsert', 'update'],
+        ] as const) {
+          const extra = method === 'upsert' ? `create: { status: 'READY' }, ` : ''
+          const text = `await prisma.outreachAttempt.${method}({ where: { id }, ${extra}${block}: { ${rel}: ${value}, status: 'READY' } })`
+          const r = findReRoutes('fixture.ts', text)
+          expect(r.checked, `${method} ${rel} ${op}`).toBe(1)
+          expect(r.findings.map((x) => x.problem), `${method} ${rel} ${op}`).toEqual([
+            `it rewrites ${rel} — an attempt's route is fixed when it is written`,
+          ])
+        }
+      }
+    }
+  })
+
+  it("catches the hand-off's old re-point in relation form, and one hidden behind a local spread", () => {
+    const relational = `
+      await prisma.outreachAttempt.update({
+        where: { id: attempt.id },
+        data: { pair: { connect: { id: newPair.id } }, sender: { connect: { id: choice.senderId } }, status: 'READY' },
+      })`
+    expect(findReRoutes('fixture.ts', relational).findings.map((x) => x.problem).join(' | ')).toMatch(/rewrites pair .*rewrites sender/)
+    const hidden = `
+      const moved = { target: { connect: { id: other.id } }, status: 'READY' }
+      await prisma.outreachAttempt.update({ where: { id }, data: { ...moved } })`
+    expect(findReRoutes('fixture.ts', hidden).findings.map((x) => x.problem)).toEqual([
+      "it rewrites target — an attempt's route is fixed when it is written",
+    ])
+  })
+
+  /** The relation names are whole keys: a field that merely starts with one is not a re-point. */
+  it('does not mistake pairId-shaped or longer keys, or a where-clause relation filter, for a relation write', () => {
+    const fine = `
+      await prisma.outreachAttempt.update({ where: { id, pair: { senderId: s } }, data: { status: 'SENT', targetHandle: t, senderName: n } })
+      await prisma.outreachAttempt.updateMany({ where: { target: { optedOut: true } }, data: { status: 'SKIPPED' } })`
+    expect(findReRoutes('fixture.ts', fine)).toEqual({ checked: 2, findings: [] })
   })
 
   it('and lets an ordinary status write, a value READ from senderId, and a create through', () => {
