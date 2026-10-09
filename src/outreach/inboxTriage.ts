@@ -63,8 +63,11 @@ export function triageInboxRow(row: InboxRow, ourBodies: readonly string[]): Inb
  * Is this snippet the reply's actual words, worth storing as `replyText`?
  * "2 new messages" and "<Name> sent an attachment." are STATES, not words — storing
  * them as the recipient's words would put system furniture in the one column that
- * exists to preserve what a human said. Those rows record a reply with NULL text and
- * the next full thread read backfills it (that path already exists).
+ * exists to preserve what a human said. Those rows record a reply with NULL text — a
+ * MARKER that they wrote. Nothing ever fills it in from the thread (audit C2: which
+ * bubble a marker stands for cannot be known, and guessing swallowed live replies); if
+ * what it stood for was words, the next full thread read records those words as their
+ * own reply, dated from the thread.
  */
 export function snippetIsReplyText(snippet: string): boolean {
   const t = snippet.trim()

@@ -246,6 +246,7 @@ describe('ensureConversationChecked — the guarantee the sweep cannot give', ()
       targetId: 'targ_1',
       targetHandle: 'tips',
       fallbackAttemptId: 'att_1',
+      fallbackIsDraft: false,
       now: NOW,
     })
     expect(r).toEqual({ status: 'unreadable', detail: 'door refused', doorRefused: true })

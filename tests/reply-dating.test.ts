@@ -191,7 +191,7 @@ describe('snippetIsReplyText — states are not words', () => {
     expect(snippetIsReplyText('Yes and spotting Abhi kaise karein')).toBe(true)
   })
   it.each(['2 new messages', 'Lalit sent an attachment.', 'You sent an attachment.', 'Liked a message'])(
-    '%s is a state, stored as NULL text for the full read to backfill',
+    '%s is a state, stored as NULL text — a marker nothing fills in',
     (s) => expect(snippetIsReplyText(s)).toBe(false),
   )
 })
