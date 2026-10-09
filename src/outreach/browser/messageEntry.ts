@@ -242,7 +242,8 @@ export async function clickPastDialogs(page: Page, target: Locator, what: string
  * a username-bearing element in an inbox-opened thread, so the evidence reader is inferred and
  * a recipient whose profile offers no door is refused until the first live refusal's logged
  * path and hrefs are read and the reader tuned from them. That direction is chosen: a refused
- * open costs a parked draft, a wrong open costs a pitch in a stranger's inbox.
+ * open costs a retry (and, three in a row, a parked draft — `refusalMayRetry`), a wrong open
+ * costs a pitch in a stranger's inbox.
  *
  * Navigation note: this clicks the rail's own Inbox link and the dialog's own buttons —
  * trusted clicks on visible controls, the same rule as everywhere else. The standing ban
@@ -506,9 +507,47 @@ export function firstStableVerdict(readings: readonly ThreadRecipient[]): Thread
  * target's, or one seen in the conversation) can contain any of those words.
  */
 export class RecipientUnconfirmedError extends Error {
-  constructor(readonly verdict: ThreadRecipient) {
+  constructor(readonly verdict: RefusedRecipient) {
     super('the inbox route could not confirm who the opened conversation is with — nothing was typed or accepted')
     this.name = 'RecipientUnconfirmedError'
+  }
+}
+
+/** Every verdict the door refuses on. A refusal never carries `confirmed`. */
+export type RefusedRecipient = Exclude<ThreadRecipient, { kind: 'confirmed' }>
+
+/**
+ * PURE. May a draft refused for THIS verdict simply be tried again, on the ordinary retry path?
+ * (Review of audit C1, 2026-10-09.)
+ *
+ * The inbox route is the LAST door, tried only after the profile's own — but a recipient WITH a
+ * working Message button reaches it on a transient miss: the button not visible inside 15 s on a
+ * slow render, or found and its click eaten three times by a modal. The reader above is inferred
+ * and fails closed until the live DOM is observed, so such a drive ends `unknown` (or
+ * `ambiguous`), and parking that on FIRST sight — a park rotation, the gate and the governor all
+ * treat as permanent — retired a healthy route over one slow render. A retry starts again at the
+ * PROFILE door, which usually works, so those two take the ordinary path: attempts + 1, the back
+ * of the queue, parked at MAX_DELIVERY_ATTEMPTS like any other repeating failure.
+ *
+ *   mismatch    a conversation that demonstrably names somebody ELSE opened. Never retried: the
+ *               next drive meets the same search and may open that stranger's thread again.
+ *   ambiguous   it names the recipient and someone else — a shared card, a partial pane. Retried.
+ *   unknown     it named nobody we could read, or never settled. Retried.
+ *
+ * Exhaustive, so a verdict added later is a compile error here rather than a silent answer in
+ * either direction.
+ */
+export function refusalMayRetry(verdict: RefusedRecipient): boolean {
+  switch (verdict.kind) {
+    case 'mismatch':
+      return false
+    case 'ambiguous':
+    case 'unknown':
+      return true
+    default: {
+      const never: never = verdict
+      return never
+    }
   }
 }
 

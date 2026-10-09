@@ -191,14 +191,22 @@ describe('a dead page never reaches the inbox route, on either path', () => {
 })
 
 /**
- * Audit C1: the inbox route opened a conversation that could not be confirmed as this
- * recipient's. Parked on FIRST sight by both delivery paths — the generic branch would put it
- * back in READY, and the dispatcher would drive the same door again within ~30 s.
+ * Audit C1: the inbox route opened a conversation that names somebody ELSE. Parked on FIRST sight
+ * by both delivery paths — the generic branch would put it back in READY, and the dispatcher
+ * would drive the same search again within ~30 s.
+ *
+ * Reviewed the same day: only a MISMATCH. An `unknown` or `ambiguous` refusal is what a transient
+ * miss at the profile door looks like and arrives flagged `recipientRetryable`, which both paths
+ * must read as an OPT-IN (`=== true`) so that a refusal without the flag still parks. The retry
+ * behaviour itself is driven end to end in tests/recipient-unconfirmed-retry.test.ts and
+ * tests/recipient-unconfirmed-send-now.test.ts.
  */
-describe('recipient-unconfirmed parks on first sight, on both send paths', () => {
+const OPT_IN = /const recipientRetryable = outcome\.status === 'FAILED' && outcome\.recipientRetryable === true/
+describe('a recipient-unconfirmed MISMATCH parks on first sight, on both send paths', () => {
   it('deliver.ts parks it FAILED at the cap, before the not-in-thread branch', () => {
     const src = readFileSync('src/outreach/deliver.ts', 'utf8')
-    const branch = src.indexOf("if (failureCode === 'recipient-unconfirmed')")
+    expect(src).toMatch(OPT_IN)
+    const branch = src.indexOf("if (failureCode === 'recipient-unconfirmed' && !recipientRetryable)")
     const next = src.indexOf("if (failureCode === 'not-in-thread')")
     expect(branch).toBeGreaterThan(0)
     expect(next).toBeGreaterThan(branch)
@@ -213,7 +221,8 @@ describe('recipient-unconfirmed parks on first sight, on both send paths', () =>
     const fnStart = src.indexOf('export async function sendNow(')
     const fnEnd = src.indexOf('\nexport ', fnStart + 1)
     const fn = src.slice(fnStart, fnEnd)
-    const branch = fn.indexOf("if (failureCode === 'recipient-unconfirmed')")
+    expect(fn).toMatch(OPT_IN)
+    const branch = fn.indexOf("if (failureCode === 'recipient-unconfirmed' && !recipientRetryable)")
     const generic = fn.indexOf('// Everything else: leave the draft intact')
     expect(branch).toBeGreaterThan(0)
     expect(generic).toBeGreaterThan(branch)

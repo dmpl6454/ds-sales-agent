@@ -572,13 +572,17 @@ describe('a recipient whose page is gone is parked before any browser drive', ()
 })
 
 /**
- * AUDIT C1 (2026-10-09): the inbox route opened a conversation that could not be confirmed as
- * the recipient's. Nothing was typed. Parked on FIRST sight — the generic branch would put it
- * back in READY and the next tick would drive the same door, possibly opening a stranger's
- * conversation again — and the account is NOT halted: it is a question about the recipient.
+ * AUDIT C1 (2026-10-09): the inbox route opened a conversation that names somebody else. Nothing
+ * was typed. Parked on FIRST sight — the generic branch would put it back in READY and the next
+ * tick would drive the same search, possibly opening that stranger's conversation again — and the
+ * account is NOT halted: it is a question about the recipient.
+ *
+ * Reviewed the same day: an outcome flagged `recipientRetryable` (an `unknown` or `ambiguous`
+ * refusal — a transient miss at the profile door) takes the ordinary retry path instead. The flag
+ * is an opt-in, so the unflagged outcome below — what a mismatch produces — still parks.
  */
 describe('a recipient the inbox route could not confirm is parked after one look', () => {
-  it("parks FAILED 'recipient-unconfirmed' at the attempt cap, without halting the account", async () => {
+  it("an unflagged refusal parks FAILED 'recipient-unconfirmed' at the attempt cap, without halting the account", async () => {
     send.mockResolvedValueOnce({
       status: 'FAILED',
       error: 'the inbox route could not confirm who the opened conversation is with (@target_a)',
@@ -602,6 +606,44 @@ describe('a recipient the inbox route could not confirm is parked after one look
     )
     // The loop moves on: the other recipient's draft is still delivered.
     expect(send).toHaveBeenCalledTimes(2)
+  })
+
+  it('a refusal flagged recipientRetryable goes to the back of the queue with attempts + 1, reservation released', async () => {
+    attemptFindMany.mockResolvedValue(twoDraftsFromOneSender().map((a) => ({ ...a, attempts: 0 })))
+    send.mockResolvedValueOnce({
+      status: 'FAILED',
+      error: 'the inbox route could not confirm who the opened conversation is with (@target_a)',
+      failureCode: 'recipient-unconfirmed',
+      recipientRetryable: true,
+    })
+    await deliverWaiting({ maxSends: 2 })
+    const retry = attemptUpdate.mock.calls.find(
+      (c) => (c[0] as { where: { id: string } }).where.id === 'att_1',
+    )?.[0] as { data: Record<string, unknown> } | undefined
+    expect(retry?.data).toMatchObject({ status: 'READY', failureCode: 'recipient-unconfirmed', attempts: { increment: 1 } })
+    expect(retry?.data.queuedAt).toBeInstanceOf(Date)
+    expect(markChallenged).not.toHaveBeenCalled()
+    expect(settleClaims).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ delivered: false, failureCode: 'recipient-unconfirmed' }),
+    )
+    expect(send).toHaveBeenCalledTimes(2)
+  })
+
+  it('and parks at the cap under the same code once it has failed MAX_DELIVERY_ATTEMPTS times', async () => {
+    attemptFindMany.mockResolvedValue(twoDraftsFromOneSender().map((a) => ({ ...a, attempts: MAX_DELIVERY_ATTEMPTS - 1 })))
+    send.mockResolvedValueOnce({
+      status: 'FAILED',
+      error: 'the inbox route could not confirm who the opened conversation is with (@target_a)',
+      failureCode: 'recipient-unconfirmed',
+      recipientRetryable: true,
+    })
+    await deliverWaiting({ maxSends: 2 })
+    const park = attemptUpdate.mock.calls.find(
+      (c) => (c[0] as { where: { id: string } }).where.id === 'att_1',
+    )?.[0] as { data: Record<string, unknown> } | undefined
+    expect(park?.data).toMatchObject({ status: 'FAILED', failureCode: 'recipient-unconfirmed', attempts: { increment: 1 } })
+    expect(park?.data).not.toHaveProperty('queuedAt')
   })
 })
 

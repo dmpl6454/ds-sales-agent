@@ -33,8 +33,22 @@ export type SendOutcome =
    * two delivery paths write the fact through the one writer each flag names —
    * `markChallenged` and `markSessionInvalid`. A flag the caller ignores is the
    * every-fifteen-minutes-forever bug this exists to end.
+   *
+   * `recipientRetryable` qualifies `recipient-unconfirmed` and nothing else: the inbox route's
+   * refusal was `unknown` or `ambiguous` — what a transient miss at the profile door looks like —
+   * so the draft takes the ordinary retry path instead of parking on first sight
+   * (`refusalMayRetry` in messageEntry.ts). It is an opt-IN on purpose: a producer that forgets
+   * it leaves the refusal parked, the conservative direction for a question about who the
+   * conversation is with.
    */
-  | { status: 'FAILED'; error: string; failureCode: FailureCode; challenged?: boolean; sessionInvalid?: boolean }
+  | {
+      status: 'FAILED'
+      error: string
+      failureCode: FailureCode
+      challenged?: boolean
+      sessionInvalid?: boolean
+      recipientRetryable?: boolean
+    }
 
 export interface OutreachSender {
   name: string

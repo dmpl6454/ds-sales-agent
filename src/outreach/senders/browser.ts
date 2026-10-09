@@ -2,7 +2,7 @@ import type { OutreachSender, SendOutcome, SendRequest } from './types'
 import { env } from '@/lib/env'
 import { log } from '@/lib/logger'
 import { sendDm } from '@/outreach/browser/sendDm'
-import { RecipientUnconfirmedError } from '@/outreach/browser/messageEntry'
+import { RecipientUnconfirmedError, refusalMayRetry } from '@/outreach/browser/messageEntry'
 import { recordSendStarted } from '@/outreach/paceClock'
 import {
   CheckpointError,
@@ -121,14 +121,26 @@ export const browserSender: OutreachSender = {
        * sent to a re-login over it. Nothing was typed or accepted, so the reservation is
        * released (`recipient-unconfirmed` is in DEFINITELY_NOT_DELIVERED). The handle goes into
        * `error` only, which nothing regex-tests; the error's own message names nobody.
+       *
+       * The VERDICT travels on as `recipientRetryable` (review of C1): only a `mismatch` — a
+       * conversation naming somebody else — parks on first sight. `unknown` and `ambiguous` are
+       * what a transient miss at the profile door looks like, and parking them retired a
+       * healthy route over one slow render; they take the ordinary retry path instead.
        */
       if (err instanceof RecipientUnconfirmedError) {
-        log.warn('the inbox route could not confirm the recipient — nothing typed, the draft is parked', {
-          sender: req.senderHandle,
-          target: req.targetHandle,
-          verdict: err.verdict.kind,
-        })
-        return { status: 'FAILED', error: `${err.message} (@${req.targetHandle})`, failureCode: 'recipient-unconfirmed' }
+        const retryable = refusalMayRetry(err.verdict)
+        log.warn(
+          retryable
+            ? 'the inbox route could not confirm the recipient — nothing typed, the draft goes back to be retried'
+            : 'the inbox route opened somebody else’s conversation — nothing typed, the draft is parked',
+          { sender: req.senderHandle, target: req.targetHandle, verdict: err.verdict.kind },
+        )
+        return {
+          status: 'FAILED',
+          error: `${err.message} (@${req.targetHandle})`,
+          failureCode: 'recipient-unconfirmed',
+          ...(retryable ? { recipientRetryable: true } : {}),
+        }
       }
       return { status: 'FAILED', error: err instanceof Error ? err.message : String(err), failureCode: 'unknown' }
     }

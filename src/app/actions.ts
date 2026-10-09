@@ -442,14 +442,23 @@ export async function sendNow(attemptId: string, overrides?: readonly string[]):
     }
   }
 
-  if (failureCode === 'recipient-unconfirmed') {
+  /**
+   * Only a MISMATCH parks here (review of audit C1), exactly as in the dispatcher. `unknown` and
+   * `ambiguous` arrive with `recipientRetryable`: a transient miss at the profile door, which the
+   * next drive starts from again. They take this button's ordinary retryable-failure branch
+   * below — READY, attempts + 1 — like a `no-composer` would, so the dispatcher re-drives them
+   * no sooner than any other failed press, and its own cap parks them under this code after
+   * MAX_DELIVERY_ATTEMPTS. Their reservation was released by `settleClaims` above.
+   */
+  const recipientRetryable = outcome.status === 'FAILED' && outcome.recipientRetryable === true
+  if (failureCode === 'recipient-unconfirmed' && !recipientRetryable) {
     /**
      * PARKED, not returned to READY (audit C1, 2026-10-09). The inbox route opened a
-     * conversation that could not be confirmed as @target's, and nothing was typed. READY is
+     * conversation that names somebody other than @target, and nothing was typed. READY is
      * what the dispatcher picks up, so with autopilot on the generic branch below would have
-     * the same door driven again within ~30 s — possibly opening a stranger's conversation
-     * again — before deliver.ts finally parked it. Same park as the dispatcher's, so it lands
-     * on the landing page's parked list with re-queue and discard.
+     * the same search driven again within ~30 s — possibly opening that stranger's
+     * conversation again — before deliver.ts finally parked it. Same park as the dispatcher's,
+     * so it lands on the landing page's parked list with re-queue and discard.
      */
     await prisma.outreachAttempt.update({
       where: { id: attemptId },
@@ -460,7 +469,7 @@ export async function sendNow(attemptId: string, overrides?: readonly string[]):
     return {
       ok: false,
       message:
-        `Nothing was typed: Instagram's search opened a conversation we could not confirm is with @${target.handle}. ` +
+        `Nothing was typed: Instagram's search opened a conversation that names somebody other than @${target.handle}. ` +
         `The message is parked — re-queue it once the thread can be checked by hand.`,
     }
   }

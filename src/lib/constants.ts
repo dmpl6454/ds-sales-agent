@@ -167,10 +167,18 @@ export const FAILURE_CODES = [
    * THE INBOX ROUTE OPENED A CONVERSATION WE COULD NOT CONFIRM IS WITH THIS RECIPIENT (audit C1,
    * 2026-10-09) — a different account (display names are not unique: @tips and @tips_india both
    * display "TIPS"), or a conversation that named nobody we could read. Nothing was typed,
-   * accepted or delivered. Parked on FIRST sight: a retry cannot change Instagram's search
-   * ranking or its DOM, and each retry is a browser drive at a revenue account that may open a
-   * stranger's conversation again. It stays parked on its pair (rotation, the gate and the
-   * governor all count it) until a person re-queues it once the thread can be checked by hand.
+   * accepted or delivered, so the reservation is always released.
+   *
+   * HOW SOON IT PARKS DEPENDS ON WHAT WAS SEEN (reviewed the same day). A MISMATCH — the
+   * conversation names somebody else — parks on FIRST sight: the next drive meets the same search
+   * and may open that stranger's conversation again. `unknown` and `ambiguous` do NOT: a recipient
+   * with a working Message button reaches the inbox route on a transient miss (the button slow to
+   * render, or its click eaten by a modal), the reader fails closed until the live DOM is
+   * observed, and parking that on first sight retired a healthy route over one slow render. A
+   * retry starts again at the profile door, so those take the ordinary path — attempts + 1, the
+   * back of the queue — and park at MAX_DELIVERY_ATTEMPTS still under this code. Parked either
+   * way, it stays parked on its pair (rotation, the gate and the governor all count it) until a
+   * person re-queues it once the thread can be checked by hand.
    */
   'recipient-unconfirmed',
   'unknown',

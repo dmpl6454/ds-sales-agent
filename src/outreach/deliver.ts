@@ -596,17 +596,26 @@ export async function deliverWaiting(opts: DeliverOptions = {}): Promise<Deliver
       continue
     }
 
-    if (failureCode === 'recipient-unconfirmed') {
+    /**
+     * Only a MISMATCH stops here (review of audit C1). `unknown` and `ambiguous` arrive with
+     * `recipientRetryable` and fall through to the retry cap below: they are what a transient
+     * miss at the profile door looks like (a Message button not rendered inside 15 s, or its
+     * click eaten by a modal), the next drive starts again at that door, and parking them on
+     * first sight retired a healthy route over one slow render. They still release the
+     * reservation (`settleClaims` above — nothing was typed) and still park at the cap under
+     * this code. The flag is opt-in, so a refusal arriving without it parks: the safe side.
+     */
+    const recipientRetryable = outcome.status === 'FAILED' && outcome.recipientRetryable === true
+    if (failureCode === 'recipient-unconfirmed' && !recipientRetryable) {
       /**
-       * The inbox route opened a conversation that could not be confirmed as this recipient's
-       * (audit C1, 2026-10-09). Nothing was typed. Parked on FIRST sighting, like a gone page:
-       * a retry cannot change Instagram's search ranking or its DOM, and the generic path below
-       * would drive the same door twice more — each drive possibly opening a stranger's
+       * The inbox route opened a conversation that names somebody ELSE (audit C1, 2026-10-09).
+       * Nothing was typed. Parked on FIRST sighting, like a gone page: the generic path below
+       * would drive the same search twice more — each drive possibly opening that stranger's
        * conversation again. `attempts: MAX_DELIVERY_ATTEMPTS` puts it on the landing page's
        * parked list with re-queue and discard. Reservations were released by `settleClaims`
        * above. The park rests this pair (rotation, the gate and the governor all count it), so
        * rotation tries the next page — which meets the same door: up to a ring's worth of
-       * parks per door-less recipient, then nothing until a person re-queues them.
+       * parks per such recipient, then nothing until a person re-queues them.
        */
       await prisma.outreachAttempt.update({
         where: { id: attempt.id },
@@ -615,9 +624,9 @@ export async function deliverWaiting(opts: DeliverOptions = {}): Promise<Deliver
       out.failed += 1
       out.outcomes.push({
         pairKey,
-        result: `the inbox route could not confirm the conversation is with @${target.handle} — nothing typed, parked after one look`,
+        result: `the inbox route opened a conversation that does not name @${target.handle} — nothing typed, parked after one look`,
       })
-      log.alarm('the inbox route could not confirm who it opened — parked, nothing typed, not retried', {
+      log.alarm('the inbox route opened somebody else’s conversation — parked, nothing typed, not retried', {
         pair: pairKey,
         attemptId: attempt.id,
       })
