@@ -93,6 +93,19 @@ async function main(): Promise<void> {
       console.log(`  @${handle} — no such target. Nothing done.`)
       continue
     }
+    /**
+     * A WATCHED PAGE IS NOT RETIRED FROM HERE (2026-10-09). This sets `optedOut` alone, which
+     * for a page we READ leaves its feed being read with its footage skipped — the half-broken
+     * state the schema warns about. The dashboard's Remove retires a watched page properly
+     * (stops reading it, keeps its posts, keeps it on the competitor list).
+     */
+    if (target.role === 'WATCH') {
+      console.log(
+        `  @${handle} — a page we WATCH, not a company we message. Nothing done: use "Remove this channel" ` +
+          `on /targets, which also stops reading it and keeps its posts.`,
+      )
+      continue
+    }
     if (target.optedOut) {
       console.log(`  @${handle} — already retired. Nothing to do.`)
       continue

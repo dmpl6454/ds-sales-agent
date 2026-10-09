@@ -33,6 +33,7 @@ import { getSettings } from '@/lib/settings'
 import { readPresence } from '@/outreach/devicePresence'
 import { assessDispatch } from '@/outreach/dispatchHealth'
 import { visibleChannelFilter, ourOwnPageHandles } from '@/detection/visibleChannels'
+import { removalVerdict, type RemovalVerdict } from './remove-target-message'
 import { detectionCutoff } from '@/lib/cutoff'
 import { readLabelledSet } from '@/detection/labels'
 import { replyHaltFloor } from '@/outreach/replyHalt'
@@ -297,8 +298,17 @@ export interface ChannelCard {
   unclassifiedReason: string | null
   /** Retired: kept for its history, never contacted again. */
   retired: boolean
-  /** Has this channel ever been sent a message? Governs delete vs retire. */
-  everContacted: boolean
+  /** Whether its feed is still read — a row retired before 2026-10-09 may still be. */
+  reading: boolean
+  /** Every attempt ever recorded to it, any status — the removal rule's second input. */
+  attemptsLogged: number
+  /**
+   * What Remove would do, from the SAME pure rule `removeTarget` asks (2026-10-09). This was
+   * `everContacted` — DELIVERED messages only, a second copy of the server's wrong rule — so
+   * every watched page's card promised "deleted outright" whatever it held. The server's
+   * sentence after the click is authoritative; this one is written before it.
+   */
+  removal: RemovalVerdict
 }
 
 export interface AccountCard {
@@ -2029,7 +2039,15 @@ async function computeCostView(): Promise<CostView> {
  * way is how a hardcoded `detectorKey === 'passthrough'` came to render a misleading zero.
  */
 async function buildChannelCards(
-  targets: Array<{ id: string; handle: string; displayName: string; optedOut: boolean; detectorKey: string }>,
+  targets: Array<{
+    id: string
+    handle: string
+    displayName: string
+    optedOut: boolean
+    detectorKey: string
+    role: string
+    watchEnabled: boolean
+  }>,
   weekStart: Date,
 ): Promise<ChannelCard[]> {
   /**
@@ -2049,7 +2067,7 @@ async function buildChannelCards(
   /* Named so the visible-channels grep can accept exactly this scope and nothing looser:
      these ids are the card rows the caller already chose, not a survey of the corpus. */
   const cardTargetIds = targets.map((t) => t.id)
-  const [campaignCounts, weekCounts, loggedCounts, lastSents, repliedCounts] = await Promise.all([
+  const [campaignCounts, weekCounts, loggedCounts, lastSents, attemptCounts] = await Promise.all([
     prisma.detectedCampaign.groupBy({
       by: ['targetId'],
       where: { targetId: { in: cardTargetIds }, verdict: 'CAMPAIGN', detectedAt: { gte: weekStart } },
@@ -2076,17 +2094,25 @@ async function buildChannelCards(
       distinct: ['targetId'],
       select: { targetId: true, sentAt: true },
     }),
+    /**
+     * EVERY attempt per card, with the newest reply beside the count (2026-10-09). This read
+     * replied rows only, for `halted`; widened so the same one query also answers the removal
+     * rule's "has anything been recorded to it at all" — undelivered parks and SENDING rows
+     * included — instead of the card guessing from deliveries. Still one query.
+     */
     prisma.outreachAttempt.groupBy({
       by: ['targetId'],
-      where: { targetId: { in: cardTargetIds }, repliedAt: { not: null } },
+      where: { targetId: { in: cardTargetIds } },
       _count: { _all: true },
+      _max: { repliedAt: true },
     }),
   ])
   const campaignBy = new Map(campaignCounts.map((r) => [r.targetId, r._count._all]))
   const weekBy = new Map(weekCounts.map((r) => [r.targetId, r._count._all]))
   const loggedBy = new Map(loggedCounts.map((r) => [r.targetId, r._count._all]))
   const lastSentBy = new Map(lastSents.map((r) => [r.targetId, r.sentAt]))
-  const repliedBy = new Map(repliedCounts.map((r) => [r.targetId, r._count._all]))
+  const attemptsBy = new Map(attemptCounts.map((r) => [r.targetId, r._count._all]))
+  const repliedBy = new Set(attemptCounts.filter((r) => r._max.repliedAt != null).map((r) => r.targetId))
 
   const channels: ChannelCard[] = []
   for (const t of targets) {
@@ -2099,7 +2125,7 @@ async function buildChannelCards(
       postsThisWeek: weekBy.get(t.id) ?? 0,
       postsLogged: loggedBy.get(t.id) ?? 0,
       lastContactedLabel: lastSentAt ? relative(lastSentAt) : 'not yet',
-      halted: (repliedBy.get(t.id) ?? 0) > 0 || t.optedOut,
+      halted: repliedBy.has(t.id) || t.optedOut,
       /**
        * Ask the detector, never the key.
        *
@@ -2116,7 +2142,13 @@ async function buildChannelCards(
       unclassified: !(getDetector(t.detectorKey).readiness?.() ?? { ready: true }).ready,
       unclassifiedReason: (getDetector(t.detectorKey).readiness?.() ?? { ready: true }).reason ?? null,
       retired: t.optedOut,
-      everContacted: lastSentAt !== null,
+      reading: t.watchEnabled,
+      attemptsLogged: attemptsBy.get(t.id) ?? 0,
+      removal: removalVerdict({
+        role: t.role,
+        campaigns: loggedBy.get(t.id) ?? 0,
+        attempts: attemptsBy.get(t.id) ?? 0,
+      }),
     })
   }
   return channels

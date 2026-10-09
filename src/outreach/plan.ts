@@ -869,10 +869,27 @@ export async function runOutreach(): Promise<PlanSummary> {
      * be pointless AND because the reason for it would be invisible — the dispatcher would
      * hold it fifteen minutes later with no clue on the planning side.
      */
+    /**
+     * AND WHETHER IT IS STILL IN THE ROTATION (2026-10-09). `pairs` is filtered on
+     * `fleetMember: true` when it is read, so a pass that started before `removeSender`
+     * flipped the flag still holds the leaving page's pairs — and could write a fresh draft
+     * for it AFTER the hand-off had already read and released that page's queue. That
+     * draft would sit READY on a retired account, holding its post claim, with nothing left
+     * to release it. Re-read here, beside the status, for the same reason as the status.
+     */
     const liveSender = await prisma.senderAccount.findUnique({
       where: { id: pair.senderId },
-      select: { status: true },
+      select: { status: true, fleetMember: true },
     })
+    if (liveSender && !liveSender.fleetMember) {
+      outcomes.push({
+        pairKey,
+        eligible: false,
+        skipReason: 'sender-not-active',
+        skipDetail: `@${pair.sender.handle} has just been taken out of the rotation`,
+      })
+      continue
+    }
     if (liveSender?.status !== 'ACTIVE') {
       outcomes.push({
         pairKey,

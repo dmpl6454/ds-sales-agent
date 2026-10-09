@@ -31,6 +31,9 @@ import { profileUrl } from '@/lib/urls'
 import { handleExists, probeHandle } from '@/detection/exists'
 import { fetchFeed } from '@/detection/feed'
 import { addTargetMessage } from './add-target-message'
+import { removalVerdict, removeTargetResult } from './remove-target-message'
+import { DELIVERED_STATUSES } from '@/lib/constants'
+import { ourOwnPageHandles } from '@/detection/visibleChannels'
 import { assertSafeHandle } from '@/lib/urls'
 import { distinctiveSlice } from '@/outreach/matching'
 import { recordDelivered, revertUndrivenClaim } from '@/outreach/recordSend'
@@ -2043,26 +2046,33 @@ export async function removeSender(handle: string): Promise<MutationResult> {
   await cancelConnect(handle)
 
   /**
-   * OUT OF THE ROTATION FIRST, THEN THE QUEUE MOVES, THEN THE ROW IS SETTLED.
+   * OUT OF THE ROTATION FIRST, THEN THE QUEUE IS RELEASED, THEN THE ROW IS SETTLED.
    *
    * `fleetMember: false` first, so the planner (which reads this flag live, on the
    * server) cannot elect this account for a fresh recipient in the window between the
    * hand-off reading the queue and the row being retired — otherwise a 15-minute
-   * planning pass could re-create the very drafts just transferred away.
+   * planning pass could re-create the very drafts just released. A pass that started
+   * BEFORE this write re-reads the flag before it writes a draft (`plan.ts`).
    *
    * Then the queue: Tabish's rule (2026-08-19) is that removing a sender must never
-   * cost a message — every waiting draft moves to the account rotation would choose
-   * next. Anything that cannot move (a recipient another account already covers, a
-   * retired recipient) is discarded through the one discard writer, audited.
+   * cost a message. Each waiting draft is RELEASED (2026-10-09), never re-pointed, and
+   * the planner writes the page rotation elects next its OWN message on its next pass —
+   * `handOff.ts` says why moving the bytes was wrong. A recipient another account
+   * already covers, or a retired one, is discarded; all of it through the one discard
+   * writer, audited.
    */
   await prisma.senderAccount.update({ where: { handle }, data: { fleetMember: false } })
   const handOff = await handOffWaitingDrafts({ senderId: sender.id, senderHandle: handle, actor: user.email })
+  const handOffDetail = `hand-off: ${handOff.released} released, ${handOff.discarded} discarded, ${handOff.kept} kept`
   const movedNote =
-    handOff.transferred + handOff.discarded + handOff.kept === 0
+    handOff.released + handOff.discarded + handOff.kept === 0
       ? ''
-      : ` Queue: ${handOff.transferred} draft${handOff.transferred === 1 ? '' : 's'} moved to other accounts by rotation` +
-        (handOff.discarded > 0 ? `, ${handOff.discarded} discarded as already covered` : '') +
-        (handOff.kept > 0 ? `, ${handOff.kept} could not move and stayed put` : '') +
+      : ` Queue: ${handOff.released} waiting message${handOff.released === 1 ? '' : 's'} released — ` +
+        `the account rotation picks next writes to each recipient on the next planning pass (within 15 minutes)` +
+        (handOff.discarded > 0 ? `; ${handOff.discarded} discarded as already covered or retired` : '') +
+        (handOff.kept > 0
+          ? `; ${handOff.kept} stayed with @${handle} (no other page sends for their fleet, or it was mid-send)`
+          : '') +
         '.'
 
   const sentCount = sender.pairs.reduce((n, p) => n + p.attempts.length, 0)
@@ -2073,7 +2083,7 @@ export async function removeSender(handle: string): Promise<MutationResult> {
       user.email,
       'sender.deleted',
       `SenderAccount:${handle}`,
-      `no send history; hand-off: ${handOff.transferred} moved, ${handOff.discarded} discarded, ${handOff.kept} kept`,
+      `no send history; ${handOffDetail}`,
     )
     refreshPath('/')
     return { ok: true, message: `Removed @${handle}. Its Chrome profile is left on disk in case you re-add it.${movedNote}` }
@@ -2087,7 +2097,7 @@ export async function removeSender(handle: string): Promise<MutationResult> {
     user.email,
     'sender.retired',
     `SenderAccount:${handle}`,
-    `${sentCount} sent messages kept; hand-off: ${handOff.transferred} moved, ${handOff.discarded} discarded, ${handOff.kept} kept`,
+    `${sentCount} sent messages kept; ${handOffDetail}`,
   )
   refreshPath('/')
   return {
@@ -2144,8 +2154,49 @@ export async function addTarget(
   } catch {
     return { ok: false, message: 'That is not a valid Instagram handle (letters, numbers, dots, underscores).' }
   }
-  if (await prisma.targetAccount.findUnique({ where: { handle } })) {
-    return { ok: false, message: `@${handle} is already a channel you watch.` }
+  /**
+   * ── A HANDLE ALREADY IN THE LIST: SAY WHAT IT IS, AND LET A REMOVED WATCH PAGE COME BACK ──
+   *
+   * This refused every existing row with *"@x is already a channel you watch"* — false for a
+   * retired page and for a company, and a dead end once `removeTarget` stopped deleting
+   * watched pages (2026-10-09): a removed page could then never be read again. Now each state
+   * gets its own sentence, and exactly ONE is revived: a WATCH row re-added as WATCH. It
+   * passes the SAME probe and feed vet as a brand-new watch add below, because a page that has
+   * since vanished, or now returns nothing, must not be revived to read nothing, and the
+   * identity line is the one defence that makes a wrong watch page visible.
+   *
+   * Never revived from here: OUR OWN pages (they are WATCH rows too since the role backfill,
+   * and resuming reading them is ~1,500 feed requests a day and Tabish's call), and a retired
+   * PROSPECT — clearing `optedOut` on a recipient makes it messageable, which is
+   * `ig:unretire-target`'s job, on a badge it has just re-read. A role is never changed.
+   */
+  const existing = await prisma.targetAccount.findUnique({
+    where: { handle },
+    select: { id: true, role: true, optedOut: true, watchEnabled: true },
+  })
+  if (existing) {
+    const ourSender = await prisma.senderAccount.findUnique({ where: { handle }, select: { id: true } })
+    if (ourOwnPageHandles().includes(handle) || ourSender) {
+      return { ok: false, message: `@${handle} is one of our own pages; it is not managed from this list.` }
+    }
+    if (existing.role === 'WATCH') {
+      if (role === 'PROSPECT') {
+        return { ok: false, message: `@${handle} is a page we watch, and a watched page is never messaged.` }
+      }
+      if (!existing.optedOut && existing.watchEnabled) {
+        return { ok: false, message: `@${handle} is already a page we watch.` }
+      }
+      /* Falls through to the probe and the feed vet, then is revived below. */
+    } else if (existing.optedOut) {
+      return {
+        ok: false,
+        message:
+          `@${handle} is retired — never messaged again, its history kept. ` +
+          `\`pnpm ig:unretire-target @${handle}\` re-reads its badge if it should be messaged again.`,
+      }
+    } else {
+      return { ok: false, message: `@${handle} is already a company we message.` }
+    }
   }
 
   /**
@@ -2198,6 +2249,40 @@ export async function addTarget(
     } catch {
       /* Unreachable is not a verdict. Admitted, and said so. */
       watchNote = ` Note: its feed could not be read just now, so how much it posts is unconfirmed.`
+    }
+  }
+
+  /**
+   * THE REVIVAL — reached only by a WATCH row re-added as WATCH (see above), and only after
+   * the probe and the feed vet a new page passes. Its stored posts never left; reading
+   * resumes on the next 15-minute pass. The fleet is NOT changed by re-adding: every prospect
+   * already discovered through this page inherited the one it has, so moving it here would
+   * split those companies from their source without saying so.
+   */
+  if (existing) {
+    const fleets = await prisma.categoryTarget.findMany({
+      where: { targetId: existing.id },
+      select: { category: { select: { slug: true } } },
+    })
+    const current = fleets.map((f) => f.category.slug)
+    const asked = categorySlugRaw.trim().toLowerCase()
+    const fleetNote =
+      asked !== '' && !current.includes(asked)
+        ? ` Its fleet is unchanged (${current.length > 0 ? current.join(', ') : 'the default fleet'}) — adding it again does not move it.`
+        : ''
+    await prisma.targetAccount.update({ where: { id: existing.id }, data: { optedOut: false, watchEnabled: true } })
+    const posts = await prisma.detectedCampaign.count({ where: { targetId: existing.id } })
+    await audit(user.email, 'target.watch.resumed', `TargetAccount:${handle}`, `${posts} stored posts kept`)
+    refreshPath('/')
+    refreshPath('/targets')
+    refreshPath('/paid-posts')
+    return {
+      ok: true,
+      message:
+        addTargetMessage('WATCH', handle, exists, facts) +
+        watchNote +
+        ` Its ${posts} stored post${posts === 1 ? ' was' : 's were'} kept.` +
+        fleetNote,
     }
   }
 
@@ -2344,38 +2429,100 @@ export async function addTarget(
 }
 
 /**
- * Stop watching a channel.
+ * Remove a target — a watched channel or a company we message.
  *
- * Same rule as senders: a channel we have written to is retired, not deleted.
- * `optedOut` is a hard stop the governor checks independently of pairs, so it holds
- * even if a pair is re-enabled later by accident.
+ * ── IT DELETED A WATCHED CHANNEL'S WHOLE CORPUS (fixed 2026-10-09) ──────────
+ *
+ * This decided delete-or-retire on DELIVERED messages alone, and a watched page is never
+ * messaged, so Remove on any WATCH row ran `targetAccount.delete` — and
+ * `DetectedCampaign.target` is ON DELETE CASCADE. Every stored post went with it, with its
+ * human label and the text read off its footage; every OTHER recipient's message that
+ * claimed one of those posts lost its claim (`OutreachAttempt.campaign` is SET NULL); and a
+ * prospect's not-in-thread park or in-flight SENDING row cascaded away with the prospect.
+ * None of it could be fetched again — Instagram's feed reaches back 48 posts. The rule now
+ * lives in `remove-target-message.ts` (PURE, shared with the card), and in short:
+ *
+ *   - a WATCH row is deleted only when it holds NO posts and NO attempts — undoing a wrong
+ *     add — and that condition is INSIDE the delete statement, so nothing that arrives
+ *     between the read and the write can be cascaded away. A row that fails it is retired;
+ *   - a retired WATCH row stops being READ (`watchEnabled: false`; `optedOut` alone left the
+ *     feed read with its footage skipped) and keeps its role, so it stays on the competitor
+ *     list `excludedHandles()` reads and can never be minted as a prospect;
+ *   - a PROSPECT is ALWAYS retired. Deleting one does not stop it being messaged: discovery
+ *     mints a handle with no row, with live routes and none of its history.
+ *
+ * `optedOut` is a hard stop the governor and the gate check independently of pairs, so it
+ * holds even if a pair is re-enabled later by accident.
  */
 export async function removeTarget(handle: string): Promise<MutationResult> {
   const user = await requireOperator()
   const target = await prisma.targetAccount.findUnique({
     where: { handle },
-    include: { pairs: { include: { attempts: { where: { status: { in: ['SENT', 'REPLIED'] } } } } } },
+    select: { id: true, role: true, _count: { select: { campaigns: true, attempts: true } } },
   })
   if (!target) return { ok: false, message: `@${handle} not found.` }
 
-  const sentCount = target.pairs.reduce((n, p) => n + p.attempts.length, 0)
-
-  if (sentCount === 0) {
-    await prisma.targetAccount.delete({ where: { handle } })
-    await audit(user.email, 'target.deleted', `TargetAccount:${handle}`, 'never contacted')
+  let posts = target._count.campaigns
+  let attempts = target._count.attempts
+  const refresh = () => {
     refreshPath('/')
-    return { ok: true, message: `Stopped watching @${handle} and removed it.` }
+    refreshPath('/targets')
+    refreshPath('/paid-posts')
   }
 
+  if (removalVerdict({ role: target.role, campaigns: posts, attempts }) === 'delete') {
+    /**
+     * THE CHECK IS THE STATEMENT. A count read a moment ago is not a guard: the 15-minute
+     * detect pass stores posts for a just-added page within minutes. Prisma emits this as one
+     * `DELETE … WHERE … AND NOT EXISTS (…)`, and the pairs clause catches an attempt whose
+     * denormalised `targetId` drifted from its pair — the pair cascade would take it too.
+     */
+    const del = await prisma.targetAccount.deleteMany({
+      where: {
+        id: target.id,
+        role: 'WATCH',
+        campaigns: { none: {} },
+        attempts: { none: {} },
+        pairs: { none: { attempts: { some: {} } } },
+      },
+    })
+    if (del.count === 1) {
+      await audit(user.email, 'target.deleted', `TargetAccount:${handle}`, '0 posts, 0 attempts')
+      refresh()
+      return { ok: true, message: removeTargetResult({ handle, outcome: 'deleted', posts: 0, attempts: 0, delivered: 0 }) }
+    }
+    /* Something arrived between the read and the delete. Retire it, worded from fresh counts. */
+    const now = await prisma.targetAccount.findUnique({
+      where: { id: target.id },
+      select: { _count: { select: { campaigns: true, attempts: true } } },
+    })
+    posts = now?._count.campaigns ?? posts
+    attempts = now?._count.attempts ?? attempts
+  }
+
+  const isWatch = target.role === 'WATCH'
+  const delivered = await prisma.outreachAttempt.count({
+    where: { targetId: target.id, status: { in: [...DELIVERED_STATUSES] } },
+  })
   await prisma.$transaction([
-    prisma.targetAccount.update({ where: { handle }, data: { optedOut: true } }),
+    prisma.targetAccount.update({
+      where: { id: target.id },
+      /* Never the role: a WATCH row must stay a competitor. A prospect's `watchEnabled` is
+         left alone — it is retired as a recipient, not as a page we read (7 Aug precedent). */
+      data: isWatch ? { optedOut: true, watchEnabled: false } : { optedOut: true },
+    }),
     prisma.outreachPair.updateMany({ where: { targetId: target.id }, data: { enabled: false } }),
   ])
-  await audit(user.email, 'target.retired', `TargetAccount:${handle}`, `${sentCount} sent messages kept`)
-  refreshPath('/')
+  await audit(
+    user.email,
+    isWatch ? 'target.watch.retired' : 'target.retired',
+    `TargetAccount:${handle}`,
+    `${posts} posts, ${attempts} attempts (${delivered} delivered) kept`,
+  )
+  refresh()
   return {
     ok: true,
-    message: `Stopped messaging @${handle}. ${sentCount} sent message${sentCount === 1 ? '' : 's'} kept, so it can never be contacted again by accident.`,
+    message: removeTargetResult({ handle, outcome: isWatch ? 'watch-retired' : 'retired', posts, attempts, delivered }),
   }
 }
 
@@ -2730,10 +2877,22 @@ export async function setTargetWatch(handle: string, on: boolean): Promise<Mutat
   const user = await requireOperator()
   const target = await prisma.targetAccount.findUnique({ where: { handle } })
   if (!target) return { ok: false, message: `@${handle} is not in the list.` }
+  /**
+   * A REMOVED WATCH PAGE IS NOT TURNED BACK ON FROM HERE (2026-10-09). Reading it again is
+   * the Add form's job, which re-checks that the handle still exists and still posts — the
+   * vet a removed page must pass like a new one. Turning reading OFF is always allowed: a
+   * stop must never need permission.
+   */
+  if (on && target.role === 'WATCH' && target.optedOut) {
+    return { ok: false, message: `@${handle} was removed — add it again to read it.` }
+  }
 
   await prisma.targetAccount.update({ where: { handle }, data: { watchEnabled: on } })
   await audit(user.email, on ? 'target.watch.on' : 'target.watch.off', `TargetAccount:${handle}`)
   refreshPath('/prospects')
+  /* The list with this control lives on /targets; '/prospects' is a redirect stub, so
+     refreshing it alone left the row showing the old state. */
+  refreshPath('/targets')
   return {
     ok: true,
     message: on

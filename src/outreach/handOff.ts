@@ -1,50 +1,84 @@
 import { prisma } from '@/lib/db'
 import { log } from '@/lib/logger'
-import { DELIVERED_STATUSES } from '@/lib/constants'
-import { fleetRingOrder, nextSender } from './rotation'
-import { readSenderAvailability } from './availability'
-import { readCategoryMemberships, ringMembersFor } from './categories'
+import { fleetRingFor } from './categories'
 import { ensureFleetPairs } from './plan'
 import { discardAttempt } from './discard'
 
 /**
- * WHEN A SENDER LEAVES THE ROTATION, ITS QUEUE DOES NOT LEAVE WITH IT.
+ * WHEN A SENDER LEAVES THE ROTATION, ITS QUEUE IS RELEASED — NEVER RE-POINTED.
  *
  * Tabish, 2026-08-19: *"when a sender is deleted the queue must not get hampered —
  * their messages must be transferred to another sender which can send it accordingly,
  * in the round rotating format."*
  *
- * Every waiting draft is the same standard template (2026-08-18), which is what makes a
- * transfer safe at all: the body carries nothing about the account that would have sent
- * it, so moving a draft between senders changes WHO speaks and not WHAT is said. Each
- * draft's new sender is chosen by `nextSender` on the fleet ring MINUS the leaving
- * account — the same rule, the same hash spread for never-messaged recipients — so the
- * hand-off is the rotation working, not a special case beside it.
+ * ── WHY THIS NO LONGER MOVES A DRAFT (2026-10-09) ─────────────────────────
  *
- * ── WHAT MOVES, WHAT STAYS, WHAT GOES ──────────────────────────────────────
+ * Until now every waiting draft was re-pointed — `pairId`, `senderId` and `touchNumber`
+ * rewritten onto the account rotation would choose — on the premise that *"every waiting
+ * draft is the same standard template, so moving it changes WHO speaks and not WHAT is
+ * said"*. That premise stopped being true three times over and nothing here noticed:
+ * follow-ups carry their own copy citing a post (1 Sept), each fleet has its own message
+ * (25-26 Aug), and whether a message is an introduction depends on the RECEIVING page's
+ * history and on whether the recipient has ever replied (`isFollowUp`, 4 Sept).
  *
- *   READY / QUEUED drafts        → transferred to the rotation's choice, attempts reset
- *   FAILED, code ≠ not-in-thread → transferred and re-queued: the failure belonged to a
- *                                  drive from the OLD account, and the retry cap starts
- *                                  over for the new one (still bounded at 3)
- *   FAILED, code = not-in-thread → STAYS ON THE LEAVING ACCOUNT, untouched. The
- *                                  recipient may already HAVE that message, and it must
- *                                  go through the two-button human flow under the
- *                                  account that actually sent it
- *   a target already covered     → the duplicate is DISCARDED (audited), because two
- *                                  waiting drafts to one recipient is the 2026-08-17
- *                                  incident queued up on purpose
- *   a retired target             → discarded — retirement outranks every transfer
+ * REPRODUCED at the base commit, against the real gate expressions:
  *
- * Touch numbers are recomputed for the RECEIVING pair: what the new account has
- * delivered to this recipient is the only history that means anything in its thread.
+ *   - a FOLLOW-UP moved to a page that had never written to the recipient was renumbered
+ *     touch 1 — so the gate read it as a first touch, skipped every follow-up rule, and
+ *     `deliver.ts` skipped the pre-send thread read. The follow-up went out as that page's
+ *     FIRST message;
+ *   - a FIRST TOUCH moved to a page that had already written was renumbered touch 2 with
+ *     the introduction's bytes, held forever as `identical-to-a-message-they-already-have`,
+ *     and — because the planner's pending check is per pair — nothing replaced it. The
+ *     recipient stalled. The old test in this file pinned that outcome as correct;
+ *   - the election was this file's own, not the planner's: it skipped blocked routes
+ *     (`readBlockedRoutes` — parked pairs, pair-scoped reply halts) and ignored a group
+ *     ring's `CategorySender.position`, so a draft could land on a route rotation would
+ *     never elect, and the planner then wrote the elected page a SECOND draft;
+ *   - the re-point had no status condition, so a row the dispatcher claimed SENDING after
+ *     this read the queue was rewritten to READY under another page mid-paste;
+ *   - a `profile-gone` park was in the movable set, and moving it erased the recipient's
+ *     7-day TARGET_UNREACHABLE stop;
+ *   - a moved draft kept the leaving account's `variantId`, and `OutreachAttempt.variant`
+ *     is ON DELETE RESTRICT — so deleting a never-delivered sender after a hand-off threw.
+ *
+ * Every one of those is a second planner living inside a removal action and drifting from
+ * the first. So the hand-off no longer elects and no longer composes: it RELEASES each
+ * waiting draft through `discardAttempt` (the one writer, status guard inside the update),
+ * which frees its post claim (SKIPPED is not in IN_FLIGHT_STATUSES) and leaves no pending
+ * draft on any fleet pair. The planner — the one elector and the one composer — then writes
+ * the correct message for whichever page `whoseTurn` elects, on its next pass: drafting
+ * runs on the 15-minute detect clock whatever Autopilot says. Tabish's rule is kept as
+ * "nothing is lost, each recipient is written to within fifteen minutes by the next page",
+ * not as "the same bytes move". An attempt's route, bytes and variant are fixed when the
+ * planner writes it for that route, and never change afterwards
+ * (`tests/attempt-route-immutable.test.ts`).
+ *
+ * ── WHAT IS RELEASED, WHAT STAYS, WHAT GOES ────────────────────────────────
+ *
+ *   READY / QUEUED drafts          → released (SKIPPED, audited); the planner re-writes
+ *   FAILED, any other code         → released — the failure belonged to a drive from the
+ *                                    leaving account, and the next page starts clean
+ *   FAILED, code = not-in-thread   → STAYS ON THE LEAVING ACCOUNT, untouched. The
+ *                                    recipient may already HAVE that message
+ *   FAILED, code = profile-gone    → STAYS, untouched. It is the recipient-scoped 7-day
+ *                                    stop (`parkedRows.ts`); a SKIPPED row is not read by it
+ *   a recipient already covered    → discarded: another page holds a draft for them, or is
+ *                                    sending one right now (SENDING counts)
+ *   a retired recipient            → discarded — retirement outranks everything
+ *   no other page in their fleet   → KEPT on the leaving account and said so; releasing it
+ *                                    would leave nobody to write, and re-adding the page
+ *                                    finds it where it was
+ *
  * Delivered history is never touched — that is the removal rule that predates this file.
  */
 
 export interface HandOffSummary {
-  transferred: number
+  /** Released for the planner to re-write from whichever page rotation elects next. */
+  released: number
+  /** Discarded because the recipient is retired or another page already covers them. */
   discarded: number
-  /** Drafts that could not move (no other fleet sender usable) and stayed put. */
+  /** Left on the leaving account: no other page sends for their fleet, or it is mid-send. */
   kept: number
   details: string[]
 }
@@ -56,183 +90,121 @@ export async function handOffWaitingDrafts(args: {
   actor: string
 }): Promise<HandOffSummary> {
   const { senderId, senderHandle, actor } = args
-  const out: HandOffSummary = { transferred: 0, discarded: 0, kept: 0, details: [] }
+  const out: HandOffSummary = { released: 0, discarded: 0, kept: 0, details: [] }
 
-  const fleet = await prisma.senderAccount.findMany({
+  const otherFleet = await prisma.senderAccount.count({
     where: { fleetMember: true, id: { not: senderId } },
-    select: { id: true, handle: true, cohort: true },
   })
 
   /**
-   * Pairs must exist before drafts can move onto them. `ensureFleetPairs` is the ONE
-   * permitted creator for fleet routes (routes.ts rules applied, watch-only and retired
-   * targets excluded) — this file deliberately creates no pair row of its own.
+   * The ring below is built from the pair rows that EXIST, so the routes the planner will
+   * create must exist before it is asked — otherwise a page with every right to write to a
+   * recipient would count as no page, and that draft would be kept on an account that just
+   * left. `ensureFleetPairs` is the ONE permitted creator for fleet routes; this file
+   * creates no pair row of its own.
    */
-  if (fleet.length > 0) await ensureFleetPairs()
+  if (otherFleet > 0) await ensureFleetPairs()
 
-  const unavailable = await readSenderAvailability()
-  /**
-   * ── THE RING IS PER RECIPIENT, BECAUSE A FLEET RING NAMES PAGES THAT CANNOT WRITE ──
-   *
-   * This built ONE ring from the whole fleet and handed every draft to whoever came next in
-   * it. MEASURED 2026-09-01, removing @bachelorssociety: **4 of its 8 movable drafts could
-   * not move**, and the reason was the same for all four — the ring elected
-   * `@madaboutmarketingg`, the MARKETING page, for four BOLLYWOOD companies
-   * (@satishfenn, @tarasutaria, @abhishekpathakk, @arunabhkumar). `routeAllowed` refuses
-   * that route, so no pair exists, so the draft was "kept" on an account that had just left
-   * the rotation and can never send it.
-   *
-   * `ringMembersFor` is the rule that already exists for this and it is the FOURTH ring
-   * builder to need it: `fleetRingFor`'s own docblock makes the argument, and `whoseTurn`
-   * learned it on 2026-08-26 when the same marketing page was elected for 15 bollywood
-   * companies and stalled every one of them. A hand-off that can elect a page the gate
-   * refuses is that stall arriving through the removal door.
-   *
-   * Memberships are read ONCE for the whole hand-off, not per draft.
-   */
-  const memberships = await readCategoryMemberships()
-  const ringFor = (targetHandle: string) => fleetRingOrder(ringMembersFor(fleet, targetHandle, memberships))
-
-  const moving = await prisma.outreachAttempt.findMany({
+  const releasable = await prisma.outreachAttempt.findMany({
     where: {
       senderId,
       OR: [
         { status: { in: ['READY', 'QUEUED'] } },
-        { status: 'FAILED', failureCode: { not: 'not-in-thread' } },
+        /* not-in-thread: they may have it. profile-gone: the recipient's own 7-day stop. */
+        { status: 'FAILED', failureCode: { notIn: ['not-in-thread', 'profile-gone'] } },
       ],
     },
     include: { pair: { include: { target: true } } },
     orderBy: { queuedAt: 'asc' },
   })
-  if (moving.length === 0) return out
+  if (releasable.length === 0) return out
 
   /**
-   * Recipients that already hold a waiting draft from some OTHER account. Seeded once,
-   * then maintained as drafts transfer, so the second of two drafts to one recipient —
-   * including a parked retry behind a fresh draft to the same company — is caught
-   * whichever order the loop meets them in.
+   * Recipients another page already holds a draft for — or is SENDING to right now. SENDING
+   * is in the planner's own pending set (`hasPendingAttempt`); leaving it out here let a
+   * draft land beside a send in flight, which then delivered the identical template.
    */
   const covered = new Set(
     (
       await prisma.outreachAttempt.findMany({
-        where: { status: { in: ['READY', 'QUEUED'] }, senderId: { not: senderId } },
+        where: { status: { in: ['READY', 'QUEUED', 'SENDING'] }, senderId: { not: senderId } },
         select: { targetId: true },
       })
     ).map((a) => a.targetId),
   )
+  /* A second leaving draft to a recipient already released is a duplicate, not a release. */
+  const releasedTargets = new Set<string>()
 
   /**
-   * Discards go through `discardAttempt` — the ONE writer that turns a draft into
-   * SKIPPED, with the status guard inside the update. A second inline writer here is
-   * exactly the drift its docblock warns about.
+   * Every write goes through `discardAttempt` — the ONE writer that turns a draft into
+   * SKIPPED, with the status guard inside the update. A draft the dispatcher claimed
+   * SENDING after the read above is refused there and stays where it is, so its delivery is
+   * recorded on the pair that actually drove it.
    */
-  const discard = async (attemptId: string, targetHandle: string, reason: string) => {
+  const drop = async (
+    attemptId: string,
+    targetHandle: string,
+    reason: string,
+    bucket: 'released' | 'discarded',
+  ): Promise<boolean> => {
     const r = await discardAttempt({ attemptId, reason: `hand-off from @${senderHandle}: ${reason}`, actor })
     if (r.ok) {
-      out.discarded += 1
-      out.details.push(`@${targetHandle}: discarded — ${reason}`)
-    } else {
-      out.kept += 1
-      out.details.push(`@${targetHandle}: kept — ${r.message}`)
+      out[bucket] += 1
+      out.details.push(`@${targetHandle}: ${bucket} — ${reason}`)
+      return true
     }
+    out.kept += 1
+    out.details.push(`@${targetHandle}: kept — ${r.message}`)
+    return false
   }
 
-  for (const attempt of moving) {
+  for (const attempt of releasable) {
     const target = attempt.pair.target
 
     if (target.optedOut) {
-      await discard(attempt.id, target.handle, 'the recipient is retired')
+      await drop(attempt.id, target.handle, 'the recipient is retired', 'discarded')
       continue
     }
     if (covered.has(target.id)) {
-      await discard(attempt.id, target.handle, 'another account already has a draft waiting for this recipient')
-      continue
-    }
-    /* This recipient's OWN ring — the pages whose fleet permits writing to them. */
-    const ring = ringFor(target.handle)
-    if (ring.length === 0) {
-      out.kept += 1
-      out.details.push(
-        `@${target.handle}: kept — no other account in the rotation sends for their fleet`,
+      await drop(
+        attempt.id,
+        target.handle,
+        'another account already has a message waiting for or being sent to them',
+        'discarded',
       )
       continue
     }
-
-    const lastDelivered = await prisma.outreachAttempt.findFirst({
-      where: { targetId: target.id, status: { in: [...DELIVERED_STATUSES] } },
-      orderBy: { sentAt: 'desc' },
-      select: { senderId: true },
-    })
+    if (releasedTargets.has(target.id)) {
+      await drop(attempt.id, target.handle, 'a second draft to them, released with the first', 'discarded')
+      continue
+    }
 
     /**
-     * The rotation's own choice, twice if needed: first among accounts that can send
-     * RIGHT NOW, then among the whole remaining ring. The second ask exists because
-     * "signed out this afternoon" must not decide where a draft lives — a draft on a
-     * signed-out account waits honestly (the gate says why), which beats both dropping
-     * it and piling every orphan onto whichever account happens to be logged in.
+     * THE PLANNER'S OWN RING for this recipient, minus the leaving page: pair-based,
+     * `fleetMember`-filtered and fleet-matched (`ringMembersFor`), so a page with no route,
+     * or a page whose fleet forbids this recipient, counts as no page. The explicit filter
+     * covers a caller that has not flipped `fleetMember` yet. This decides only whether
+     * ANYONE is left to write; WHO writes is `whoseTurn`'s answer on the next pass.
      */
-    const choice = (() => {
-      const strict = nextSender({
-        ring,
-        lastSenderId: lastDelivered?.senderId ?? null,
-        unavailable,
-        targetId: target.id,
-      })
-      if (strict.ok) return strict
-      return nextSender({ ring, lastSenderId: lastDelivered?.senderId ?? null, targetId: target.id })
-    })()
-
-    if (!choice.ok) {
+    const ring = (await fleetRingFor(target.id)).filter((m) => m.senderId !== senderId)
+    if (ring.length === 0) {
       out.kept += 1
-      out.details.push(`@${target.handle}: kept — ${choice.detail}`)
+      out.details.push(`@${target.handle}: kept — no other account in the rotation sends for their fleet`)
       continue
     }
 
-    const newPair = await prisma.outreachPair.findFirst({
-      where: { senderId: choice.senderId, targetId: target.id },
-      select: { id: true },
-    })
-    if (!newPair) {
-      // ensureFleetPairs declined this route (routes.ts said no). Not overridden here.
-      out.kept += 1
-      out.details.push(`@${target.handle}: kept — no route exists from @${choice.handle}`)
-      continue
-    }
-
-    const deliveredOnNewPair = await prisma.outreachAttempt.count({
-      where: { pairId: newPair.id, status: { in: [...DELIVERED_STATUSES] } },
-    })
-
-    await prisma.$transaction([
-      prisma.outreachAttempt.update({
-        where: { id: attempt.id },
-        data: {
-          pairId: newPair.id,
-          senderId: choice.senderId,
-          touchNumber: deliveredOnNewPair + 1,
-          status: 'READY',
-          attempts: 0,
-          error: null,
-          failureCode: null,
-        },
-      }),
-      prisma.auditLog.create({
-        data: {
-          actor,
-          action: 'attempt.transferred.handoff',
-          entity: `OutreachAttempt:${attempt.id}`,
-          detail: `@${target.handle}: @${senderHandle} → @${choice.handle} (rotation's choice)`,
-        },
-      }),
-    ])
-    covered.add(target.id)
-    out.transferred += 1
-    out.details.push(`@${target.handle}: now with @${choice.handle}`)
+    const ok = await drop(
+      attempt.id,
+      target.handle,
+      "released — rotation's next page writes to them on the next planning pass",
+      'released',
+    )
+    if (ok) releasedTargets.add(target.id)
   }
 
   log.info('queue handed off', {
     from: senderHandle,
-    transferred: out.transferred,
+    released: out.released,
     discarded: out.discarded,
     kept: out.kept,
   })

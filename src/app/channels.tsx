@@ -3,17 +3,19 @@
 import { useState } from 'react'
 import { addTarget, removeTarget } from './actions'
 import { DETECT_INTERVAL_MINUTES } from '@/detection/cadence'
+import { removeTargetConfirm } from './remove-target-message'
 import type { ChannelCard } from './view-model'
 
 /**
  * The channels being watched, and adding or removing them.
  *
- * Removal is not deletion when a channel has been contacted. The record of what was
- * sent to whom is what the spacing rule, the unanswered-touch cap and the
- * new-material rule are computed from — throwing it away would let the system write
- * to someone it has already written to, which is the single worst outcome here. So a
- * contacted channel is retired: marked never-contact and kept. A channel that was
- * never messaged has no such history and is simply deleted.
+ * Removal is not deletion when a channel holds anything (2026-10-09). This said a channel
+ * "never messaged has no such history and is simply deleted" — and a watched page is never
+ * messaged, so Remove deleted every page's stored posts, labels and footage text through a
+ * cascade, for good: Instagram's feed reaches back 48 posts. A watched page that has stored
+ * anything is now RETIRED — no longer read, posts kept, still on the list of pages we never
+ * message — and only an empty one (a wrong add undone) is deleted. The rule is
+ * `removalVerdict` in `remove-target-message.ts`, shared with the server action.
  */
 export function ChannelsPanel({
   channels,
@@ -57,7 +59,11 @@ export function ChannelsPanel({
               <span className="dot" aria-hidden />
               <span className="acc-name">{c.name}</span>
               <span className="acc-handle">@{c.handle}</span>
-              <span className="acc-note">retired — never contacted again, history kept</span>
+              <span className="acc-note">
+                {c.reading
+                  ? 'retired — never messaged, still read · its stored posts are kept'
+                  : `no longer read — ${c.postsLogged} stored post${c.postsLogged === 1 ? '' : 's'} kept · add it again to read it`}
+              </span>
             </div>
           ))}
         </div>
@@ -78,6 +84,14 @@ function ChannelBlock({ channel: c }: { channel: ChannelCard }) {
   const [busy, setBusy] = useState(false)
   const [confirm, setConfirm] = useState(false)
   const [msg, setMsg] = useState<string | null>(null)
+
+  /* The SAME pure rule `removeTarget` asks — never a second copy of it in this file. */
+  const confirmCopy = removeTargetConfirm({
+    handle: c.handle,
+    postsLogged: c.postsLogged,
+    attemptsLogged: c.attemptsLogged,
+    removal: c.removal,
+  })
 
   const remove = async () => {
     setBusy(true)
@@ -129,11 +143,9 @@ function ChannelBlock({ channel: c }: { channel: ChannelCard }) {
 
       {confirm ? (
         <div className="connect-strip warn">
-          {c.everContacted
-            ? `We have already messaged @${c.handle}. Removing marks it never-contact and keeps that record, so nobody there is written to twice.`
-            : `@${c.handle} has never been messaged, so it will be deleted outright.`}
+          {confirmCopy.text}
           <button className="link-btn" onClick={remove} disabled={busy}>
-            {busy ? 'Removing…' : c.everContacted ? 'Yes, stop messaging' : 'Yes, delete'}
+            {busy ? 'Removing…' : confirmCopy.button}
           </button>
           <button className="link-btn" onClick={() => setConfirm(false)}>
             Keep it

@@ -110,6 +110,16 @@ async function main(): Promise<void> {
       console.log(`  @${handle} — no such target. Nothing done.`)
       continue
     }
+    /**
+     * A WATCHED PAGE IS NOT UN-RETIRED HERE (2026-10-09). This command re-reads a recipient's
+     * badge and sets `campaignTalent` — both meaningless for a page we only read, and clearing
+     * its `optedOut` would leave it unread. Reading a removed page again is the dashboard's Add,
+     * which re-checks the handle still exists and still posts.
+     */
+    if (target.role === 'WATCH') {
+      console.log(`  @${handle} — a page we WATCH, not a company we message. Nothing done: add it again on /targets to read it.`)
+      continue
+    }
     if (!target.optedOut) {
       console.log(`  @${handle} — already live. Nothing to do.`)
       continue
