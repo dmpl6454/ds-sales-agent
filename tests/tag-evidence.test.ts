@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { tagsForPrompt, storedTagEvidence, sanitiseHandle } from '@/detection/tagEvidence'
+import { walkSources, readSource, stripComments, callsOf as callsIn } from './fixtures/sourceScan'
 
 /**
  * WHO A POST TAGS, handed to the classifier as evidence and never as a rule.
@@ -196,15 +197,26 @@ function topLevelArgCount(args: string): number {
   return count
 }
 
-/** Every file that asks the model whether a post is paid. */
-const CLASSIFIER_CALLERS = [
-  'detection/detectors/semantic.ts',
-  'detection/judge.ts',
-  'scripts/classify.ts',
-  'scripts/accuracy.ts',
-] as const
+/**
+ * Every file that asks the model whether a post is paid, and every file that hands a post to
+ * `judgeWithFrame` — DISCOVERED from the tree rather than listed (2026-10-09). The lists that
+ * stood here named four and three files; the accuracy harness then stopped calling the
+ * classifier directly and new judge callers had appeared, and a list cannot notice either.
+ * Paths are relative to `src/`, as `read` expects.
+ */
+const discovered = (name: string) =>
+  walkSources('src')
+    .filter((f) => callsIn(stripComments(readSource(f)), name).length > 0)
+    .map((f) => f.replace(/^src\//, ''))
+const CLASSIFIER_CALLERS = discovered('classifyCaption')
+const JUDGE_CALLERS = discovered('judgeWithFrame')
 
 describe('every classifier call sees the post’s tags', () => {
+  it('the discovery found the callers it must (an empty walk would pass everything)', () => {
+    expect(CLASSIFIER_CALLERS).toEqual(expect.arrayContaining(['detection/detectors/semantic.ts', 'detection/judge.ts', 'scripts/classify.ts']))
+    expect(JUDGE_CALLERS).toEqual(expect.arrayContaining(['detection/pipeline.ts', 'scripts/classify.ts', 'scripts/ocr.ts', 'scripts/accuracy.ts']))
+  })
+
   it.each(CLASSIFIER_CALLERS)('%s passes a tag argument to every classifyCaption call', (file) => {
     const source = read(file)
     /**
@@ -221,7 +233,7 @@ describe('every classifier call sees the post’s tags', () => {
     }
   })
 
-  it.each(['detection/pipeline.ts', 'scripts/classify.ts', 'scripts/ocr.ts'] as const)(
+  it.each(JUDGE_CALLERS)(
     '%s gives judgeWithFrame the same tags the caption verdict was reached with',
     (file) => {
       const source = read(file)

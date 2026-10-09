@@ -15,19 +15,15 @@ import type { Verdict } from '@/lib/constants'
  * that same classifier, and the harness's labels are caption-derived — so a verdict that
  * only the frame could have produced is covered by no measurement that exists yet.
  *
- * The honest consequence: when the caption alone reads as ordinary and the frame is what
- * turned the verdict commercial, the post lands in REVIEW — visible, on `/paid-posts`,
- * with the frame text quoted so a person can settle it in one look. That answer is then
- * recorded as `humanLabel`, and those answers are the only labels that can ever measure
- * recall on video-only placements. The mechanism produces its own measurement.
+ * The consequence when this was written: a caption ORGANIC that the frame turned
+ * commercial landed in REVIEW — surfaced on `/paid-posts` for a person, nothing asserted.
  *
- * It is deliberately NOT the more aggressive choice. CLAUDE.md's rule is "protect recall,
- * never trade it for precision — a missed paid post is invisible and unappealable, a false
- * alarm becomes a draft a human reads". REVIEW satisfies both halves: nothing is missed
- * (the post is surfaced) and nothing is asserted (no CAMPAIGN is claimed on unmeasured
- * evidence). Promoting frame-driven verdicts to CAMPAIGN is a decision to take once the
- * human answers exist to justify it, and `pnpm ig:vision-accuracy`'s successor is where
- * that number will come from.
+ * SUPERSEDED 2026-08-17: Tabish removed the third state ("either a post is paid or
+ * unpaid/ordinary, no in between"), so the escalation now lands on CAMPAIGN, and the cross on
+ * `/paid-posts` — which writes a human ORGANIC through `labelPost` — is the corrective that
+ * shipped with it. The reasoning is at the CAMPAIGN case below. What has NOT changed is the
+ * direction: the footage may raise a caption ORGANIC, and may never clear, overturn or mint
+ * anything else. And `judge.ts` is the only caller, so this table runs once per post.
  */
 
 export type FrameEvidence =

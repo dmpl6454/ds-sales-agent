@@ -10,6 +10,8 @@ import { buildVocabulary } from './detectors/novelty'
 import { saveFrame } from './media'
 import { buildRawPayload, evidenceRefresh } from './evidence'
 import { tagsForPost } from './tagEvidence'
+import { publisherForPrompt } from './publisherContext'
+import type { ModelInputs } from './types'
 import { judgeWithFrame } from './judge'
 import { hoursAgo } from '@/lib/time'
 import { DETECT_LOOKBACK_HOURS } from './cadence'
@@ -27,6 +29,44 @@ import { rejudgeUnusedEvidence, type RejudgeSummary } from './rejudge'
  * day means each post is seen repeatedly, so known shortcodes are filtered before
  * any work and the rest are upserted. Re-running a slot is safe.
  */
+
+/**
+ * The model inputs for one live post besides its caption: who it tags, and whose feed it is.
+ *
+ * ── BUILT ONCE, HANDED TO BOTH CALLS (2026-10-09) ────────────────────────────────────
+ *
+ * A post reaches the model twice — its caption alone in the detector, then caption plus frame
+ * in `judgeWithFrame` — and `applyFrameSignal` blames any difference between the two answers
+ * on THE FOOTAGE. Each side used to build its own blocks, and they had drifted: the detector
+ * named the publisher `@filmygyan` (it held no display name) while judge named it
+ * `@filmygyan ("F I L M Y G Y A N")`. Built here, from the target row that carries the display
+ * name, and passed unchanged to both, the two calls differ in exactly one input by
+ * construction.
+ *
+ * The display name is not decoration: `publisherForPrompt` fires when the caption names the
+ * publisher by its handle OR its display name, so a caption saying "RVCJ Media" on @rvcjinsta
+ * gets the block only when the name is supplied. Exported so the composition test drives this
+ * builder rather than a copy of it.
+ */
+export async function modelInputsFor(
+  post: Pick<FeedPost, 'shortcode' | 'caption' | 'taggedAccounts' | 'collabHandles' | 'isPaidPartnership'>,
+  target: { handle: string; displayName: string | null },
+  publisherAsContext: boolean,
+): Promise<ModelInputs> {
+  return {
+    tagText: await tagsForPost(
+      {
+        taggedAccounts: post.taggedAccounts,
+        collabHandles: post.collabHandles,
+        isPaidPartnership: post.isPaidPartnership,
+      },
+      post.shortcode.slice(0, 6),
+    ),
+    publisherText: publisherAsContext
+      ? publisherForPrompt(post.caption, { handle: target.handle, displayName: target.displayName })
+      : null,
+  }
+}
 
 export interface ChannelOutcome {
   handle: string
@@ -303,9 +343,18 @@ export async function runDetection(
          */
         await saveFrame(post.shortcode, post.thumbnailUrl)
 
+        /**
+         * The per-post model inputs, built ONCE here and handed UNCHANGED to the detector's
+         * caption call and to `judgeWithFrame`'s frame call — see `modelInputsFor`. The
+         * Setting is read per post, like everywhere else in detection, so flipping it takes
+         * effect on the next post rather than at the next restart.
+         */
+        const settings = await getSettings()
+        const inputs = await modelInputsFor(post, target, settings.publisherAsContext)
+
         // Awaited: the semantic detector calls a model. Rule detectors return
         // synchronously and `await` on a non-promise costs a microtask.
-        const cls = await detector.classify(post)
+        const cls = await detector.classify(post, inputs)
 
         // Instagram's own Paid Partnership label overrides any heuristic. Neither
         // Phase 1 target uses it today, but when one does this becomes the truth.
@@ -330,7 +379,13 @@ export async function runDetection(
          * `judgeWithFrame` is the ONE judging path, shared with the backfill and the
          * classify CLI. It decides on its own whether a call is worth making (retired
          * target, unsupported detector, a caption verdict a frame cannot move) and the
-         * footage may only ever raise ORGANIC to REVIEW.
+         * footage may only ever raise ORGANIC to CAMPAIGN.
+         *
+         * It is also the ONLY place the footage is read. The semantic detector had its own
+         * frame stage until 2026-10-09 — so an ORGANIC post was read twice and judged with
+         * the frame twice, and the detector's copy never stripped the publisher's own
+         * watermark, so `cls.verdict` arrived here already escalated on @filmygyan's logo and
+         * this call returned 'caption-decisive' without running its strip at all.
          */
         const judged = await judgeWithFrame(
           {
@@ -344,23 +399,18 @@ export async function runDetection(
             optedOut: target.optedOut,
             /* Whose post this is — a publisher's own watermark is not evidence about it. */
             publisher: { handle: target.handle, displayName: target.displayName },
-            publisherAsContext: (await getSettings()).publisherAsContext,
+            publisherAsContext: settings.publisherAsContext,
             // judge.ts owns what each detector permits — including the M.O.M second look.
             detectorKey: detector.key,
             /**
-             * The SAME tag block the caption verdict was reached with. Built here from the
-             * same post the detector saw, so the frame call differs from the caption call
-             * in exactly one thing — the frame — which is what `applyFrameSignal` is about
-             * to attribute the difference to.
+             * The SAME tag and publisher blocks the caption verdict was reached with — the
+             * very strings the detector was handed above, not a second construction of them —
+             * so the frame call differs from the caption call in exactly one thing, the
+             * frame, which is what `applyFrameSignal` is about to attribute the difference to.
+             * The M.O.M second look uses them too, so its caption call matches as well.
              */
-            tagText: await tagsForPost(
-              {
-                taggedAccounts: post.taggedAccounts,
-                collabHandles: post.collabHandles,
-                isPaidPartnership: post.isPaidPartnership,
-              },
-              post.shortcode.slice(0, 6),
-            ),
+            tagText: inputs.tagText,
+            publisherText: inputs.publisherText,
           },
           captionVerdict,
         )
@@ -408,11 +458,11 @@ export async function runDetection(
           taggedAccounts: post.taggedAccounts ?? [],
           /**
            * What the footage said, from the ONE writer of that sentence
-           * (`frameTextSummaryLine`), falling back to whatever the detector recorded.
-           * The screen and the stored record must not be able to describe the same
-           * evidence differently.
+           * (`frameTextSummaryLine`). The screen and the stored record must not be able to
+           * describe the same evidence differently — and no detector reads the footage any
+           * more, so there is nothing else to fall back to.
            */
-          frameText: judged.frameText ?? cls.frameText ?? null,
+          frameText: judged.frameText ?? null,
         })
         outcome.stored += 1
       }

@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { publisherForPrompt } from '@/detection/publisherContext'
+import { walkSources, readSource, stripComments, callsOf, topLevelArgs } from './fixtures/sourceScan'
 
 /**
  * WHOSE FEED IS THIS — the input the classifier was never given (2026-08-21).
@@ -76,7 +77,8 @@ describe('the input reaches BOTH classifier calls, or neither', () => {
    * says whether reading video earns its keep. Exactly the constraint `tagText` documents.
    */
   it('is derived once and passed to both calls in judge.ts', () => {
-    expect(judge).toMatch(/const publisherText = input\.publisherAsContext/)
+    // A caller's own block wins; only in its absence is one derived from the Setting.
+    expect(judge).toMatch(/const publisherText =\s*input\.publisherText !== undefined\s*\?\s*input\.publisherText\s*:\s*input\.publisherAsContext/)
     const calls = judge.match(/classifyCaption\([^)]*\)/g) ?? []
     expect(calls.length, 'expected both classifier calls').toBeGreaterThanOrEqual(2)
     for (const c of calls) expect(c, `this call omits the publisher: ${c}`).toContain('publisherText')
@@ -90,27 +92,82 @@ describe('the input reaches BOTH classifier calls, or neither', () => {
    * pipeline's caption verdict comes from `detector.classify()`, which was never told. The
    * missing-caller failure, inside the fix for an input gap. Found by READING the fresh
    * verdicts rather than trusting the green harness.
+   *
+   * ── AND THEN THE DETECTOR BUILT ITS OWN, WITHOUT THE DISPLAY NAME (2026-10-09) ──
+   *
+   * Its fix gave the detector a SECOND construction of the block — `displayName: null` — while
+   * judge built one with it, so the caption call and the frame call about one post carried
+   * different publisher blocks. The detector now builds nothing: it is handed the caller's
+   * block and makes exactly one call with it.
    */
-  it('the semantic DETECTOR passes the publisher to both of its own calls', () => {
-    const sem = read('src/detection/detectors/semantic.ts')
-    const classify = sem.slice(sem.indexOf('async classify('), sem.indexOf('const detector: ChannelDetector') > 0 ? sem.indexOf('const detector: ChannelDetector') : sem.length)
-    expect(classify).toMatch(/publisherForPrompt\(post\.caption, \{ handle: post\.ownerHandle/)
-    const calls = classify.match(/classifyCaption\([^)]*\)/gs) ?? []
-    expect(calls.length).toBeGreaterThanOrEqual(2)
-    for (const c of calls) expect(c, `detector call omits the publisher: ${c.slice(0, 80)}`).toContain('publisherText')
+  it('the semantic DETECTOR makes ONE caption call, with the block it was handed', () => {
+    const sem = stripComments(read('src/detection/detectors/semantic.ts'))
+    const classify = sem.slice(sem.indexOf('async classify('))
+    const calls = callsOf(classify, 'classifyCaption')
+    expect(calls.length).toBe(1)
+    expect(topLevelArgs(calls[0]!)[4]).toBe('inputs.publisherText')
+    expect(topLevelArgs(calls[0]!)[3]).toBe('inputs.tagText')
+    for (const name of ['publisherForPrompt', 'tagsForPost', 'readFrameText', 'applyFrameSignal']) {
+      expect(callsOf(classify, name), `the detector builds or reads ${name} itself again`).toEqual([])
+    }
+  })
+
+  /**
+   * The pipeline builds the inputs ONCE and hands the SAME object to the detector and the same
+   * fields to judge. Two constructions are two chances to drift; this is how the drift above
+   * happened.
+   */
+  it('pipeline.ts hands the same inputs to the detector and to judgeWithFrame', () => {
+    const pipe = stripComments(read('src/detection/pipeline.ts'))
+    expect(callsOf(pipe, 'modelInputsFor').length).toBe(1)
+    expect(callsOf(pipe, '.classify')).toEqual(['post, inputs'])
+    const judged = callsOf(pipe, 'judgeWithFrame')
+    expect(judged.length).toBe(1)
+    expect(judged[0]).toMatch(/tagText:\s*inputs\.tagText/)
+    expect(judged[0]).toMatch(/publisherText:\s*inputs\.publisherText/)
+    // The builder is the only place the pipeline makes a publisher block, and it carries the name.
+    expect(callsOf(pipe, 'publisherForPrompt')).toEqual(['post.caption, { handle: target.handle, displayName: target.displayName }'])
+  })
+
+  /** The backfills that make their own caption call pass ONE block to both of their calls. */
+  it.each(['src/scripts/classify.ts', 'src/scripts/rejudgeChannel.ts'])(
+    '%s passes its publisher block to both the caption call and judgeWithFrame',
+    (file) => {
+      const src = stripComments(read(file))
+      const caption = callsOf(src, 'classifyCaption')
+      expect(caption.length).toBe(1)
+      expect(topLevelArgs(caption[0]!)[4]).toBe('publisherText')
+      const judged = callsOf(src, 'judgeWithFrame')
+      expect(judged.length).toBe(1)
+      expect(judged[0]).toMatch(/\bpublisherText\b/)
+    },
+  )
+
+  /**
+   * NO publisher block anywhere is built without the display name. `publisherForPrompt` fires
+   * on the handle OR the display name, so a `displayName: null` block silently omits the input
+   * for a caption that names the page by its name ("RVCJ Media" on @rvcjinsta) — and differs
+   * from the block another call about the same post was given.
+   */
+  it('no publisherForPrompt call in the tree passes displayName: null', () => {
+    let seen = 0
+    for (const f of [...walkSources('src'), ...walkSources('scripts')]) {
+      for (const args of callsOf(stripComments(readSource(f)), 'publisherForPrompt')) {
+        seen++
+        expect(args, `${f}: publisherForPrompt(${args})`).not.toMatch(/displayName:\s*null/)
+      }
+    }
+    expect(seen, 'no call found — the grep is broken').toBeGreaterThan(3)
   })
 
   /** Every judgeWithFrame caller carries the Setting, so the flag reaches the frame path too. */
   it('every judgeWithFrame caller passes publisherAsContext', () => {
-    for (const f of [
-      'src/detection/pipeline.ts',
-      'src/detection/rejudge.ts',
-      'src/scripts/classify.ts',
-      'src/scripts/secondLook.ts',
-      'src/scripts/ocr.ts',
-      'src/scripts/rejudgeChannel.ts',
-    ]) {
-      expect(read(f), `${f} omits publisherAsContext`).toMatch(/publisherAsContext/)
+    const callers = walkSources('src').filter((f) => callsOf(stripComments(readSource(f)), 'judgeWithFrame').length > 0)
+    expect(callers).toEqual(expect.arrayContaining(['src/detection/pipeline.ts', 'src/detection/rejudge.ts', 'src/scripts/accuracy.ts']))
+    for (const f of callers) {
+      for (const args of callsOf(stripComments(readSource(f)), 'judgeWithFrame')) {
+        expect(args, `${f} omits publisherAsContext`).toMatch(/publisherAsContext/)
+      }
     }
   })
 

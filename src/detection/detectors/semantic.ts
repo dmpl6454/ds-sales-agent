@@ -1,14 +1,9 @@
-import type { ChannelDetector, Classification, EnrichedPost, PostTagFacts } from '../types'
-import { getSettings } from '@/lib/settings'
-import { publisherForPrompt } from '../publisherContext'
-import { tagsForPost } from '../tagEvidence'
+import type { ChannelDetector, Classification, EnrichedPost, ModelInputs, PostTagFacts } from '../types'
 import type { Verdict } from '@/lib/constants'
 import { extractBrands, normaliseBrandKey } from './mom'
 import { log } from '@/lib/logger'
 import { recordModelCall } from '@/lib/modelCall'
 import { noveltyScore, type ChannelVocabulary } from './novelty'
-import { readFrameText, type FrameText } from '../ocr'
-import { applyFrameSignal } from '../frameSignal'
 
 /**
  * Detector for channels that never disclose paid work — @viralbhayani above all.
@@ -456,7 +451,7 @@ export const semanticDetector: ChannelDetector = {
 
   readiness: semanticReadiness,
 
-  async classify(post: EnrichedPost & PostTagFacts): Promise<Classification> {
+  async classify(post: EnrichedPost & PostTagFacts, inputs: ModelInputs): Promise<Classification> {
     const brandsFromText = extractBrands(post.caption)
     const ready = semanticReadiness()
 
@@ -530,62 +525,37 @@ export const semanticDetector: ChannelDetector = {
     }
 
     /**
-     * ── Stage 2: THE CAPTION IS JUDGED FIRST, ON ITS OWN ───────────────────
+     * ── Stage 2: THE CAPTION, AND ONLY THE CAPTION ─────────────────────────
      *
-     * This ordering is load-bearing and the reverse of the obvious one. Reading the frame
-     * first and passing its text into the only call was cheaper — one call for most posts
-     * instead of two — and it was wrong three separate ways, each found by review:
+     * This detector returns what the CAPTION says. The footage is judged in `judge.ts` and
+     * nowhere else, and the reason is a measurement rather than tidiness (2026-10-09):
      *
-     *  1. IT FAILED OPEN. The frame-informed answer came back first, and a SECOND call
-     *     established what the caption alone would have said. When that second call failed,
-     *     the code fell back to "the frame agreed" — so a CAMPAIGN produced entirely by
-     *     frame text was recorded as a caption CAMPAIGN and asserted, which is the one
-     *     thing `applyFrameSignal` exists to forbid. A network blip was enough.
-     *  2. IT LET FRAME TEXT NAME BRANDS. The model's `brands` came from the frame-informed
-     *     call, and those brands become message copy. Executed against the real salon
-     *     control, that produced the sentence *"I noticed your recent branded collaboration
-     *     with Dessange Paris and Kerastase"* — to a prospect, about signage that happened
-     *     to be behind a celebrity. Exactly the invented claim decision 3 forbids.
-     *  3. It made `frame:disagreed-lower` unreachable, so the guard against a frame
-     *     CLEARING a post could never fire.
+     * This function used to read the frame itself — a Stage 3 with its own `readFrameText`,
+     * its own frame call and its own `applyFrameSignal` — and the pipeline then handed the
+     * result to `judgeWithFrame`, which does all three again. Two frame paths, and they had
+     * diverged in the one place that mattered: `judge.ts` is where the publisher's own
+     * watermark is stripped before the footage becomes evidence (the 21 August @filmygyan
+     * fix — itself a no-op on the format it was handed until the same day this stage went;
+     * see `judge.ts`), and this copy never even tried. Traced end to end on the anniversary
+     * post `DcRTPMDTTjX`: this stage
+     * escalated it to CAMPAIGN on the bare `FILMYGYAN` logo, and `judgeWithFrame` then
+     * received a CAMPAIGN, returned 'caption-decisive', and never ran its strip at all. An
+     * ORGANIC post with frame text cost two OCR reads and three model calls, its two frame
+     * calls carrying DIFFERENT publisher blocks.
      *
-     * Caption first fixes all three by construction: the caption verdict is established
-     * before any frame text exists, so it cannot be contaminated, and a frame call happens
-     * only where its result is ALLOWED to matter. Cost measured from the ledger:
-     * $0.0000180/post becomes ~$0.0000236 — about 2.8 cents across the whole corpus.
+     * The ordering rule survives unchanged, because `judge.ts` keeps it: the caption is
+     * judged first and ALONE, so the caption verdict cannot be contaminated by frame text,
+     * brands come only from the caption call, and the footage may only escalate. See the
+     * header of `judge.ts` for the three ways the reverse order was wrong.
+     *
+     * `inputs` is built ONCE by the caller and handed unchanged to `judgeWithFrame` too, so
+     * the frame call there differs from this call in exactly one input — the frame. Building
+     * the tag and publisher blocks here as well was a second construction that could drift,
+     * and it had: this side named the publisher by handle alone while judge named it with its
+     * display name.
      */
-    /**
-     * Computed ONCE and handed to both calls below. Two separate constructions of this
-     * string would be two chances for them to differ, and a difference here is silently
-     * attributed to the footage by `applyFrameSignal`.
-     */
-    const tagText = await tagsForPost(
-      {
-        taggedAccounts: post.taggedAccounts ?? [],
-        collabHandles: post.collabHandles ?? [],
-        isPaidPartnership: post.isPaidPartnership ?? false,
-      },
-      post.shortcode.slice(0, 6),
-    )
-
-    /**
-     * WHOSE FEED THIS IS — derived from the post's own `ownerHandle` and gated on the same
-     * Setting as everywhere else. Computed ONCE and handed to BOTH calls below, exactly like
-     * `tagText` above and for the same reason: a difference between the two calls is
-     * attributed to the footage by `applyFrameSignal`.
-     *
-     * ── FOUND BY READING THE FRESH VERDICTS, 40 MINUTES AFTER THE SETTING WENT ON ──
-     * (2026-08-21) `publisherAsContext` was wired into judgeWithFrame's callers and the
-     * accuracy harness, measured, and turned on — and @filmygyan's NEXT anniversary post was
-     * still judged CAMPAIGN, because THIS function is the production caption path and it was
-     * never told. The missing-caller failure, inside the fix for an input gap. No display
-     * name is available here; `publisherForPrompt` degrades to "@handle" honestly.
-     */
-    const publisherText = (await getSettings()).publisherAsContext
-      ? publisherForPrompt(post.caption, { handle: post.ownerHandle, displayName: null })
-      : null
-
-    const captionCall = await classifyCaption(post.caption, post.shortcode, null, tagText, publisherText)
+    const subject = inputs.costSubject === undefined ? post.shortcode : (inputs.costSubject ?? undefined)
+    const captionCall = await classifyCaption(post.caption, subject, null, inputs.tagText, inputs.publisherText)
     if (!captionCall) {
       return {
         verdict: 'UNCLASSIFIED',
@@ -611,46 +581,16 @@ export const semanticDetector: ChannelDetector = {
      */
     const captionOnly: Verdict = modelVerdictToStored(captionCall.verdict)
 
-    /**
-     * ── Stage 3: the FOOTAGE, only where it can change something ───────────
-     *
-     * A caption CAMPAIGN is already found and `applyFrameSignal` would refuse to move it
-     * either way, so its frame is never read — no OCR, no second call, no cost. The frame
-     * is still SAVED for every post by the pipeline, because saving is what expires.
-     */
-    let withFrame: Verdict = captionOnly
-    let frame: Awaited<ReturnType<typeof readFrameText>> | null = null
-    if (captionOnly === 'ORGANIC') {
-      frame = await readFrameText(post.shortcode)
-      if (frame.prompt !== null) {
-        // Same `tagText` as the caption call above, so the ONLY difference between the two
-        // is the frame — which is the thing `applyFrameSignal` is about to attribute.
-        const frameCall = await classifyCaption(
-          post.caption,
-          `${post.shortcode}:with-frame`,
-          frame.prompt,
-          tagText,
-          publisherText,
-        )
-        if (frameCall) withFrame = modelVerdictToStored(frameCall.verdict)
-        // A failed frame call leaves withFrame === captionOnly, so the footage is recorded
-        // as having agreed. That is the safe direction now: it can only fail to escalate.
-      }
-    }
-
-    const framed = applyFrameSignal(captionOnly, withFrame, frame?.evidence ?? { kind: 'read', hadText: false })
-
     return {
-      verdict: framed.verdict,
+      verdict: captionOnly,
       confidence: captionCall.confidence,
       signals: [
         'detector:semantic',
         `model:${MODEL}`,
         ...(novelty?.signals ?? []),
         ...(captionOnly !== captionCall.verdict ? [`downgraded:confidence-below-${CAMPAIGN_CONFIDENCE_FLOOR}`] : []),
-        ...(captionOnly === 'CAMPAIGN' ? ['frame:not-needed-caption-decided'] : framed.signals),
-        ...(frame?.text ? [`frame:engine-${frame.text.engine}`] : []),
-        ...(frame?.text && frame.text.dropped > 0 ? [`frame:dropped-${frame.text.dropped}-unreadable`] : []),
+        // No `frame:*` signal: this detector never reads the footage. `judgeWithFrame` is the
+        // one writer of those, including `frame:not-needed-caption-decided` and the engine.
         ...(captionCall.usage ? [`cache:${captionCall.usage.cacheHit}hit/${captionCall.usage.cacheMiss}miss`] : []),
       ],
       /**
@@ -659,26 +599,13 @@ export const semanticDetector: ChannelDetector = {
        * These names travel into message copy — `brandPitch` and the hook line read them —
        * so a brand the model only saw because OCR read a shop sign becomes a claim about
        * the recipient's own marketing in a real DM. See the executed example in the
-       * ordering note above. The frame may raise a post for a human; it may never put a
-       * word in a message.
+       * ordering note in `judge.ts`. The frame may raise a post; it may never put a word
+       * in a message.
        */
       brands: mergeBrands(captionCall.brands, brandsFromText),
       verdictSource: 'semantic',
       classifierModel: MODEL,
       classifierReason: captionCall.reason,
-      /**
-       * The frame's own words, stored so `/paid-posts` can show a person WHAT to look at.
-       * A flagged post that does not say why is a nag rather than information.
-       */
-      frameText: frame?.text ? frameTextSummary(frame.text) : null,
     }
   },
-}
-
-/** One line describing what the frame said, for the review queue. Never sent to anyone. */
-function frameTextSummary(ft: FrameText): string | null {
-  const parts: string[] = []
-  if (ft.overlay.length > 0) parts.push(`on screen: ${ft.overlay.join(' | ')}`)
-  if (ft.smaller.length > 0) parts.push(`in shot: ${ft.smaller.join(' | ')}`)
-  return parts.length > 0 ? parts.join(' — ').slice(0, 400) : null
 }

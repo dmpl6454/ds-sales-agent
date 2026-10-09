@@ -599,10 +599,7 @@ export async function readFrameText(
       return { prompt: null, evidence: { kind: 'failed' }, text: null }
     case 'read': {
       const text = describeFrameText(outcome)
-      // A per-call nonce on the fence, so nothing read off the picture can guess the
-      // delimiter and close the block. Derived from the shortcode, which is unique and
-      // not something the frame's own text can know.
-      const prompt = frameTextForPrompt(text, shortcode.slice(0, 6))
+      const prompt = framePromptFor(text, shortcode)
       return { prompt, evidence: { kind: 'read', hadText: prompt !== null }, text }
     }
     default: {
@@ -610,6 +607,22 @@ export async function readFrameText(
       return exhaustive
     }
   }
+}
+
+/**
+ * The fenced prompt block for a post's frame text — the ONE definition of its nonce.
+ *
+ * A per-call nonce on the fence, so nothing read off the picture can guess the delimiter and
+ * close the block. Derived from the shortcode, which is unique and not something the frame's
+ * own text can know.
+ *
+ * Exported because `judge.ts` re-renders the block AFTER stripping the publisher's own marks
+ * from the structured text (2026-10-09). Both renderings go through here, so a frame with no
+ * own marks produces a block BYTE-IDENTICAL to the one `readFrameText` returned — which is
+ * what keeps every frame call that was correct before this change unchanged by it.
+ */
+export function framePromptFor(text: FrameText | null, shortcode: string): string | null {
+  return frameTextForPrompt(text, shortcode.slice(0, 6))
 }
 
 /**

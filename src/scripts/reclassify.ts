@@ -1,88 +1,50 @@
-import { prisma } from '@/lib/db'
-import { getDetector } from '@/detection/detectors'
-import { writeStringArray, readStringArray } from '@/lib/json'
-import { EnrichedPostSchema } from '@/detection/types'
-import { log } from '@/lib/logger'
-
 /**
- * Re-run the detectors over captions already stored, without re-fetching anything.
+ * `pnpm reclassify` — RETIRED (2026-10-09). It refuses, and says what to run instead.
  *
- * Every improvement to a detector needs this: the captions are the expensive
- * part to collect and they never change, while the classification logic will keep
- * evolving. Non-destructive — it only rewrites verdict, confidence, signals and
- * brands, and deliberately preserves any human REVIEW-queue label.
+ * Kept as a refusal rather than deleted so the command still explains itself to anyone who
+ * remembers it: a missing script reads as a broken install, while this sentence reads as a
+ * decision.
  *
- *   pnpm reclassify           # report what would change
- *   pnpm reclassify --apply   # write the changes
+ * ── WHY IT WAS RETIRED ─────────────────────────────────────────────────────────────
+ *
+ * It re-ran each channel's detector over every stored caption and, with `--apply`, wrote the
+ * result straight over `verdict`, `confidence`, `signals` and `brands`. Three things were
+ * wrong with that, and every one of them is a rule this codebase already enforces elsewhere:
+ *
+ *   1. IT OVERWROTE HUMAN LABELS. It selected every row with no `humanLabel` filter, so a
+ *      person's answer — the highest-authority verdict in the system and the only possible
+ *      ground truth for a placement that lives in the footage — was replaced by a model's.
+ *      Its own docblock claimed to "preserve any human label"; it preserved the label column
+ *      and overwrote the verdict that column exists to settle.
+ *   2. IT JUDGED OUTSIDE THE ONE JUDGING PATH. It called the detector and wrote the answer,
+ *      never `judgeWithFrame` — so it reverted the M.O.M second look's results, and since the
+ *      detector now returns the CAPTION verdict alone, `--apply` would have written
+ *      caption-only verdicts over every footage escalation: the frame clearing posts, which
+ *      `applyFrameSignal` exists to forbid.
+ *   3. IT SPENT MONEY IN REPORT MODE. The dry run still called the model once per semantic
+ *      row, across the whole corpus — the one command here whose default was not free.
+ *
+ * What replaces it, each going through `judgeWithFrame`, each dry-run by default, each
+ * refusing human-labelled rows:
+ *
+ *   pnpm ig:rejudge-channel <handle>   re-judge a semantic channel after an INPUT changes
+ *   pnpm ig:classify                   judge posts nothing has judged yet
+ *   pnpm ig:second-look                re-judge the M.O.M rule's negatives
  */
-async function main() {
-  const apply = process.argv.includes('--apply')
-
-  const campaigns = await prisma.detectedCampaign.findMany({
-    include: { target: true },
-    orderBy: { postedAt: 'desc' },
-  })
-
-  if (campaigns.length === 0) {
-    log.warn('nothing stored yet — run `pnpm run:slot` first')
-    await prisma.$disconnect()
-    return
-  }
-
-  let changed = 0
-  for (const row of campaigns) {
-    const detector = getDetector(row.target.detectorKey)
-
-    const post = EnrichedPostSchema.parse({
-      shortcode: row.shortcode,
-      permalink: row.permalink,
-      ownerHandle: row.target.handle,
-      caption: row.caption,
-      likeCount: row.likeCount,
-      commentCount: row.commentCount,
-      postedAt: row.postedAt,
-      gridIndex: 0,
-    })
-
-    const next = await detector.classify(post)
-    const prevBrands = readStringArray(row.brands)
-    const brandsDiffer = JSON.stringify(prevBrands) !== JSON.stringify(next.brands)
-    const verdictDiffers = row.verdict !== next.verdict
-
-    if (!brandsDiffer && !verdictDiffers) continue
-    changed += 1
-
-    console.log('─'.repeat(78))
-    console.log(`${row.shortcode}  @${row.target.handle}`)
-    if (verdictDiffers) console.log(`  verdict: ${row.verdict}  ->  ${next.verdict}`)
-    if (brandsDiffer) {
-      console.log(`  brands : ${prevBrands.join(' | ') || '(none)'}`)
-      console.log(`        ->  ${next.brands.join(' | ') || '(none)'}`)
-    }
-
-    if (apply) {
-      await prisma.detectedCampaign.update({
-        where: { id: row.id },
-        data: {
-          verdict: next.verdict,
-          confidence: next.confidence,
-          signals: writeStringArray(next.signals),
-          brands: writeStringArray(next.brands),
-        },
-      })
-    }
-  }
-
-  console.log('─'.repeat(78))
-  console.log(`  ${campaigns.length} stored · ${changed} would change`)
-  if (!apply && changed > 0) console.log('  re-run with --apply to write them\n')
-  else if (apply) console.log('  applied\n')
-
-  await prisma.$disconnect()
-}
-
-main().catch(async (err) => {
-  log.error('reclassify failed', { error: err instanceof Error ? err.message : String(err) })
-  await prisma.$disconnect().catch(() => undefined)
-  process.exit(1)
-})
+console.log(
+  [
+    '',
+    '  pnpm reclassify is retired — it is not safe to run.',
+    '',
+    '  It wrote detector verdicts straight over stored rows: over human labels, outside the one',
+    '  judging path (so it would have undone every footage escalation and M.O.M second look),',
+    '  and it called the model for every row even in report mode.',
+    '',
+    '  Use instead (each is a dry run unless you pass --run, and none touches a human answer):',
+    '    pnpm ig:rejudge-channel <handle>   re-judge a semantic channel after an input changes',
+    '    pnpm ig:classify                   judge posts nothing has judged yet',
+    '    pnpm ig:second-look                re-judge the M.O.M rule’s negatives',
+    '',
+  ].join('\n'),
+)
+process.exitCode = 1

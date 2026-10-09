@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest'
+import { parse as parseQuery } from 'node:querystring'
+import { NextURL } from 'next/dist/server/web/next-url'
 import { decideRoute, isPublic, PUBLIC_PATHS } from '@/middleware'
 import { safeNext } from '@/lib/safe-next'
+import { newUserCode } from '@/lib/deviceEnrol'
 
 /**
  * The front door, tested in BOTH directions.
@@ -177,5 +180,174 @@ describe('safeNext — the open-redirect guard', () => {
   it('REFUSES backslashes, which some browsers normalise to a separator', () => {
     expect(safeNext('/\\evil.com')).toBe('/')
     expect(safeNext('\\\\evil.com')).toBe('/')
+  })
+})
+
+/**
+ * ── THE GUARD MODELLED THE STRING, AND THE BROWSER NAVIGATES THE PARSE (2026-10-09) ──
+ *
+ * Every case below is a value that passed the old four checks and sent a person somewhere
+ * other than where the check thought. Each premise is PINNED in the test itself — the parser
+ * really does turn the input into the off-site URL — so a test here cannot pass because the
+ * attack stopped being an attack.
+ */
+const DASH = 'https://dash.example/sign-in'
+
+/** What `?next=<raw>` decodes to, the way the sign-in page receives it. */
+const decoded = (raw: string) => new URLSearchParams(`next=${raw}`).get('next')!
+
+/**
+ * Where Next's CLIENT actually sends the browser for a server-action redirect to `v`:
+ * the server sets `x-action-redirect: <v>;push`, the client takes everything before the FIRST
+ * `;`, strips one trailing slash from the path part, and resolves it against the page.
+ */
+function navigatedTo(v: string): URL {
+  let loc = `${v};push`.split(';')[0]!
+  const cut = loc.search(/[?#]/)
+  const path = cut === -1 ? loc : loc.slice(0, cut)
+  const rest = cut === -1 ? '' : loc.slice(cut)
+  loc = (path.length > 1 && path.endsWith('/') ? path.slice(0, -1) : path) + rest
+  if (loc === '') loc = '/'
+  return new URL(loc, DASH)
+}
+
+describe('safeNext — the parser may change nothing', () => {
+  /** TAB is the live vector: Node accepts it in a header value, and the parser deletes it. */
+  it('refuses TAB, LF and CR, which the parser deletes to make //evil.com', () => {
+    expect(new URL('/\t/evil.com', DASH).origin).toBe('https://evil.com') // the premise
+    for (const raw of ['/%09/evil.com', '/%0A/evil.com', '/%0D/evil.com', '/%09%2Fevil.com']) {
+      expect(safeNext(decoded(raw)), raw).toBe('/')
+    }
+  })
+
+  it('refuses dot segments, which collapse to a protocol-relative path', () => {
+    expect(new URL('/.//evil.com', 'https://dash.example').pathname).toBe('//evil.com') // the premise
+    for (const v of ['/.//evil.com', '/a/..//evil.com', '/%2e//evil.com', '/%2e%2e//evil.com', '/a/./b', '/%2E%2E/targets']) {
+      expect(safeNext(v), v).toBe('/')
+    }
+  })
+
+  /**
+   * ── THE `;` BYPASS ───────────────────────────────────────────────────────
+   * Resolved whole, these land on `/` — the `..` pops the junk segment — so an origin check
+   * and a resolved-pathname check both pass them. The client splits on the first `;` and goes
+   * to `/.//evil.com`. Only the `;` rule and the round trip stop it.
+   */
+  it('refuses a ";" — the client navigates to the part before it', () => {
+    expect(new URL('/.//evil.com;/../..', 'https://dash.example').pathname).toBe('/') // whole: harmless
+    expect(new URL('/.//evil.com;/../..'.split(';')[0]!, DASH).pathname).toBe('//evil.com') // the client's view
+    expect(safeNext('/.//evil.com;/../..')).toBe('/')
+    expect(safeNext('/a/..//evil.com;/../x')).toBe('/')
+    // A ';' makes the validated string and the navigated string differ even when both are
+    // harmless, which is reason enough on its own.
+    expect(safeNext('/targets;x')).toBe('/')
+  })
+
+  /** Only the round trip refuses these; the character whitelist passes every one. */
+  it('refuses anything the parser would re-encode, and keeps legitimate encoding byte-identical', () => {
+    expect(safeNext("/paid-posts?q='x'")).toBe('/')
+    expect(safeNext('/a?')).toBe('/')
+    expect(safeNext('/a#')).toBe('/')
+    const encoded = '/x%2Fy?q=%2e%2e&q=a%3Bb#frag'
+    expect(safeNext(encoded)).toBe(encoded)
+  })
+
+  /**
+   * Raw space, DEL, a C0 control and non-ASCII all resolve SAME-origin, so only the whitelist
+   * refuses them — and `\x01` would otherwise reach `res.setHeader`, which throws after the
+   * session has been created.
+   */
+  it('refuses raw controls, space and non-ASCII', () => {
+    for (const v of ['/\x01x', '/\x7f', '/paid posts', '/ x', '/\u3000/evil.com']) {
+      expect(safeNext(v), JSON.stringify(v)).toBe('/')
+    }
+  })
+
+  it('never throws on a non-string — ?next=a&next=b arrives as an ARRAY', () => {
+    expect(safeNext(['/a', '/b'] as unknown as string)).toBe('/')
+    expect(safeNext(42 as unknown as string)).toBe('/')
+    expect(safeNext({} as unknown as string)).toBe('/')
+  })
+
+  /**
+   * THE SWEEP MODELS THE SINK, NOT THE VALIDATED STRING. An earlier version of this sweep
+   * asserted on `new URL(safeNext(x))` — the string the server checked — and passed against
+   * the `;` bypass, because the transformation that leaks happens AFTER the check. So every
+   * UTF-16 code unit is pushed through eight shapes and then through `navigatedTo`, which does
+   * what Next's client does, and the URL the browser would load is what is asserted.
+   */
+  it('no code unit, in any shape, sends the browser off this origin or to a // path', () => {
+    const shapes = (c: string) => [
+      `/${c}/evil.com`,
+      `/${c}${c}evil.com`,
+      `/.${c}/evil.com`,
+      `/${c}\\evil.com`,
+      `/.//evil.com;${c}/../..`,
+      `/.${c}/evil.com;/..`,
+      `/a/..//evil.com;${c}`,
+      `/%2e//evil.com;/${c}..`,
+    ]
+    const leaks: string[] = []
+    for (let code = 0; code <= 0xffff; code++) {
+      const c = String.fromCharCode(code)
+      for (const x of shapes(c)) {
+        const u = navigatedTo(safeNext(x))
+        if (u.origin !== 'https://dash.example' || (u.pathname + u.search).startsWith('//')) {
+          leaks.push(JSON.stringify(x))
+        }
+      }
+    }
+    expect(leaks.slice(0, 10)).toEqual([])
+  })
+})
+
+/**
+ * ── EVERY `next` THE APP GENERATES SURVIVES, BYTE-IDENTICAL ─────────────────────────────
+ *
+ * The rule refuses whatever the parser would change, so it must be checked against what the
+ * app actually emits — derived through the REAL parsing the middleware sees (`NextURL`), the
+ * real `decideRoute`, the real `searchParams.set`, and BOTH decoders a page might use. Writing
+ * these values by hand would skip exactly the normalisation (raw Devanagari, quotes, spaces)
+ * that decides whether a legitimate destination survives.
+ */
+describe('safeNext — keeps every destination the app generates', () => {
+  const raws = [
+    '/targets?channel=viralbhayani&page=2',
+    '/paid-posts?q=arshad+warsi',
+    '/paid-posts?q=arshad%20warsi&channel=x',
+    '/paid-posts?q=हि',
+    "/paid-posts?q='quoted'",
+    '/paid-posts?q=a b',
+    '/analytics?range=7d&from=bollywoodchronicle&to=sony&sent=3',
+    '/senders?paired=DMPLs%20Mac%20Studio',
+    '/devices/enrol?code=ABCD2345',
+    '/api/pulse',
+    '/targets/',
+    '/a?',
+  ]
+
+  it.each(raws)('%s', (raw) => {
+    const nextUrl = new NextURL(`http://127.0.0.1:3100${raw}`)
+    const d = decideRoute({ pathname: nextUrl.pathname, search: nextUrl.search, method: 'GET', hasCookie: false })
+    expect(d.kind).toBe('redirect-signin')
+    if (d.kind !== 'redirect-signin' || !d.next) throw new Error('no next to carry')
+    const signIn = new URL('/sign-in', 'http://127.0.0.1:3100')
+    signIn.searchParams.set('next', d.next)
+    const viaSearchParams = new URL(signIn.href).searchParams.get('next')!
+    const viaQuerystring = parseQuery(signIn.search.slice(1)).next as string
+    expect(viaQuerystring).toBe(viaSearchParams)
+    expect(safeNext(viaSearchParams)).toBe(viaSearchParams)
+  })
+
+  /** The enrol page builds its own `next`, and the start route hands out `approvePath`. */
+  it('keeps the enrol destination for real pairing codes', () => {
+    for (let i = 0; i < 200; i++) {
+      const code = newUserCode()
+      const href = `/sign-in?next=${encodeURIComponent(`/devices/enrol?code=${code}`)}`
+      const received = new URL(href, 'http://127.0.0.1:3100').searchParams.get('next')!
+      expect(safeNext(received)).toBe(`/devices/enrol?code=${code}`)
+      const approvePath = `/devices/enrol?code=${code}`
+      expect(safeNext(approvePath)).toBe(approvePath)
+    }
   })
 })

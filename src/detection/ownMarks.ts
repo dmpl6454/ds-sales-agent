@@ -1,3 +1,5 @@
+import type { FrameText } from './ocr'
+
 /**
  * A PUBLISHER'S OWN MARKS ARE NOT EVIDENCE THAT SOMEBODY PAID THEM.
  *
@@ -134,37 +136,65 @@ function isSubsequence(needle: string, hay: string): boolean {
 }
 
 /**
- * Strip the publisher's own marks out of OCR'd frame text before it becomes evidence.
+ * PURE. Strip the publisher's own marks out of OCR'd frame text before it becomes evidence —
+ * on the STRUCTURED text, item by item, never on a rendered string.
  *
- * Splits on the separators `frameTextSummaryLine` builds with (`|`) and on commas, keeps
- * every fragment that is not purely the publisher's own mark, and returns `null` when
- * NOTHING survives — because "the only thing we could read was their own logo" is the same
- * fact as "we read no brand evidence", and it must not arrive at the classifier looking like
- * a finding.
+ * ── THE STRING VERSION WAS A NO-OP FOR TWO MONTHS (found 2026-10-09) ─────────────────
+ *
+ * Its predecessor, `stripOwnMarksFromFrame`, split a string on `|` and `—` and took the text
+ * after the first `:` — the SUMMARY-LINE format (`on screen: … — in shot: …`), which is what
+ * its tests fed it. `judge.ts` fed it the fenced PROMPT block instead, whose groups are
+ * separated by newlines and whose last item shares a fragment with the `[END FRAME-TEXT-…]`
+ * fence and the constant trailing sentence. Measured on the real format:
+ *
+ *   anniversary frame (trailing watermark)   unchanged — the logo reached the model
+ *   a frame that is ONLY the watermark       unchanged — `frame:only-own-marks` unreachable
+ *   watermark first in a later group         deleted the PREVIOUS group's last real item
+ *   watermark first in the first group       deleted the `[BEGIN FRAME-TEXT-…]` fence itself,
+ *                                            leaving an END with no BEGIN
+ *
+ * So the 21 August @filmygyan fix had never applied on any path, and on one shape it broke
+ * the injection fence. Filtering the arrays OCR produced and rendering AFTER is the only form
+ * that cannot touch a neighbour or a delimiter: there is no delimiter in an array.
+ *
+ * ── THE DROP RULE, AND WHY IT IS TWO TESTS ──────────────────────────────────────────
+ *
+ * OCR returns LINE-level items, so a two-word logo arrives as ONE item. An item is dropped iff
+ *
+ *   (a) the WHOLE item normalises to EXACTLY the handle or the display name — catching
+ *       `VIRAL BHAYANI`, `FILMY GYAN`, `F I L M Y G Y A N`, `RVCJ MEDIA`, which a per-word
+ *       test lets through because no single word is the name; or
+ *   (b) EVERY word of it is an own mark (`FILMYGYAN`, `@filmygyan`, `fg6`).
+ *
+ * (a) is EQUALITY ONLY, never `isOwnMark`'s affix branch. Running `isOwnMark` on the whole
+ * item drops `Filmygyan x Acer`, `FILMYGYAN PRESENTS` and `Pose toh FILMYGYAN` — the shape of a
+ * real collaboration — because the run-together text is within the affix slack of the handle.
+ * Dropping a real advertiser is the expensive direction here; keeping a logo we could have
+ * dropped is merely the status quo.
+ *
+ * `engine` and `dropped` are carried through: `dropped` counts observations that sanitised
+ * away to nothing, which is a fact about the OCR, not about the publisher.
  */
-export function stripOwnMarksFromFrame(
-  frameText: string | null,
+export function stripOwnMarksFromFrameText(
+  ft: FrameText,
   publisher: { handle: string; displayName: string | null },
-): string | null {
-  if (!frameText) return frameText
-  /**
-   * Split on BOTH separators `frameTextSummaryLine` uses: `|` between items and `—` between
-   * the two size groups. Splitting on `|` alone put the second group's LABEL in the same
-   * fragment as the previous group's last item, so dropping a watermark took a real title
-   * card with it — caught by driving the verbatim frame of the post that started this.
-   */
-  const parts = frameText.split(/[|—]/)
-  const kept = parts.filter((part) => {
-    const body = part.includes(':') ? part.slice(part.indexOf(':') + 1) : part
-    const words = body.split(/[,\s]+/).map((w) => w.trim()).filter(Boolean)
-    if (words.length === 0) return false
-    /* Drop the fragment only when EVERY word in it is one of the publisher's own marks. */
-    return !words.every((w) => isOwnMark(w, publisher))
-  })
-  const out = kept.join('|').trim()
-  /* A line that is only its labels carries no evidence. */
-  const hasContent = out.replace(/on screen:|in shot:/g, '').replace(/[|\s]/g, '').length > 0
-  return hasContent ? out : null
+): FrameText {
+  const handle = normaliseMark(publisher.handle)
+  const name = normaliseMark(publisher.displayName ?? '')
+  const isOwnItem = (item: string): boolean => {
+    const whole = normaliseMark(item)
+    if (whole.length > 0 && (whole === handle || (name.length >= 3 && whole === name))) return true
+    const words = item.split(/[,\s]+/).map((w) => w.trim()).filter(Boolean)
+    return words.length > 0 && words.every((w) => isOwnMark(w, publisher))
+  }
+  const keep = (items: readonly string[]) => items.filter((item) => !isOwnItem(item))
+  return {
+    overlay: keep(ft.overlay),
+    smaller: keep(ft.smaller),
+    misread: keep(ft.misread),
+    dropped: ft.dropped,
+    engine: ft.engine,
+  }
 }
 
 /** Drop the publisher's own marks from an extracted brand list. PURE. */

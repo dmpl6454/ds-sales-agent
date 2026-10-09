@@ -1705,7 +1705,10 @@ async function computePaidPostsView(input?: PaidPostsInput): Promise<PaidPostsVi
      *
      * The signals are the evidence: `applyFrameSignal` writes exactly one per post, so
      * these counts are what the permission table actually recorded rather than a guess
-     * reconstructed from a nullable column.
+     * reconstructed from a nullable column. (Not true of semantic rows until 2026-10-09: the
+     * detector ran its own copy of the table before `judge.ts` ran it again, so a row could
+     * carry `frame:ocr-failed` from one and `frame:read-agreed` from the other. `judge.ts` is
+     * the only caller now.)
      */
     prisma.detectedCampaign.count({ where: { frameText: { not: null }, ...inWindow } }),
     prisma.detectedCampaign.count({ where: { signals: { contains: 'frame:not-saved' }, ...inWindow } }),

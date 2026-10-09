@@ -5,6 +5,7 @@ import { buildVocabulary, noveltyScore } from '@/detection/detectors/novelty'
 import { modelVerdictToStored, classifyCaption, semanticReadiness, tooShortToJudge } from '@/detection/detectors/semantic'
 import { judgeWithFrame } from '@/detection/judge'
 import { tagsForStoredPost } from '@/detection/tagEvidence'
+import { publisherForPrompt } from '@/detection/publisherContext'
 import { detectionCutoff } from '@/lib/cutoff'
 import { getDetector } from '@/detection/detectors'
 
@@ -110,6 +111,8 @@ async function main(): Promise<void> {
   let cacheHitTokens = 0
   let cacheMissTokens = 0
   let outputTokens = 0
+  /** Read ONCE for the run, so every post in it is judged under the same Setting. */
+  const settings = await getSettings()
 
   for (const target of classifiable) {
     // Vocabulary from EVERYTHING stored for this channel, judged or not — the
@@ -191,7 +194,16 @@ async function main(): Promise<void> {
        * `applyFrameSignal` — so it would land as a false frame-driven escalation.
        */
       const tagText = await tagsForStoredPost(post)
-      const judged = await classifyCaption(post.caption, post.shortcode, null, tagText)
+      /**
+       * The publisher block, under the same rule as `tagText` and built the same way the
+       * pipeline builds it — WITH the display name. This call used to pass no publisher at
+       * all while `judgeWithFrame` derived one for its frame call, so with the Setting ON the
+       * two calls about one post differed in an input the footage then took the blame for.
+       */
+      const publisherText = settings.publisherAsContext
+        ? publisherForPrompt(post.caption, { handle: target.handle, displayName: target.displayName })
+        : null
+      const judged = await classifyCaption(post.caption, post.shortcode, null, tagText, publisherText)
       if (!judged) {
         // No verdict is left as no verdict. A failed call must not be recorded as
         // ORGANIC — that would be a fabricated judgement, indistinguishable later
@@ -228,9 +240,10 @@ async function main(): Promise<void> {
           caption: post.caption,
           optedOut: target.optedOut,
           publisher: { handle: target.handle, displayName: target.displayName },
-          publisherAsContext: (await getSettings()).publisherAsContext,
+          publisherAsContext: settings.publisherAsContext,
           detectorKey: 'semantic', // only semantic channels reach this loop
           tagText,
+          publisherText,
         },
         captionVerdict,
       )

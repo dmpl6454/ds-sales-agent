@@ -28,6 +28,20 @@
  * comparable with every figure recorded in CLAUDE.md, or this change would silently
  * reset the baseline it exists to protect.
  *
+ * ── IT NOW RUNS THE PRODUCTION FUNCTIONS, NOT A COPY OF THEM (2026-10-09) ─────────
+ *
+ * This file held a THIRD frame path — its own `readFrameText`, its own frame call, its own
+ * `applyFrameSignal` — beside the detector's and `judge.ts`'s, and the three had drifted:
+ * only `judge.ts` removed the publisher's own watermark from the footage, and this copy
+ * gave both calls a publisher block with no display name. So the caption verdict now comes
+ * from `semanticDetector.classify` (which also scores a too-short caption the way
+ * production does, instead of skipping it) and the footage goes through `judgeWithFrame`.
+ * A harness that re-implements the thing it measures measures its own copy.
+ *
+ * Figures for channels whose footage carries their own mark CAN move after this — the
+ * strip now applies here as it does in production. That is the harness becoming correct;
+ * compare with care against runs recorded before 2026-10-09.
+ *
  * RECALL IS THE ONE TO PROTECT. A missed paid post is invisible and unappealable; a false
  * alarm surfaces as a draft a human reads before anything is sent. Never trade recall for
  * precision here, and never on ANY channel — a per-channel report exists so a gain on one
@@ -36,11 +50,11 @@
  * Costs a few tenths of a cent per run.
  */
 import { prisma } from '@/lib/db'
-import { modelVerdictToStored, classifyCaption } from '@/detection/detectors/semantic'
-import { readFrameText } from '@/detection/ocr'
+import { semanticDetector } from '@/detection/detectors/semantic'
+import { judgeWithFrame } from '@/detection/judge'
 import { tagsForPrompt } from '@/detection/tagEvidence'
 import { publisherForPrompt } from '@/detection/publisherContext'
-import { applyFrameSignal, type FrameEvidence } from '@/detection/frameSignal'
+import type { ModelInputs } from '@/detection/types'
 import { readLabelledSet, LABEL_SOURCES, DISCLOSURE_PATTERN, type LabelRow } from '@/detection/labels'
 import type { Verdict } from '@/lib/constants'
 
@@ -142,7 +156,16 @@ const posts = labelled.rows.length
        * PRODUCTION PATH. Scoring calls that lack an input the real detector has would
        * measure a pipeline that does not exist.
        */
-      select: { caption: true, shortcode: true, taggedAccounts: true, rawPayload: true },
+      select: {
+        caption: true,
+        shortcode: true,
+        taggedAccounts: true,
+        rawPayload: true,
+        permalink: true,
+        postedAt: true,
+        /* The display name, so the publisher block matches the one production builds. */
+        target: { select: { displayName: true } },
+      },
     })
   : []
 const postBy = new Map(posts.map((p) => [p.shortcode, p]))
@@ -223,42 +246,74 @@ async function scoreOnce(): Promise<Map<string, Block>> {
   if (tagText) b.postsWithTags++
 
   /**
-   * THIS HARNESS RUNS THE PRODUCTION PATH, in the production ORDER.
+   * THIS HARNESS RUNS THE PRODUCTION PATH, in the production ORDER — by calling the
+   * production functions rather than restating them.
    *
-   * Caption first, alone. Then — only if that verdict is ORGANIC or REVIEW — the frame
-   * text, then `applyFrameSignal`. Anything else measures a pipeline that does not exist:
-   * calling once WITH frame text would let the footage produce a CAMPAIGN, which the real
-   * detector forbids, and would report a false-alarm rate for verdicts it cannot reach.
+   * Caption first, alone, through `semanticDetector.classify`. Then — only if that verdict is
+   * ORGANIC — the footage, through `judgeWithFrame`, which reads the frame, strips the
+   * publisher's own marks and applies the permission table. Anything else measures a pipeline
+   * that does not exist: calling once WITH frame text would let the footage produce a
+   * CAMPAIGN the real detector never could, and a private copy of the frame step is how this
+   * file came to skip the watermark strip production runs.
    */
   /**
-   * Whose feed this post is from, derived ONCE and given to BOTH calls — the same
+   * Whose feed this post is from, built ONCE and given to BOTH calls — the same
    * both-or-neither rule as the tags, so a publisher-driven change is never scored as a
-   * frame-driven one.
+   * frame-driven one. WITH the display name, as `pipeline.ts` builds it: a caption naming
+   * the page by its name rather than its handle gets the block in production, so it must
+   * here too.
    */
   const publisherText = usePublisher
-    /* `label.channel` IS the posting channel's handle. No display name is loaded here, and
-       the block degrades to "@handle" honestly rather than inventing one. */
-    ? publisherForPrompt(p.caption, { handle: label.channel, displayName: null })
+    ? publisherForPrompt(p.caption, { handle: label.channel, displayName: p.target.displayName })
     : null
   if (publisherText) b.postsWithPublisher++
 
-  const captionCall = await classifyCaption(blind, undefined, null, tagText, publisherText)
-  if (!captionCall) { b.skipped++; continue }
-  const captionOnly: Verdict = modelVerdictToStored(captionCall.verdict)
+  /**
+   * `costSubject: null` on both calls: this harness's spend is not detection spend, and
+   * booked under the shortcode it would join `DetectedCampaign` on `/cost` and land on
+   * whichever channel happens to carry the labels.
+   */
+  const inputs: ModelInputs = { tagText, publisherText, costSubject: null }
+  const cls = await semanticDetector.classify(
+    {
+      shortcode: p.shortcode,
+      permalink: p.permalink,
+      ownerHandle: label.channel,
+      caption: blind,
+      likeCount: null,
+      commentCount: null,
+      postedAt: p.postedAt,
+      gridIndex: 0,
+    },
+    inputs,
+  )
+  /* UNCLASSIFIED is a call that did not answer (or no key) — never a verdict to score. */
+  if (cls.verdict === 'UNCLASSIFIED') { b.skipped++; continue }
+  const captionOnly: Verdict = cls.verdict
 
-  let withFrame: Verdict = captionOnly
-  let evidence: FrameEvidence = { kind: 'read', hadText: false }
-  if (useFrames && captionOnly === 'ORGANIC') {
-    const frame = await readFrameText(p.shortcode)
-    evidence = frame.evidence
-    if (frame.prompt) {
-      b.withFrameText++
-      const frameCall = await classifyCaption(blind, undefined, frame.prompt, tagText, publisherText)
-      if (frameCall) withFrame = modelVerdictToStored(frameCall.verdict)
-    }
-  }
-
-  const final = applyFrameSignal(captionOnly, withFrame, evidence).verdict
+  /**
+   * `optedOut: false` deliberately: this measures the CLASSIFIER, so a labelled post on a
+   * page we no longer message is still judged with its footage. And NO `humanLabelled` —
+   * judging a human-labelled post is the entire point of scoring it against that label.
+   */
+  const judged = useFrames
+    ? await judgeWithFrame(
+        {
+          shortcode: p.shortcode,
+          caption: blind,
+          optedOut: false,
+          publisher: { handle: label.channel, displayName: p.target.displayName },
+          publisherAsContext: usePublisher,
+          publisherText: inputs.publisherText,
+          tagText: inputs.tagText,
+          detectorKey: 'semantic',
+          costSubject: null,
+        },
+        captionOnly,
+      )
+    : null
+  if (judged?.frameCallMade) b.withFrameText++
+  const final: Verdict = judged ? judged.verdict : captionOnly
   const truth = label.paid
 
   /**
@@ -280,7 +335,7 @@ async function scoreOnce(): Promise<Map<string, Block>> {
    * different pipelines, which is the exact mistake this file exists to prevent.
    */
   const pred = final === 'CAMPAIGN'
-  if (final === 'CAMPAIGN' && captionOnly === 'ORGANIC') {
+  if (judged?.changedByFrame) {
     if (truth) { b.rescued++; b.frameMoves.push(`RESCUED  ${p.shortcode} :: ${p.caption.replace(/\s+/g,' ').slice(0,70)}`) }
     else { b.extraReview++; b.frameMoves.push(`to review ${p.shortcode} :: ${p.caption.replace(/\s+/g,' ').slice(0,70)}`) }
   }
@@ -289,8 +344,8 @@ async function scoreOnce(): Promise<Map<string, Block>> {
 
   if (truth && pred) b.tp++
   else if (!truth && !pred) b.tn++
-  else if (!truth && pred) { b.fp++; b.errors.push(`FP [${captionCall.confidence}%] ${captionCall.reason} :: ${p.caption.replace(/\s+/g,' ').slice(0,90)}`) }
-  else { b.fn++; b.errors.push(`FN [${final} ${captionCall.confidence}%] ${captionCall.reason} :: ${p.caption.replace(/\s+/g,' ').slice(0,90)}`) }
+  else if (!truth && pred) { b.fp++; b.errors.push(`FP [${cls.confidence}%] ${cls.classifierReason ?? ''} :: ${p.caption.replace(/\s+/g,' ').slice(0,90)}`) }
+  else { b.fn++; b.errors.push(`FN [${final} ${cls.confidence}%] ${cls.classifierReason ?? ''} :: ${p.caption.replace(/\s+/g,' ').slice(0,90)}`) }
   }
   return blocks
 }

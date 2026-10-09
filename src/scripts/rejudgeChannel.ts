@@ -30,6 +30,14 @@
  *  - **A FAILED CALL DECIDES NOTHING.** `judgeWithFrame` returning the caption verdict on a
  *    failed call is the existing contract; a row whose call failed is reported and left alone.
  *  - **BOUNDED** by `--limit` (default 40), because this spends a model call per post.
+ *  - **SEMANTIC CHANNELS ONLY** (2026-10-09). It re-asks the caption of the MODEL, so on a
+ *    `mom` channel it would hand `judgeWithFrame` a model ORGANIC for a post the
+ *    `#Collaboration` rule called paid — and judge's second look would accept it and this
+ *    script would write it, overturning a disclosure. The rule positive is never touched;
+ *    `pnpm ig:second-look` is the command for that channel's negatives.
+ *  - **IT KEEPS THE ROW'S OWN SIGNALS.** Only the `frame:*` evidence is replaced by what this
+ *    run read; `detector:`, `model:`, the novelty scores and the rest describe how the row
+ *    came to exist and are not this script's to erase.
  */
 import { prisma } from '@/lib/db'
 import { judgeWithFrame } from '@/detection/judge'
@@ -39,6 +47,7 @@ import { getDetector } from '@/detection/detectors'
 import { detectionCutoff } from '@/lib/cutoff'
 import { getSettings } from '@/lib/settings'
 import { tagsForStoredPost } from '@/detection/tagEvidence'
+import { readStringArray } from '@/lib/json'
 import { env } from '@/lib/env'
 
 const args = process.argv.slice(2)
@@ -59,6 +68,19 @@ async function main() {
   })
   if (!target) {
     console.log(`no target @${handle}`)
+    process.exit(1)
+  }
+
+  /**
+   * REFUSED BEFORE ANYTHING IS READ OR ASKED. The caption below is re-asked of the semantic
+   * model, which is only the production caption path on a semantic channel. On `mom` it would
+   * put a model's opinion where the publisher's own `#Collaboration` disclosure stands.
+   */
+  if (target.detectorKey !== 'semantic') {
+    console.log(
+      `@${target.handle} uses the "${target.detectorKey}" detector, not "semantic" — this command re-asks ` +
+        `the caption of the model and would overwrite a rule verdict. Use pnpm ig:second-look for a mom channel.`,
+    )
     process.exit(1)
   }
 
@@ -109,19 +131,21 @@ async function main() {
      * This is the same two-step the pipeline performs (caption verdict, then
      * `judgeWithFrame`); the SEQUENCE that composes them still lives in one place.
      */
-    const captionCall = await classifyCaption(
-      post.caption,
-      post.shortcode,
-      null,
-      await tagsForStoredPost({
-        shortcode: post.shortcode,
-        taggedAccounts: post.taggedAccounts,
-        rawPayload: post.rawPayload,
-      }),
-      settings.publisherAsContext
-        ? publisherForPrompt(post.caption, { handle: target.handle, displayName: target.displayName })
-        : null,
-    )
+    /**
+     * Both blocks built ONCE and handed to both calls below — the caption call here and the
+     * frame call inside `judgeWithFrame` — so the two differ in exactly one input, the frame.
+     * They were built twice (the tags) and derived twice (the publisher, once here and once
+     * inside judge), which is two chances to drift for no gain.
+     */
+    const tagText = await tagsForStoredPost({
+      shortcode: post.shortcode,
+      taggedAccounts: post.taggedAccounts,
+      rawPayload: post.rawPayload,
+    })
+    const publisherText = settings.publisherAsContext
+      ? publisherForPrompt(post.caption, { handle: target.handle, displayName: target.displayName })
+      : null
+    const captionCall = await classifyCaption(post.caption, post.shortcode, null, tagText, publisherText)
     /* A failed call decides nothing — the stored verdict stands and the row is reported. */
     if (!captionCall) {
       failed += 1
@@ -137,18 +161,10 @@ async function main() {
         publisher: { handle: target.handle, displayName: target.displayName },
         publisherAsContext: settings.publisherAsContext,
         detectorKey: target.detectorKey,
-        tagText: await tagsForStoredPost({
-          shortcode: post.shortcode,
-          taggedAccounts: post.taggedAccounts,
-          rawPayload: post.rawPayload,
-        }),
+        tagText,
+        publisherText,
       },
-      /**
-       * RE-ASK THE CAPTION rather than trusting the stored verdict: the stored one was formed
-       * WITHOUT the new input, so composing the frame against it would measure the change
-       * against itself. `judgeWithFrame` re-runs the caption call for a semantic channel when
-       * it is handed UNCLASSIFIED, which is the honest starting point here.
-       */
+      /* The caption verdict re-asked above, WITH the new input — see the note on that call. */
       modelVerdictToStored(captionCall.verdict),
     )
 
@@ -170,7 +186,16 @@ async function main() {
         where: { id: post.id },
         data: {
           verdict: judged.verdict,
-          signals: JSON.stringify([...judged.signals, 'rejudged:publisher-context']),
+          /**
+           * The row's own non-frame signals survive; only the footage evidence is replaced by
+           * what this run read. Replacing the whole list erased `detector:semantic`, the model
+           * name and the novelty scores from every row this command ever moved.
+           */
+          signals: JSON.stringify([
+            ...readStringArray(post.signals).filter((sig) => !sig.startsWith('frame:')),
+            ...judged.signals,
+            'rejudged:publisher-context',
+          ]),
           frameText: judged.frameText,
         },
       })

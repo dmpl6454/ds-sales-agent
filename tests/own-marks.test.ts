@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest'
-import { isOwnMark, stripOwnMarksFromFrame, stripOwnMarksFromBrands, selfInitialisms } from '@/detection/ownMarks'
+import { isOwnMark, stripOwnMarksFromFrameText, stripOwnMarksFromBrands, selfInitialisms } from '@/detection/ownMarks'
+import { frameTextForPrompt, type FrameText } from '@/detection/ocr'
 
 /**
  * A PUBLISHER'S OWN MARKS ARE NOT EVIDENCE ABOUT THE PUBLISHER — 2026-08-21.
@@ -65,9 +66,15 @@ describe('selfInitialisms', () => {
   })
 })
 
-describe('stripOwnMarksFromFrame', () => {
+/** A FrameText as OCR produces it — line-level items in three groups. */
+function ft(overlay: string[], smaller: string[] = [], misread: string[] = []): FrameText {
+  return { overlay, smaller, misread, dropped: 0, engine: 'rapidocr' }
+}
+
+describe('stripOwnMarksFromFrameText — on the STRUCTURED text, item by item', () => {
   /**
-   * The anniversary post's frame, VERBATIM from the row that was wrongly escalated.
+   * The anniversary post's frame, VERBATIM from the row that was wrongly escalated, as the
+   * arrays OCR produced rather than the summary line.
    *
    * The bare `FILMYGYAN` in shot is what read as "a brand is present" and must go. The
    * run-together title card SURVIVES on purpose: it is prose about the publisher, and the
@@ -75,30 +82,88 @@ describe('stripOwnMarksFromFrame', () => {
    * paid promotion"). Stripping evidence the model judges correctly would be the wrong fix.
    */
   it('drops the bare watermark and keeps the title card', () => {
-    const frame =
-      'on screen: AglamorouscelebrationasFilmygyan | marks10amazingyearsintheindustry! — in shot: FILMYGYAN'
-    const out = stripOwnMarksFromFrame(frame, filmygyan)
-    expect(out).not.toBeNull()
-    expect(out).toContain('marks10amazingyearsintheindustry')
-    expect(out).not.toMatch(/in shot: FILMYGYAN/)
+    const out = stripOwnMarksFromFrameText(
+      ft(['AglamorouscelebrationasFilmygyan', 'marks10amazingyearsintheindustry!'], ['FILMYGYAN']),
+      filmygyan,
+    )
+    expect(out.overlay).toEqual(['AglamorouscelebrationasFilmygyan', 'marks10amazingyearsintheindustry!'])
+    expect(out.smaller).toEqual([])
   })
 
-  it('a frame that is ONLY the watermark carries no evidence at all', () => {
-    expect(stripOwnMarksFromFrame('in shot: FILMYGYAN', filmygyan)).toBeNull()
-    expect(stripOwnMarksFromFrame('on screen: fg6 | in shot: FILMYGYAN', filmygyan)).toBeNull()
+  /**
+   * ── A TWO-WORD LOGO ARRIVES AS ONE ITEM ───────────────────────────────────
+   * OCR returns LINE-level items, so a per-word test lets every one of these through: no
+   * single word of `VIRAL BHAYANI` is the handle. The whole-item EQUALITY test is what
+   * catches them — and @filmygyan's display name is literally the letter-spaced form.
+   */
+  it.each([
+    ['FILMYGYAN', filmygyan],
+    ['F I L M Y G Y A N', filmygyan],
+    ['FILMY GYAN', filmygyan],
+    ['@filmygyan', filmygyan],
+    ['fg6', filmygyan],
+    ['VIRAL BHAYANI', { handle: 'viralbhayani', displayName: 'Viral Bhayani' }],
+    ['RVCJ MEDIA', { handle: 'rvcjinsta', displayName: 'RVCJ Media' }],
+  ])('drops %s as the publisher’s own mark', (item, publisher) => {
+    const out = stripOwnMarksFromFrameText(ft([], [item]), publisher)
+    expect(out.smaller, `${item} should be dropped`).toEqual([])
+  })
+
+  /**
+   * ── THE OTHER DIRECTION, WHICH IS THE EXPENSIVE ONE ───────────────────────
+   * Running `isOwnMark` on the WHOLE item would drop all of these: run together, each is
+   * within the affix slack of the handle. They are the shape of a real collaboration or a
+   * real placement, and dropping a real advertiser is the error this project does not make.
+   */
+  it.each([
+    'Filmygyan x Acer',
+    'FILMYGYAN PRESENTS',
+    'Pose toh FILMYGYAN',
+    'acerpure',
+    'BaDolby',
+    '120Hz',
+    'AglamorouscelebrationasFilmygyan',
+  ])('keeps %s', (item) => {
+    const out = stripOwnMarksFromFrameText(ft([], [item]), filmygyan)
+    expect(out.smaller).toEqual([item])
   })
 
   /** THE CONTROL: the acerpure placement must come through untouched apart from the logo. */
   it('keeps a real placement while dropping the watermark beside it', () => {
-    const frame = 'on screen: acerpu | Pose toh AkshayKumar sir — in shot: acerpure | BaDolby | 120Hz | FILMYGYAN'
-    const out = stripOwnMarksFromFrame(frame, filmygyan)
-    expect(out).toContain('acerpure')
-    expect(out).toContain('120Hz')
-    expect(out).not.toMatch(/\|\s*FILMYGYAN/)
+    const out = stripOwnMarksFromFrameText(
+      ft(['acerpu', 'Pose toh AkshayKumar sir'], ['acerpure', 'BaDolby', '120Hz', 'FILMYGYAN']),
+      filmygyan,
+    )
+    expect(out.overlay).toEqual(['acerpu', 'Pose toh AkshayKumar sir'])
+    expect(out.smaller).toEqual(['acerpure', 'BaDolby', '120Hz'])
   })
 
-  it('null in, null out — and an absent frame is not an empty finding', () => {
-    expect(stripOwnMarksFromFrame(null, filmygyan)).toBeNull()
+  /**
+   * A WATERMARK AT THE START OF A GROUP NEVER TAKES A NEIGHBOUR WITH IT. The string version
+   * deleted the previous group's last real item (`NIKE AIR`) on exactly this shape, and on
+   * the FIRST group it deleted the `[BEGIN FRAME-TEXT-…]` fence itself. There is no
+   * delimiter in an array to damage.
+   */
+  it('a watermark first in a group never removes a neighbouring item or the fence', () => {
+    const out = stripOwnMarksFromFrameText(ft(['FILMYGYAN', 'NIKE AIR'], ['FILMYGYAN', 'JUST DO IT']), filmygyan)
+    expect(out.overlay).toEqual(['NIKE AIR'])
+    expect(out.smaller).toEqual(['JUST DO IT'])
+    const prompt = frameTextForPrompt(out, 'abc123')!
+    expect(prompt.startsWith('[BEGIN FRAME-TEXT-abc123')).toBe(true)
+    expect(prompt).toContain('[END FRAME-TEXT-abc123]')
+    expect(prompt).toContain('NIKE AIR')
+  })
+
+  it('a frame that is ONLY the watermark strips to empty groups — nothing left to send', () => {
+    const out = stripOwnMarksFromFrameText(ft(['fg6'], ['FILMYGYAN'], ['FILMYGYAN']), filmygyan)
+    expect([out.overlay, out.smaller, out.misread]).toEqual([[], [], []])
+    expect(frameTextForPrompt(out, 'abc123')).toBeNull()
+  })
+
+  it('carries the engine and the dropped count through unchanged — they describe the OCR', () => {
+    const out = stripOwnMarksFromFrameText({ ...ft(['FILMYGYAN']), dropped: 3, engine: 'vision' }, filmygyan)
+    expect(out.engine).toBe('vision')
+    expect(out.dropped).toBe(3)
   })
 })
 

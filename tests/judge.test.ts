@@ -31,6 +31,20 @@ vi.mock('@/detection/ocr', async (importOriginal) => {
 })
 
 const { judgeWithFrame } = await import('@/detection/judge')
+/* The REAL renderer: `@/detection/ocr` is mocked only for `readFrameText`. */
+const { framePromptFor } = await import('@/detection/ocr')
+type FrameText = import('@/detection/ocr').FrameText
+
+/**
+ * What `readFrameText` really returns for a given parsed frame — the prompt from the same
+ * renderer with the same nonce — so the strip is exercised on the format production hands
+ * it, not on a fake. The fake (`<<frame>>…`) is exactly how the string strip passed its
+ * tests for two months while doing nothing in production.
+ */
+function realFrame(shortcode: string, text: FrameText) {
+  const prompt = framePromptFor(text, shortcode)
+  return { prompt, evidence: { kind: 'read' as const, hadText: prompt !== null }, text }
+}
 
 /**
  * `publisher` is required since 2026-08-21 — a channel's own watermark is not evidence about
@@ -42,11 +56,13 @@ const ordinaryTarget = { shortcode: 'DbtNU9UzWYU', caption: 'a bus in Thane', op
 
 /** A frame that read cleanly and carries the founding case's decisive token. */
 function frameRead() {
-  return {
-    prompt: '<<frame>>THANE\'s First Double Decker Bus | SWITCH<</frame>>',
-    evidence: { kind: 'read' as const, hadText: true },
-    text: { overlay: ["THANE's First Double Decker Bus"], smaller: ['SWITCH'], misread: [], dropped: 0, engine: 'vision' as const },
-  }
+  return realFrame('DbtNU9UzWYU', {
+    overlay: ["THANE's First Double Decker Bus"],
+    smaller: ['SWITCH'],
+    misread: [],
+    dropped: 0,
+    engine: 'vision' as const,
+  })
 }
 
 beforeEach(() => {
@@ -238,7 +254,10 @@ describe('judgeWithFrame — the M.O.M second look (2026-08-17, Tabish\'s decisi
     // Two calls: the second look (no frame prompt), then the frame call (with it).
     expect(classifyCaption).toHaveBeenCalledTimes(2)
     expect(classifyCaption.mock.calls[0]?.[2]).toBeNull()
-    expect(classifyCaption.mock.calls[1]?.[2]).toContain('frame')
+    // The REAL rendered block now (judge re-renders after the own-mark strip), so assert its
+    // fence and its decisive token rather than the word 'frame' the old fake carried.
+    expect(classifyCaption.mock.calls[1]?.[2]).toContain('[BEGIN FRAME-TEXT-')
+    expect(classifyCaption.mock.calls[1]?.[2]).toContain('SWITCH')
     expect(result.signals).toContain('second-look:judged')
   })
 
@@ -266,5 +285,200 @@ describe('judgeWithFrame — the M.O.M second look (2026-08-17, Tabish\'s decisi
     expect(result.secondLook).toBeNull()
     // Only the frame path may call the model here, and with no frame there is no call.
     expect(classifyCaption).not.toHaveBeenCalled()
+  })
+})
+
+describe('judgeWithFrame — the publisher\'s own watermark is stripped from the STRUCTURED text', () => {
+  const fg = { handle: 'filmygyan', displayName: 'F I L M Y G Y A N' }
+  const anniversary = {
+    shortcode: 'DcRTPMDTTjX',
+    caption: 'Celebrating a decade of Filmygyan with all the glam and glory!',
+    optedOut: false,
+    detectorKey: 'semantic',
+    publisher: fg,
+  }
+  const text = (overlay: string[], smaller: string[] = [], misread: string[] = [], dropped = 0): FrameText => ({
+    overlay,
+    smaller,
+    misread,
+    dropped,
+    engine: 'rapidocr',
+  })
+
+  /**
+   * A frame whose only text is the channel's own logo carries NO evidence, and no call is
+   * spent on it. The string strip never recognised this shape, so `frame:only-own-marks` was
+   * unreachable — and the evidence must say "read, no text", or the table records
+   * `frame:read-agreed` about a call that was never made.
+   */
+  it('(i) a watermark-only frame spends no call and is recorded as own marks, never as agreement', async () => {
+    readFrameText.mockResolvedValue(realFrame(anniversary.shortcode, text([], ['FILMYGYAN'])))
+
+    const result = await judgeWithFrame(anniversary, 'ORGANIC')
+
+    expect(classifyCaption).not.toHaveBeenCalled()
+    expect(result.verdict).toBe('ORGANIC')
+    expect(result.signals).toContain('frame:no-text')
+    expect(result.signals).toContain('frame:only-own-marks')
+    expect(result.signals).not.toContain('frame:read-agreed')
+    expect(result.frameCallMade).toBe(false)
+  })
+
+  /** The founding case of the 21 August fix, on the format production actually renders. */
+  it('(ii) the anniversary frame reaches the model WITHOUT its watermark and with its fence intact', async () => {
+    readFrameText.mockResolvedValue(
+      realFrame(anniversary.shortcode, text(['AglamorouscelebrationasFilmygyan', 'marks10amazingyearsintheindustry!'], ['FILMYGYAN'])),
+    )
+    classifyCaption.mockResolvedValue({ verdict: 'ORGANIC', confidence: 90, reason: 'own anniversary', brands: [] })
+
+    const result = await judgeWithFrame(anniversary, 'ORGANIC')
+
+    expect(classifyCaption).toHaveBeenCalledTimes(1)
+    const sent = classifyCaption.mock.calls[0]?.[2] as string
+    expect(sent).toContain('marks10amazingyearsintheindustry')
+    expect(sent).toContain('[BEGIN FRAME-TEXT-')
+    expect(sent).toContain('[END FRAME-TEXT-')
+    expect(sent).not.toMatch(/SMALLER TEXT IN THE FRAME: FILMYGYAN/)
+    expect(sent).not.toMatch(/\bFILMYGYAN\b/)
+    // What we READ is still stored whole — evidence and record are different facts.
+    expect(result.frameText).toContain('FILMYGYAN')
+    expect(result.frameCallMade).toBe(true)
+  })
+
+  /** The string strip deleted the BEGIN fence on exactly this shape. */
+  it('(iii) a watermark first in the first group leaves the BEGIN fence and its neighbour', async () => {
+    readFrameText.mockResolvedValue(realFrame(anniversary.shortcode, text(['FILMYGYAN', 'NIKE AIR'], ['JUST DO IT'])))
+    classifyCaption.mockResolvedValue({ verdict: 'ORGANIC', confidence: 90, reason: 'x', brands: [] })
+
+    await judgeWithFrame(anniversary, 'ORGANIC')
+
+    const sent = classifyCaption.mock.calls[0]?.[2] as string
+    expect(sent.startsWith('[BEGIN FRAME-TEXT-')).toBe(true)
+    expect(sent).toContain('NIKE AIR')
+    expect(sent).toContain('JUST DO IT')
+  })
+
+  /**
+   * A frame with none of the publisher's marks is sent BYTE-IDENTICAL to what `readFrameText`
+   * rendered — so every frame call that was right before this change is unchanged by it.
+   */
+  it('(iv) the Thane frame under @viralbhayani is sent byte-identical', async () => {
+    const frame = frameRead()
+    readFrameText.mockResolvedValue(frame)
+    classifyCaption.mockResolvedValue({ verdict: 'CAMPAIGN', confidence: 88, reason: 'bus as product', brands: [] })
+
+    await judgeWithFrame(ordinaryTarget, 'ORGANIC')
+
+    expect(classifyCaption.mock.calls[0]?.[2]).toBe(frame.prompt)
+  })
+
+  /**
+   * Text that survived the strip but is too weak to render is NOT "only own marks" — folding it
+   * in would conflate the weak-evidence rule with the own-mark rule in the stored signal.
+   */
+  it('(v) a surviving misread item is not labelled as own marks', async () => {
+    readFrameText.mockResolvedValue(realFrame(anniversary.shortcode, text(['FILMYGYAN'], [], ['acerpu'])))
+
+    const result = await judgeWithFrame(anniversary, 'ORGANIC')
+
+    expect(classifyCaption).not.toHaveBeenCalled()
+    expect(result.signals).not.toContain('frame:only-own-marks')
+    expect(result.signals).toContain('frame:only-weak-text-left')
+  })
+
+  /** This file is now the one writer of engine provenance: every result that read anything. */
+  it('(vi) every post-read return carries the engine, and the unreadable count when there is one', async () => {
+    // stripped to nothing — no call
+    readFrameText.mockResolvedValue(realFrame(anniversary.shortcode, text([], ['FILMYGYAN'], [], 2)))
+    let result = await judgeWithFrame(anniversary, 'ORGANIC')
+    expect(result.signals).toContain('frame:engine-rapidocr')
+    expect(result.signals).toContain('frame:dropped-2-unreadable')
+
+    // call failed
+    readFrameText.mockResolvedValue(frameRead())
+    classifyCaption.mockResolvedValue(null)
+    result = await judgeWithFrame(ordinaryTarget, 'ORGANIC')
+    expect(result.signals).toEqual(expect.arrayContaining(['frame:call-failed', 'frame:engine-vision']))
+
+    // judged
+    classifyCaption.mockResolvedValue({ verdict: 'ORGANIC', confidence: 90, reason: 'x', brands: [] })
+    result = await judgeWithFrame(ordinaryTarget, 'ORGANIC')
+    expect(result.signals).toEqual(expect.arrayContaining(['frame:read-agreed', 'frame:engine-vision']))
+
+    // nothing read — no engine to name
+    readFrameText.mockResolvedValue({ prompt: null, evidence: { kind: 'no-frame' as const }, text: null })
+    result = await judgeWithFrame(ordinaryTarget, 'ORGANIC')
+    expect(result.signals.some((sig) => sig.startsWith('frame:engine-'))).toBe(false)
+  })
+
+  /** The marker the detector's own frame stage used to write, carried on by judge. */
+  it('marks a semantic caption CAMPAIGN as not needing the footage', async () => {
+    const result = await judgeWithFrame(ordinaryTarget, 'CAMPAIGN')
+    expect(result.signals).toContain('frame:not-needed-caption-decided')
+    expect(readFrameText).not.toHaveBeenCalled()
+  })
+})
+
+describe('judgeWithFrame — the inputs the caller already built are used, not re-derived', () => {
+  const momPost = {
+    shortcode: 'DmomTest02',
+    caption: 'Mad Over Marketing M.O.M turns ten this week',
+    optedOut: false,
+    detectorKey: 'mom',
+    publisher: { handle: 'madovermarketing_mom', displayName: 'Mad Over Marketing (M.O.M)' },
+    publisherAsContext: true,
+  }
+
+  /**
+   * The detector's caption call and judge's frame call must carry the SAME publisher block,
+   * or `applyFrameSignal` blames the footage for a publisher-driven difference. A caller that
+   * judged the caption with a block hands it in, and that block wins over a second derivation.
+   */
+  it('uses publisherText verbatim in BOTH calls, even where a derived block would differ', async () => {
+    classifyCaption.mockResolvedValue({ verdict: 'ORGANIC', confidence: 90, reason: 'x', brands: [] })
+    readFrameText.mockResolvedValue(frameRead())
+
+    await judgeWithFrame({ ...momPost, publisherText: 'X' }, 'ORGANIC')
+
+    expect(classifyCaption).toHaveBeenCalledTimes(2)
+    expect(classifyCaption.mock.calls[0]?.[4]).toBe('X')
+    expect(classifyCaption.mock.calls[1]?.[4]).toBe('X')
+  })
+
+  it('a null publisherText is used too — null is an answer, not an absence', async () => {
+    classifyCaption.mockResolvedValue({ verdict: 'ORGANIC', confidence: 90, reason: 'x', brands: [] })
+    readFrameText.mockResolvedValue(frameRead())
+
+    await judgeWithFrame({ ...momPost, publisherText: null }, 'ORGANIC')
+
+    expect(classifyCaption.mock.calls[0]?.[4]).toBeNull()
+    expect(classifyCaption.mock.calls[1]?.[4]).toBeNull()
+  })
+
+  it('derives the block when the caller supplies none (the backfills)', async () => {
+    classifyCaption.mockResolvedValue({ verdict: 'ORGANIC', confidence: 90, reason: 'x', brands: [] })
+    readFrameText.mockResolvedValue(frameRead())
+
+    await judgeWithFrame(momPost, 'ORGANIC')
+
+    const derived = classifyCaption.mock.calls[0]?.[4] as string
+    expect(derived).toContain('@madovermarketing_mom ("Mad Over Marketing (M.O.M)")')
+    expect(classifyCaption.mock.calls[1]?.[4]).toBe(derived)
+  })
+
+  /**
+   * The accuracy harness passes `costSubject: null` so its spend is not booked on `/cost` as
+   * detection spend on the labelled channel. Production passes nothing and books the shortcode.
+   */
+  it('books both calls under the shortcode by default, under nothing when costSubject is null', async () => {
+    classifyCaption.mockResolvedValue({ verdict: 'ORGANIC', confidence: 90, reason: 'x', brands: [] })
+    readFrameText.mockResolvedValue(frameRead())
+
+    await judgeWithFrame(momPost, 'ORGANIC')
+    expect(classifyCaption.mock.calls.map((c) => c[1])).toEqual(['DmomTest02', 'DmomTest02'])
+
+    classifyCaption.mockClear()
+    await judgeWithFrame({ ...momPost, costSubject: null }, 'ORGANIC')
+    expect(classifyCaption.mock.calls.map((c) => c[1])).toEqual([undefined, undefined])
   })
 })

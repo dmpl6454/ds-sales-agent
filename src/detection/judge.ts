@@ -1,5 +1,5 @@
-import { readFrameText, frameTextSummaryLine } from './ocr'
-import { stripOwnMarksFromFrame } from './ownMarks'
+import { readFrameText, frameTextSummaryLine, framePromptFor, type FrameText } from './ocr'
+import { stripOwnMarksFromFrameText } from './ownMarks'
 import { publisherForPrompt } from './publisherContext'
 import { applyFrameSignal } from './frameSignal'
 import { modelVerdictToStored, classifyCaption } from './detectors/semantic'
@@ -10,13 +10,21 @@ import type { Verdict } from '@/lib/constants'
  *
  * ── WHY THIS FILE EXISTS ────────────────────────────────────────────────────
  *
- * Three callers ran their own version of this and they had already diverged:
+ * Three callers ran their own version of this and they had already diverged (the table is
+ * the state on 2026-08-08, when this file was written):
  *
  *   | caller                  | caption | frame |
  *   |-------------------------|---------|-------|
  *   | `pipeline.ts`           | yes     | **NO** |
  *   | `scripts/ocr.ts`        | yes     | yes   |
  *   | `scripts/classify.ts`   | yes     | **NO** |
+ *
+ * And it happened AGAIN, one layer down (found 2026-10-09): `semanticDetector.classify` grew
+ * its own frame stage and `scripts/accuracy.ts` its own copy, neither of which ran the
+ * publisher's-own-mark strip below. Today every caller in that table — and the detector, and
+ * the harness — reads the footage through this file and nowhere else, and
+ * `tests/one-judging-path.test.ts` DISCOVERS the callers rather than listing them, because a
+ * hard-coded list is exactly what let the fourth and fifth copies in unseen.
  *
  * MEASURED 2026-08-08, and it is the finding that made this urgent rather than tidy:
  * **166 posts detected that day had a cover frame on disk that nothing had read.** The
@@ -52,10 +60,11 @@ import type { Verdict } from '@/lib/constants'
  * ── THE FOOTAGE MAY ONLY ESCALATE ───────────────────────────────────────────
  *
  * `applyFrameSignal` is the permission table and it is not re-implemented here: a frame
- * may turn a caption ORGANIC into REVIEW so a person looks, and nothing else. It can
- * never mint a CAMPAIGN, overturn one, clear one, or give an UNCLASSIFIED post a verdict.
- * The reason is honest rather than cautious — `ig:accuracy`'s labels are caption-derived,
- * so a frame-driven CAMPAIGN is measured by nothing that exists.
+ * may turn a caption ORGANIC into CAMPAIGN, and nothing else. It can never overturn a
+ * CAMPAIGN, clear one, or give an UNCLASSIFIED post a verdict. (Until 2026-08-17 the
+ * escalation landed in REVIEW; Tabish removed the third state, and the cross on
+ * /paid-posts is the corrective — see `frameSignal.ts`.) `ig:accuracy`'s labels are
+ * caption-derived, so a frame-driven CAMPAIGN is still measured by no harness.
  */
 
 /** What the caller must supply. Deliberately not a Prisma row: this stays testable. */
@@ -121,6 +130,32 @@ export interface JudgeInput {
    * must stay distinguishable from empty.
    */
   tagText?: string | null
+  /**
+   * The publisher block, ALREADY FENCED by `publisherForPrompt`, exactly as the caption
+   * verdict was reached with — the `tagText` rule above, applied to the second input.
+   *
+   * Undefined means "derive it here" from `publisher` and `publisherAsContext`, which is what
+   * the backfills that hold no caption call of their own do (the M.O.M second look, the
+   * re-judge pass, `ig:ocr`). A string or null is used VERBATIM in every call below.
+   *
+   * ── WHY THE OVERRIDE EXISTS (2026-10-09) ─────────────────────────────────────
+   *
+   * The pipeline's caption call lived in the detector and built its own block with no display
+   * name — `@filmygyan` — while this file built `@filmygyan ("F I L M Y G Y A N")` for the
+   * frame call. Two calls about one post differing in two inputs, and `applyFrameSignal`
+   * blaming the footage for both. One construction, handed to both, is the only form in which
+   * "differs in exactly one input" is true by construction.
+   */
+  publisherText?: string | null
+  /**
+   * The `ModelCall.subject` both calls here are booked under. Undefined means the post's
+   * shortcode — production, so `/cost` can attribute the spend to the channel.
+   *
+   * NULL means no subject at all, and exists for the accuracy harness: its daily
+   * `--repeat 3` run would otherwise join `DetectedCampaign` on the shortcode and be booked as
+   * DETECTION spend on whichever channel happened to carry the labels (M.O.M, mostly).
+   */
+  costSubject?: string | null
 }
 
 export type JudgeReason =
@@ -180,6 +215,16 @@ export interface JudgeResult {
    * verdict, and the rule's own answer stands).
    */
   secondLook: { confidence: number; reason: string; brands: string[] } | null
+  /**
+   * Was the model actually asked about the FOOTAGE? True only when a frame call was made,
+   * whether it answered or failed.
+   *
+   * Carried rather than parsed back out of `signals`, because the signals cannot say it
+   * honestly: a frame whose only text was the publisher's own watermark is READ and yet
+   * nothing is sent, and the accuracy harness counts "posts whose footage reached the model"
+   * from this.
+   */
+  frameCallMade: boolean
 }
 
 /**
@@ -204,6 +249,7 @@ export async function judgeWithFrame(
     changedByFrame: false,
     reason: 'judged',
     secondLook: null,
+    frameCallMade: false,
   }
 
   /**
@@ -221,8 +267,19 @@ export async function judgeWithFrame(
    * to THE FOOTAGE. A publisher block reaching only one call would record a publisher-driven
    * change as a frame-driven one, corrupting the single number that says whether reading video
    * earns its keep. `tests/publisher-context.test.ts` greps both call sites for this.
+   *
+   * A caller that already holds the block it judged the caption with passes it in
+   * (`input.publisherText`), and that wins: deriving a second copy here is how the
+   * detector's `@filmygyan` and this file's `@filmygyan ("F I L M Y G Y A N")` came apart.
    */
-  const publisherText = input.publisherAsContext ? publisherForPrompt(input.caption, input.publisher) : null
+  const publisherText =
+    input.publisherText !== undefined
+      ? input.publisherText
+      : input.publisherAsContext
+        ? publisherForPrompt(input.caption, input.publisher)
+        : null
+  /** See `costSubject`: undefined books under the shortcode, null books under nothing. */
+  const subject = input.costSubject === undefined ? input.shortcode : (input.costSubject ?? undefined)
 
   if (input.optedOut) return { ...base, reason: 'opted-out' }
   if (!FRAME_JUDGING_DETECTORS.has(input.detectorKey)) return { ...base, reason: 'unsupported' }
@@ -242,7 +299,7 @@ export async function judgeWithFrame(
   let secondLook: JudgeResult['secondLook'] = null
   const extraSignals: string[] = []
   if (SECOND_LOOK_DETECTORS.has(input.detectorKey) && captionOnly === 'ORGANIC') {
-    const call = await classifyCaption(input.caption, input.shortcode, null, input.tagText ?? null, publisherText)
+    const call = await classifyCaption(input.caption, subject, null, input.tagText ?? null, publisherText)
     if (call) {
       captionOnly = modelVerdictToStored(call.verdict)
       secondLook = { confidence: call.confidence, reason: call.reason, brands: call.brands }
@@ -261,7 +318,14 @@ export async function judgeWithFrame(
    * CAMPAIGN is spending money to be told no.
    */
   if (captionOnly !== 'ORGANIC') {
-    return { ...base, reason: 'caption-decisive' }
+    /**
+     * `frame:not-needed-caption-decided` on a semantic CAMPAIGN, the population
+     * `rejudge.ts` documents. The detector used to write it from its own frame stage; with
+     * that stage gone this file is the one writer of every `frame:*` signal, so it carries
+     * the marker on — scoped to exactly the rows that carried it before.
+     */
+    const notNeeded = input.detectorKey === 'semantic' && captionOnly === 'CAMPAIGN' ? ['frame:not-needed-caption-decided'] : []
+    return { ...base, signals: [...base.signals, ...notNeeded], reason: 'caption-decisive' }
   }
 
   /**
@@ -275,18 +339,39 @@ export async function judgeWithFrame(
   const engine = frame.text?.engine ?? null
 
   /**
+   * WHICH ENGINE READ IT, on every result that read anything — and this file is now the one
+   * writer of it. CLAUDE.md: *never compare verdicts across engines without knowing which
+   * read the frame.* The detector's own frame stage used to write these; with it gone, a
+   * judgement that did not carry them would erase the provenance from every new row.
+   */
+  const provenance = frame.text
+    ? [
+        `frame:engine-${frame.text.engine}`,
+        ...(frame.text.dropped > 0 ? [`frame:dropped-${frame.text.dropped}-unreadable`] : []),
+      ]
+    : []
+
+  /**
    * THE PUBLISHER'S OWN WATERMARK IS REMOVED BEFORE THE FOOTAGE BECOMES EVIDENCE.
    *
-   * Applied to the PROMPT, so the classifier never sees the channel's own logo presented as
-   * a brand in shot — and applied here rather than in `ocr.ts` so the stored `frameText`
-   * still records everything that was actually read. What we READ and what we treat as
-   * EVIDENCE are different facts, and this repo has paid for collapsing them before.
+   * Applied to the STRUCTURED text and then re-rendered, so the classifier never sees the
+   * channel's own logo presented as a brand in shot — and applied here rather than in
+   * `ocr.ts` so the stored `frameText` still records everything that was actually read.
+   * What we READ and what we treat as EVIDENCE are different facts, and this repo has paid
+   * for collapsing them before.
    *
-   * When nothing survives the strip there is no footage evidence at all, so the flow takes
-   * the same path as a frame with no text — through `applyFrameSignal`, which is the one
-   * writer of the reasoning about why the footage did not speak.
+   * ── IT WAS A STRING STRIP, AND IT DID NOTHING FOR TWO MONTHS (found 2026-10-09) ─────
+   *
+   * This line used to hand the rendered PROMPT block to a function that parsed the one-line
+   * SUMMARY format. The groups did not split where it expected, so the anniversary frame's
+   * trailing `FILMYGYAN` reached the model untouched, a watermark-only frame was never
+   * recognised, and a watermark at the start of the first group deleted the `[BEGIN …]` fence
+   * itself. Filtering the arrays and rendering AFTER cannot touch a neighbour or a delimiter,
+   * and `framePromptFor` is the same renderer `readFrameText` used, so a frame with no own
+   * marks produces a byte-identical block.
    */
-  const evidencePrompt = frame.prompt ? stripOwnMarksFromFrame(frame.prompt, input.publisher) : frame.prompt
+  const kept: FrameText | null = frame.text ? stripOwnMarksFromFrameText(frame.text, input.publisher) : null
+  const evidencePrompt = frame.prompt && kept ? framePromptFor(kept, input.shortcode) : null
 
   /**
    * No prompt means nothing to add to the caption. The verdict is re-derived through
@@ -295,24 +380,39 @@ export async function judgeWithFrame(
    * rather than invented here. One writer of that reasoning, not two.
    */
   if (!evidencePrompt) {
-    const outcome = applyFrameSignal(captionOnly, captionOnly, frame.evidence)
     /**
-     * `frame:only-own-marks` when the frame HAD text and all of it was the publisher's own.
-     * Distinct from "no text found", because they are different facts with different
-     * meanings — the five-states lesson from `framesRead`, one modality along.
+     * When the frame HAD sendable text and the strip left none, no call is made — so the
+     * evidence handed to the table is "read, no text", never the original `hadText: true`.
+     * Passing that through would record `frame:read-agreed`, *the classifier read the
+     * footage and agreed*, about a call that never happened.
      */
-    const stripped = frame.prompt ? ['frame:only-own-marks'] : []
+    const strippedAway = frame.prompt !== null
+    const outcome = applyFrameSignal(
+      captionOnly,
+      captionOnly,
+      strippedAway ? { kind: 'read', hadText: false } : frame.evidence,
+    )
+    /**
+     * `frame:only-own-marks` when EVERYTHING read was the publisher's own — counted across
+     * all three groups, including the possibly-misread one the prompt does not render on
+     * its own. Text that survived the strip but is too weak to send is a different fact
+     * (`frame:only-weak-text-left`), and folding it into "only own marks" would conflate the
+     * weak-evidence rule with the own-mark rule in the stored signal — the five-states lesson
+     * from `framesRead`, one modality along.
+     */
+    const survived = kept ? kept.overlay.length + kept.smaller.length + kept.misread.length : 0
+    const why = strippedAway ? [survived === 0 ? 'frame:only-own-marks' : 'frame:only-weak-text-left'] : []
     return {
       ...base,
       verdict: outcome.verdict,
-      signals: [...extraSignals, ...outcome.signals, ...stripped],
+      signals: [...extraSignals, ...outcome.signals, ...why, ...provenance],
       frameText: frameTextSummaryLine(frame.text),
       frameSummary: frameTextSummaryLine(frame.text),
       engine,
     }
   }
 
-  const withFrameCall = await classifyCaption(input.caption, input.shortcode, evidencePrompt, input.tagText ?? null, publisherText)
+  const withFrameCall = await classifyCaption(input.caption, subject, evidencePrompt, input.tagText ?? null, publisherText)
 
   /**
    * A FAILED CALL IS NOT A VERDICT. Without an answer we cannot know what the classifier
@@ -325,10 +425,11 @@ export async function judgeWithFrame(
   if (!withFrameCall) {
     return {
       ...base,
-      signals: [...extraSignals, 'frame:call-failed'],
+      signals: [...extraSignals, 'frame:call-failed', ...provenance],
       frameText: summary,
       frameSummary: summary,
       engine,
+      frameCallMade: true,
     }
   }
 
@@ -344,12 +445,13 @@ export async function judgeWithFrame(
 
   return {
     verdict: outcome.verdict,
-    signals: [...extraSignals, ...outcome.signals],
+    signals: [...extraSignals, ...outcome.signals, ...provenance],
     frameText: summary,
     frameSummary: summary,
     engine,
     changedByFrame: outcome.verdict !== captionOnly,
     reason: 'judged',
     secondLook,
+    frameCallMade: true,
   }
 }

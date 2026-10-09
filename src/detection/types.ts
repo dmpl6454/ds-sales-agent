@@ -59,8 +59,37 @@ export interface Classification {
    * Null when no frame was read, which is not the same as a frame with no text; the
    * `frame:*` entries in `signals` keep those states apart. Never sent to a recipient:
    * this is text off a stranger's video and it has no business in message copy.
+   *
+   * No DETECTOR sets this any more (2026-10-09): the footage is read in `judge.ts` alone,
+   * and `judgeWithFrame`'s own `frameText` is what the pipeline stores.
    */
   frameText?: string | null
+}
+
+/**
+ * The per-post model inputs besides the caption, built ONCE by the caller.
+ *
+ * ── WHY THE CALLER BUILDS THEM (2026-10-09) ──────────────────────────────────
+ *
+ * The same post reaches the model twice — the caption alone in the detector, then the caption
+ * WITH the frame in `judgeWithFrame` — and `applyFrameSignal` attributes any difference
+ * between those two verdicts to THE FOOTAGE. When each side built its own copy, they had
+ * drifted: the detector's publisher block named `@filmygyan` and judge's named
+ * `@filmygyan ("F I L M Y G Y A N")`, so the two calls differed in two inputs while the
+ * signal blamed one. One construction, handed unchanged to both, makes "differs in exactly
+ * one input" true by construction rather than by two authors agreeing.
+ */
+export interface ModelInputs {
+  /** The post's tags and co-authors, fenced by `tagsForPrompt`, or null. */
+  tagText: string | null
+  /** Whose feed this is, fenced by `publisherForPrompt`, or null. */
+  publisherText: string | null
+  /**
+   * The `ModelCall.subject` the cost ledger books this call under. Undefined means the
+   * post's shortcode (production). Null means NO subject — the accuracy harness, whose calls
+   * must not be booked as detection spend on the channel they happen to label.
+   */
+  costSubject?: string | null
 }
 
 /**
@@ -97,10 +126,18 @@ export interface ChannelDetector {
   describe: string
   /**
    * Async because a semantic detector calls a model over the network. Rule-based
-   * detectors simply return; the cost of the wider signature is one `await` at the
-   * single call site in `pipeline.ts`.
+   * detectors simply return; the cost of the wider signature is one `await` at each call
+   * site — `pipeline.ts`, and the accuracy harness, which must run the production caption
+   * path rather than a copy of it.
+   *
+   * Returns the CAPTION verdict only. The footage is judged in `judge.ts` and nowhere else.
+   *
+   * `inputs` is REQUIRED so the compiler names every caller: they are built once by the
+   * caller and handed unchanged to the detector AND to `judgeWithFrame`, so the frame call
+   * differs from the caption call in exactly one input. Rule detectors take one parameter,
+   * which is assignable here, and ignore it.
    */
-  classify(post: EnrichedPost & PostTagFacts): Promise<Classification> | Classification
+  classify(post: EnrichedPost & PostTagFacts, inputs: ModelInputs): Promise<Classification> | Classification
 
   /**
    * Is this detector actually able to do its job right now?
