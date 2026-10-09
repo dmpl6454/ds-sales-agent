@@ -81,6 +81,10 @@ export function selfInitialisms(handle: string, displayName: string | null): str
  * publisher's own names it matches. A brand this returns false for is simply judged as
  * before, so the failure direction is "we kept a token we could have dropped", never "we
  * dropped a real advertiser".
+ *
+ * This is the rule for CAPTION BRAND STRINGS. OCR'd footage uses `isOwnFrameMark`: OCR runs a
+ * collaboration card into one word, and this function's affix slack and series-code
+ * subsequence read `FILMYGYANxACER` or `VH1` as the publisher's own.
  */
 export function isOwnMark(token: string, publisher: { handle: string; displayName: string | null }): boolean {
   const t = normaliseMark(token)
@@ -136,6 +140,75 @@ function isSubsequence(needle: string, hay: string): boolean {
 }
 
 /**
+ * The words a channel wraps around its OWN name in a watermark (`thefilmygyan`,
+ * `FILMYGYAN OFFICIAL`, `filmygyantv`). FIXED and SMALL on purpose: none of these is an
+ * advertiser, so a token that is the handle plus only these can never be a placement. A
+ * leftover outside this list — `xacer`, `presents`, `posetoh` — is something else sharing the
+ * frame with the logo, and the frame keeps it.
+ */
+const FRAME_WATERMARK_AFFIXES: ReadonlySet<string> = new Set([
+  'the',
+  'official',
+  'real',
+  'india',
+  'in',
+  'tv',
+  'media',
+  'hq',
+])
+
+/**
+ * PURE. Is this OCR'd word the publisher's own mark? The FRAME rule — deliberately narrower than
+ * `isOwnMark`, which was written for CAPTION brand strings and stays as it is for them.
+ *
+ * ── WHY FOOTAGE CANNOT SHARE THE CAPTION RULE (review, 2026-10-09) ───────────────────
+ *
+ * OCR runs words together, so a collaboration card arrives as ONE word: `FILMYGYANxACER`,
+ * `ViralBhayaniXNykaa`, `PINKVILLAxLAKME`. Every one is within `isOwnMark`'s 8-character affix
+ * slack of the handle, so the caption rule read the card as the logo and DROPPED THE
+ * ADVERTISER WITH IT. Its series-code arm (first letter + any in-order subsequence of the
+ * handle) dropped real code-shaped brands the same way — `VH1` under @viralbhayani, `MG4` under
+ * @madovermarketing_mom, `TCL55` under @trolls_official, `FLY91` under @filmygyan, `VO5` under
+ * @voompla. When that was the frame's only text, `judge.ts` made no call and filed the post
+ * `frame:only-own-marks`, which nothing retries: a genuine placement missed permanently, the
+ * one error this project refuses to make.
+ *
+ * So a word is the publisher's own only when it can be POINTED AT:
+ *
+ *   - it IS the handle or the display name (normalised, so `@filmygyan`, `F I L M Y G Y A N`);
+ *   - it is the handle or the display name with nothing around it but `FRAME_WATERMARK_AFFIXES`;
+ *   - it is a series code whose stem is one of `selfInitialisms` — the publisher's DERIVABLE
+ *     initials — and never the subsequence arm. That arm cannot be kept even as a fallback for
+ *     a channel with no derivable initials: `FLY91` and `VO5` are exactly that case.
+ *
+ * The cost, stated: under @filmygyan's real display name (`F I L M Y G Y A N`) no initialism is
+ * derivable, so a frame reading `fg6` is KEPT and sent. The fg codes were measured in CAPTIONS,
+ * where `isOwnMark` still removes them; in footage a lone `fg6` costs one classifier call the
+ * model has no reason to escalate, which is the cheap direction.
+ */
+export function isOwnFrameMark(token: string, publisher: { handle: string; displayName: string | null }): boolean {
+  const t = normaliseMark(token)
+  if (t.length === 0) return false
+
+  const handle = normaliseMark(publisher.handle)
+  const name = normaliseMark(publisher.displayName ?? '')
+
+  if (t === handle || (name.length >= 3 && t === name)) return true
+
+  /* Six is `isOwnMark`'s floor for the same reason: below it a core is too short to identify
+     a channel inside a longer word. */
+  const isAffix = (s: string) => s === '' || FRAME_WATERMARK_AFFIXES.has(s)
+  for (const core of [handle, name]) {
+    if (core.length < 6) continue
+    const at = t.indexOf(core)
+    if (at >= 0 && isAffix(t.slice(0, at)) && isAffix(t.slice(at + core.length))) return true
+  }
+
+  const code = t.match(/^([a-z]{2,5})(\d{1,3})$/)
+  return code !== null && selfInitialisms(publisher.handle, publisher.displayName).includes(code[1]!)
+}
+
+/**
  * PURE. Strip the publisher's own marks out of OCR'd frame text before it becomes evidence —
  * on the STRUCTURED text, item by item, never on a rendered string.
  *
@@ -161,16 +234,16 @@ function isSubsequence(needle: string, hay: string): boolean {
  *
  * OCR returns LINE-level items, so a two-word logo arrives as ONE item. An item is dropped iff
  *
- *   (a) the WHOLE item normalises to EXACTLY the handle or the display name — catching
- *       `VIRAL BHAYANI`, `FILMY GYAN`, `F I L M Y G Y A N`, `RVCJ MEDIA`, which a per-word
- *       test lets through because no single word is the name; or
- *   (b) EVERY word of it is an own mark (`FILMYGYAN`, `@filmygyan`, `fg6`).
+ *   (a) the WHOLE item is an own mark — catching `VIRAL BHAYANI`, `FILMY GYAN`,
+ *       `F I L M Y G Y A N`, `RVCJ MEDIA`, `FILMYGYAN OFFICIAL`, which a per-word test lets
+ *       through because no single word is the name; or
+ *   (b) EVERY word of it is an own mark (`FILMYGYAN`, `@filmygyan`).
  *
- * (a) is EQUALITY ONLY, never `isOwnMark`'s affix branch. Running `isOwnMark` on the whole
- * item drops `Filmygyan x Acer`, `FILMYGYAN PRESENTS` and `Pose toh FILMYGYAN` — the shape of a
- * real collaboration — because the run-together text is within the affix slack of the handle.
- * Dropping a real advertiser is the expensive direction here; keeping a logo we could have
- * dropped is merely the status quo.
+ * Both ask `isOwnFrameMark`, NEVER the caption `isOwnMark`. The caption rule's affix slack and
+ * series-code subsequence drop `Filmygyan x Acer` run together (`FILMYGYANxACER`, which is how
+ * OCR emits it), `FILMYGYAN PRESENTS`, `Pose toh FILMYGYAN`, `VH1`, `MG4` — the shape of a real
+ * collaboration or a real product. Dropping a real advertiser is the expensive direction here;
+ * keeping a logo we could have dropped is merely the status quo.
  *
  * `engine` and `dropped` are carried through: `dropped` counts observations that sanitised
  * away to nothing, which is a fact about the OCR, not about the publisher.
@@ -179,13 +252,10 @@ export function stripOwnMarksFromFrameText(
   ft: FrameText,
   publisher: { handle: string; displayName: string | null },
 ): FrameText {
-  const handle = normaliseMark(publisher.handle)
-  const name = normaliseMark(publisher.displayName ?? '')
   const isOwnItem = (item: string): boolean => {
-    const whole = normaliseMark(item)
-    if (whole.length > 0 && (whole === handle || (name.length >= 3 && whole === name))) return true
+    if (isOwnFrameMark(item, publisher)) return true
     const words = item.split(/[,\s]+/).map((w) => w.trim()).filter(Boolean)
-    return words.length > 0 && words.every((w) => isOwnMark(w, publisher))
+    return words.length > 0 && words.every((w) => isOwnFrameMark(w, publisher))
   }
   const keep = (items: readonly string[]) => items.filter((item) => !isOwnItem(item))
   return {

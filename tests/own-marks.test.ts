@@ -101,12 +101,36 @@ describe('stripOwnMarksFromFrameText — on the STRUCTURED text, item by item', 
     ['F I L M Y G Y A N', filmygyan],
     ['FILMY GYAN', filmygyan],
     ['@filmygyan', filmygyan],
-    ['fg6', filmygyan],
+    /* A watermark wearing only non-brand affixes is still the logo. */
+    ['filmygyanofficial', filmygyan],
+    ['thefilmygyan', filmygyan],
+    ['FILMYGYAN OFFICIAL', filmygyan],
+    /**
+     * A series code drops when its stem is a DERIVABLE initialism. Under the real display name
+     * `F I L M Y G Y A N` none is derivable — see the KEEP case below — so the code is tested
+     * where the initials can be pointed at, which is what the frame rule requires.
+     */
+    ['fg6', { handle: 'filmygyan', displayName: 'Filmy Gyan' }],
+    ['bs2', society],
     ['VIRAL BHAYANI', { handle: 'viralbhayani', displayName: 'Viral Bhayani' }],
     ['RVCJ MEDIA', { handle: 'rvcjinsta', displayName: 'RVCJ Media' }],
   ])('drops %s as the publisher’s own mark', (item, publisher) => {
     const out = stripOwnMarksFromFrameText(ft([], [item]), publisher)
     expect(out.smaller, `${item} should be dropped`).toEqual([])
+  })
+
+  /**
+   * THE COST OF THE FRAME RULE, PINNED SO IT IS A DECISION RATHER THAN A SURPRISE. Under
+   * @filmygyan's real display name no initialism is derivable, and the only arm that matched
+   * `fg6` — first letter + in-order subsequence of the handle — is the arm that also matches
+   * `FLY91` and `VO5`. So in FOOTAGE a lone `fg6` is kept and sent: one classifier call with
+   * nothing to escalate on. The caption rule still removes it from brand strings, where the fg
+   * codes were actually measured.
+   */
+  it('keeps fg6 in footage under the letter-spaced display name — the cheap direction', () => {
+    const out = stripOwnMarksFromFrameText(ft([], ['fg6']), filmygyan)
+    expect(out.smaller).toEqual(['fg6'])
+    expect(isOwnMark('fg6', filmygyan), 'the CAPTION rule is unchanged').toBe(true)
   })
 
   /**
@@ -126,6 +150,45 @@ describe('stripOwnMarksFromFrameText — on the STRUCTURED text, item by item', 
   ])('keeps %s', (item) => {
     const out = stripOwnMarksFromFrameText(ft([], [item]), filmygyan)
     expect(out.smaller).toEqual([item])
+  })
+
+  /**
+   * ── OCR RUNS WORDS TOGETHER, AND THE CAPTION RULE WAS DROPPING THE ADVERTISER WITH THEM ──
+   * Found by review 2026-10-09, running the real functions. RapidOCR on the server emits a
+   * collaboration card as ONE word, so every one of these was a single "word" that passed the
+   * CAPTION `isOwnMark` — its affix branch (contains the handle, within 8 characters) or its
+   * series-code arm (first letter + an in-order subsequence of the handle). Dropped, a frame
+   * whose only text this was made no call and was recorded `frame:only-own-marks`, which is
+   * never retried: a genuine placement missed permanently. `FLY91` (an airline) and `VO5` (a
+   * hair-care brand) are the two that rule out keeping the subsequence arm for frames at all,
+   * even as a fallback for a publisher with no derivable initials.
+   */
+  const viral = { handle: 'viralbhayani', displayName: 'Viral Bhayani' }
+  const pinkvilla = { handle: 'pinkvilla', displayName: 'Pinkvilla' }
+  const mom = { handle: 'madovermarketing_mom', displayName: 'Mad Over Marketing (M.O.M)' }
+  const rvcj = { handle: 'rvcjinsta', displayName: 'RVCJ Media' }
+  const trolls = { handle: 'trolls_official', displayName: 'Trolls Official' }
+  const voompla = { handle: 'voompla', displayName: 'Voompla' }
+  it.each([
+    ['FILMYGYANxACER', filmygyan],
+    ['FilmygyanXZee5', filmygyan],
+    ['#FilmygyanXNike', filmygyan],
+    ['AcerxFilmygyan', filmygyan],
+    ['ViralBhayaniXNykaa', viral],
+    ['NykaaxViralBhayani', viral],
+    ['PinkvillaXMyntra', pinkvilla],
+    ['PINKVILLAxLAKME', pinkvilla],
+    ['PosetohFILMYGYAN', filmygyan],
+    ['FILMYGYANPRESENTS', filmygyan],
+    ['VH1', viral],
+    ['MG4', mom],
+    ['Rs499', rvcj],
+    ['TCL55', trolls],
+    ['FLY91', filmygyan],
+    ['VO5', voompla],
+  ])('keeps the run-together or code-shaped %s — it can be the advertiser', (item, publisher) => {
+    const out = stripOwnMarksFromFrameText(ft([], [item]), publisher)
+    expect(out.smaller, `${item} must survive under @${publisher.handle}`).toEqual([item])
   })
 
   /** THE CONTROL: the acerpure placement must come through untouched apart from the logo. */
@@ -154,8 +217,10 @@ describe('stripOwnMarksFromFrameText — on the STRUCTURED text, item by item', 
     expect(prompt).toContain('NIKE AIR')
   })
 
+  /* The overlay was `fg6` until 2026-10-09; under this display name a frame `fg6` is now kept
+     (see above), so the watermark-only frame is built from forms of the logo itself. */
   it('a frame that is ONLY the watermark strips to empty groups — nothing left to send', () => {
-    const out = stripOwnMarksFromFrameText(ft(['fg6'], ['FILMYGYAN'], ['FILMYGYAN']), filmygyan)
+    const out = stripOwnMarksFromFrameText(ft(['@filmygyan'], ['FILMYGYAN'], ['FILMYGYAN']), filmygyan)
     expect([out.overlay, out.smaller, out.misread]).toEqual([[], [], []])
     expect(frameTextForPrompt(out, 'abc123')).toBeNull()
   })

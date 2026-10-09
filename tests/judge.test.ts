@@ -345,6 +345,36 @@ describe('judgeWithFrame — the publisher\'s own watermark is stripped from the
     expect(result.frameCallMade).toBe(true)
   })
 
+  /**
+   * A RUN-TOGETHER COLLABORATION CARD IS EVIDENCE, NOT A WATERMARK (review, 2026-10-09).
+   * OCR emits `FILMYGYANxACER` as one word, and the caption rule's affix branch read it as the
+   * publisher's logo — so a frame whose only text was the collab card made no call and was
+   * filed `frame:only-own-marks`, which nothing ever retries. That is a genuine placement
+   * missed permanently; the frame must reach the model.
+   */
+  it('(i-b) a frame whose only text is a run-together collab card is SENT, never filed as own marks', async () => {
+    readFrameText.mockResolvedValue(realFrame(anniversary.shortcode, text([], ['FILMYGYANxACER'])))
+    classifyCaption.mockResolvedValue({ verdict: 'CAMPAIGN', confidence: 90, reason: 'acer collab', brands: [] })
+
+    const result = await judgeWithFrame(anniversary, 'ORGANIC')
+
+    expect(classifyCaption).toHaveBeenCalledTimes(1)
+    expect(classifyCaption.mock.calls[0]?.[2] as string).toContain('FILMYGYANxACER')
+    expect(result.signals).not.toContain('frame:only-own-marks')
+    expect(result.frameCallMade).toBe(true)
+  })
+
+  /** A code-shaped brand (`VH1`, the channel) under @viralbhayani is not the publisher's code. */
+  it('(i-c) a code-shaped brand is sent, not read as the publisher’s series code', async () => {
+    readFrameText.mockResolvedValue(realFrame('DvhTest001', text(['VH1'])))
+    classifyCaption.mockResolvedValue({ verdict: 'CAMPAIGN', confidence: 90, reason: 'channel promo', brands: [] })
+
+    const result = await judgeWithFrame({ ...ordinaryTarget, shortcode: 'DvhTest001' }, 'ORGANIC')
+
+    expect(classifyCaption).toHaveBeenCalledTimes(1)
+    expect(result.signals).not.toContain('frame:only-own-marks')
+  })
+
   /** The string strip deleted the BEGIN fence on exactly this shape. */
   it('(iii) a watermark first in the first group leaves the BEGIN fence and its neighbour', async () => {
     readFrameText.mockResolvedValue(realFrame(anniversary.shortcode, text(['FILMYGYAN', 'NIKE AIR'], ['JUST DO IT'])))
