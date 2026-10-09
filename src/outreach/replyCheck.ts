@@ -12,6 +12,7 @@ import { normalise } from './matching'
 import { markChallenged } from './challenge'
 import { thisMacRole } from './activeDevice'
 import { browserShutdownRequested } from './shutdown'
+import { createFailureMemory } from '@/detection/lookupCooldown'
 
 /**
  * Checking open conversations for replies.
@@ -88,6 +89,29 @@ const MAX_REPLY_CHECKS_PER_RUN = 4
 
 /** Inbox rows older than this are never opened to learn their thread id (see the scan). */
 const OPEN_ROW_MAX_AGE_MS = 14 * 24 * 60 * 60 * 1000
+
+/**
+ * ── PAIRS WHOSE DOOR REFUSED, RESTED FOR A DAY (audit C1, 2026-10-09) ─────────────────
+ *
+ * When the inbox route cannot confirm WHO a conversation is with, the read refuses and never
+ * stamps `replyCheckedAt` — correctly. But `openConversations` re-selects every never-checked
+ * pair on every run and `prioritiseConversations` ranks them first, so a door-less recipient
+ * the ring fanned out to four or five pages would hold the whole `MAX_REPLY_CHECKS_PER_RUN`
+ * budget every half hour, forever: zero real reply reads, and dozens of inbox-route drives a
+ * day from revenue accounts. Rules 26/36, one door along.
+ *
+ * So a refused pair goes to the back for 24 hours through the shared `lookupCooldown`
+ * mechanism — in-process and time-based, a failure never becoming a verdict — and the pairs it
+ * holds back are COUNTED into `deferred`, never silently dropped. A successful read forgets it.
+ * The just-in-time read before a follow-up does not consult this: deliver.ts's attempt cap
+ * already bounds that path, and a send must never skip the read it depends on.
+ */
+const doorRefusals = createFailureMemory()
+
+/** Test seam: module state would otherwise leak between cases in one suite process. */
+export function resetReplySweepMemory(): void {
+  doorRefusals.reset()
+}
 
 /**
  * Thread ids learned by opening inbox rows, per sender and row title, for this process's
@@ -197,7 +221,11 @@ export function prioritiseConversations(candidates: readonly ConversationCandida
 export type ConversationResult =
   | { status: 'reply-found'; replyText: string }
   | { status: 'no-reply'; detail?: string }
-  | { status: 'unreadable'; detail: string }
+  /**
+   * `doorRefused`: the inbox route opened a conversation that could not be confirmed as this
+   * recipient's (audit C1). The sweep rests the pair on it — see `doorRefusals`.
+   */
+  | { status: 'unreadable'; detail: string; doorRefused?: true }
   /**
    * The thread opened and was read, and what came back was provably not all of it. A HOLD,
    * never a "no reply": `replyCheckedAt` is not stamped, exactly as for `unreadable`.
@@ -321,6 +349,7 @@ export async function checkConversation(args: {
     if (result.reason === 'incomplete') {
       return { status: 'incomplete', detail: result.detail ?? 'did not see the whole conversation' }
     }
+    if (result.doorRefused) return { status: 'unreadable', detail: result.detail ?? result.reason, doorRefused: true }
     return { status: 'unreadable', detail: result.detail ?? result.reason }
   }
 
@@ -791,8 +820,16 @@ export async function checkForReplies(): Promise<ReplyCheckSummary> {
   }
 
   /* Candidates are computed AFTER the scan: a reply the scan just recorded takes its
-     conversation out of the thread budget, which is the whole point of the scan. */
-  const candidates = prioritiseConversations(await openConversations(now))
+     conversation out of the thread budget, which is the whole point of the scan. A pair whose
+     inbox-route door refused inside the last day is held back and COUNTED (`doorRefusals`). */
+  const ordered = doorRefusals.order(prioritiseConversations(await openConversations(now)), (c) => c.pairId)
+  const candidates = ordered.queue
+  const doorResting = ordered.coolingOff
+  if (doorResting > 0) {
+    log.step('conversations resting after the inbox route could not confirm the recipient — retried after a day', {
+      count: doorResting,
+    })
+  }
 
   for (const c of candidates) {
     const pairKey = `${c.senderHandle}→${c.targetHandle}`
@@ -812,7 +849,7 @@ export async function checkForReplies(): Promise<ReplyCheckSummary> {
        * guard the sweep is actually providing — and it is why the just-in-time check
        * exists, since the ones about to be written to no longer depend on this budget.
        */
-      const remaining = candidates.length - candidates.indexOf(c)
+      const remaining = candidates.length - candidates.indexOf(c) + doorResting
       log.step('reply check cap reached — the rest wait for the next run or for their own send', {
         cap: MAX_REPLY_CHECKS_PER_RUN,
         deferred: remaining,
@@ -847,15 +884,20 @@ export async function checkForReplies(): Promise<ReplyCheckSummary> {
         repliesFound,
         unreadable,
         incomplete,
-        deferred: candidates.length - candidates.indexOf(c) - 1,
+        deferred: candidates.length - candidates.indexOf(c) - 1 + doorResting,
         outcomes,
       }
     }
     if (result.status === 'unreadable') {
       unreadable += 1
       outcomes.push({ pairKey, status: 'unreadable', detail: result.detail })
+      // The door refused: rest this pair a day, or it takes a budget slot every run.
+      if (result.doorRefused) doorRefusals.note(c.pairId)
       continue
     }
+    // Every other outcome means the door opened onto this recipient's thread — forget any
+    // earlier refusal so the pair competes normally again.
+    doorRefusals.clear(c.pairId)
     if (result.status === 'incomplete') {
       incomplete += 1
       outcomes.push({ pairKey, status: 'incomplete', detail: result.detail })
@@ -869,7 +911,7 @@ export async function checkForReplies(): Promise<ReplyCheckSummary> {
     outcomes.push({ pairKey, status: 'no-reply', detail: result.detail })
   }
 
-  return { checked, repliesFound, unreadable, incomplete, deferred: 0, outcomes, inboxesScanned: inbox.scanned, inboxRepliesRecorded: inbox.recorded, inboxUnmatched: inbox.unmatched }
+  return { checked, repliesFound, unreadable, incomplete, deferred: doorResting, outcomes, inboxesScanned: inbox.scanned, inboxRepliesRecorded: inbox.recorded, inboxUnmatched: inbox.unmatched }
 }
 
 // ── the just-in-time check, before a follow-up goes out ─────────────────────

@@ -59,8 +59,55 @@ describe('the delivery path asks before it drives, and parks on first sight', ()
   it('the drive recognises the dead page before trying the inbox route', () => {
     const dm = readFileSync('src/outreach/browser/sendDm.ts', 'utf8')
     const gone = dm.indexOf("Sorry, this page isn't available")
-    const inbox = dm.indexOf('await openThreadViaInbox(page, targetHandle)')
+    const inbox = dm.indexOf('await openThreadViaInbox(page, targetHandle, senderHandle)')
     expect(gone).toBeGreaterThan(0)
     expect(inbox).toBeGreaterThan(gone)
+  })
+
+  /**
+   * Audit C1, 2026-10-09: the read path had no dead-page check, so a follow-up's pre-send read of
+   * a deleted or renamed handle went straight to the inbox route — where only OTHER accounts can
+   * match the To: search — and opened a stranger's conversation before anything could refuse.
+   */
+  it('the READ path recognises the dead page before trying the inbox route too', () => {
+    const rt = readFileSync('src/outreach/browser/readThread.ts', 'utf8')
+    const gone = rt.indexOf("Sorry, this page isn't available")
+    const inbox = rt.indexOf('await openThreadViaInbox(page, targetHandle, senderHandle)')
+    expect(gone).toBeGreaterThan(0)
+    expect(inbox).toBeGreaterThan(gone)
+  })
+})
+
+/**
+ * Audit C1: the inbox route opened a conversation that could not be confirmed as this
+ * recipient's. Parked on FIRST sight by both delivery paths — the generic branch would put it
+ * back in READY, and the dispatcher would drive the same door again within ~30 s.
+ */
+describe('recipient-unconfirmed parks on first sight, on both send paths', () => {
+  it('deliver.ts parks it FAILED at the cap, before the not-in-thread branch', () => {
+    const src = readFileSync('src/outreach/deliver.ts', 'utf8')
+    const branch = src.indexOf("if (failureCode === 'recipient-unconfirmed')")
+    const next = src.indexOf("if (failureCode === 'not-in-thread')")
+    expect(branch).toBeGreaterThan(0)
+    expect(next).toBeGreaterThan(branch)
+    const body = src.slice(branch, next)
+    expect(body).toMatch(/status: 'FAILED'/)
+    expect(body).toMatch(/attempts: MAX_DELIVERY_ATTEMPTS/)
+    expect(body).toMatch(/continue/)
+  })
+
+  it("actions.ts sendNow parks it before its generic return-to-READY branch", () => {
+    const src = readFileSync('src/app/actions.ts', 'utf8')
+    const fnStart = src.indexOf('export async function sendNow(')
+    const fnEnd = src.indexOf('\nexport ', fnStart + 1)
+    const fn = src.slice(fnStart, fnEnd)
+    const branch = fn.indexOf("if (failureCode === 'recipient-unconfirmed')")
+    const generic = fn.indexOf('// Everything else: leave the draft intact')
+    expect(branch).toBeGreaterThan(0)
+    expect(generic).toBeGreaterThan(branch)
+    const body = fn.slice(branch, generic)
+    expect(body).toMatch(/status: 'FAILED'/)
+    expect(body).toMatch(/attempts: MAX_DELIVERY_ATTEMPTS/)
+    expect(body).toMatch(/return \{/)
   })
 })

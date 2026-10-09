@@ -23,6 +23,15 @@ describe('shouldReleaseOnFailure', () => {
   })
 
   /**
+   * Audit C1: refused at the inbox route's door, before the request Accept, the interstitial
+   * or the composer. Nothing was typed, so nothing can have reached anyone — and keeping the
+   * reservation would hold the recipient's allowance for a message that never existed.
+   */
+  it('releases recipient-unconfirmed — nothing was typed', () => {
+    expect(shouldReleaseOnFailure('recipient-unconfirmed')).toBe(true)
+  })
+
+  /**
    * THE ONE THAT MATTERS. The composer cleared — Instagram accepted the keystroke — and
    * the message never appeared. The recipient may well have it. Releasing here permits a
    * second message on top of a first that probably landed.

@@ -138,7 +138,11 @@ export async function sendDm(params: SendDmParams): Promise<SendDmResult> {
         }
       }
       log.step('the profile offers no way into the DM — trying the inbox route', { target: targetHandle })
-      const viaInbox = await openThreadViaInbox(page, targetHandle)
+      /* No catch here, on purpose: if the opened conversation cannot be confirmed as this
+         recipient's, `RecipientUnconfirmedError` propagates through the `finally` (which closes
+         the context) to `senders/browser.ts`, which files it `recipient-unconfirmed`. Nothing has
+         been typed or accepted at that point. */
+      const viaInbox = await openThreadViaInbox(page, targetHandle, senderHandle)
       if (!viaInbox) {
         return {
           ok: false,

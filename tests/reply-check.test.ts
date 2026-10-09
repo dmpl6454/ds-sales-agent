@@ -217,6 +217,57 @@ describe('ensureConversationChecked — the guarantee the sweep cannot give', ()
     expect(markChallenged).toHaveBeenCalledOnce()
   })
 
+  /**
+   * AUDIT C1 (2026-10-09). The inbox route's refusal must reach the caller as UNREADABLE and
+   * must never halt the account. `checkConversation` regex-tests THROWN messages for
+   * /checkpoint|challenge|suspend/i, so this drives the THROWN path with a recipient named
+   * `challenge.suspend` and a conversation that named `checkpoint.page`: a refusal whose message
+   * interpolated either would mark a healthy revenue account CHALLENGED and trip the fleet
+   * breaker for a day.
+   */
+  it('a THROWN recipient refusal is unreadable and never halts the account', async () => {
+    const { RecipientUnconfirmedError } = await import('@/outreach/browser/messageEntry')
+    openAndReadThread.mockRejectedValue(new RecipientUnconfirmedError({ kind: 'mismatch', seen: ['checkpoint.page'] }))
+    const r = await ensureConversationChecked({ ...args, targetHandle: 'challenge.suspend' })
+    expect(r.ok).toBe(false)
+    if (r.ok) throw new Error('unreachable')
+    expect(r.reason).toBe('unreadable')
+    expect(markChallenged).not.toHaveBeenCalled()
+    expect(attemptUpdate).not.toHaveBeenCalled()
+  })
+
+  /** The resolved path — what readThread actually returns — rests the pair in the sweep. */
+  it('a RESOLVED door refusal is unreadable, stamps nothing, and is marked doorRefused', async () => {
+    const { checkConversation } = await import('@/outreach/replyCheck')
+    openAndReadThread.mockResolvedValue({ ok: false, reason: 'unreadable', detail: 'door refused', doorRefused: true })
+    const r = await checkConversation({
+      senderId: 'send_1',
+      senderHandle: 'alpha',
+      targetId: 'targ_1',
+      targetHandle: 'tips',
+      fallbackAttemptId: 'att_1',
+      now: NOW,
+    })
+    expect(r).toEqual({ status: 'unreadable', detail: 'door refused', doorRefused: true })
+    expect(attemptUpdate).not.toHaveBeenCalled()
+    expect(markChallenged).not.toHaveBeenCalled()
+  })
+
+  /**
+   * And a real checkpoint still IS one: the inbox route raises the session's own errors ahead
+   * of its refusal, and a catch-all mapping anywhere in between would turn a flagged account
+   * into an "unreadable" thread and drive it again.
+   */
+  it('a CheckpointError still halts the account', async () => {
+    const { CheckpointError } = await import('@/outreach/browser/session')
+    openAndReadThread.mockRejectedValue(new CheckpointError('https://www.instagram.com/challenge/x/', 'challenge'))
+    const r = await ensureConversationChecked(args)
+    expect(r.ok).toBe(false)
+    if (r.ok) throw new Error('unreachable')
+    expect(r.reason).toBe('checkpoint')
+    expect(markChallenged).toHaveBeenCalledOnce()
+  })
+
   it('HOLDS the send when a reply is found, and records it', async () => {
     openAndReadThread.mockResolvedValue({
       ok: true,

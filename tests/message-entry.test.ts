@@ -12,9 +12,27 @@ import { exactHandleMatcher } from '@/outreach/browser/messageEntry'
  * from a revenue account. This matcher is what refuses that.
  */
 describe('exactHandleMatcher — the wrong-account guard for blocker 4', () => {
-  it('matches the handle itself, case-insensitively', () => {
+  /**
+   * CASE-SENSITIVE SINCE 2026-10-09 (audit C1). This test used to pin
+   * `exactHandleMatcher('idfreshfood').test('IDFreshFood') === true` as correct — and that is
+   * the defect: a search result's DISPLAY NAME satisfied the matcher, and @tips and @tips_india
+   * both display "TIPS". Usernames are lower case and render lower case on the result's
+   * username line, so the handle is lower-cased once and matched without the `i` flag.
+   */
+  it('matches the handle itself — the lower-case username line', () => {
     expect(exactHandleMatcher('idfreshfood').test('idfreshfood')).toBe(true)
-    expect(exactHandleMatcher('idfreshfood').test('IDFreshFood')).toBe(true)
+  })
+
+  it('REFUSES a display name in capitals — the @tips / @tips_india "TIPS" case', () => {
+    expect(exactHandleMatcher('tips').test('tips')).toBe(true)
+    expect(exactHandleMatcher('tips').test('TIPS')).toBe(false)
+    expect(exactHandleMatcher('tips').test('Tips')).toBe(false)
+    expect(exactHandleMatcher('idfreshfood').test('IDFreshFood')).toBe(false)
+  })
+
+  it('a stored handle with capitals still matches the lower-case username line', () => {
+    expect(exactHandleMatcher('IDFreshFood').test('idfreshfood')).toBe(true)
+    expect(exactHandleMatcher('IDFreshFood').test('IDFreshFood')).toBe(false)
   })
 
   it('REFUSES a longer handle that merely contains it — the @crocs / @crocsindia case', () => {

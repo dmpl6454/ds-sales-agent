@@ -596,6 +596,34 @@ export async function deliverWaiting(opts: DeliverOptions = {}): Promise<Deliver
       continue
     }
 
+    if (failureCode === 'recipient-unconfirmed') {
+      /**
+       * The inbox route opened a conversation that could not be confirmed as this recipient's
+       * (audit C1, 2026-10-09). Nothing was typed. Parked on FIRST sighting, like a gone page:
+       * a retry cannot change Instagram's search ranking or its DOM, and the generic path below
+       * would drive the same door twice more — each drive possibly opening a stranger's
+       * conversation again. `attempts: MAX_DELIVERY_ATTEMPTS` puts it on the landing page's
+       * parked list with re-queue and discard. Reservations were released by `settleClaims`
+       * above. The park rests this pair (rotation, the gate and the governor all count it), so
+       * rotation tries the next page — which meets the same door: up to a ring's worth of
+       * parks per door-less recipient, then nothing until a person re-queues them.
+       */
+      await prisma.outreachAttempt.update({
+        where: { id: attempt.id },
+        data: { status: 'FAILED', error, failureCode, attempts: MAX_DELIVERY_ATTEMPTS },
+      })
+      out.failed += 1
+      out.outcomes.push({
+        pairKey,
+        result: `the inbox route could not confirm the conversation is with @${target.handle} — nothing typed, parked after one look`,
+      })
+      log.alarm('the inbox route could not confirm who it opened — parked, nothing typed, not retried', {
+        pair: pairKey,
+        attemptId: attempt.id,
+      })
+      continue
+    }
+
     if (failureCode === 'not-in-thread') {
       /**
        * ── THE ONE FAILURE THAT IS NOT RETRIED. Changed in Phase 5. ─────────

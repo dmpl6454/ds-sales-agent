@@ -163,6 +163,16 @@ export const FAILURE_CODES = [
    * with re-queue/discard, which is what stops the browser-drive loop.
    */
   'unreadable',
+  /**
+   * THE INBOX ROUTE OPENED A CONVERSATION WE COULD NOT CONFIRM IS WITH THIS RECIPIENT (audit C1,
+   * 2026-10-09) — a different account (display names are not unique: @tips and @tips_india both
+   * display "TIPS"), or a conversation that named nobody we could read. Nothing was typed,
+   * accepted or delivered. Parked on FIRST sight: a retry cannot change Instagram's search
+   * ranking or its DOM, and each retry is a browser drive at a revenue account that may open a
+   * stranger's conversation again. It stays parked on its pair (rotation, the gate and the
+   * governor all count it) until a person re-queues it once the thread can be checked by hand.
+   */
+  'recipient-unconfirmed',
   'unknown',
 ] as const
 export type FailureCode = (typeof FAILURE_CODES)[number]

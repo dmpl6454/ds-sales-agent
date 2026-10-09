@@ -205,6 +205,9 @@ const DEFINITELY_NOT_DELIVERED = new Set([
   'no-composer', // The thread never opened a message box.
   'no-message-button', // We never even reached a composer.
   'profile-gone', // The page does not exist; no composer was ever reached.
+  // Refused at the inbox route's door, before the request Accept, the interstitial or the
+  // composer: nothing was typed, so nothing can have reached anyone (audit C1).
+  'recipient-unconfirmed',
 ])
 
 /** Is it certain that nothing reached the recipient? Unknown codes answer NO. */

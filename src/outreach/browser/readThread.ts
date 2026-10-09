@@ -10,6 +10,7 @@ import {
   dismissBlockingDialog,
   firstVisible,
   jitter,
+  RecipientUnconfirmedError,
 } from './messageEntry'
 import { parseThreadTimestamp } from './threadDates'
 
@@ -82,6 +83,12 @@ export type ReadThreadResult =
       ok: false
       reason: 'unreadable' | 'incomplete' | 'no-message-button' | 'checkpoint'
       detail?: string
+      /**
+       * Set when the inbox route opened a conversation that could not be confirmed as this
+       * recipient's (audit C1). Nothing was accepted or read. The sweep rests the pair for a day
+       * on it, so a door-less recipient cannot take the whole deep-read budget every run.
+       */
+      doorRefused?: true
       /**
        * What an INCOMPLETE read did see. A partial read may never vouch for silence, but a
        * reply it has in hand is a fact:  answered the 1 Sept first touch,
@@ -582,9 +589,42 @@ export async function openAndReadThread(
     // or its conversation can never be checked for a reply.
     const entry = await clickMessageEntry(page, targetHandle)
     if (!entry.ok) {
+      /**
+       * A DEAD PAGE IS NOT A HIDDEN DOOR — the send path's rule (sendDm.ts), mirrored here
+       * (audit C1, 2026-10-09). For a deleted or renamed handle the exact username can no
+       * longer exist in the To: search, so only OTHER accounts can be offered there; going
+       * to the inbox route at all would click into, and open, a stranger's conversation
+       * before the recipient check could refuse it. Unreadable, never "no reply".
+       */
+      const gone = await page.getByText("Sorry, this page isn't available", { exact: false }).first().isVisible().catch(() => false)
+      if (gone) {
+        return {
+          ok: false,
+          reason: 'unreadable',
+          detail: 'the profile page reads "Sorry, this page isn\'t available" — not opened through the inbox',
+        }
+      }
       // Blocker 4: a profile with no door at all still has a conversation worth reading —
       // the inbox-compose route reaches the same thread the send path would use.
-      const viaInbox = await openThreadViaInbox(page, targetHandle)
+      let viaInbox: boolean
+      try {
+        viaInbox = await openThreadViaInbox(page, targetHandle, senderHandle)
+      } catch (e) {
+        /**
+         * The opened conversation could not be confirmed as this recipient's: nothing was
+         * accepted and nothing was read, so it is UNREADABLE — never a recorded reply from a
+         * stranger's bubble, never verified silence, never a backfilled thread URL.
+         * `doorRefused` lets the sweep rest this pair rather than spend its whole budget on the
+         * same refusal every half hour. Everything else — a checkpoint, a login form, a 2FA
+         * prompt, which `openThreadViaInbox` raises ahead of the refusal — is rethrown so
+         * `checkConversation` classifies it exactly as before. So is anything once the
+         * deadline has fired: that is the deadline's outcome, not a door refusal.
+         */
+        if (e instanceof RecipientUnconfirmedError && !deadlineFired) {
+          return { ok: false, reason: 'unreadable', detail: e.message, doorRefused: true }
+        }
+        throw e
+      }
       if (!viaInbox) return { ok: false, reason: 'no-message-button' }
     }
 

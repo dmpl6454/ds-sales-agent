@@ -2,6 +2,7 @@ import type { OutreachSender, SendOutcome, SendRequest } from './types'
 import { env } from '@/lib/env'
 import { log } from '@/lib/logger'
 import { sendDm } from '@/outreach/browser/sendDm'
+import { RecipientUnconfirmedError } from '@/outreach/browser/messageEntry'
 import { recordSendStarted } from '@/outreach/paceClock'
 import {
   CheckpointError,
@@ -112,6 +113,22 @@ export const browserSender: OutreachSender = {
       // just try again next slot.
       if (err instanceof IdentityCheckFailedError) {
         return { status: 'FAILED', error: err.message, failureCode: 'navigation' }
+      }
+      /**
+       * The inbox route opened a conversation that could not be confirmed as this recipient's
+       * (audit C1, 2026-10-09). A question about the RECIPIENT, never the sender: no
+       * `challenged`, no `sessionInvalid` — the account is fine and must not be halted or
+       * sent to a re-login over it. Nothing was typed or accepted, so the reservation is
+       * released (`recipient-unconfirmed` is in DEFINITELY_NOT_DELIVERED). The handle goes into
+       * `error` only, which nothing regex-tests; the error's own message names nobody.
+       */
+      if (err instanceof RecipientUnconfirmedError) {
+        log.warn('the inbox route could not confirm the recipient — nothing typed, the draft is parked', {
+          sender: req.senderHandle,
+          target: req.targetHandle,
+          verdict: err.verdict.kind,
+        })
+        return { status: 'FAILED', error: `${err.message} (@${req.targetHandle})`, failureCode: 'recipient-unconfirmed' }
       }
       return { status: 'FAILED', error: err instanceof Error ? err.message : String(err), failureCode: 'unknown' }
     }

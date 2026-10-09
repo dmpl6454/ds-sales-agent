@@ -51,6 +51,7 @@ import { fleetTemplateKey } from '@/outreach/fleetTemplate'
 import { FOLLOW_UP_DEFAULT_KEY, followUpTemplateKey } from '@/outreach/followUpTemplate'
 import { DEFAULT_CATEGORY_SLUG } from '@/outreach/senderCategories'
 import { requireOperator } from '@/lib/session'
+import { MAX_DELIVERY_ATTEMPTS } from '@/lib/constants'
 import { MESSAGE_VARIANTS } from '../../prisma/variants'
 import { BRAND_MESSAGE_VARIANTS } from '../../prisma/brandVariants'
 
@@ -435,6 +436,29 @@ export async function sendNow(attemptId: string, overrides?: readonly string[]):
         `It has NOT been re-queued and will not be retried: @${target.handle} may already have it. ` +
         `Open the conversation if you want to know which it was — nothing on the dashboard will ask you again, ` +
         `and @${sender.handle} will not write to them again.`,
+    }
+  }
+
+  if (failureCode === 'recipient-unconfirmed') {
+    /**
+     * PARKED, not returned to READY (audit C1, 2026-10-09). The inbox route opened a
+     * conversation that could not be confirmed as @target's, and nothing was typed. READY is
+     * what the dispatcher picks up, so with autopilot on the generic branch below would have
+     * the same door driven again within ~30 s — possibly opening a stranger's conversation
+     * again — before deliver.ts finally parked it. Same park as the dispatcher's, so it lands
+     * on the landing page's parked list with re-queue and discard.
+     */
+    await prisma.outreachAttempt.update({
+      where: { id: attemptId },
+      data: { status: 'FAILED', error, failureCode, attempts: MAX_DELIVERY_ATTEMPTS },
+    })
+    await audit(user.email, 'attempt.send.recipient-unconfirmed', `OutreachAttempt:${attemptId}`, error)
+    refreshPath('/')
+    return {
+      ok: false,
+      message:
+        `Nothing was typed: Instagram's search opened a conversation we could not confirm is with @${target.handle}. ` +
+        `The message is parked — re-queue it once the thread can be checked by hand.`,
     }
   }
 

@@ -707,7 +707,10 @@ describe('every failure code is documented for a person', () => {
     // 'profile-gone' (2026-09-09): the recipient's page answers "Sorry, this page isn't available"
     // — parked on first sight, never retried, target-scoped stop for a week. 11 → 12.
     expect(FAILURE_CODES).toContain('profile-gone')
-    expect(FAILURE_CODES.length).toBe(12)
+    // 'recipient-unconfirmed' (2026-10-09, audit C1): the inbox route opened a conversation that
+    // could not be confirmed as this recipient's — nothing typed, parked on first sight. 12 → 13.
+    expect(FAILURE_CODES).toContain('recipient-unconfirmed')
+    expect(FAILURE_CODES.length).toBe(13)
     for (const c of FAILURE_CODES) expect(c).toMatch(/^[a-z][a-z0-9-]+$/)
   })
 
