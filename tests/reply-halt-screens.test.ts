@@ -56,11 +56,8 @@ const COPY_OWNER = 'src/outreach/replyHaltCopy.ts'
  * reason for it.
  */
 const PENDING: { file: string; contains: string; why: string }[] = [
-  {
-    file: 'src/outreach/replyCheck.ts',
-    contains: 'has replied — outreach to them is halted and a person should take over',
-    why: 'audit H9 §B9, rewritten with the pair-correct reply attachment',
-  },
+  /* The replyCheck.ts entry (H9 §B9) was deleted when that sentence was rewritten — empty now,
+     so the guard covers every file. Add an entry only with a reason that ends. */
 ]
 
 const repo = join(__dirname, '..')
