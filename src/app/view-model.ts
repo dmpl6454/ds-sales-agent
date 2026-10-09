@@ -648,6 +648,7 @@ async function computeCeoView(): Promise<CeoView> {
     selected: settings.activeDevice,
     selectedBeating: presence.some((d) => d.device === settings.activeDevice),
     stamp: passes.dispatchStamp,
+    selectedSince: passes.activeDeviceSince,
   })
 
   /**

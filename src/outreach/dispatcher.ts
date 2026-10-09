@@ -1,4 +1,5 @@
 import { prisma } from '@/lib/db'
+import { browserShutdownRequested } from './shutdown'
 import { deviceId, deviceIsBeating } from './devicePresence'
 import { thisMacRole } from './activeDevice'
 import { env } from '@/lib/env'
@@ -564,6 +565,12 @@ export async function withSendLock<T>(what: string, fn: () => Promise<T>): Promi
    */
   if (!env.SEND_ENABLED) {
     log.step('this machine is not allowed to send (SEND_ENABLED=false) — the message stays waiting', { what })
+    return null
+  }
+  /* The agent is stopping: nothing new may take the lock, or the shutdown drain waits on it and
+     then kills it at the deadline. See src/outreach/shutdown.ts. */
+  if (browserShutdownRequested()) {
+    log.step('the agent is stopping — not starting new browser work', { what })
     return null
   }
   /**

@@ -32,15 +32,30 @@ describe('no unbounded waits', () => {
     const offenders: string[] = []
     let seen = 0
     for (const file of walk(join(root, 'src'))) {
-      // Browser components fetch their own same-origin API; they are not a server waiting on a remote.
-      if (file.includes(`${join('src', 'app')}`) && !file.includes(join('src', 'app', 'api'))) continue
-      const src = code(readFileSync(file, 'utf8'))
-      for (const m of src.matchAll(/await fetch\(([\s\S]{0,900}?)\)\s*\n/g)) {
+      const raw = readFileSync(file, 'utf8')
+      // A browser component fetches its own same-origin API; it is not a server waiting on a
+      // remote. Identified by its directive, not its directory: actions.ts lives in src/app too.
+      if (/^\s*['"]use client['"]/.test(raw)) continue
+      const src = code(raw)
+      // EVERY call, whatever its shape: find `fetch(` not preceded by an identifier character or
+      // a dot (so `prefetch(` and `x.fetch(` are not calls of the global), then read the WHOLE
+      // argument list by bracket matching. A call the scan cannot close fails rather than skips.
+      for (const m of src.matchAll(/(?<![\w.$])fetch\(/g)) {
         seen++
-        if (!/signal:\s*AbortSignal\.timeout\(/.test(m[1]!)) offenders.push(file.replace(root, ''))
+        let depth = 1
+        let i = m.index! + m[0].length
+        for (; i < src.length && depth > 0; i++) {
+          if (src[i] === '(') depth++
+          else if (src[i] === ')') depth--
+        }
+        const args = src.slice(m.index! + m[0].length, i - 1)
+        // Named by the call's own text: line numbers would be those of the comment-stripped source.
+        const at = `${file.replace(root, '')}: fetch(${args.replace(/\s+/g, ' ').slice(0, 60)}`
+        if (depth !== 0) offenders.push(`${at} (could not read the call)`)
+        else if (!/signal:\s*AbortSignal\.timeout\(/.test(args)) offenders.push(at)
       }
     }
-    expect(seen, 'no fetch found at all — the scan is broken').toBeGreaterThan(0)
+    expect(seen, 'no fetch found at all — the scan is broken').toBeGreaterThanOrEqual(4)
     expect(offenders).toEqual([])
   })
 

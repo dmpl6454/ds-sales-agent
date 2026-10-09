@@ -177,6 +177,7 @@ const { whoseTurn, describeRing, fleetRingFor } = await import('@/outreach/categ
 const { fleetRingOrder, stableIndex } = await import('@/outreach/rotation')
 const { sessionRecorded } = await import('@/outreach/sessionHealth')
 const { prisma } = await import('@/lib/db')
+const { parkBlocksRoute, UNREADABLE_RECHECK_DAYS } = await import('@/outreach/parkedRows')
 
 const persona = {
   personaName: 'Kapil Jain',
@@ -770,8 +771,15 @@ describe('whoseTurn on a group ring', () => {
  *     ring verbatim. Only `fleetRingFor`, `whoseTurnForMany` and the hand-off applied the
  *     26 August fleet filter. The old parity test here passed `fleetRingFor`'s ring — already
  *     filtered — so it could never see the difference.
- *  2. `readBlockedRoutes` counted an `unreadable` park as a blocked route, while the gate and
- *     the governor both ignore it (it is a READ that could not vouch for a thread, not a send).
+ *     There is no harness that runs `runOutreach` against a real database, so the PLANNER'S own
+ *     ring is pinned by the source check below (every `fleetRingOrder(` outside rotation.ts must
+ *     take `ringMembersFor(`, mutation-tested against plan.ts); the behavioural case beside it
+ *     covers `fleetRingFor`/`whoseTurn`, which were already filtered.
+ *  2. `readBlockedRoutes` counted an `unreadable` park as a blocked route FOREVER, while the gate
+ *     and the governor both ignore it (it is a READ that could not vouch for a thread, not a
+ *     send). The first fix ignored it in rotation too — and review found that re-opened the read
+ *     loop: the page was re-elected, re-drafted and its thread re-read every planning pass. So it
+ *     rests the route for a WEEK (`parkBlocksRoute`), like a `profile-gone` park.
  */
 describe('rotation never elects a page the enforcers refuse', () => {
   async function marketingPage(handle: string) {
@@ -822,7 +830,7 @@ describe('rotation never elects a page the enforcers refuse', () => {
     for (const c of calls) expect(c, `unfiltered fleet ring: ${c}`).toMatch(/:\s*ringMembersFor\(/)
   })
 
-  it('an unreadable park does not take a page out of the ring; a failed send still does', async () => {
+  it('an unreadable park rests its page for a week, not forever and not never; a failed send rests it until settled', async () => {
     await addSender('alpha')
     await addSender('bravo')
     const park = (handle: string, failureCode: string) =>
@@ -840,16 +848,34 @@ describe('rotation never elects a page the enforcers refuse', () => {
         },
       })
 
-    // Both pages carry an `unreadable` park: the enforcers would let either write, so rotation
-    // must still elect one rather than answering all-unavailable.
+    // FRESH unreadable parks on both pages: each just failed three reads of this thread, so
+    // re-electing either would re-draft and re-read at once — the loop. Both rest.
     await park('alpha', 'unreadable')
     await park('bravo', 'unreadable')
+    const resting = await whoseTurn({ targetId: TARGET })
+    expect(resting.choice.ok).toBe(false)
+
+    // A week on, both are back: the recipient is not stalled forever on reads that failed once.
+    await prisma.outreachAttempt.updateMany({
+      where: { targetId: TARGET },
+      data: { queuedAt: new Date(Date.now() - (UNREADABLE_RECHECK_DAYS + 1) * 86_400_000) },
+    })
     const clear = await whoseTurn({ targetId: TARGET })
     expect(clear.choice.ok).toBe(true)
 
-    // A real parked SEND (not-in-thread) on one page still routes around it.
+    // A real parked SEND (not-in-thread) rests its route at ANY age.
     await prisma.outreachAttempt.update({ where: { id: 'a_park_alpha' }, data: { failureCode: 'not-in-thread' } })
     const around = await whoseTurn({ targetId: TARGET })
     expect(around.choice.ok && around.choice.handle).toBe('bravo')
+  })
+
+  it('parkBlocksRoute: the one rule, at the boundary', () => {
+    const now = new Date('2026-10-09T00:00:00Z')
+    const ago = (days: number) => new Date(now.getTime() - days * 86_400_000)
+    expect(parkBlocksRoute({ failureCode: 'unreadable', queuedAt: ago(UNREADABLE_RECHECK_DAYS - 0.01) }, now)).toBe(true)
+    expect(parkBlocksRoute({ failureCode: 'unreadable', queuedAt: ago(UNREADABLE_RECHECK_DAYS + 0.01) }, now)).toBe(false)
+    expect(parkBlocksRoute({ failureCode: 'not-in-thread', queuedAt: ago(365) }, now)).toBe(true)
+    expect(parkBlocksRoute({ failureCode: 'no-composer', queuedAt: ago(365) }, now)).toBe(true)
+    expect(parkBlocksRoute({ failureCode: null, queuedAt: now }, now)).toBe(false)
   })
 })

@@ -7,6 +7,7 @@ import { browserSender } from './senders/browser'
 import { profileStatus } from './browser/profile'
 import { recheckBeforeSend } from './gate'
 import { thisMacRole } from './activeDevice'
+import { browserShutdownRequested } from './shutdown'
 import { recordDelivered, revertUndrivenClaim } from './recordSend'
 import { claimForAttempt, settleClaims, type Reservation } from './reservations'
 import { markChallenged } from './challenge'
@@ -340,6 +341,12 @@ export async function deliverWaiting(opts: DeliverOptions = {}): Promise<Deliver
      */
     if (!(await getSettings()).autopilotEnabled) {
       log.step('autopilot was switched off mid-tick — stopping before the claim, nothing sent')
+      break
+    }
+    /* The agent was told to stop while this tick evaluated: a claim now would start a drive the
+       shutdown drain then has to wait on, or kill. See src/outreach/shutdown.ts. */
+    if (browserShutdownRequested()) {
+      log.step('the agent is stopping — not claiming another message, nothing sent')
       break
     }
 

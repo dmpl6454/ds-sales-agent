@@ -143,6 +143,7 @@ describe('the excluded Setting keys name what their owners actually write', () =
     ['dispatchState', 'src/outreach/dispatcher.ts', 'DISPATCH_STATE_KEY'],
     ['sendLock', 'src/outreach/dispatcher.ts', 'SEND_LOCK_KEY'],
     ['fleetLastSendStartedAt', 'src/outreach/paceClock.ts', 'LAST_SEND_STARTED_KEY'],
+    ['dispatchLastOkAt', 'src/outreach/dispatchHealth.ts', 'DISPATCH_OK_KEY'],
   ]
 
   it('covers every excluded key exactly once', () => {

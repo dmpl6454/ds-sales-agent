@@ -12,6 +12,7 @@ import { replyHaltFloor, replyHaltKey } from '@/outreach/replyHalt'
 import { eligibleFleetSenderIds, readSenderAvailability } from '@/outreach/availability'
 import { fleetRingOrder, nextSender } from '@/outreach/rotation'
 import { categoriesFor, readCategoryMemberships, ringMembersFor, unavailableForTarget } from '@/outreach/categories'
+import { parkBlocksRoute } from '@/outreach/parkedRows'
 import { readPersonHandles } from '@/outreach/compose'
 import { watchMarksFrom } from '@/detection/ownMarks'
 import { followUpForSettings, followUpSubject } from '@/outreach/followUpTemplate'
@@ -439,6 +440,7 @@ async function computeRestTally(now: Date): Promise<RestTally> {
           replyPostedAt: true,
           replyHandledAt: true,
           failureCode: true,
+          queuedAt: true,
           pair: { select: { targetId: true, senderId: true, sender: { select: { handle: true } } } },
         },
         orderBy: { sentAt: 'asc' },
@@ -550,9 +552,10 @@ async function computeRestTally(now: Date): Promise<RestTally> {
       r.replyPostedAt >= replyHaltFloor(settings.replyResumeHours, now),
   )
   const pending = inFlightAndParked.filter((a) => a.status !== 'FAILED')
-  /* Excluding 'unreadable' exactly as `readBlockedRoutes`, the gate and the governor do — a read that
-     could not vouch for a thread is not a failed send and blocks no route. */
-  const parked = inFlightAndParked.filter((a) => a.status === 'FAILED' && a.failureCode !== 'unreadable')
+  /* `parkBlocksRoute`, the rule `readBlockedRoutes` applies for the planner: every park rests its
+     route except an 'unreadable' one older than a week. Mirrored from the same function, not
+     re-derived, or this panel would name a page the planner will not elect. */
+  const parked = inFlightAndParked.filter((a) => a.status === 'FAILED' && parkBlocksRoute(a, now))
 
   /** The enforcer's own linkage, fed from one query. The floor is honoured — see the docblock. */
   const preloaded = {
@@ -636,7 +639,9 @@ async function computeRestTally(now: Date): Promise<RestTally> {
       p.pair.senderId,
       p.failureCode === 'not-in-thread'
         ? 'an earlier message from this page may already have reached them'
-        : `an earlier message from this page is parked (${p.failureCode})`,
+        : p.failureCode === 'unreadable'
+          ? 'this page could not read its conversation with them, so it rests for a week'
+          : `an earlier message from this page is parked (${p.failureCode})`,
     )
   }
   /**

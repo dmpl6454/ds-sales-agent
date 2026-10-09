@@ -201,7 +201,7 @@ if [[ -n "$PREBUILT_TARGET" ]]; then
   # ...unless the served directory changed in between (a hand rollback mid-deploy). Unpacking
   # over the build the workers are running breaks the live site, so refuse instead.
   if [[ "\$TARGET" == "\$ACTIVE" ]]; then
-    echo "REFUSING: the prebuilt \$TARGET is the directory being served right now. Nothing was changed; run the deploy again."
+    echo "REFUSING: the prebuilt \$TARGET is the directory being served right now. The source files and node_modules were updated, but the web build was not unpacked and nothing was reloaded or restarted; run the deploy again."
     exit 1
   fi
   echo "==> Unpacking the prebuilt \$TARGET while \$ACTIVE keeps serving"

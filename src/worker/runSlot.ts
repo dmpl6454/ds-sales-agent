@@ -323,15 +323,19 @@ export async function withSlotLock<T>(label: string, fn: () => Promise<T>): Prom
     log.step('a slot is already running in this process — skipping this run', { label })
     return null
   }
-  const ours = await acquireSlotLock(label)
-  if (ours === null) return null
-  slotLockValue = ours
+  /* The flag is taken BEFORE the first await and dropped only AFTER the release has finished.
+     Set after the acquire (the first version), two callers starting in the same tick both passed
+     the check, and — a row naming our own pid always grants a take-over — both held the lock;
+     dropped before the delete, a waiting slot woke mid-release and was declined by the row. */
   slotLockHeldHere = true
   try {
+    const ours = await acquireSlotLock(label)
+    if (ours === null) return null
+    slotLockValue = ours
     return await fn()
   } finally {
-    slotLockHeldHere = false
     await releaseSlotLock()
+    slotLockHeldHere = false
   }
 }
 
@@ -346,18 +350,19 @@ export async function runSlot(slot: string): Promise<SlotResult> {
       return { runId: '', status: 'FAILED', postsSeen: 0, newPosts: 0, detected: 0, queued: 0, sent: 0 }
     }
   }
-  const ours = await acquireSlotLock(slot)
-  if (ours === null) {
-    return { runId: '', status: 'FAILED', postsSeen: 0, newPosts: 0, detected: 0, queued: 0, sent: 0 }
-  }
-
-  slotLockValue = ours
+  /* Same ordering as `withSlotLock`, for the same two races. No await separates the wait above
+     from this line, so nothing in this process can take the flag in between. */
   slotLockHeldHere = true
   try {
+    const ours = await acquireSlotLock(slot)
+    if (ours === null) {
+      return { runId: '', status: 'FAILED', postsSeen: 0, newPosts: 0, detected: 0, queued: 0, sent: 0 }
+    }
+    slotLockValue = ours
     return await runSlotLocked(slot, started)
   } finally {
-    slotLockHeldHere = false
     await releaseSlotLock()
+    slotLockHeldHere = false
   }
 }
 

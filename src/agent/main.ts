@@ -2,6 +2,7 @@ import { prisma } from '@/lib/db'
 import { log } from '@/lib/logger'
 import { runDeviceAgent, stopDeviceAgent } from './index'
 import { sendLockHeldHere } from '@/outreach/dispatcher'
+import { requestBrowserShutdown } from '@/outreach/shutdown'
 
 /**
  *   pnpm agent:device
@@ -19,10 +20,16 @@ import { sendLockHeldHere } from '@/outreach/dispatcher'
  * which nothing automatic releases. CLAUDE.md's rule 8 ("never restart while the send lock is
  * held") was a procedure a person had to remember; this makes the process honour it.
  *
- * `stopDeviceAgent` first, so no new tick starts; then wait, bounded, for any lock-holding job in
- * THIS process (a send, a reply sweep, disk care) to finish. The worker drains the same way. The
- * bound is below the launchd ExitTimeOut install-watch.sh sets, so we exit cleanly before launchd
- * would kill us. A second signal skips the wait — a person pressing Ctrl-C twice means now.
+ * First NOTHING NEW STARTS: no tick, no new holder of the send lock, no next claim inside a tick
+ * already running, no next conversation in a sweep (src/outreach/shutdown.ts — without that, a
+ * tick still evaluating drafts went on to claim one, and this wait then killed its drive). Then
+ * wait, bounded, for whatever already holds the lock in THIS process to finish. The bound is
+ * below the launchd ExitTimeOut install-watch.sh sets, so we exit before launchd would kill us.
+ * A second signal skips the wait — a person pressing Ctrl-C twice means now.
+ *
+ * UNVERIFIED ON A MAC: the plist's main process is `caffeinate`, with pnpm and then node beneath
+ * it, so whether launchd's SIGTERM reaches node and is given time to drain depends on how those
+ * two pass it on. Look for "waiting for it to finish" in watch.log after the next reinstall.
  */
 const SHUTDOWN_DRAIN_MS = 100_000
 let shuttingDown = false
@@ -34,6 +41,8 @@ async function shutdown(signal: string): Promise<void> {
   }
   shuttingDown = true
   log.info(`received ${signal} — stopping the device agent`)
+  // Nothing new starts (no tick, no lock, no claim, no next conversation); what runs finishes.
+  requestBrowserShutdown()
   stopDeviceAgent()
   if (sendLockHeldHere()) {
     log.info('a send or sweep is in progress — waiting for it to finish before stopping', {

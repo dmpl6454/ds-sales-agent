@@ -12,7 +12,7 @@ import { runDetection } from '@/detection/pipeline'
 import { DETECT_INTERVAL_MINUTES, DETECT_LOOKBACK_HOURS } from '@/detection/cadence'
 import { runOutreach } from '@/outreach/plan'
 import { DISPATCH_OK_KEY, parseDispatchStamp, type DispatchStamp } from '@/outreach/dispatchHealth'
-import { getSettings } from '@/lib/settings'
+import { getSettings, SETTING_KEYS } from '@/lib/settings'
 
 /**
  * The standing watch, extracted so it can run either as its own process
@@ -127,6 +127,8 @@ export interface PassHealth {
    * ladder pays nothing extra for it. Judged against the selected Mac by `assessDispatch`.
    */
   dispatchStamp: DispatchStamp | null
+  /** When the sending-Mac selection was last written, so a stamp from an earlier selection is ignored. */
+  activeDeviceSince: Date | null
 }
 
 /** A detection pass every 15 minutes with nothing fetched for this long is blind, not quiet. */
@@ -135,7 +137,7 @@ export const FEED_STALE_MS = 60 * 60 * 1000
 /** What the dashboard reads beside the heartbeat. Null timestamps never read as stale. */
 export async function readPassHealth(now: Date = new Date()): Promise<PassHealth> {
   const rows = await prisma.setting.findMany({
-    where: { key: { in: [PASS_OK_KEYS.detect, PASS_OK_KEYS.plan, DETECT_FEED_OK_KEY, DETECT_THROTTLED_KEY, DISPATCH_OK_KEY] } },
+    where: { key: { in: [PASS_OK_KEYS.detect, PASS_OK_KEYS.plan, DETECT_FEED_OK_KEY, DETECT_THROTTLED_KEY, DISPATCH_OK_KEY, SETTING_KEYS.activeDevice] } },
   })
   const at = (key: string): Date | null => {
     const row = rows.find((r) => r.key === key)
@@ -157,6 +159,7 @@ export async function readPassHealth(now: Date = new Date()): Promise<PassHealth
     feedStale: feedOkAt !== null && now.getTime() - feedOkAt.getTime() > FEED_STALE_MS,
     throttledUntil: throttledRaw !== null && throttledRaw.getTime() > now.getTime() ? throttledRaw : null,
     dispatchStamp: parseDispatchStamp(rows.find((r) => r.key === DISPATCH_OK_KEY)?.value),
+    activeDeviceSince: rows.find((r) => r.key === SETTING_KEYS.activeDevice)?.updatedAt ?? null,
   }
 }
 

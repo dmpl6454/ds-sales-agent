@@ -5,6 +5,7 @@ import { fleetRingOrder, nextSender, type RingMember, type RotationChoice } from
 import { sameCategory } from './senderCategories'
 import { replyHaltFloor, type ReplyHaltScope } from './replyHalt'
 import { getSettings } from '@/lib/settings'
+import { parkBlocksRoute } from './parkedRows'
 
 /**
  * The database half of rotation: read the ring and the history, then ask the pure
@@ -284,13 +285,13 @@ export async function readBlockedRoutes(args: {
 
   const [parkedRows, repliedRows] = await Promise.all([
     prisma.outreachAttempt.findMany({
-      /* 'unreadable' is a READ that could not vouch for the thread, not a failed send: the gate and
-         the governor both exclude it (gate.ts, plan.ts), so rotation must too, or a page the
-         enforcers would let write is skipped and a recipient whose every page carries one stalls
-         at all-unavailable (2026-10-09). */
-      where: { status: 'FAILED', failureCode: { not: null, notIn: ['unreadable'] }, ...scopeFilter },
+      /* Every park rests its route except an 'unreadable' one older than a week — see
+         `parkBlocksRoute` for why neither "never" nor "forever" is safe there. Filtered in JS from
+         the same rows this query always read, so it costs nothing. */
+      where: { status: 'FAILED', failureCode: { not: null }, ...scopeFilter },
       select: {
         failureCode: true,
+        queuedAt: true,
         pair: { select: { targetId: true, senderId: true, sender: { select: { handle: true } } } },
       },
     }),
@@ -314,13 +315,17 @@ export async function readBlockedRoutes(args: {
     out.set(targetId, m)
   }
 
+  const now = replyHalt.now ?? new Date()
   for (const r of parkedRows) {
+    if (!parkBlocksRoute(r, now)) continue
     put(
       r.pair.targetId,
       r.pair.senderId,
       r.failureCode === 'not-in-thread'
         ? 'an earlier message from this page may already have reached them'
-        : `an earlier message from this page is parked (${r.failureCode})`,
+        : r.failureCode === 'unreadable'
+          ? 'this page could not read its conversation with them, so it rests for a week'
+          : `an earlier message from this page is parked (${r.failureCode})`,
     )
   }
   /* Written AFTER the parked rows so a reply wins where both apply: "they replied to this page"

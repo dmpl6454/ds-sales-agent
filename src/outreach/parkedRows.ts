@@ -41,3 +41,29 @@ export function splitParks(
     .sort((a, b) => b.queuedAt.getTime() - a.queuedAt.getTime())
   return { parkedFailureCode: own[0]?.failureCode ?? null, targetProfileGoneAt: gone[0]?.queuedAt ?? null }
 }
+
+/**
+ * ── DOES A PARK KEEP ROTATION OFF THIS ROUTE? (2026-10-09) ─────────────────────────────
+ *
+ * Every parked failure rests its route — except `unreadable`, which only rests it for a WEEK.
+ *
+ * `unreadable` is a follow-up's pre-send READ that could not vouch for the thread three times,
+ * not a failed send, so the gate and the governor do not count it (above): retiring a pair
+ * forever because Instagram rendered a deep thread partially is the 3 Sept mistake. But
+ * rotation was the one thing standing between that park and a fresh draft. With it gone
+ * entirely the planner re-elected the same page on its next pass, wrote a new follow-up with
+ * `attempts: 0`, and its pre-send read drove the same Chrome profile three more times — every
+ * pass, without bound: the 1 Sept read-path loop, found by review before it shipped. With it
+ * permanent (the state before), a recipient whose every page carried one stalled forever.
+ *
+ * A week is the `profile-gone` re-check window for the same reason: one bounded retry a week
+ * instead of either a permanent stop or a loop. `queuedAt` is the park's clock, as it is for
+ * `profile-gone` — a park does not move it, so it records the last time the draft was lined up.
+ */
+export const UNREADABLE_RECHECK_DAYS = 7
+
+export function parkBlocksRoute(r: { failureCode: string | null; queuedAt: Date }, now: Date): boolean {
+  if (r.failureCode === null) return false
+  if (r.failureCode !== 'unreadable') return true
+  return r.queuedAt.getTime() >= now.getTime() - UNREADABLE_RECHECK_DAYS * 86_400_000
+}

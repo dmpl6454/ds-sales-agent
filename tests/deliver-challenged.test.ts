@@ -45,6 +45,8 @@ const { probeHandle } = vi.hoisted(() => ({
 // The pre-drive existence probe (9 Sept 2026) is a NETWORK call to Instagram; these tests are
 // about the drive, so it answers 'unknown' — which changes nothing — unless a case overrides it.
 // This Mac is the selected sending Mac in these fixtures (2026-09-10); the standby rule has tests/active-device.test.ts.
+const shutdown = vi.hoisted(() => ({ requested: false }))
+vi.mock('@/outreach/shutdown', () => ({ browserShutdownRequested: () => shutdown.requested }))
 vi.mock('@/outreach/activeDevice', () => ({ thisMacRole: async () => ({ active: true, selected: 'this-mac', thisDevice: 'this-mac' }) }))
 vi.mock('@/detection/exists', () => ({ probeHandle: (handle: string) => probeHandle(handle) }))
 vi.mock('@/lib/db', () => ({
@@ -141,6 +143,27 @@ beforeEach(() => {
   ensureConversationChecked.mockReset().mockResolvedValue({ ok: true, reason: 'fresh' })
   send.mockReset().mockResolvedValue({ status: 'SENT', threadUrl: 'https://x' })
   revertUndrivenClaim.mockReset().mockResolvedValue(true)
+  shutdown.requested = false
+})
+
+/**
+ * A SIGTERM landing while a tick evaluates must not let that tick START a drive: the shutdown
+ * drain would then wait on it and kill it at its deadline, parking a never-confirmed message
+ * as "may already have it" (review of 2026-10-09). The draft stays READY for the next process.
+ */
+describe('the agent stopping', () => {
+  it('claims nothing and drives nothing once a shutdown is requested', async () => {
+    shutdown.requested = true
+    await deliverWaiting({ maxSends: 2 })
+    expect(send).not.toHaveBeenCalled()
+    expect(attemptUpdateMany).not.toHaveBeenCalledWith(expect.objectContaining({ data: { status: 'SENDING' } }))
+    expect(claimForAttempt).not.toHaveBeenCalled()
+  })
+
+  it('still delivers when no shutdown is requested — the check must not become a blanket stop', async () => {
+    await deliverWaiting({ maxSends: 2 })
+    expect(send).toHaveBeenCalledTimes(2)
+  })
 })
 
 /**

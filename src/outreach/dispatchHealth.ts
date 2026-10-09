@@ -71,18 +71,39 @@ export function assessDispatch(args: {
   selected: string | null
   selectedBeating: boolean
   stamp: DispatchStamp | null
+  /**
+   * When the current selection was written (`activeDevice`'s `updatedAt`). A stamp older than
+   * that predates this selection and says nothing about it: select A, then another Mac for a
+   * while, then A again, and A's old stamp would otherwise read as "A's loop keeps failing"
+   * until A's first tick — found by review. Null means unknown and ignores nothing.
+   */
+  selectedSince?: Date | null
   now?: number
 }): { stale: boolean; lastOkAt: Date | null } {
   const now = args.now ?? Date.now()
   if (args.selected === null || !args.selectedBeating) return { stale: false, lastOkAt: null }
   if (args.stamp === null || args.stamp.device !== args.selected) return { stale: false, lastOkAt: null }
+  if (args.selectedSince && args.stamp.at.getTime() < args.selectedSince.getTime()) return { stale: false, lastOkAt: null }
   return { stale: now - args.stamp.at.getTime() > DISPATCH_STALE_MS, lastOkAt: args.stamp.at }
 }
 
+/**
+ * At most one write a minute. A tick ends every 30 s, every 5 s while the fleet lock is busy and
+ * every SECOND while an agent older than the lock's device field holds it — a write per tick
+ * would be a database write a second over the tunnel to record a fact a 15-minute threshold
+ * reads. A minute of staleness costs the alarm nothing.
+ */
+export const DISPATCH_STAMP_EVERY_MS = 60_000
+let lastWrite: { device: string; at: number } | null = null
+
 /** Written by the device agent at the end of a completed tick. Never fails the tick. */
-export async function recordDispatchOk(device: string): Promise<void> {
-  const value = JSON.stringify({ device, at: new Date().toISOString() })
+export async function recordDispatchOk(device: string, now: number = Date.now()): Promise<void> {
+  if (lastWrite !== null && lastWrite.device === device && now - lastWrite.at < DISPATCH_STAMP_EVERY_MS) return
+  const value = JSON.stringify({ device, at: new Date(now).toISOString() })
   await prisma.setting
     .upsert({ where: { key: DISPATCH_OK_KEY }, update: { value }, create: { key: DISPATCH_OK_KEY, value } })
+    .then(() => {
+      lastWrite = { device, at: now }
+    })
     .catch(() => undefined)
 }

@@ -11,6 +11,7 @@ import { triageInboxRow, snippetIsReplyText, matchInboxRow, matchInboxRowToTarge
 import { normalise } from './matching'
 import { markChallenged } from './challenge'
 import { thisMacRole } from './activeDevice'
+import { browserShutdownRequested } from './shutdown'
 
 /**
  * Checking open conversations for replies.
@@ -553,6 +554,10 @@ async function inboxPhase(
   const unmatched: string[] = []
 
   for (const sender of local) {
+    if (browserShutdownRequested()) {
+      log.step('the agent is stopping — ending the inbox scan between accounts')
+      break
+    }
     if (!(await thisMacRole()).active) {
       log.step('the sending Mac changed mid-sweep — stopping the inbox scan here, no more browsers open on this Mac')
       break
@@ -791,6 +796,10 @@ export async function checkForReplies(): Promise<ReplyCheckSummary> {
 
   for (const c of candidates) {
     const pairKey = `${c.senderHandle}→${c.targetHandle}`
+    if (browserShutdownRequested()) {
+      log.step('the agent is stopping — ending the thread reads between conversations')
+      break
+    }
     if (!(await thisMacRole()).active) {
       log.step('the sending Mac changed mid-sweep — stopping the thread reads here, no more browsers open on this Mac')
       break

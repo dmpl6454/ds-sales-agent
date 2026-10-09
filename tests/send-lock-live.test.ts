@@ -142,6 +142,26 @@ describe('the slot lock is held in-process and released only by its holder', asy
     expect(await slotRow()).toBeNull()
   })
 
+  it('two runs started in the same tick: exactly one holds the lock (the flag is taken before the first await)', async () => {
+    const ran: string[] = []
+    const [a, b] = await Promise.all([
+      withSlotLock('slot-17:00', async () => {
+        ran.push('slot')
+        await new Promise((r) => setTimeout(r, 20))
+        return 'slot'
+      }),
+      withSlotLock('detect-draft', async () => {
+        ran.push('plan')
+        return 'plan'
+      }),
+    ])
+    expect(ran).toEqual(['slot'])
+    expect(a).toBe('slot')
+    expect(b).toBeNull()
+    expect(slotLockHeldInThisProcess()).toBe(false)
+    expect(await slotRow()).toBeNull()
+  })
+
   it('a lock refreshed mid-run is still released — the refresh rewrites the row the release matches on', async () => {
     await withSlotLock('slot-15:00', async () => {
       const before = (await slotRow())?.value
@@ -173,5 +193,27 @@ describe('the slot lock is held in-process and released only by its holder', asy
       })
     })
     expect((await slotRow())?.value).toMatch(/"slot":"other"/)
+  })
+})
+
+/**
+ * LAST IN THIS FILE ON PURPOSE: a requested shutdown cannot be withdrawn, so every test after it
+ * would run against a stopping agent. Once stopping, nothing new may take the send lock — the
+ * shutdown drain would otherwise wait on it and then kill it at the deadline (review, 2026-10-09).
+ */
+describe('a stopping agent starts no new browser work', () => {
+  it('withSendLock refuses new holders after a shutdown is requested', async () => {
+    const { requestBrowserShutdown } = await import('@/outreach/shutdown')
+    await select('this-mac')
+    expect(await withSendLock('dispatch:device', async () => 'drove')).toBe('drove')
+    requestBrowserShutdown()
+    let ran = false
+    const r = await withSendLock('dispatch:device', async () => {
+      ran = true
+      return 'drove'
+    })
+    expect(r).toBeNull()
+    expect(ran).toBe(false)
+    expect(await lockRow()).toBeNull()
   })
 })

@@ -43,7 +43,9 @@ describe('SEND_ENABLED is a hard floor on every send path', () => {
   it('checks it BEFORE acquiring the lock or driving anything', () => {
     const body = code(DISPATCHER)
     const lockAt = body.indexOf('export async function withSendLock')
-    const lockBody = body.slice(lockAt, lockAt + 900)
+    // The WHOLE function, not a fixed window: a 900-character window is a measurement of how
+    // much was written above the acquire, and it broke the day a shutdown check was added.
+    const lockBody = body.slice(lockAt, body.indexOf('\nexport ', lockAt + 1))
 
     const floorAt = lockBody.indexOf('env.SEND_ENABLED')
     const acquireAt = lockBody.indexOf('acquireSendLock')
@@ -56,7 +58,9 @@ describe('SEND_ENABLED is a hard floor on every send path', () => {
   it('returns null rather than throwing, so a blocked send leaves the draft waiting', () => {
     const body = code(DISPATCHER)
     const lockAt = body.indexOf('export async function withSendLock')
-    const lockBody = body.slice(lockAt, lockAt + 900)
+    // The WHOLE function, not a fixed window: a 900-character window is a measurement of how
+    // much was written above the acquire, and it broke the day a shutdown check was added.
+    const lockBody = body.slice(lockAt, body.indexOf('\nexport ', lockAt + 1))
     const floorAt = lockBody.indexOf('env.SEND_ENABLED')
     const after = lockBody.slice(floorAt, floorAt + 260)
 

@@ -29,7 +29,7 @@ bootstrap.close()
 process.env.DATABASE_URL = `file:${dbPath}`
 
 const { prisma } = await import('@/lib/db')
-const { assessDispatch, parseDispatchStamp, recordDispatchOk, DISPATCH_OK_KEY, DISPATCH_STALE_MS } = await import(
+const { assessDispatch, parseDispatchStamp, recordDispatchOk, DISPATCH_OK_KEY, DISPATCH_STALE_MS, DISPATCH_STAMP_EVERY_MS } = await import(
   '@/outreach/dispatchHealth'
 )
 const { readPassHealth } = await import('@/worker/scheduler')
@@ -70,6 +70,15 @@ describe('assessDispatch', () => {
     expect(assessDispatch({ selected: 'studio', selectedBeating: false, stamp: stampAt(DISPATCH_STALE_MS * 10), now: NOW }).stale).toBe(false)
   })
 
+  it('ignores a stamp from before the current selection — re-selecting a Mac is not its loop failing', () => {
+    const selectedSince = new Date(NOW - 60_000)
+    const old = assessDispatch({ selected: 'studio', selectedBeating: true, stamp: stampAt(DISPATCH_STALE_MS * 4), selectedSince, now: NOW })
+    expect(old).toEqual({ stale: false, lastOkAt: null })
+    // Once the newly selected Mac has stamped and then stops, the alarm can fire again.
+    const since = new Date(NOW - DISPATCH_STALE_MS * 3)
+    expect(assessDispatch({ selected: 'studio', selectedBeating: true, stamp: stampAt(DISPATCH_STALE_MS * 2), selectedSince: since, now: NOW }).stale).toBe(true)
+  })
+
   it('tolerates one slow-but-healthy tick: the threshold is longer than a pre-send read plus a send', () => {
     expect(DISPATCH_STALE_MS).toBeGreaterThan(6 * 60_000 + 2 * 60_000)
   })
@@ -96,6 +105,20 @@ describe('the stamp round-trips through the query the landing page already makes
     const health = await readPassHealth()
     expect(health.dispatchStamp?.device).toBe('studio')
     expect(Date.now() - health.dispatchStamp!.at.getTime()).toBeLessThan(10_000)
+  })
+
+  it('writes at most once a minute per Mac — a tick can end every second', async () => {
+    const t0 = Date.now() + 10 * 60_000 // clear of the write the test above made
+    await recordDispatchOk('studio', t0)
+    await recordDispatchOk('studio', t0 + 30_000)
+    expect((await readPassHealth()).dispatchStamp?.at.getTime()).toBe(t0)
+    await recordDispatchOk('studio', t0 + DISPATCH_STAMP_EVERY_MS)
+    expect((await readPassHealth()).dispatchStamp?.at.getTime()).toBe(t0 + DISPATCH_STAMP_EVERY_MS)
+  })
+
+  it('carries when the selection was written, from the same query', async () => {
+    await prisma.setting.create({ data: { key: 'activeDevice', value: 'studio' } })
+    expect((await readPassHealth()).activeDeviceSince).toBeInstanceOf(Date)
   })
 
   it('no row reads as null', async () => {

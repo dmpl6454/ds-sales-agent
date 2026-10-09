@@ -39,9 +39,10 @@
  *                     count(*)         a row created or deleted
  *   SenderAccount     max(updatedAt)   a sign-in, a challenge, a retirement — `@updatedAt`, ~7 rows
  *
- * SETTING IS A HOT TABLE, AND FIVE OF ITS KEYS ARE EXCLUDED ON PURPOSE. The scheduler
+ * SETTING IS A HOT TABLE, AND SIX OF ITS KEYS ARE EXCLUDED ON PURPOSE. The scheduler
  * heartbeat is rewritten every 60 s, device presence every 30 s, `dispatchState` on every
- * dispatch tick, the send lock on every browser drive, the pace clock on every send. Folded
+ * dispatch tick, the send lock on every browser drive, the pace clock on every send, and the
+ * sending Mac's success stamp (`dispatchLastOkAt`) once a minute. Folded
  * into the stamp they would change it on nearly every poll, and change-detection would
  * silently become the blind 30-second timer it replaces — the pile-up back, wearing a
  * cleverer name. What those rows feed on screen is a RELATIVE AGE ("heartbeat 1 min old",
@@ -62,6 +63,7 @@ export const PULSE_IGNORED_SETTING_KEYS = [
   'dispatchState', // dispatcher.ts DISPATCH_STATE_KEY — every dispatch tick
   'sendLock', // dispatcher.ts SEND_LOCK_KEY — every browser drive
   'fleetLastSendStartedAt', // paceClock.ts LAST_SEND_STARTED_KEY — every send; the send itself moves max(sentAt)
+  'dispatchLastOkAt', // dispatchHealth.ts DISPATCH_OK_KEY — the sending Mac's completed ticks, once a minute
 ] as const
 
 export type PulseParts = {
