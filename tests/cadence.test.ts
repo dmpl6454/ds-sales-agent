@@ -318,6 +318,20 @@ describe('the pass-health stamps', () => {
     expect(stamped).toEqual(['detect', 'plan'])
   })
 
+  it('does NOT stamp plan when the slot lock was held and planning was skipped', async () => {
+    /* A wedged slot holds the lock forever; stamping on the skip kept planning "healthy" while
+       nothing was drafted (2026-10-09). */
+    const stamped: string[] = []
+    await detectThenDraft({
+      recordOk: async (kind) => void stamped.push(kind),
+      detect: async () => pass,
+      plan: async () => ({}) as never,
+      settings: async () => ({ autopilotEnabled: false }) as never,
+      lock: (async () => null) as never,
+    })
+    expect(stamped).toEqual(['detect'])
+  })
+
   it('stamps nothing when detection throws — a failed pass must read as failed', async () => {
     const stamped: string[] = []
     await detectThenDraft({

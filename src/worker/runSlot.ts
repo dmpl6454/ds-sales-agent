@@ -114,27 +114,34 @@ export function decideSlotLock(args: {
 }
 
 /**
+ * The exact value of the slot-lock row THIS process last wrote, or null when it holds none.
+ *
+ * Release is conditioned on it (below), and the refresh moves it forward — so the two can
+ * never disagree. The first version of the conditional release compared against the value
+ * written at ACQUISITION, while this refresh rewrites the row at every stage boundary: the
+ * delete matched nothing and every slot would have left its lock behind, blocking the
+ * dashboard's Sync now and `pnpm run:slot` until the row went stale. Found by reading the
+ * diff, before it shipped.
+ */
+let slotLockValue: string | null = null
+
+/**
  * Refresh the lock's timestamp — "still going".
  *
- * Conditional on the row still being OURS, so a slot that lost the lock cannot stamp
- * over whoever holds it now. Silent on failure: this is a liveness signal, and failing
+ * Conditional on the row still being the one WE wrote, so a slot that lost the lock cannot
+ * stamp over whoever holds it now. Silent on failure: this is a liveness signal, and failing
  * to write one must never take down the slot it is reporting on.
+ *
+ * Exported for tests only; the slot calls it at each stage boundary.
  */
-async function touchSlotLock(slot: string): Promise<void> {
-  const stale = await prisma.setting.findUnique({ where: { key: SLOT_LOCK_KEY } }).catch(() => null)
-  if (!stale) return
-  try {
-    const held = JSON.parse(stale.value) as { pid: number }
-    if (held.pid !== process.pid) return
-  } catch {
-    return
-  }
-  await prisma.setting
-    .updateMany({
-      where: { key: SLOT_LOCK_KEY, value: stale.value },
-      data: { value: JSON.stringify({ pid: process.pid, slot, at: new Date().toISOString() }) },
-    })
-    .catch(() => undefined)
+export async function touchSlotLock(slot: string): Promise<void> {
+  const ours = slotLockValue
+  if (ours === null) return
+  const next = JSON.stringify({ pid: process.pid, slot, at: new Date().toISOString() })
+  const r = await prisma.setting
+    .updateMany({ where: { key: SLOT_LOCK_KEY, value: ours }, data: { value: next } })
+    .catch(() => null)
+  if (r !== null && r.count === 1) slotLockValue = next
 }
 
 /**
@@ -150,7 +157,7 @@ async function touchSlotLock(slot: string): Promise<void> {
  * the bug that once stopped the scheduler starting at all. So ask the OS, the same way
  * `startScheduler` does.
  */
-async function acquireSlotLock(slot: string): Promise<boolean> {
+async function acquireSlotLock(slot: string): Promise<string | null> {
   const value = JSON.stringify({ pid: process.pid, slot, at: new Date().toISOString() })
 
   /**
@@ -164,7 +171,7 @@ async function acquireSlotLock(slot: string): Promise<boolean> {
    */
   try {
     await prisma.setting.create({ data: { key: SLOT_LOCK_KEY, value } })
-    return true
+    return value
   } catch {
     // A row exists. Whether it represents a live slot is a separate question.
   }
@@ -174,9 +181,9 @@ async function acquireSlotLock(slot: string): Promise<boolean> {
     // Vanished between the create and the read — the holder just finished. Try once more.
     try {
       await prisma.setting.create({ data: { key: SLOT_LOCK_KEY, value } })
-      return true
+      return value
     } catch {
-      return false
+      return null
     }
   }
 
@@ -211,7 +218,7 @@ async function acquireSlotLock(slot: string): Promise<boolean> {
     } else {
       log.warn('another slot is already running — declining to start a second', detail)
     }
-    return false
+    return null
   }
 
   /**
@@ -225,7 +232,7 @@ async function acquireSlotLock(slot: string): Promise<boolean> {
   })
   if (claimed.count === 0) {
     log.warn('another slot took over the lock first — declining', { previousPid: held?.pid })
-    return false
+    return null
   }
   /**
    * Three reasons we reach here, and they printed as one.
@@ -245,11 +252,48 @@ async function acquireSlotLock(slot: string): Promise<boolean> {
       ageSeconds: Math.round(ageMs / 1000),
     })
   }
-  return true
+  return value
 }
 
+/**
+ * ── THE SLOT LOCK IS ALSO HELD IN THIS PROCESS, AND RELEASED ONLY BY ITS HOLDER (2026-10-09) ──
+ *
+ * The row decides between PROCESSES, and `decideSlotLock` grants a take-over whenever the row
+ * names our own pid — right for a crash leftover, wrong for a LIVE holder in the same process.
+ * On the Linode the four slots and the 15-minute detect-then-draft run in ONE worker, so the
+ * planner's `withSlotLock` took over a running slot's lock, planned beside it (two planners,
+ * two drafts per pair possible), and its `finally` then deleted the row while the slot was still
+ * running. The same "nested acquire, inner finally unlocks" hole `withSendLock` closed with
+ * `heldInThisProcess`, closed the same way here — and the release is conditioned on the exact
+ * value this holder wrote, like the send lock's.
+ */
+let slotLockHeldHere = false
+
 async function releaseSlotLock(): Promise<void> {
-  await prisma.setting.deleteMany({ where: { key: SLOT_LOCK_KEY } }).catch(() => undefined)
+  const ours = slotLockValue
+  slotLockValue = null
+  if (ours === null) return
+  await prisma.setting.deleteMany({ where: { key: SLOT_LOCK_KEY, value: ours } }).catch(() => undefined)
+}
+
+/**
+ * A slot must not be SKIPPED because this process is planning — a slot carries the twice-daily
+ * reply sweep and the catch-up detection, and losing one is worse than waiting for a planning
+ * run to finish. So a slot waits, bounded, for an in-process holder; the planner (which runs
+ * again in fifteen minutes) simply skips. The bound is generous because a slot has nothing else
+ * to do, and after it the slot declines exactly as it did for a foreign holder.
+ */
+const SLOT_WAIT_FOR_IN_PROCESS_MS = 15 * 60_000
+
+async function waitForInProcessSlotLock(maxMs: number): Promise<boolean> {
+  const deadline = Date.now() + maxMs
+  while (slotLockHeldHere && Date.now() < deadline) await new Promise((r) => setTimeout(r, 1000))
+  return !slotLockHeldHere
+}
+
+/** True while a slot or a planning run in THIS process holds the slot lock. For tests and health. */
+export function slotLockHeldInThisProcess(): boolean {
+  return slotLockHeldHere
 }
 
 /**
@@ -275,10 +319,18 @@ async function releaseSlotLock(): Promise<void> {
  * nested send lock.
  */
 export async function withSlotLock<T>(label: string, fn: () => Promise<T>): Promise<T | null> {
-  if (!(await acquireSlotLock(label))) return null
+  if (slotLockHeldHere) {
+    log.step('a slot is already running in this process — skipping this run', { label })
+    return null
+  }
+  const ours = await acquireSlotLock(label)
+  if (ours === null) return null
+  slotLockValue = ours
+  slotLockHeldHere = true
   try {
     return await fn()
   } finally {
+    slotLockHeldHere = false
     await releaseSlotLock()
   }
 }
@@ -287,13 +339,24 @@ export async function runSlot(slot: string): Promise<SlotResult> {
   const started = Date.now()
   log.info(`▶ slot ${slot} starting`, { at: istStamp(), dryRun: env.DRY_RUN })
 
-  if (!(await acquireSlotLock(slot))) {
+  if (slotLockHeldHere) {
+    log.step('planning is running in this process — the slot waits for it rather than being skipped', { slot })
+    if (!(await waitForInProcessSlotLock(SLOT_WAIT_FOR_IN_PROCESS_MS))) {
+      log.alarm('the slot waited for an in-process run that never finished — skipping it', { slot })
+      return { runId: '', status: 'FAILED', postsSeen: 0, newPosts: 0, detected: 0, queued: 0, sent: 0 }
+    }
+  }
+  const ours = await acquireSlotLock(slot)
+  if (ours === null) {
     return { runId: '', status: 'FAILED', postsSeen: 0, newPosts: 0, detected: 0, queued: 0, sent: 0 }
   }
 
+  slotLockValue = ours
+  slotLockHeldHere = true
   try {
     return await runSlotLocked(slot, started)
   } finally {
+    slotLockHeldHere = false
     await releaseSlotLock()
   }
 }

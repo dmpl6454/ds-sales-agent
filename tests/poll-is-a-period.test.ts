@@ -99,11 +99,10 @@ describe('the loop as written', () => {
    * shape, so this asserts the SUBTRACTION exists and that no unconditional sleep of the
    * whole interval remains next to the tick.
    */
-  it('subtracts the elapsed tick time from the wait', () => {
+  it('takes its wait from nextPollWait, with the elapsed time and whether the tick drove', () => {
     const loop = src.slice(src.indexOf('while (!stopping)'), src.indexOf('clearInterval(presence)'))
-    expect(loop).toMatch(/POLL_INTERVAL_MS - \(Date\.now\(\) - startedAt\)/)
-    /* `wait` since the boundary-wake change: the remainder, capped by the dispatcher's
-       own retryInMs when that is sooner. Still never an unconditional full sleep. */
+    expect(loop).toMatch(/nextPollWait\(\{ pollMs: POLL_INTERVAL_MS, elapsedMs: Date\.now\(\) - startedAt, drove, retryInMs \}\)/)
+    expect(loop).toMatch(/drove = r\.drove === true/)
     expect(loop).toMatch(/if \(wait > 0\)/)
     /* The old, additive line must be gone rather than merely shadowed. */
     expect(loop).not.toMatch(/setTimeout\(r, POLL_INTERVAL_MS\)/)
@@ -303,8 +302,41 @@ describe('the loop wakes at the gap boundary, not on its grid', () => {
   })
 
   it('the agent consumes the hint with min(), so it cannot extend the wait', () => {
-    const src = read('src/agent/index.ts')
-    const loop = src.slice(src.indexOf('while (!stopping)'), src.indexOf('clearInterval(presence)'))
-    expect(loop).toMatch(/retryInMs !== undefined \? Math\.min\(/)
+    /* Moved into the pure `nextPollWait` (2026-10-09), where the property is also driven by
+       behaviour below: a 90 s hint cannot stretch a 30 s wait. */
+    expect(read('src/agent/pollWait.ts')).toMatch(/retryInMs !== undefined \? Math\.min\(/)
+    expect(read('src/agent/index.ts')).toMatch(/nextPollWait\(/)
+  })
+})
+
+/**
+ * ── THE REMAINDER IS FOR SENDS ONLY (2026-10-09) ────────────────────────────
+ *
+ * The remainder rule above exists so a ~47 s SEND leaves nothing to wait for. Applied to every
+ * tick, it let a long all-held evaluation (the whole queue through the gate, under the fleet
+ * lock, over the tunnel) restart at once, so the lock was held almost continuously and the reply
+ * sweep and disk care in the same process only ran by luck. These drive the real rule.
+ */
+describe('nextPollWait — the remainder after a drive, the full interval otherwise', async () => {
+  const { nextPollWait } = await import('@/agent/pollWait')
+  const POLL = 30_000
+
+  it('after a send, sleeps only the remainder — the 77 s fix is intact', () => {
+    expect(nextPollWait({ pollMs: POLL, elapsedMs: 47_000, drove: true })).toBe(0)
+    expect(nextPollWait({ pollMs: POLL, elapsedMs: 10_000, drove: true })).toBe(20_000)
+  })
+
+  it('after a long tick that drove NOTHING, waits the full interval — the lock is left free', () => {
+    expect(nextPollWait({ pollMs: POLL, elapsedMs: 180_000, drove: false })).toBe(POLL)
+  })
+
+  it('an idle tick waits the full interval, as before', () => {
+    expect(nextPollWait({ pollMs: POLL, elapsedMs: 800, drove: false })).toBe(POLL)
+  })
+
+  it('the dispatcher\'s boundary still wakes the loop early, never late', () => {
+    expect(nextPollWait({ pollMs: POLL, elapsedMs: 120_000, drove: false, retryInMs: 5_000 })).toBe(5_000)
+    expect(nextPollWait({ pollMs: POLL, elapsedMs: 0, drove: false, retryInMs: 90_000 })).toBe(POLL)
+    expect(nextPollWait({ pollMs: POLL, elapsedMs: 0, drove: true, retryInMs: -5 })).toBe(0)
   })
 })

@@ -35,6 +35,7 @@ const claimForAttempt = vi.fn()
 const settleClaims = vi.fn()
 const markChallenged = vi.fn()
 const ensureConversationChecked = vi.fn()
+const revertUndrivenClaim = vi.fn()
 
 const { probeHandle } = vi.hoisted(() => ({
   probeHandle: vi.fn(
@@ -69,7 +70,10 @@ vi.mock('@/lib/time', () => ({ randomInt: () => 0, istDateKey: () => '2026-08-04
 vi.mock('@/outreach/senders/browser', () => ({ browserSender: { send: (...a: unknown[]) => send(...a) } }))
 vi.mock('@/outreach/browser/profile', () => ({ profileStatus: () => ({ dir: '/tmp/p', hasSession: true }) }))
 vi.mock('@/outreach/gate', () => ({ recheckBeforeSend: (...a: unknown[]) => recheck(...a) }))
-vi.mock('@/outreach/recordSend', () => ({ recordDelivered: async () => undefined }))
+vi.mock('@/outreach/recordSend', () => ({
+  recordDelivered: async () => undefined,
+  revertUndrivenClaim: (...a: unknown[]) => revertUndrivenClaim(...a),
+}))
 vi.mock('@/outreach/reservations', () => ({
   claimForAttempt: (...a: unknown[]) => claimForAttempt(...a),
   settleClaims: (...a: unknown[]) => settleClaims(...a),
@@ -136,6 +140,7 @@ beforeEach(() => {
   markChallenged.mockReset().mockResolvedValue(undefined)
   ensureConversationChecked.mockReset().mockResolvedValue({ ok: true, reason: 'fresh' })
   send.mockReset().mockResolvedValue({ status: 'SENT', threadUrl: 'https://x' })
+  revertUndrivenClaim.mockReset().mockResolvedValue(true)
 })
 
 /**
@@ -540,5 +545,38 @@ describe('a recipient whose page is gone is parked before any browser drive', ()
   it("an 'unknown' probe (a throttle, a blip) changes nothing — absence of an answer is not a verdict", async () => {
     await deliverWaiting({ maxSends: 1 })
     expect(send).toHaveBeenCalledTimes(1)
+  })
+})
+
+/**
+ * ── A DATABASE ERROR BETWEEN THE CLAIM AND THE DRIVE (2026-10-09) ─────────────
+ *
+ * The claim flips the row to SENDING, then the reservations, the spacing and the anonymous probe
+ * run before any browser opens. A throw in there used to escape the loop with the row still
+ * SENDING, and the next tick's orphan sweep parked it `not-in-thread` — "may already have it" —
+ * which nothing automatic releases. These assert the draft goes back instead, and that no
+ * browser is driven on the way.
+ */
+describe('a database error after the claim puts the draft back, and drives nothing', () => {
+  it('reverts when the reservation claim throws', async () => {
+    claimForAttempt.mockRejectedValue(new Error("Can't reach database server"))
+    const out = await deliverWaiting()
+    expect(send).not.toHaveBeenCalled()
+    expect(revertUndrivenClaim).toHaveBeenCalledOnce()
+    expect(revertUndrivenClaim.mock.calls[0]![0]).toBe('att_1')
+    // Nothing had been reserved yet, so nothing is handed back to release.
+    expect(revertUndrivenClaim.mock.calls[0]![1]).toEqual([])
+    // The tick ends rather than claiming the second draft into the same failure.
+    expect(claimForAttempt).toHaveBeenCalledOnce()
+    expect(out.sent).toBe(0)
+  })
+
+  it('hands back the reservations already held when a later step throws', async () => {
+    attemptUpdate.mockRejectedValue(new Error('connection terminated'))
+    probeHandle.mockResolvedValue({ check: 'missing', facts: null })
+    await deliverWaiting()
+    expect(send).not.toHaveBeenCalled()
+    expect(revertUndrivenClaim).toHaveBeenCalledOnce()
+    expect(revertUndrivenClaim.mock.calls[0]![1]).toEqual([{ id: 'res_1', seq: 1 }])
   })
 })

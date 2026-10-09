@@ -231,7 +231,7 @@ function alive(pid: number): boolean {
   }
 }
 
-async function acquireSendLock(what: string): Promise<boolean> {
+async function acquireSendLock(what: string): Promise<string | null> {
   const ourDevice = deviceId()
   const value = JSON.stringify({ pid: process.pid, device: ourDevice, what, at: new Date().toISOString() })
 
@@ -247,11 +247,11 @@ async function acquireSendLock(what: string): Promise<boolean> {
   if (!row) {
     try {
       await prisma.setting.create({ data: { key: SEND_LOCK_KEY, value } })
-      return true
+      return value
     } catch {
       // Lost the race to a row created between the read and the create. Re-read it.
       row = await prisma.setting.findUnique({ where: { key: SEND_LOCK_KEY } })
-      if (!row) return false
+      if (!row) return null
     }
   }
 
@@ -294,7 +294,7 @@ async function acquireSendLock(what: string): Promise<boolean> {
         tries: busyStreak,
       })
     }
-    return false
+    return null
   }
   busyStreak = 0
 
@@ -306,7 +306,7 @@ async function acquireSendLock(what: string): Promise<boolean> {
   })
   if (claimed.count === 0) {
     log.step('another sender took the lock first — declining', { previousPid: held?.pid })
-    return false
+    return null
   }
   /**
    * THREE different reasons we got here, and they must not print as one.
@@ -335,11 +335,28 @@ async function acquireSendLock(what: string): Promise<boolean> {
       secondsHeld: Math.round(ageMs / 1000),
     })
   }
-  return true
+  return value
 }
 
-async function releaseSendLock(): Promise<void> {
-  await prisma.setting.deleteMany({ where: { key: SEND_LOCK_KEY } }).catch(() => undefined)
+/**
+ * ── RELEASE ONLY THE ROW THIS PROCESS WROTE (2026-10-09) ───────────────────
+ *
+ * Acquisition was carefully conditional — `create` on the key, take-over by `updateMany` on the
+ * exact value read — and release was `deleteMany({ key })`, which deletes whoever holds the row
+ * NOW. That is the nested-lock hole `heldInThisProcess` closed, arriving across machines: a Mac
+ * whose lid closed mid-sweep is stepped over once its lock is stale and it has stopped beating;
+ * when it wakes, its `finally` ran this and deleted the lock the OTHER Mac had since taken,
+ * leaving that Mac's drive unprotected against a third lock user. Conditioning the delete on the
+ * exact JSON written at acquisition (pid, device, what, a timestamp) makes it a no-op once the
+ * row has changed hands.
+ */
+async function releaseSendLock(ours: string): Promise<void> {
+  const gone = await prisma.setting
+    .deleteMany({ where: { key: SEND_LOCK_KEY, value: ours } })
+    .catch(() => ({ count: -1 }))
+  if (gone.count === 0) {
+    log.step('the send lock had already changed hands — left it with its new holder')
+  }
 }
 
 /**
@@ -570,14 +587,45 @@ export async function withSendLock<T>(what: string, fn: () => Promise<T>): Promi
     log.warn('a send is already in progress in this process — refusing to start a second', { what })
     return null
   }
-  if (!(await acquireSendLock(what))) return null
+
+  /**
+   * ── A STANDBY MAC'S DISK CARE DOES NOT TAKE THE FLEET'S LOCK (2026-10-09) ──
+   *
+   * The lock is FLEET-wide: one row in the shared database. Disk care on a standby Mac took it,
+   * polling every second for up to three minutes, and held it through walking, deleting and
+   * hashing gigabytes of cache — and for all of that time the SELECTED Mac's dispatcher read a
+   * foreign holder, logged "another Mac is sending" and sent nothing. On a standby the lock buys
+   * nothing locally: every other caller here is refused by the role check above, so no drive can
+   * start under the prune, and the prune itself asks the OS whether Chrome holds each profile
+   * before touching it. The in-process guard is still taken, so nothing in THIS process overlaps.
+   */
+  if (!role.active && what === 'disk-care') {
+    heldInThisProcess = true
+    try {
+      return await fn()
+    } finally {
+      heldInThisProcess = false
+    }
+  }
+
+  const ours = await acquireSendLock(what)
+  if (ours === null) return null
   heldInThisProcess = true
   try {
     return await fn()
   } finally {
     heldInThisProcess = false
-    await releaseSendLock()
+    await releaseSendLock(ours)
   }
+}
+
+/**
+ * Is a lock-holding job (a send, a reply sweep, disk care) running in this process right now?
+ * Read by the device agent's shutdown so a routine restart waits for the drive in flight rather
+ * than killing it between the READY→SENDING claim and the thread confirmation.
+ */
+export function sendLockHeldHere(): boolean {
+  return heldInThisProcess
 }
 
 /** A human's explicit stop, if there is one. */

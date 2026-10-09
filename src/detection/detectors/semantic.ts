@@ -315,6 +315,16 @@ export async function classifyCaption(
     const res = await fetch(API_URL, {
       method: 'POST',
       headers: { 'content-type': 'application/json', authorization: `Bearer ${key}` },
+      /**
+       * BOUNDED, like every other outbound call (decideBrand, generate, igGet, saveFrame).
+       * Node's fetch has no default timeout, so a model endpoint that accepts the connection
+       * and then stalls held a detection pass for as long as undici's own ~5-minute limits —
+       * up to three calls a post, under a `noOverlap` cron that skips every pass while one is
+       * running, after the pass had already stamped itself alive. Posts scroll out of the
+       * 48-deep feed window while that happens. A timeout is a failed call, never a verdict
+       * (2026-10-09).
+       */
+      signal: AbortSignal.timeout(30_000),
       body: JSON.stringify({
         model: MODEL,
         // OFF. See the note on MODEL — this is on by default and would bill output

@@ -33,8 +33,8 @@ import { fetchFeed } from '@/detection/feed'
 import { addTargetMessage } from './add-target-message'
 import { assertSafeHandle } from '@/lib/urls'
 import { distinctiveSlice } from '@/outreach/matching'
-import { recordDelivered } from '@/outreach/recordSend'
-import { claimForAttempt, settleClaims, releaseReservation } from '@/outreach/reservations'
+import { recordDelivered, revertUndrivenClaim } from '@/outreach/recordSend'
+import { claimForAttempt, settleClaims, releaseReservation, type Reservation } from '@/outreach/reservations'
 import { markChallenged, clearChallenged } from '@/outreach/challenge'
 import { markSessionInvalid, clearSessionInvalid } from '@/outreach/sessionHealth'
 import { withSendLock, DISPATCH_PAUSE_KEY, dispatchTick, acknowledgeBreaker } from '@/outreach/dispatcher'
@@ -216,6 +216,13 @@ export async function sendNow(attemptId: string, overrides?: readonly string[]):
   }
 
   /**
+   * What was ACTUALLY crossed, not what the caller asked to cross. Computed from the
+   * whitelist so a stray or malicious value can neither reach the gate nor appear in
+   * the audit trail as though it had.
+   */
+  const crossed = (overrides ?? []).filter(isOverridable)
+
+  /**
    * Claim the recipient's daily allowance atomically — the SAME call `deliverWaiting`
    * makes, for the same reason.
    *
@@ -224,45 +231,53 @@ export async function sendNow(attemptId: string, overrides?: readonly string[]):
    * person; crossing a daily cap has no bound at all), so the button claims exactly as
    * the slot does and refuses on the same terms.
    */
-  const sendSettings = await getSettings()
-  const claim = await claimForAttempt({
-    attemptId,
-    pairId: attempt.pairId,
-    maxPerPairPerDay: sendSettings.maxPerPairPerDay,
-    /**
-     * `attended: true` skips the fleet's HOURLY bucket and only that one.
-     *
-     * The hourly bucket is pacing — it exists so fourteen unattended drafts cannot leave
-     * inside one hour. A person pressing Send, once, is not a cluster, and refusing them
-     * because a scheduled tick used this hour's pace would make the button unreliable for
-     * exactly the case it was built for. The fleet's DAILY bucket still binds, because
-     * that is a volume ceiling and daily caps are not crossable here: crossing cooldown
-     * sends one extra message to one person, crossing a daily cap has no bound at all.
-     */
-    fleetMaxPerDay: sendSettings.fleetMaxPerDay,
-    attended: true,
-  })
-  if (!claim.ok) {
-    await prisma.outreachAttempt.updateMany({
-      where: { id: attemptId, status: 'SENDING' },
-      data: { status: 'READY' },
+  /* Everything from the claim to the drive is guarded — see `revertUndrivenClaim`. A database
+     error in here used to leave the row SENDING, which the orphan sweep later parks as possibly
+     delivered, holding the pair for good although nothing was sent. */
+  let sendHeld: readonly Reservation[] = []
+  try {
+    const sendSettings = await getSettings()
+    const claim = await claimForAttempt({
+      attemptId,
+      pairId: attempt.pairId,
+      maxPerPairPerDay: sendSettings.maxPerPairPerDay,
+      /**
+       * `attended: true` skips the fleet's HOURLY bucket and only that one.
+       *
+       * The hourly bucket is pacing — it exists so fourteen unattended drafts cannot leave
+       * inside one hour. A person pressing Send, once, is not a cluster, and refusing them
+       * because a scheduled tick used this hour's pace would make the button unreliable for
+       * exactly the case it was built for. The fleet's DAILY bucket still binds, because
+       * that is a volume ceiling and daily caps are not crossable here: crossing cooldown
+       * sends one extra message to one person, crossing a daily cap has no bound at all.
+       */
+      fleetMaxPerDay: sendSettings.fleetMaxPerDay,
+      attended: true,
     })
-    return { ok: false, message: `@${sender.handle}: ${claim.detail}.` }
+    if (!claim.ok) {
+      await prisma.outreachAttempt.updateMany({
+        where: { id: attemptId, status: 'SENDING' },
+        data: { status: 'READY' },
+      })
+      return { ok: false, message: `@${sender.handle}: ${claim.detail}.` }
+    }
+    sendHeld = claim.held
+
+
+    await audit(
+      user.email,
+      crossed.length > 0 ? 'attempt.send.start.override' : 'attempt.send.start',
+      `OutreachAttempt:${attemptId}`,
+      `@${sender.handle} → @${target.handle}${crossed.length > 0 ? ` — crossed: ${crossed.join(', ')}` : ''}`,
+    )
+
+  } catch (err) {
+    await revertUndrivenClaim(attemptId, sendHeld, err)
+    return {
+      ok: false,
+      message: 'Nothing was sent — the database did not answer before the send could start. The message is back in the queue; try again in a minute.',
+    }
   }
-
-  /**
-   * What was ACTUALLY crossed, not what the caller asked to cross. Computed from the
-   * whitelist so a stray or malicious value can neither reach the gate nor appear in
-   * the audit trail as though it had.
-   */
-  const crossed = (overrides ?? []).filter(isOverridable)
-
-  await audit(
-    user.email,
-    crossed.length > 0 ? 'attempt.send.start.override' : 'attempt.send.start',
-    `OutreachAttempt:${attemptId}`,
-    `@${sender.handle} → @${target.handle}${crossed.length > 0 ? ` — crossed: ${crossed.join(', ')}` : ''}`,
-  )
 
   /**
    * ── THE FLEET-WIDE SEND LOCK ────────────────────────────────────────────
@@ -277,19 +292,36 @@ export async function sendNow(attemptId: string, overrides?: readonly string[]):
    * Refused rather than queued. Waiting would hold a server action open for the 40 seconds
    * of somebody else's send, and the honest answer is that the message is still there.
    */
-  const outcome = await withSendLock(`operator:${sender.handle}`, () =>
-    browserSender.send({
-      attemptId,
-      senderHandle: sender.handle,
-      sessionPath: profileStatus(sender.handle).dir,
-      targetHandle: target.handle,
-      body: attempt.renderedBody,
-    }),
-  )
+  /* Taking the lock reads and writes the shared database, so it can throw BEFORE any browser
+     opens — and that throw stranded the row SENDING exactly like the window guarded above.
+     `driveStarted` separates the two: before it, nothing was driven and the draft goes back;
+     after it, the browser may have delivered and the orphan sweep's "check the conversation"
+     stays the right answer, so the error is left to propagate as it always did. */
+  let driveStarted = false
+  let outcome: Awaited<ReturnType<typeof browserSender.send>> | null
+  try {
+    outcome = await withSendLock(`operator:${sender.handle}`, () => {
+      driveStarted = true
+      return browserSender.send({
+        attemptId,
+        senderHandle: sender.handle,
+        sessionPath: profileStatus(sender.handle).dir,
+        targetHandle: target.handle,
+        body: attempt.renderedBody,
+      })
+    })
+  } catch (err) {
+    if (driveStarted) throw err
+    await revertUndrivenClaim(attemptId, sendHeld, err)
+    return {
+      ok: false,
+      message: 'Nothing was sent — the database did not answer before the send could start. The message is back in the queue; try again in a minute.',
+    }
+  }
 
   if (outcome === null) {
     // Nothing was driven, so give back everything claimed and put the draft back.
-    await settleClaims(claim.held, { delivered: false, attempted: false })
+    await settleClaims(sendHeld, { delivered: false, attempted: false })
     await prisma.outreachAttempt.updateMany({
       where: { id: attemptId, status: 'SENDING' },
       data: { status: 'READY' },
@@ -300,7 +332,7 @@ export async function sendNow(attemptId: string, overrides?: readonly string[]):
     }
   }
 
-  await settleClaims(claim.held, {
+  await settleClaims(sendHeld, {
     delivered: outcome.status === 'SENT',
     failureCode: outcome.status === 'FAILED' ? outcome.failureCode : null,
   })

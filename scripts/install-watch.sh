@@ -144,6 +144,11 @@ ${FLOORS}
   <key>KeepAlive</key>
   <true/>
 
+  <!-- On unload launchd sends SIGTERM and kills the job after ExitTimeOut (default 20 s). The agent
+       waits up to 100 s for a send in flight to finish (src/agent/main.ts), so give it room. -->
+  <key>ExitTimeOut</key>
+  <integer>120</integer>
+
   <!-- Do not restart faster than this. A worker that cannot start (bad .env, damaged
        node_modules) would otherwise spin, and a tight relaunch loop against the
        Instagram feed endpoint is exactly the IP-level risk decision 4 accepts but does

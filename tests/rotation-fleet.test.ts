@@ -758,3 +758,98 @@ describe('whoseTurn on a group ring', () => {
     if (!turn.choice.ok) expect(turn.choice.reason).toBe('empty-ring')
   })
 })
+
+/**
+ * ── THE PLANNER'S RING WAS UNFILTERED, AND `unreadable` BLOCKED A ROUTE (2026-10-09) ──
+ *
+ * The 9 October audit found two ways rotation could still elect a page the enforcers refuse,
+ * and both are the self-locking stall: the turn only advances on a DELIVERY, so an elected page
+ * that can never deliver holds the recipient forever.
+ *
+ *  1. `plan.ts` built its pre-loaded ring from raw pair rows and `whoseTurn` uses a pre-loaded
+ *     ring verbatim. Only `fleetRingFor`, `whoseTurnForMany` and the hand-off applied the
+ *     26 August fleet filter. The old parity test here passed `fleetRingFor`'s ring — already
+ *     filtered — so it could never see the difference.
+ *  2. `readBlockedRoutes` counted an `unreadable` park as a blocked route, while the gate and
+ *     the governor both ignore it (it is a READ that could not vouch for a thread, not a send).
+ */
+describe('rotation never elects a page the enforcers refuse', () => {
+  async function marketingPage(handle: string) {
+    await prisma.category.upsert({
+      where: { slug: 'marketing' },
+      update: {},
+      create: { id: 'c_mkt', name: 'Marketing', slug: 'marketing' },
+    })
+    await prisma.categorySender.create({
+      data: { id: `cs_${handle}`, categoryId: 'c_mkt', senderId: `s_${handle}`, position: 0 },
+    })
+  }
+
+  it('a page of the OTHER fleet that still holds a pair row is not in the ring', async () => {
+    // Every rotation start position must be tried, so the test cannot pass by the hash
+    // happening to start somewhere else: one page of each kind, the marketing page first
+    // alphabetically, so an unfiltered ring would put it at the front.
+    await addSender('aaa_marketing')
+    await addSender('bravo')
+    await marketingPage('aaa_marketing')
+
+    const ring = await fleetRingFor(TARGET)
+    expect(ring.map((r) => r.handle)).toEqual(['bravo'])
+
+    const turn = await whoseTurn({ targetId: TARGET })
+    expect(turn.choice.ok && turn.choice.handle).toBe('bravo')
+  })
+
+  it('every builder of a fleet ring outside rotation.ts passes it through ringMembersFor', async () => {
+    // A SOURCE CHECK, because the failure mode is a ring builder nobody has written yet — the
+    // planner's was exactly that. It asserts the call shape, not a mention: the argument of every
+    // `fleetRingOrder(` must open with `ringMembersFor(`.
+    const { readFileSync, readdirSync, statSync } = await import('node:fs')
+    const { join: j } = await import('node:path')
+    const walk = (d: string): string[] =>
+      readdirSync(d).flatMap((n) => {
+        const p = j(d, n)
+        return statSync(p).isDirectory() ? (n === 'generated' ? [] : walk(p)) : /\.tsx?$/.test(n) ? [p] : []
+      })
+    const strip = (s: string) => s.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')
+    const calls: string[] = []
+    for (const file of walk(join(process.cwd(), 'src'))) {
+      if (file.endsWith('outreach/rotation.ts')) continue
+      const src = strip(readFileSync(file, 'utf8'))
+      for (const m of src.matchAll(/fleetRingOrder\(\s*([\s\S]{0,40})/g)) calls.push(`${file}: ${m[1]}`)
+    }
+    expect(calls.length, 'found no ring builders at all — the walk is broken').toBeGreaterThanOrEqual(4)
+    for (const c of calls) expect(c, `unfiltered fleet ring: ${c}`).toMatch(/:\s*ringMembersFor\(/)
+  })
+
+  it('an unreadable park does not take a page out of the ring; a failed send still does', async () => {
+    await addSender('alpha')
+    await addSender('bravo')
+    const park = (handle: string, failureCode: string) =>
+      prisma.outreachAttempt.create({
+        data: {
+          id: `a_park_${handle}`,
+          pairId: `p_${handle}`,
+          senderId: `s_${handle}`,
+          targetId: TARGET,
+          variantId: 'v_1',
+          touchNumber: 2,
+          renderedBody: 'body',
+          status: 'FAILED',
+          failureCode,
+        },
+      })
+
+    // Both pages carry an `unreadable` park: the enforcers would let either write, so rotation
+    // must still elect one rather than answering all-unavailable.
+    await park('alpha', 'unreadable')
+    await park('bravo', 'unreadable')
+    const clear = await whoseTurn({ targetId: TARGET })
+    expect(clear.choice.ok).toBe(true)
+
+    // A real parked SEND (not-in-thread) on one page still routes around it.
+    await prisma.outreachAttempt.update({ where: { id: 'a_park_alpha' }, data: { failureCode: 'not-in-thread' } })
+    const around = await whoseTurn({ targetId: TARGET })
+    expect(around.choice.ok && around.choice.handle).toBe('bravo')
+  })
+})

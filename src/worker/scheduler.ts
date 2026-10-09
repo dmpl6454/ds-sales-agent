@@ -11,6 +11,7 @@ import { DISPATCH_INTERVAL_MINUTES, ACTIVE_FROM_HOUR, ACTIVE_TO_HOUR } from '@/o
 import { runDetection } from '@/detection/pipeline'
 import { DETECT_INTERVAL_MINUTES, DETECT_LOOKBACK_HOURS } from '@/detection/cadence'
 import { runOutreach } from '@/outreach/plan'
+import { DISPATCH_OK_KEY, parseDispatchStamp, type DispatchStamp } from '@/outreach/dispatchHealth'
 import { getSettings } from '@/lib/settings'
 
 /**
@@ -121,6 +122,11 @@ export interface PassHealth {
   feedStale: boolean
   /** Set while the detection host is in an anonymous-read cooldown; the dashboard says so. */
   throttledUntil: Date | null
+  /**
+   * The sending Mac's last COMPLETED tick (audit H11), read in this same query so the health
+   * ladder pays nothing extra for it. Judged against the selected Mac by `assessDispatch`.
+   */
+  dispatchStamp: DispatchStamp | null
 }
 
 /** A detection pass every 15 minutes with nothing fetched for this long is blind, not quiet. */
@@ -129,7 +135,7 @@ export const FEED_STALE_MS = 60 * 60 * 1000
 /** What the dashboard reads beside the heartbeat. Null timestamps never read as stale. */
 export async function readPassHealth(now: Date = new Date()): Promise<PassHealth> {
   const rows = await prisma.setting.findMany({
-    where: { key: { in: [PASS_OK_KEYS.detect, PASS_OK_KEYS.plan, DETECT_FEED_OK_KEY, DETECT_THROTTLED_KEY] } },
+    where: { key: { in: [PASS_OK_KEYS.detect, PASS_OK_KEYS.plan, DETECT_FEED_OK_KEY, DETECT_THROTTLED_KEY, DISPATCH_OK_KEY] } },
   })
   const at = (key: string): Date | null => {
     const row = rows.find((r) => r.key === key)
@@ -150,6 +156,7 @@ export async function readPassHealth(now: Date = new Date()): Promise<PassHealth
     feedOkAt,
     feedStale: feedOkAt !== null && now.getTime() - feedOkAt.getTime() > FEED_STALE_MS,
     throttledUntil: throttledRaw !== null && throttledRaw.getTime() > now.getTime() ? throttledRaw : null,
+    dispatchStamp: parseDispatchStamp(rows.find((r) => r.key === DISPATCH_OK_KEY)?.value),
   }
 }
 
@@ -277,11 +284,14 @@ export async function detectThenDraft(
      */
     await lock('detect-draft', plan).then(
       /**
-       * Stamped on the lock resolving, which includes a lock-skip: a held lock means a
-       * SLOT is planning at this moment, so "planning is happening" is true either way.
-       * The stamp answers "when did planning last work", not "when did THIS call plan".
+       * Stamped only when planning ACTUALLY RAN (2026-10-09). It used to be stamped on a lock-skip
+       * too, on the reasoning that a held lock means a slot is planning. But a slot that is alive
+       * and wedged (an unbounded await on a dropped tunnel) holds the lock forever, every 15-minute
+       * run skips, and the stamp stayed fresh — so the "fresh heartbeat, no drafts" alarm this
+       * stamp exists for could not fire in exactly that case. A normal slot finishes in minutes and
+       * the next run stamps; the 45-minute threshold absorbs the skips in between.
        */
-      () => recordOk('plan'),
+      (ran) => (ran === null ? undefined : recordOk('plan')),
       (e) => log.warn('outreach planning after detect failed', { error: String(e) }),
     )
   } catch (err) {

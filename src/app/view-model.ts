@@ -31,6 +31,7 @@ import { attributedPostIdsForRecipients, messagedUnderElsewhere } from './view-m
 import { isConnecting } from '@/outreach/browser/connect'
 import { getSettings } from '@/lib/settings'
 import { readPresence } from '@/outreach/devicePresence'
+import { assessDispatch } from '@/outreach/dispatchHealth'
 import { visibleChannelFilter, ourOwnPageHandles } from '@/detection/visibleChannels'
 import { detectionCutoff } from '@/lib/cutoff'
 import { readLabelledSet } from '@/detection/labels'
@@ -635,6 +636,21 @@ async function computeCeoView(): Promise<CeoView> {
   const passes = await readPassHealth()
 
   /**
+   * THE SAME SPLIT FOR THE ONE PROCESS THAT SENDS (audit H11, 2026-10-09). The device agent
+   * writes its presence before anything in its tick can throw, so a sending Mac whose every
+   * tick fails — or whose loop has hung — read as "online" and this page said it "sends by
+   * itself". The agent now stamps each COMPLETED tick; a beating selected Mac beside a stale
+   * stamp is the signature. Presence is read ONCE here and reused for the sending-Mac card
+   * below, and the stamp rides in `readPassHealth`'s query, so this rung costs no query.
+   */
+  const presence = settings.activeDevice !== null ? await readPresence() : []
+  const dispatch = assessDispatch({
+    selected: settings.activeDevice,
+    selectedBeating: presence.some((d) => d.device === settings.activeDevice),
+    stamp: passes.dispatchStamp,
+  })
+
+  /**
    * The ceiling must be counted the way the PLANNER counts it, or the page reports
    * a limit that is not the one being enforced.
    *
@@ -728,6 +744,17 @@ async function computeCeoView(): Promise<CeoView> {
     headline =
       `The watch is running, but ${failing} keeps failing` +
       `${minutes !== null ? ` — last succeeded ${minutes} min ago` : ''}`
+  } else if (dispatch.stale) {
+    /**
+     * Beside the pass rungs and for the same reason: nothing reaches a recipient while the
+     * sending Mac's loop fails, however healthy detection and drafting look. `lastOkAt` is
+     * non-null whenever `stale` is true (assessDispatch only measures a stamp it holds).
+     */
+    health = 'broken'
+    const minutes = dispatch.lastOkAt ? Math.round((Date.now() - dispatch.lastOkAt.getTime()) / 60_000) : null
+    headline =
+      `${settings.activeDevice} is online, but its sending loop keeps failing` +
+      `${minutes !== null ? ` — last completed ${minutes} min ago` : ''}`
   } else if (passes.throttledUntil) {
     // The server is refused but a paired Mac is reading the feeds in its place (feedOkAt is
     // fresh, or `detectionBlind` above would have fired). Worth knowing, not broken.
@@ -960,9 +987,7 @@ async function computeCeoView(): Promise<CeoView> {
     allowedByEnv: env.AUTOPILOT_ENABLED,
     sendingMac: {
       selected: settings.activeDevice,
-      online:
-        settings.activeDevice !== null &&
-        (await readPresence()).some((d) => d.device === settings.activeDevice),
+      online: settings.activeDevice !== null && presence.some((d) => d.device === settings.activeDevice),
     },
     scheduler: {
       running: hb?.fresh ?? false,

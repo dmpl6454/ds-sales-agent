@@ -158,11 +158,43 @@ export async function launchProfile(handle: string): Promise<BrowserContext> {
 
 export type UrlVerdict = 'ok' | 'checkpoint' | 'needs-login' | 'needs-2fa'
 
+/**
+ * Does `pattern` (e.g. `/accounts/login`) occur in this URL's PATH as whole segments?
+ *
+ * ── WHOLE SEGMENTS, NOT A SUBSTRING (2026-10-09) ────────────────────────────
+ *
+ * These lists were tested with `url.includes(p)`, and a profile URL is
+ * `instagram.com/<handle>/`. Handles are `[A-Za-z0-9._]`, so `/challenge` was a substring of
+ * `/challengemtv/` and `/two_factor` of `/two_factor_fan/`: the profile loading was read as a
+ * CHECKPOINT, the account was marked CHALLENGED, the fleet breaker halted every account for a
+ * day, and the draft stayed READY to trip it again the moment a person cleared it — all on
+ * the strength of a recipient's name. Matching whole segments anywhere in the path keeps the
+ * real cases (`/challenge/`, `/accounts/login/two_step_verification`) and cannot match a
+ * handle that merely begins with the word.
+ *
+ * A URL that will not parse falls back to the old substring test — the cautious direction,
+ * because a checkpoint missed is retried into, and a checkpoint invented only pauses.
+ */
+function pathHas(url: string, pattern: string): boolean {
+  let path: string
+  try {
+    path = new URL(url).pathname
+  } catch {
+    return url.includes(pattern)
+  }
+  const segs = path.split('/').filter(Boolean)
+  const want = pattern.split('/').filter(Boolean)
+  for (let i = 0; i + want.length <= segs.length; i++) {
+    if (want.every((w, k) => segs[i + k] === w)) return true
+  }
+  return false
+}
+
 /** Pure, so every verdict is testable without a browser. */
 export function classifyUrl(url: string): UrlVerdict {
-  for (const p of CHECKPOINT_PATHS) if (url.includes(p)) return 'checkpoint'
-  for (const p of TWO_FACTOR_PATHS) if (url.includes(p)) return 'needs-2fa'
-  for (const p of LOGIN_PATHS) if (url.includes(p)) return 'needs-login'
+  for (const p of CHECKPOINT_PATHS) if (pathHas(url, p)) return 'checkpoint'
+  for (const p of TWO_FACTOR_PATHS) if (pathHas(url, p)) return 'needs-2fa'
+  for (const p of LOGIN_PATHS) if (pathHas(url, p)) return 'needs-login'
   return 'ok'
 }
 

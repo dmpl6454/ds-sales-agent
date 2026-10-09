@@ -115,7 +115,10 @@ if [[ "${DS_PREBUILT:-1}" == "1" ]]; then
     *) echo "error: .env DATABASE_URL must be Postgres to prebuild the web tier (the generated client is bundled). DS_PREBUILT=0 builds on the server instead." >&2; exit 1 ;;
   esac
   bash scripts/prisma-client-for-env.sh >/dev/null
-  REMOTE_ACTIVE="$(ssh "$HOST" "cat '$DIR/.active-dist' 2>/dev/null || echo .next")"
+  # Which dist the server is SERVING — asked of its pm2 process by scripts/active-dist.sh, the
+  # same script the remote half asks below (audit H7). The cat fallback covers the one
+  # deploy that ships that script to a box that does not have it yet.
+  REMOTE_ACTIVE="$(ssh "$HOST" "bash '$DIR/scripts/active-dist.sh' '$DIR' 2>/dev/null || cat '$DIR/.active-dist' 2>/dev/null || echo .next")"
   if [[ "$REMOTE_ACTIVE" == ".next-a" ]]; then PREBUILT_TARGET=.next-b; else PREBUILT_TARGET=.next-a; fi
   echo "==> Building $PREBUILT_TARGET on this Mac (the server serves $REMOTE_ACTIVE and cannot build)"
   rm -rf "$PREBUILT_TARGET"
@@ -186,12 +189,21 @@ pnpm exec prisma generate --config prisma.postgres.config.ts >/dev/null
 # so a request always has a worker to land on. A failed build leaves the running site untouched.
 # The build is niced: on one vCPU it would otherwise starve the page renders it is meant to
 # replace.
-ACTIVE=\$(cat .active-dist 2>/dev/null || echo .next)
+# ACTIVE is what the workers are SERVING, asked of pm2 (scripts/active-dist.sh, audit H7) —
+# not the .active-dist marker, which a rollback or a failed health check leaves naming the
+# OTHER directory, so the next deploy would unpack over and then delete the live build.
+ACTIVE=\$(bash scripts/active-dist.sh "$DIR")
 if [[ "\$ACTIVE" == ".next-a" ]]; then TARGET=.next-b; else TARGET=.next-a; fi
 if [[ -n "$PREBUILT_TARGET" ]]; then
-  # Built on the Mac (see above). The target was chosen from THIS server's .active-dist a
+  # Built on the Mac (see above). The target was chosen from what THIS server was serving a
   # moment ago, so it is the directory not being served; unpack over it and never touch ACTIVE.
   TARGET="$PREBUILT_TARGET"
+  # ...unless the served directory changed in between (a hand rollback mid-deploy). Unpacking
+  # over the build the workers are running breaks the live site, so refuse instead.
+  if [[ "\$TARGET" == "\$ACTIVE" ]]; then
+    echo "REFUSING: the prebuilt \$TARGET is the directory being served right now. Nothing was changed; run the deploy again."
+    exit 1
+  fi
   echo "==> Unpacking the prebuilt \$TARGET while \$ACTIVE keeps serving"
   rm -rf "\$TARGET"
   tar xzf /tmp/ds-dist.tgz
@@ -227,7 +239,7 @@ else
     exit 1
   fi
 fi
-echo "\$TARGET" > .active-dist
+# .active-dist is written only once the new build has ANSWERED (below), never here.
 # The build stamp for the tsx-run processes here (the worker) — src/lib/buildVersion.ts reads it.
 cp /tmp/ds-version .version
 
@@ -357,11 +369,24 @@ for p in \$(pgrep -f 'src/worker/index'); do renice -n 15 -p \$p >/dev/null 2>&1
 CODE=\$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:3100/sign-in || echo 000)
 echo "    dashboard answered HTTP \$CODE from \$TARGET"
 [[ "\$CODE" == "200" ]] || { echo "    the dashboard is NOT serving — check pm2 logs"; exit 1; }
+# Only now is TARGET the build that serves. Written earlier (as it was until audit H7), a failed
+# check left the marker naming a directory nothing proved good — and it is still the fallback
+# scripts/active-dist.sh reads when pm2 cannot answer.
+echo "\$TARGET" > .active-dist
 
 # The previous build is removed only once the new one answers, so a rollback is one
 # \`NEXT_DIST_DIR=<old> pm2 reload ds-sales-agent --update-env\` away until this line.
 if [[ "\$ACTIVE" != "\$TARGET" && -d "\$ACTIVE" ]]; then rm -rf "\$ACTIVE"; fi
 pm2 jlist | node -e 'const l=JSON.parse(require("fs").readFileSync(0));for(const p of l.filter(p=>p.name.startsWith("ds-sales")))console.log("    "+p.name+" "+p.pm2_env.status+" mode="+p.pm2_env.exec_mode+" pid="+p.pid)'
+# SURVIVE A REBOOT (audit H7). Every deploy alternates NEXT_DIST_DIR between .next-a and
+# .next-b and deletes the old one, and nothing saved the pm2 dump — so the dump named whichever
+# directory was live the day someone last ran \`pm2 save\` by hand, and after an odd number of
+# deploys a boot-time resurrect (the standing 2 GB resize reboots the box) started Next against
+# a directory that no longer exists and crash-looped it. Saved last, once the new build has
+# answered and the old one is gone, so the dump only ever names a directory that serves.
+# This box is OURS ALONE since 9 Sept 2026 — rule 14's ban on a global pm2 command is about a
+# shared daemon, and this script refuses the shared host outright (top of file).
+pm2 save >/dev/null
 REMOTE
 
 echo

@@ -11,7 +11,7 @@ import { crossSpacingVerdict } from '@/outreach/crossSpacing'
 import { replyHaltFloor, replyHaltKey } from '@/outreach/replyHalt'
 import { eligibleFleetSenderIds, readSenderAvailability } from '@/outreach/availability'
 import { fleetRingOrder, nextSender } from '@/outreach/rotation'
-import { categoriesFor, readCategoryMemberships, unavailableForTarget } from '@/outreach/categories'
+import { categoriesFor, readCategoryMemberships, ringMembersFor, unavailableForTarget } from '@/outreach/categories'
 import { readPersonHandles } from '@/outreach/compose'
 import { watchMarksFrom } from '@/detection/ownMarks'
 import { followUpForSettings, followUpSubject } from '@/outreach/followUpTemplate'
@@ -550,7 +550,9 @@ async function computeRestTally(now: Date): Promise<RestTally> {
       r.replyPostedAt >= replyHaltFloor(settings.replyResumeHours, now),
   )
   const pending = inFlightAndParked.filter((a) => a.status !== 'FAILED')
-  const parked = inFlightAndParked.filter((a) => a.status === 'FAILED')
+  /* Excluding 'unreadable' exactly as `readBlockedRoutes`, the gate and the governor do — a read that
+     could not vouch for a thread is not a failed send and blocks no route. */
+  const parked = inFlightAndParked.filter((a) => a.status === 'FAILED' && a.failureCode !== 'unreadable')
 
   /** The enforcer's own linkage, fed from one query. The floor is honoured — see the docblock. */
   const preloaded = {
@@ -629,7 +631,13 @@ async function computeRestTally(now: Date): Promise<RestTally> {
     blockedRoutes.set(targetId, m)
   }
   for (const p of parked) {
-    blockRoute(p.pair.targetId, p.pair.senderId, 'an earlier message from this page may already have reached them')
+    blockRoute(
+      p.pair.targetId,
+      p.pair.senderId,
+      p.failureCode === 'not-in-thread'
+        ? 'an earlier message from this page may already have reached them'
+        : `an earlier message from this page is parked (${p.failureCode})`,
+    )
   }
   /**
    * ── AND A REPLY HALTS ONE PAGE, NOT THE RECIPIENT (2026-09-04) ────────────
@@ -699,7 +707,9 @@ async function computeRestTally(now: Date): Promise<RestTally> {
      * ORDER is unchanged and `tests/rest-tally.test.ts`'s precedence assertions still describe
      * the planner's own order.
      */
-    const ring = fleetRingOrder(ringByTarget.get(p.id) ?? [])
+    /* Filtered by fleet exactly as the planner's ring is (plan.ts) — a page the recipient's fleet
+       refuses must not be elected here either, or this panel names a turn the planner never takes. */
+    const ring = fleetRingOrder(ringMembersFor(ringByTarget.get(p.id) ?? [], p.handle, memberships))
     const turn = nextSender({
       ring,
       lastSenderId: lastSenderPerTarget.get(p.id) ?? null,

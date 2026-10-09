@@ -68,7 +68,7 @@ vi.mock('@/lib/time', () => ({ randomInt: () => 0, istDateKey: () => '2026-08-06
 vi.mock('@/outreach/senders/browser', () => ({ browserSender: { send: (...a: unknown[]) => send(...a) } }))
 vi.mock('@/outreach/browser/profile', () => ({ profileStatus: () => ({ dir: '/tmp/p', hasSession: true }) }))
 vi.mock('@/outreach/gate', () => ({ recheckBeforeSend: (...a: unknown[]) => recheck(...a) }))
-vi.mock('@/outreach/recordSend', () => ({ recordDelivered: async () => undefined }))
+vi.mock('@/outreach/recordSend', () => ({ recordDelivered: async () => undefined, revertUndrivenClaim: async () => true }))
 vi.mock('@/outreach/reservations', () => ({
   claimForAttempt: (...a: unknown[]) => claimForAttempt(...a),
   settleClaims: (...a: unknown[]) => settleClaims(...a),

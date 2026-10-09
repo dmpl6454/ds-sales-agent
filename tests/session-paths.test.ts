@@ -41,6 +41,31 @@ describe('classifyUrl', () => {
     expect(classifyUrl('https://www.instagram.com/')).toBe('ok')
   })
 
+  /**
+   * A RECIPIENT'S NAME IS NOT A CHECKPOINT (2026-10-09). Handles are `[A-Za-z0-9._]`, so a
+   * substring test read `/challengemtv/` as `/challenge` and `/two_factor_fan/` as a 2FA prompt —
+   * the profile loading marked the SENDER challenged and the breaker halted the fleet for a day.
+   * Each case is a real-shaped profile URL, and each must read as an ordinary page.
+   */
+  it.each([
+    'https://www.instagram.com/challengemtv/',
+    'https://www.instagram.com/challenge_accepted.in/',
+    'https://www.instagram.com/two_factor_fan/',
+    'https://www.instagram.com/two_step_verification_co/',
+    'https://www.instagram.com/accounts.disabled.daily/',
+  ])('a profile whose handle begins with a path word is an ordinary page: %s', (url) => {
+    expect(classifyUrl(url)).toBe('ok')
+  })
+
+  it('still finds the checkpoint when its segment is not the first one, and ignores the query', () => {
+    expect(classifyUrl('https://www.instagram.com/challenge/action/?next=%2F')).toBe('checkpoint')
+    expect(classifyUrl('https://www.instagram.com/accounts/login/?next=/challenge/')).toBe('needs-login')
+  })
+
+  it('falls back to the cautious substring test for a URL that will not parse', () => {
+    expect(classifyUrl('not a url /challenge/')).toBe('checkpoint')
+  })
+
   /** IG's 2FA URL lives under /accounts/login/, so the order of the checks matters. */
   it('classifies 2FA ahead of the login form when the URL contains both', () => {
     expect(classifyUrl('https://www.instagram.com/accounts/login/two_factor')).toBe('needs-2fa')

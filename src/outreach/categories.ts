@@ -284,7 +284,11 @@ export async function readBlockedRoutes(args: {
 
   const [parkedRows, repliedRows] = await Promise.all([
     prisma.outreachAttempt.findMany({
-      where: { status: 'FAILED', failureCode: { not: null }, ...scopeFilter },
+      /* 'unreadable' is a READ that could not vouch for the thread, not a failed send: the gate and
+         the governor both exclude it (gate.ts, plan.ts), so rotation must too, or a page the
+         enforcers would let write is skipped and a recipient whose every page carries one stalls
+         at all-unavailable (2026-10-09). */
+      where: { status: 'FAILED', failureCode: { not: null, notIn: ['unreadable'] }, ...scopeFilter },
       select: {
         failureCode: true,
         pair: { select: { targetId: true, senderId: true, sender: { select: { handle: true } } } },

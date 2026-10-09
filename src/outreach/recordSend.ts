@@ -1,5 +1,6 @@
 import { prisma } from '@/lib/db'
-import { log } from '@/lib/logger'
+import { log, describeError } from '@/lib/logger'
+import { settleClaims, type Reservation } from './reservations'
 
 /**
  * Recording that a DM was DELIVERED — the one write in this system that must not fail.
@@ -121,4 +122,58 @@ export async function recordDelivered(rec: DeliveredRecord): Promise<void> {
       })
     }
   }
+}
+
+/**
+ * ── A CLAIM WHOSE DRIVE NEVER BEGAN GOES BACK TO READY (2026-10-09) ─────────
+ *
+ * Between the READY→SENDING claim and the browser drive sit several database reads and writes
+ * (the daily reservations, the settings read, the audit row, the anonymous probe's park). None
+ * was guarded: a tunnel blip or a refused Postgres connection there threw out of the loop with
+ * the row still SENDING. The next tick's orphan sweep then found it and — correctly, from what
+ * it can see — parked it `not-in-thread`, "the recipient may have this message", although no
+ * browser had ever opened. That code is refused by discard and by re-queue on purpose, so the
+ * PAIR was held forever on a send that never happened.
+ *
+ * This is the opposite of `recordDelivered`'s rule and for the same reason: there, delivery
+ * cannot be ruled out, so the row must never go back to READY; here, the drive provably never
+ * started, so it must. Reservations are released as `attempted: false` (nothing was driven),
+ * and the status revert is retried on the same backoff, because the error that brought us here
+ * is usually the database being briefly unreachable. If every retry fails the row is left
+ * SENDING and alarmed — the orphan sweep is then the fallback, exactly as before this existed.
+ */
+export async function revertUndrivenClaim(
+  attemptId: string,
+  held: readonly Reservation[],
+  why: unknown,
+): Promise<boolean> {
+  log.warn('the send stopped before the browser was driven — putting the draft back in the queue', {
+    attemptId,
+    error: describeError(why),
+  })
+  await settleClaims(held, { delivered: false, attempted: false }).catch((e) =>
+    log.warn('could not release the reservations of an undriven claim — they lapse at midnight IST', {
+      attemptId,
+      error: describeError(e),
+    }),
+  )
+  for (let attempt = 0; attempt <= RECORD_RETRIES; attempt++) {
+    try {
+      await prisma.outreachAttempt.updateMany({
+        where: { id: attemptId, status: 'SENDING' },
+        data: { status: 'READY' },
+      })
+      return true
+    } catch (e) {
+      if (attempt === RECORD_RETRIES) {
+        log.alarm('could not put an undriven draft back in the queue — it stays SENDING for the orphan sweep', {
+          attemptId,
+          error: describeError(e),
+        })
+        return false
+      }
+      await new Promise((r) => setTimeout(r, RECORD_BACKOFF_MS[attempt] ?? 7000))
+    }
+  }
+  return false
 }

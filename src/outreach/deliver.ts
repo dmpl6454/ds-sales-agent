@@ -7,8 +7,8 @@ import { browserSender } from './senders/browser'
 import { profileStatus } from './browser/profile'
 import { recheckBeforeSend } from './gate'
 import { thisMacRole } from './activeDevice'
-import { recordDelivered } from './recordSend'
-import { claimForAttempt, settleClaims } from './reservations'
+import { recordDelivered, revertUndrivenClaim } from './recordSend'
+import { claimForAttempt, settleClaims, type Reservation } from './reservations'
 import { markChallenged } from './challenge'
 import { markSessionInvalid, clearSessionInvalid } from './sessionHealth'
 import { ensureConversationChecked } from './replyCheck'
@@ -380,78 +380,94 @@ export async function deliverWaiting(opts: DeliverOptions = {}): Promise<Deliver
      * explicit because this is the unattended path and the hour bucket exists for exactly
      * it — a person pressing Send one message at a time is not a cluster.
      */
-    const claim = await claimForAttempt({
-      attemptId: attempt.id,
-      pairId: attempt.pairId,
-      maxPerPairPerDay: settings.maxPerPairPerDay,
-      fleetMaxPerHour: settings.fleetMaxPerHour,
-      fleetMaxPerDay: settings.fleetMaxPerDay,
-      attended: false,
-    })
-    if (!claim.ok) {
-      // Put it back where it was. Nothing was sent, so nothing is lost.
-      await prisma.outreachAttempt.updateMany({
-        where: { id: attempt.id, status: 'SENDING' },
-        data: { status: 'READY' },
+    /**
+     * EVERYTHING FROM THE CLAIM TO THE DRIVE IS GUARDED (2026-10-09). A database error in here
+     * left the row SENDING with no browser ever opened, and the orphan sweep then parked it as
+     * possibly delivered — holding the pair for good. See `revertUndrivenClaim`.
+     */
+    let claimHeld: readonly Reservation[] = []
+    try {
+      const claim = await claimForAttempt({
+        attemptId: attempt.id,
+        pairId: attempt.pairId,
+        maxPerPairPerDay: settings.maxPerPairPerDay,
+        fleetMaxPerHour: settings.fleetMaxPerHour,
+        fleetMaxPerDay: settings.fleetMaxPerDay,
+        attended: false,
       })
-      hold(claim.detail)
+      if (!claim.ok) {
+        // Put it back where it was. Nothing was sent, so nothing is lost.
+        await prisma.outreachAttempt.updateMany({
+          where: { id: attempt.id, status: 'SENDING' },
+          data: { status: 'READY' },
+        })
+        hold(claim.detail)
+
+        /**
+         * A FLEET refusal ends the tick; a per-pair one does not.
+         *
+         * The difference is what the refusal is about. "This channel has had its message
+         * today" says nothing about the next attempt in the queue, so the loop should carry
+         * on. "The fleet has used this hour's pace" is true of every remaining attempt, so
+         * continuing would gate, claim and roll back all of them one by one — dozens of
+         * writes to reach the identical answer, and a log full of the same sentence.
+         */
+        if (claim.reason === 'fleet-hourly-pace' || claim.reason === 'fleet-daily-cap') {
+          log.step('fleet pacing reached — the rest wait for the next tick', { reason: claim.reason })
+          break
+        }
+        continue
+      }
+      claimHeld = claim.held
 
       /**
-       * A FLEET refusal ends the tick; a per-pair one does not.
+       * Space consecutive sends.
        *
-       * The difference is what the refusal is about. "This channel has had its message
-       * today" says nothing about the next attempt in the queue, so the loop should carry
-       * on. "The fleet has used this hour's pace" is true of every remaining attempt, so
-       * continuing would gate, claim and roll back all of them one by one — dozens of
-       * writes to reach the identical answer, and a log full of the same sentence.
+       * SEND_JITTER_MIN/MAX_SECONDS were parsed, range-validated, cross-checked
+       * (min <= max) and documented in .env as "Human-like delay bounds between
+       * consecutive DMs" — and read by nothing. There was no delay between consecutive
+       * sends at all. At 1-2/day that is academic; the danger is config asserting a
+       * control that does not exist, and raising volume is exactly when someone would
+       * rely on it.
+       *
+       * It also serialises the clipboard, which is process-global: two overlapping sends
+       * could otherwise interleave copy and paste and put message A into thread B.
        */
-      if (claim.reason === 'fleet-hourly-pace' || claim.reason === 'fleet-daily-cap') {
-        log.step('fleet pacing reached — the rest wait for the next tick', { reason: claim.reason })
-        break
+      if (out.sent > 0) {
+        const waitSeconds = randomInt(env.SEND_JITTER_MIN_SECONDS, env.SEND_JITTER_MAX_SECONDS)
+        log.step('spacing before the next send', { seconds: waitSeconds })
+        await new Promise((r) => setTimeout(r, waitSeconds * 1000))
       }
-      continue
-    }
 
-    /**
-     * Space consecutive sends.
-     *
-     * SEND_JITTER_MIN/MAX_SECONDS were parsed, range-validated, cross-checked
-     * (min <= max) and documented in .env as "Human-like delay bounds between
-     * consecutive DMs" — and read by nothing. There was no delay between consecutive
-     * sends at all. At 1-2/day that is academic; the danger is config asserting a
-     * control that does not exist, and raising volume is exactly when someone would
-     * rely on it.
-     *
-     * It also serialises the clipboard, which is process-global: two overlapping sends
-     * could otherwise interleave copy and paste and put message A into thread B.
-     */
-    if (out.sent > 0) {
-      const waitSeconds = randomInt(env.SEND_JITTER_MIN_SECONDS, env.SEND_JITTER_MAX_SECONDS)
-      log.step('spacing before the next send', { seconds: waitSeconds })
-      await new Promise((r) => setTimeout(r, waitSeconds * 1000))
-    }
+      /**
+       * ONE ANONYMOUS REQUEST BEFORE A BROWSER DRIVE (9 Sept 2026). A recipient admitted as verified
+       * can cease to exist — @acearteofficial (1 Sept), @hemantpandeyji (8 Sept) — and until now the
+       * first anyone learned of it was Chrome standing on "Sorry, this page isn't available" from a
+       * revenue account, three times per sender. `probeHandle` asks Instagram's profile endpoint
+       * with no session (decision 4) from this machine's own IP; `missing` parks the draft here
+       * with NO drive. `unknown` (a throttle, a blip) changes nothing — absence of an answer is not
+       * a verdict, and the drive itself recognises the dead page as the second net.
+       */
+      const probe = await probeHandle(target.handle)
+      if (probe.check === 'missing') {
+        const error = `@${target.handle}'s Instagram page no longer exists (anonymous probe: not found) — nothing was driven`
+        await prisma.outreachAttempt.update({
+          where: { id: attempt.id },
+          data: { status: 'FAILED', failureCode: 'profile-gone', error, attempts: MAX_DELIVERY_ATTEMPTS },
+        })
+        await settleClaims(claim.held, { delivered: false, failureCode: 'profile-gone' })
+        log.warn("the recipient's page is gone — parked without a browser drive", { pair: pairKey })
+        out.failed += 1
+        out.outcomes.push({ pairKey, result: `@${target.handle}'s page no longer exists — parked; no browser was driven` })
+        continue
+      }
 
-    /**
-     * ONE ANONYMOUS REQUEST BEFORE A BROWSER DRIVE (9 Sept 2026). A recipient admitted as verified
-     * can cease to exist — @acearteofficial (1 Sept), @hemantpandeyji (8 Sept) — and until now the
-     * first anyone learned of it was Chrome standing on "Sorry, this page isn't available" from a
-     * revenue account, three times per sender. `probeHandle` asks Instagram's profile endpoint
-     * with no session (decision 4) from this machine's own IP; `missing` parks the draft here
-     * with NO drive. `unknown` (a throttle, a blip) changes nothing — absence of an answer is not
-     * a verdict, and the drive itself recognises the dead page as the second net.
-     */
-    const probe = await probeHandle(target.handle)
-    if (probe.check === 'missing') {
-      const error = `@${target.handle}'s Instagram page no longer exists (anonymous probe: not found) — nothing was driven`
-      await prisma.outreachAttempt.update({
-        where: { id: attempt.id },
-        data: { status: 'FAILED', failureCode: 'profile-gone', error, attempts: MAX_DELIVERY_ATTEMPTS },
-      })
-      await settleClaims(claim.held, { delivered: false, failureCode: 'profile-gone' })
-      log.warn("the recipient's page is gone — parked without a browser drive", { pair: pairKey })
-      out.failed += 1
-      out.outcomes.push({ pairKey, result: `@${target.handle}'s page no longer exists — parked; no browser was driven` })
-      continue
+    } catch (err) {
+      await revertUndrivenClaim(attempt.id, claimHeld, err)
+      hold('the database did not answer before the drive — back in the queue, nothing was sent')
+      /* A database fault is about the shared store, not this draft: end the tick rather than
+         claim the next one into the same failure. The next tick is 30 seconds away. */
+      break
     }
 
     log.step('delivering a waiting message', { pair: pairKey, chars: attempt.renderedBody.length })
@@ -466,7 +482,7 @@ export async function deliverWaiting(opts: DeliverOptions = {}): Promise<Deliver
       body: attempt.renderedBody,
     })
 
-    await settleClaims(claim.held, {
+    await settleClaims(claimHeld, {
       delivered: outcome.status === 'SENT',
       failureCode: outcome.status === 'FAILED' ? outcome.failureCode : null,
     })

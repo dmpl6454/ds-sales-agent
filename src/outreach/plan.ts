@@ -12,7 +12,7 @@ import { crossSpacingVerdict } from './crossSpacing'
 import { materialAllowance, campaignsNamingHandle, campaignsNamingHandleRows } from './materialAllowance'
 import { eligibleFleetSenderIds } from './availability'
 import { routeAllowed } from './routes'
-import { readCategoryMemberships, categoriesFor } from './categories'
+import { readCategoryMemberships, categoriesFor, ringMembersFor } from './categories'
 import { composeForPair, freshCampaignsFor, readPersonHandles, readWatchChannels } from './compose'
 import {
   followUpForSettings,
@@ -344,15 +344,40 @@ export async function runOutreach(): Promise<PlanSummary> {
    * senders × 70 targets it would otherwise ask the same question 280 times to get 70
    * answers — and each one is three queries across an SSH tunnel at ~30 ms.
    */
+  /**
+   * Which fleet each end belongs to — TWO queries for the whole run, not one per pair.
+   * The ring below and `templateForSettings` both read it, and a lookup inside the loop would
+   * be an N+1 over senders x targets, the defect this codebase has killed four times.
+   */
+  const memberships = await readCategoryMemberships()
   const fleetRingByTarget = new Map<string, ReturnType<typeof fleetRingOrder>>()
   {
+    /**
+     * ── THE RING IS FILTERED BY FLEET HERE TOO (2026-10-09) ─────────────────
+     *
+     * `fleetRingFor`, `whoseTurnForMany` and the hand-off all pass their rings through
+     * `ringMembersFor` (the 26 Aug fix); this pre-loaded ring did not, and `whoseTurn` uses a
+     * pre-loaded ring verbatim. A page still holding pair rows to the OTHER fleet's companies
+     * (@madaboutmarketingg keeps its old bollywood routes on purpose) was therefore in the
+     * planner's ring for them, could be ELECTED, was then refused `different-category`, and
+     * every other page was skipped as `not-this-senders-turn` — a self-locking stall, because
+     * the turn only advances on a delivery that cannot happen. Same filter, same answer as
+     * every other caller of rotation.
+     */
     const sendersByTarget = new Map<string, { id: string; handle: string; cohort: number }[]>()
+    const handleByTarget = new Map<string, string>()
     for (const p of pairs) {
       const list = sendersByTarget.get(p.targetId) ?? []
       list.push({ id: p.sender.id, handle: p.sender.handle, cohort: p.sender.cohort })
       sendersByTarget.set(p.targetId, list)
+      handleByTarget.set(p.targetId, p.target.handle)
     }
-    for (const [targetId, rows] of sendersByTarget) fleetRingByTarget.set(targetId, fleetRingOrder(rows))
+    for (const [targetId, rows] of sendersByTarget) {
+      fleetRingByTarget.set(
+        targetId,
+        fleetRingOrder(ringMembersFor(rows, handleByTarget.get(targetId) ?? '', memberships)),
+      )
+    }
   }
   /** One answer per target, reused across that target's pairs. See above. */
   const turnByTarget = new Map<string, WhoseTurnResult>()
@@ -363,12 +388,6 @@ export async function runOutreach(): Promise<PlanSummary> {
    */
   const eligibleSenderIds = await eligibleFleetSenderIds()
 
-  /**
-   * Which fleet each end belongs to — TWO queries for the whole run, not one per pair.
-   * `templateForSettings` below reads it, and a lookup inside the loop would be an N+1 over
-   * senders x targets, the defect this codebase has killed four times.
-   */
-  const memberships = await readCategoryMemberships()
   /**
    * Bodies each pair has already DELIVERED — one query for the whole run, not one per pair.
    * The planner walks every pair, and a read in there is the N+1 this file has killed four

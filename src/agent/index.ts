@@ -7,6 +7,8 @@ import { env } from '@/lib/env'
 import { log, describeError } from '@/lib/logger'
 import { dispatchTick, withSendLock } from '@/outreach/dispatcher'
 import { thisMacRole } from '@/outreach/activeDevice'
+import { nextPollWait } from './pollWait'
+import { recordDispatchOk } from '@/outreach/dispatchHealth'
 import {
   deviceId,
   DEVICE_PRESENCE_KEY,
@@ -307,7 +309,12 @@ let stopping = false
  * public feeds is not activity against anyone's account, and a blind fleet with autopilot
  * off is still a fleet that will have nothing to send when it is switched on.
  */
-let detectionFailoverRunning = false
+/* A START TIME, not a boolean (rule 27, applied here on 2026-10-09). The brand and reply passes
+   moved to timestamps on 9 Sept because a pass frozen by sleep or a hung await left a `true`
+   that nothing ever cleared — and this one, added two days earlier, was missed. A failover pass
+   stuck on a dropped tunnel would otherwise skip every later pass silently, exactly while the
+   Mac is meant to be covering a blind server. */
+let detectionFailoverStartedAt: number | null = null
 
 async function detectionFailoverPass(): Promise<void> {
   // Reading feeds in the server's place is fleet work; a standby Mac does not (2026-09-10).
@@ -316,8 +323,8 @@ async function detectionFailoverPass(): Promise<void> {
     log.step('detection failover idle', { reason: `not the selected sending Mac — ${role.detail}` })
     return
   }
-  if (detectionFailoverRunning) return
-  detectionFailoverRunning = true
+  if (passIsRunning(detectionFailoverStartedAt, 'detection failover')) return
+  detectionFailoverStartedAt = Date.now()
   try {
     await hydrateAnonGate()
     const rows = await prisma.setting.findMany({ where: { key: { in: [DETECT_FEED_OK_KEY, DETECT_THROTTLED_KEY] } } })
@@ -361,7 +368,7 @@ async function detectionFailoverPass(): Promise<void> {
   } catch (err) {
     log.warn('detection failover failed — next pass retries', { error: err instanceof Error ? err.message : String(err) })
   } finally {
-    detectionFailoverRunning = false
+    detectionFailoverStartedAt = null
   }
 }
 
@@ -607,7 +614,7 @@ export async function replyPass(): Promise<void> {
   }
 }
 
-async function tick(): Promise<{ retryInMs?: number }> {
+async function tick(): Promise<{ retryInMs?: number; drove?: boolean }> {
   const handles = await localSenderHandles()
   await writePresence(handles)
 
@@ -636,6 +643,8 @@ async function tick(): Promise<{ retryInMs?: number }> {
     // Not an error, and said plainly: a machine with no signed-in profile has nothing to
     // do, and the dashboard will show it as present-but-empty rather than silently idle.
     log.step('no signed-in Instagram profiles on this device — nothing to send from')
+    // The tick COMPLETED, so it is stamped: "its loop keeps failing" would be false here.
+    await recordDispatchOk(deviceId())
     return {}
   }
 
@@ -645,7 +654,15 @@ async function tick(): Promise<{ retryInMs?: number }> {
    * the fleet's pacing rule and not something the agent may relax.
    */
   const result = await dispatchTick('device')
-  return { retryInMs: result.retryInMs }
+  /**
+   * LIVENESS IS NOT SUCCESS, FOR THE SENDER TOO (audit H11). Presence was written at the top
+   * of this tick and by its own interval, so a tick that throws or hangs anywhere above still
+   * reads as an online sending Mac. Only a tick that reached here stamps; the landing page
+   * alarms on a fresh beat beside a stale stamp. See src/outreach/dispatchHealth.ts.
+   */
+  await recordDispatchOk(deviceId())
+  const d = result.delivered
+  return { retryInMs: result.retryInMs, drove: d !== undefined && d.sent + d.failed > 0 }
 }
 
 export async function runDeviceAgent(): Promise<void> {
@@ -769,18 +786,19 @@ export async function runDeviceAgent(): Promise<void> {
      */
     const startedAt = Date.now()
     let retryInMs: number | undefined
+    let drove = false
     try {
       const r = await tick()
       retryInMs = r.retryInMs
+      drove = r.drove === true
     } catch (err) {
       // One bad tick must never end the loop: the device going quiet is the failure this
       // whole process exists to prevent.
       log.error('device tick failed', { error: describeError(err) })
     }
-    const remaining = POLL_INTERVAL_MS - (Date.now() - startedAt)
-    /* The dispatcher's own boundary wins when it is sooner than the grid — never later:
-       a hint may only ever wake us EARLIER, so a wrong hint degrades to the plain poll. */
-    const wait = retryInMs !== undefined ? Math.min(Math.max(remaining, 0), Math.max(retryInMs, 0)) : remaining
+    /* See `nextPollWait`: the remainder only after a drive, the full interval otherwise, and the
+       dispatcher's own boundary whenever it is sooner. */
+    const wait = nextPollWait({ pollMs: POLL_INTERVAL_MS, elapsedMs: Date.now() - startedAt, drove, retryInMs })
     if (wait > 0) await new Promise((r) => setTimeout(r, wait))
   }
 

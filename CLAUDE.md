@@ -5,6 +5,46 @@ changing anything that touches sending.
 
 ---
 
+## 9 OCTOBER — "MAKE IT MORE ROBUST, IT SHOULD NOT STOP": THE STALL, HANG AND STUCK-ROW FINDINGS OF THE AUDIT, FIXED
+
+**Asked: *"make it more robust it should not stop."*** Read as: every finding in
+`docs/AUDIT-2026-10-09.md` whose effect is the fleet stopping, stalling, hanging or leaving a row
+or lock stuck. Fixed, each with a test that fails when the fix is reverted. **NOT DEPLOYED, and
+not run against the live system from here** — this session had no Instagram, no tunnel and no
+box. **C1-C4 (the wrong-account inbox route, the swallowed textless reply, the WATCH hard-delete
+cascade, duplicate device names) are a separate pass and are untouched.**
+
+| finding | what stopped | now |
+|---|---|---|
+| **H1** rotation | the planner's pre-loaded ring skipped `ringMembersFor`, so a page holding the OTHER fleet's pair rows was elected, refused `different-category`, and the recipient stalled (the 26 Aug self-locking stall, one caller late). `rest-tally` did the same | both filter by fleet like every other ring builder |
+| `unreadable` parks | gate and governor ignore them; `readBlockedRoutes` did not, so a recipient whose every page carried one stalled at `all-unavailable` | excluded there too — enforcer and rotation agree |
+| **H2** checkpoints | `classifyUrl` used `includes`, so a recipient named `@challenge…` or `@two_factor…` read as a CHECKPOINT, marked the account CHALLENGED and tripped the fleet breaker for a day | whole path SEGMENTS (`pathHas`); unparseable URL keeps the old substring test, the cautious direction |
+| **M1** undriven claims | a DB error between READY→SENDING and the drive left the row SENDING; the orphan sweep parked it `not-in-thread`, which nothing releases — a pair held forever on a send that never happened | `revertUndrivenClaim` puts it back to READY and releases reservations `attempted: false`, retried on the record backoff. Both the scheduled path and the Send button; in `sendNow` a throw while TAKING the lock reverts only when `driveStarted` is still false |
+| lock release | `releaseSendLock`/`releaseSlotLock` were `deleteMany({ key })` — whoever holds it NOW. A Mac waking after its stale lock was taken over deleted the other Mac's lock | delete conditioned on the exact value this holder wrote. **The slot lock tracks `slotLockValue`** because `touchSlotLock` rewrites the row at every stage — the first version compared against the acquisition value and every slot would have left its lock behind; caught on reading the diff, pinned by a test |
+| slot lock, one process | slots and the 15-min planner share the Linode worker; the planner took over a running slot's lock (own pid) and its `finally` deleted it — two planners, possible double drafts | in-process guard like `heldInThisProcess`; the planner skips, a slot WAITS (≤15 min) rather than losing its reply sweep |
+| standby disk care | took the FLEET lock for up to minutes on a standby Mac, so the selected Mac read "another Mac is sending" and sent nothing | on a standby it runs under the in-process guard only; every drive there is refused by the role check anyway |
+| shutdown | SIGTERM exited at once, killing a drive mid-flight → `not-in-thread` park | `main.ts` stops new ticks and waits ≤100 s for the lock holder; launchd `ExitTimeOut` 120 s; a second signal exits now. **The signal path caffeinate→pnpm→node under launchd is UNVERIFIED** — check `watch.log` for the drain line on the next reinstall |
+| poll | an all-held tick slept only the remainder, re-taking the fleet lock back-to-back | `nextPollWait`: remainder only after a DRIVE, full interval otherwise, the dispatcher's boundary when sooner |
+| hangs | the classifier `fetch` had no timeout; the failover pass flag was a boolean (rule 27) | `AbortSignal.timeout(30 s)`; a start timestamp through `passIsRunning`. `tests/no-unbounded-waits.test.ts` greps every server-side `fetch` |
+| plan stamp | `planLastOkAt` was stamped when planning was SKIPPED (slot lock held) | stamped only when it ran |
+| **H11** the sender | presence is written before anything in the tick can throw, so a sending Mac whose every tick failed read "online … sends by itself" | the agent stamps `dispatchLastOkAt` `{device, at}` after each COMPLETED tick; the landing page alarms on a beating selected Mac beside a stamp >15 min old. Absence never alarms (a Mac that throws from its first tick after selection is still only in its log) |
+| **H7** deploy | `.active-dist` written before the health check and never by a rollback, so the next deploy could unpack over and `rm -rf` the served build; nothing ran `pm2 save`, so a reboot resurrected a deleted dist | `scripts/active-dist.sh` asks pm2 which dist is SERVED (marker is the fallback, values whitelisted); marker written after the 200; prebuilt target == served refuses; `pm2 save` last. **pm2's env key layout is assumed, not observed on the box** — the script reads both `pm2_env.NEXT_DIST_DIR` and `pm2_env.env.NEXT_DIST_DIR` |
+
+**Still failing in the suite, pre-existing and unrelated:** two `tests/route-rule.test.ts` cases call
+the real Instagram feed (`addTarget` vets a WATCH page with `fetchFeed`, unmocked) and time out
+offline. Identical on the base commit.
+
+### RULES, ADDED TO THE STANDING LIST
+
+43. **Release only what you hold.** A lock released by key deletes whoever holds it now; condition
+    the delete on the value you wrote — and if anything refreshes that value, track the refresh.
+44. **A claim whose drive never started goes back.** `not-in-thread` means "may have it"; an
+    exception before the browser opens is not that, and parking it holds the pair forever.
+45. **Every ring passes through the fleet filter.** A pre-loaded ring is a ring builder too.
+46. **A process that sends stamps its success, not just its liveness** — the sender included.
+
+---
+
 ## 24 SEPTEMBER — THE DASHBOARD REDESIGN (PR #1) MERGED AS UI-ONLY, AND THE TWO THINGS THAT HAD TO COME OUT OF IT FIRST
 
 **Tabish: *"A new PR has been raised on github merge it and make sure it is present on production
