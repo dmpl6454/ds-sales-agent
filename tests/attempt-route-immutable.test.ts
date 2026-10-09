@@ -99,16 +99,37 @@ function findReRoutes(file: string, text: string): { checked: number; findings: 
       continue
     }
     checked++
-    if (/\.\.\.\s*[A-Za-z_$]/.test(block)) {
-      findings.push({ where, problem: 'it spreads a variable into its data, so it cannot be checked' })
+    /*
+     * A spread is followed back to a LOCAL `const name = { … }` literal in the same file and that
+     * literal is checked too (replyCheck.ts builds the reply fields once and spreads them into
+     * each guarded write). Anything else spread in — a parameter, an import, a computed object, a
+     * literal that itself spreads a variable — cannot be read here and is refused, as before.
+     */
+    const blocks = [block]
+    for (const sp of block.matchAll(/\.\.\.\s*([A-Za-z_$][\w$]*)/g)) {
+      const literal = localLiteral(src, sp[1]!)
+      if (literal === null || /\.\.\.\s*[A-Za-z_$]/.test(literal)) {
+        findings.push({ where, problem: 'it spreads a variable into its data, so it cannot be checked' })
+      } else {
+        blocks.push(literal)
+      }
     }
     for (const key of ROUTE_KEYS) {
-      if (new RegExp(`(?<![.\\w$])${key}\\s*[:,}]`).test(block)) {
+      if (blocks.some((b) => new RegExp(`(?<![.\\w$])${key}\\s*[:,}]`).test(b))) {
         findings.push({ where, problem: `it rewrites ${key} — an attempt's route is fixed when it is written` })
       }
     }
   }
   return { checked, findings }
+}
+
+/** The object literal a `const name = { … }` (optionally typed) initialises, if exactly one exists. */
+function localLiteral(src: string, name: string): string | null {
+  const decl = new RegExp(`\\bconst\\s+${name.replace(/\$/g, '\\$')}\\s*(?::[^=]+)?=\\s*\\{`, 'g')
+  const hits = [...src.matchAll(decl)]
+  if (hits.length !== 1) return null
+  const h = hits[0]!
+  return balanced(src, h.index! + h[0].length - 1)
 }
 
 describe("an attempt's route is never rewritten", () => {
@@ -142,6 +163,25 @@ describe("an attempt's route is never rewritten", () => {
     const r = findReRoutes('fixture.ts', headShape)
     expect(r.checked).toBe(1)
     expect(r.findings.map((x) => x.problem).join(' | ')).toMatch(/pairId.*senderId/)
+  })
+
+  it('follows a spread to its local literal: a re-point hidden there is caught, a clean one passes', () => {
+    const hidden = `
+      const moved = { pairId: newPair.id, status: 'READY' }
+      await prisma.outreachAttempt.update({ where: { id }, data: { ...moved } })`
+    expect(findReRoutes('fixture.ts', hidden).findings.map((x) => x.problem).join(' | ')).toMatch(/rewrites pairId/)
+    const clean = `
+      const reply = { repliedAt: now, replyText: t, ...(vouch ? { replyCheckedAt: now } : {}) }
+      await prisma.outreachAttempt.update({ where: { id }, data: { ...reply, status: 'REPLIED' } })`
+    expect(findReRoutes('fixture.ts', clean)).toEqual({ checked: 1, findings: [] })
+    const opaque = `
+      await prisma.outreachAttempt.update({ where: { id }, data: { ...args.fields } })
+      const wrap = { ...other }
+      await prisma.outreachAttempt.update({ where: { id }, data: { ...wrap } })`
+    expect(findReRoutes('fixture.ts', opaque).findings.map((x) => x.problem)).toEqual([
+      'it spreads a variable into its data, so it cannot be checked',
+      'it spreads a variable into its data, so it cannot be checked',
+    ])
   })
 
   it('and lets an ordinary status write, a value READ from senderId, and a create through', () => {
