@@ -1,5 +1,5 @@
-import { describe, it, expect } from 'vitest'
-import { decideSendLock } from '@/outreach/dispatcher'
+import { describe, it, expect, vi } from 'vitest'
+import { decideSendLock, holderIsSameMachine, pidAlive } from '@/outreach/dispatcher'
 
 /**
  * The send-lock decision, in every direction.
@@ -144,5 +144,61 @@ describe('decideSendLock', () => {
     expect(fresh).toEqual({ action: 'decline', stalled: false })
     const stale = decideSendLock({ held: holder(1, OLD), holderAlive: false, holderIsLocal: false, holderDeviceFresh: false, ourPid: 1, ageMs: 7 * 60_000 })
     expect(stale).toEqual({ action: 'take' })
+  })
+})
+
+/**
+ * ── A NAME IS NOT A MACHINE (2026-10-09, the C4 finding) ─────────────────────
+ *
+ * Two Macs that share a device name each read the other's lock row as their OWN, asked their own
+ * OS about the other's pid, and took the lock over a live drive. The row carries a machine id now;
+ * a row with none keeps the old local reading, or the first restart onto this build would wait on
+ * its predecessor's row forever (a foreign holder is released only once its Mac stops beating,
+ * and under our own name it never does).
+ */
+describe('holderIsSameMachine', () => {
+  const row = (device: string | undefined, host?: string) => ({ pid: 1, what: 'dispatch', at: NOW, device, ...(host ? { host } : {}) })
+
+  it('the same name on the same host is this machine', () => {
+    expect(holderIsSameMachine(row('mac', 'h1'), 'mac', 'h1')).toBe(true)
+  })
+  it('the same name on ANOTHER host is another machine', () => {
+    expect(holderIsSameMachine(row('mac', 'h2'), 'mac', 'h1')).toBe(false)
+  })
+  it('a row with no host (an older agent — most likely our predecessor) keeps the local reading', () => {
+    expect(holderIsSameMachine(row('mac'), 'mac', 'h1')).toBe(true)
+  })
+  it('when this machine has no id, the name decides, as before', () => {
+    expect(holderIsSameMachine(row('mac', 'h2'), 'mac', undefined)).toBe(true)
+  })
+  it('a different name, or no name at all, is never this machine', () => {
+    expect(holderIsSameMachine(row('studio', 'h1'), 'mac', 'h1')).toBe(false)
+    expect(holderIsSameMachine(row(undefined, 'h1'), 'mac', 'h1')).toBe(false)
+  })
+})
+
+describe('pidAlive — EPERM is a live process, not a dead one', () => {
+  const throwing = (code: string) =>
+    vi.spyOn(process, 'kill').mockImplementation(() => {
+      throw Object.assign(new Error(code), { code })
+    })
+
+  it('EPERM (another user\'s live process on this Mac) is alive; ESRCH is gone', () => {
+    const spy = throwing('EPERM')
+    try {
+      expect(pidAlive(4242)).toBe(true)
+    } finally {
+      spy.mockRestore()
+    }
+    const gone = throwing('ESRCH')
+    try {
+      expect(pidAlive(4242)).toBe(false)
+    } finally {
+      gone.mockRestore()
+    }
+  })
+
+  it('this process is alive', () => {
+    expect(pidAlive(process.pid)).toBe(true)
   })
 })

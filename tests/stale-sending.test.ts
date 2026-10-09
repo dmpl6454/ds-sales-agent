@@ -206,6 +206,27 @@ describe('parkOrphanedSending', () => {
     expect(row?.status).toBe('SENDING')
   })
 
+  /**
+   * TWO MACS UNDER ONE NAME (2026-10-09, C4). Both pass the name check, and a pid can coincide;
+   * MEASURED before the host field: Mac B's sweep parked Mac A's in-flight drive as an orphan.
+   */
+  it('parks NOTHING when the lock names our pid and our NAME but another MACHINE — and parks when it is ours', async () => {
+    const saved = process.env.DS_HOST_ID
+    process.env.DS_HOST_ID = 'host-b'
+    try {
+      const withHost = (host: string) => JSON.stringify({ pid: process.pid, device: deviceId(), host, what: 'test', at: new Date().toISOString() })
+      await prisma.setting.create({ data: { key: SEND_LOCK_KEY, value: withHost('host-a') } })
+      expect(await parkOrphanedSending(0)).toBe(0)
+      expect((await prisma.outreachAttempt.findUnique({ where: { id: 'att_sending' } }))?.status).toBe('SENDING')
+
+      await prisma.setting.update({ where: { key: SEND_LOCK_KEY }, data: { value: withHost('host-b') } })
+      expect(await parkOrphanedSending(0)).toBe(1)
+    } finally {
+      if (saved === undefined) delete process.env.DS_HOST_ID
+      else process.env.DS_HOST_ID = saved
+    }
+  })
+
   it('parks NOTHING when the lock names no Mac at all (an agent older than the device field)', async () => {
     await prisma.setting.create({ data: { key: SEND_LOCK_KEY, value: legacyLockValue(process.pid) } })
     expect(await parkOrphanedSending(0)).toBe(0)

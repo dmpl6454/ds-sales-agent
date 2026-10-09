@@ -1,6 +1,6 @@
 import { prisma } from '@/lib/db'
 import { browserShutdownRequested } from './shutdown'
-import { deviceId, deviceIsBeating } from './devicePresence'
+import { deviceId, deviceIsBeating, hostId } from './devicePresence'
 import { thisMacRole } from './activeDevice'
 import { env } from '@/lib/env'
 import { log } from '@/lib/logger'
@@ -169,6 +169,26 @@ export interface SendLockHolder {
    * step over a live sender.
    */
   device?: string
+  /**
+   * WHICH MACHINE wrote the row (`hostId()`, 2026-10-09). A device NAME is typed by a person and
+   * two Macs can share one; when they did, each read the other's row as its own, asked its own
+   * OS about the other's pid, and took the lock over a live drive. Absent on rows from older
+   * agents and when the id could not be read — and then the name alone decides, as before.
+   */
+  host?: string
+}
+
+/**
+ * PURE. Was this lock row written on THIS machine (2026-10-09)?
+ *
+ * The same NAME is necessary; when both sides carry a host, the same HOST is too. A row with no
+ * host is treated as this machine's, deliberately: it is what our own predecessor wrote before it
+ * learned the field, and reading it as foreign would make the first restart onto this build wait
+ * on it forever — a foreign holder is released only once its Mac stops beating, and a row under
+ * our own name always looks beating while we run.
+ */
+export function holderIsSameMachine(held: SendLockHolder, ourDevice: string, ourHost: string | undefined): boolean {
+  return held.device === ourDevice && (held.host === undefined || ourHost === undefined || held.host === ourHost)
 }
 
 export type SendLockVerdict = { action: 'take' } | { action: 'decline'; stalled: boolean }
@@ -223,18 +243,25 @@ export function decideSendLock(args: {
   return { action: 'decline', stalled }
 }
 
-function alive(pid: number): boolean {
+/**
+ * Does this OS have a process with this pid? EPERM is YES (2026-10-09): the process exists and
+ * belongs to another user — a second macOS account on the same Mac, same hardware id, same name.
+ * Reading that as "gone" took the lock over a live drive. Only ESRCH means no such process.
+ */
+export function pidAlive(pid: number): boolean {
   try {
     process.kill(pid, 0)
     return true
-  } catch {
-    return false
+  } catch (err) {
+    return (err as NodeJS.ErrnoException)?.code === 'EPERM'
   }
 }
 
 async function acquireSendLock(what: string): Promise<string | null> {
   const ourDevice = deviceId()
-  const value = JSON.stringify({ pid: process.pid, device: ourDevice, what, at: new Date().toISOString() })
+  const ourHost = hostId()
+  // `host` is dropped by JSON.stringify when undefined, so a Mac without an id writes today's row.
+  const value = JSON.stringify({ pid: process.pid, device: ourDevice, host: ourHost, what, at: new Date().toISOString() })
 
   // `create` on the primary key IS the test-and-set: it succeeds only if no row exists.
   // A `findUnique` then `upsert` is a check-then-act, which has already produced two
@@ -264,15 +291,15 @@ async function acquireSendLock(what: string): Promise<string | null> {
   }
 
   const ageMs = held ? Date.now() - new Date(held.at).getTime() : Infinity
-  const holderIsLocal = held !== null && held.device === ourDevice
+  const holderIsLocal = held !== null && holderIsSameMachine(held, ourDevice, ourHost)
   // The presence read costs a query, so it happens only on the path where it decides anything:
   // a foreign holder whose lock has gone stale. A fresh foreign lock is honoured unread.
   const foreignAndStale = held !== null && !holderIsLocal && ageMs >= SEND_LOCK_STALE_MS
   const verdict = decideSendLock({
     held,
-    holderAlive: holderIsLocal && held !== null && alive(held.pid),
+    holderAlive: holderIsLocal && held !== null && pidAlive(held.pid),
     holderIsLocal,
-    holderDeviceFresh: foreignAndStale ? await deviceIsBeating(held?.device) : true,
+    holderDeviceFresh: foreignAndStale ? await deviceIsBeating(held?.device, held?.host) : true,
     ourPid: process.pid,
     ageMs,
   })
@@ -281,6 +308,8 @@ async function acquireSendLock(what: string): Promise<string | null> {
     const detail = {
       otherPid: held?.pid,
       otherDevice: held?.device ?? 'unknown (an agent older than the device field)',
+      // Beside the name, because two Macs can share one — the host is what says which (2026-10-09).
+      otherHost: held?.host,
       doing: held?.what,
       secondsHeld: Math.round(ageMs / 1000),
     }
@@ -407,6 +436,9 @@ export async function parkOrphanedSending(dwellMs: number = ORPHAN_SENDING_DWELL
   // and a foreign dispatcher parking this Mac's in-flight drive is the one outcome worse
   // than the zombie this sweep exists to clear.
   if (!holder || holder.pid !== process.pid || holder.device !== deviceId()) return 0
+  // And THIS machine, when the row says which (2026-10-09): two Macs under one name each pass the
+  // name check, and a pid can coincide — the other Mac's in-flight drive would be parked.
+  if (holder.host !== undefined && holder.host !== hostId()) return 0
 
   const first = await prisma.outreachAttempt.findMany({
     where: { status: 'SENDING' },

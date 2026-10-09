@@ -302,7 +302,9 @@ export default async function SendersPage({ searchParams }: { searchParams: Prom
                         })()}
                       </td>
                       <td>
+                        {/* By KEY: two Macs can share a name, and by name one click revoked both (2026-10-09). */}
                         <form action={revokeDevice}>
+                          <input type="hidden" name="fingerprint" value={d.fingerprint} />
                           <input type="hidden" name="name" value={d.name} />
                           <button className="btn btn-quiet" type="submit">
                             Revoke
@@ -314,6 +316,12 @@ export default async function SendersPage({ searchParams }: { searchParams: Prom
                 </tbody>
               </table>
             </div>
+          )}
+          {paired.length > 0 && (
+            <p className="muted">
+              Revoking removes that Mac&rsquo;s key, matched by the key shown. A Mac already connected keeps its
+              tunnel until it next reconnects — it is cut off then, not instantly.
+            </p>
           )}
         </section>
 

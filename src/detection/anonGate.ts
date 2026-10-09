@@ -166,7 +166,7 @@ export function anonGateRecordSuccess(source: string): void {
 // ── Persistence: survives a process restart, and is what the dashboard reads ──────────
 
 export function anonGateHost(): string {
-  return process.env.DS_DEVICE_NAME ?? hostname()
+  return process.env.DS_DEVICE_NAME?.trim() || hostname() // blank is no name — same rule as deviceId()
 }
 
 export function anonGateSettingKey(host: string = anonGateHost()): string {

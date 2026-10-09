@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterAll } from 'vitest'
+import { describe, it, expect, beforeEach, afterAll, afterEach } from 'vitest'
 import Database from 'better-sqlite3'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -193,6 +193,59 @@ describe('the slot lock is held in-process and released only by its holder', asy
       })
     })
     expect((await slotRow())?.value).toMatch(/"slot":"other"/)
+  })
+})
+
+/**
+ * ── TWO MACS UNDER ONE NAME — THE LOCK TELLS THEM APART BY MACHINE (2026-10-09, C4) ──
+ *
+ * MEASURED against the real modules before this: Mac A held `{pid, device: 'Mac Studio'}`, Mac B
+ * (also 'Mac Studio') read it as its own, asked its own OS about A's pid, and took the lock over
+ * A's live drive. The row carries `host` now; DS_HOST_ID stands in for the hardware id here.
+ */
+describe('a name shared by two Macs does not let one step over the other', () => {
+  const savedHost = process.env.DS_HOST_ID
+  afterEach(() => {
+    if (savedHost === undefined) delete process.env.DS_HOST_ID
+    else process.env.DS_HOST_ID = savedHost
+  })
+  const row = (fields: Record<string, unknown>) => JSON.stringify({ what: 'dispatch:device', ...fields })
+
+  it('a live row from ANOTHER machine under our own name is honoured, and left exactly as it was', async () => {
+    process.env.DS_HOST_ID = 'host-b'
+    await select('this-mac')
+    const foreign = row({ pid: 999_999, device: 'this-mac', host: 'host-a', at: new Date(Date.now() - 20_000).toISOString() })
+    await prisma.setting.create({ data: { key: 'sendLock', value: foreign } })
+    let ran = false
+    expect(await withSendLock('dispatch:device', async () => (ran = true))).toBeNull()
+    expect(ran).toBe(false)
+    expect((await lockRow())?.value).toBe(foreign)
+  })
+
+  it('a stale row from a twin that stopped beating is released, though WE beat under that name', async () => {
+    process.env.DS_HOST_ID = 'host-b'
+    await select('this-mac')
+    const stale = row({ pid: 999_999, device: 'this-mac', host: 'host-a', at: new Date(Date.now() - 7 * 60_000).toISOString() })
+    await prisma.setting.create({ data: { key: 'sendLock', value: stale } })
+    // Our own heartbeat under the shared name, fresh. Asked by name alone, the dead twin "beats".
+    await prisma.setting.create({
+      data: { key: 'devicePresence', value: JSON.stringify([{ device: 'this-mac', host: 'host-b', at: new Date().toISOString(), handles: [] }]) },
+    })
+    expect(await withSendLock('dispatch:device', async () => 'ran')).toBe('ran')
+  })
+
+  it('a row with no host — our predecessor before the field — is recovered as a local crash, as before', async () => {
+    process.env.DS_HOST_ID = 'host-b'
+    await select('this-mac')
+    await prisma.setting.create({ data: { key: 'sendLock', value: row({ pid: 999_999, device: 'this-mac', at: new Date().toISOString() }) } })
+    expect(await withSendLock('dispatch:device', async () => 'ran')).toBe('ran')
+  })
+
+  it('the row this Mac writes names its machine', async () => {
+    process.env.DS_HOST_ID = 'host-b'
+    await select('this-mac')
+    const during = await withSendLock('dispatch:device', () => lockRow())
+    expect(during?.value).toMatch(/"host":"host-b"/)
   })
 })
 

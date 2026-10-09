@@ -11,6 +11,9 @@ import { nextPollWait } from './pollWait'
 import { recordDispatchOk } from '@/outreach/dispatchHealth'
 import {
   deviceId,
+  hostId,
+  mergePresence,
+  tunnelKeyFingerprint,
   DEVICE_PRESENCE_KEY,
   PRESENCE_FRESH_MS,
   PRESENCE_INTERVAL_MS,
@@ -255,7 +258,15 @@ export async function localSenderHandles(): Promise<string[]> {
  * rediscovering.
  */
 export async function writePresence(handles: string[]): Promise<void> {
-  const me: DevicePresence = { device: deviceId(), at: new Date().toISOString(), handles, version: buildVersionInfo().version, versionSource: buildVersionInfo().source }
+  const me: DevicePresence = {
+    device: deviceId(),
+    at: new Date().toISOString(),
+    handles,
+    version: buildVersionInfo().version,
+    versionSource: buildVersionInfo().source,
+    host: hostId(),
+    keyFingerprint: tunnelKeyFingerprint(),
+  }
   const row = await prisma.setting.findUnique({ where: { key: DEVICE_PRESENCE_KEY } })
 
   let all: DevicePresence[] = []
@@ -269,7 +280,9 @@ export async function writePresence(handles: string[]): Promise<void> {
     }
   }
 
-  const next = [...all.filter((d) => d.device !== me.device), me]
+  // Same-name entries from ANOTHER machine survive (see `mergePresence`) — a second Mac under
+  // this name must be visible, not overwritten every 30 seconds.
+  const next = mergePresence(all, me, Date.now())
   const value = JSON.stringify(next)
   await prisma.setting
     .upsert({ where: { key: DEVICE_PRESENCE_KEY }, update: { value }, create: { key: DEVICE_PRESENCE_KEY, value } })

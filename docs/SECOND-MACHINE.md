@@ -46,6 +46,11 @@ Requires **Node 22+** and **pnpm 10+**. Verified on Node 22.22 / pnpm 10.33.
 CLOSED — correct on a server, a dead end on a laptop, and the symptom is that you start the
 app and can never create the account that would let you in.
 
+**If this machine will ever talk to the shared database, give it its own `DS_DEVICE_NAME`**
+(uncomment the line in `.env`; unset means the hostname). The sending Mac is chosen by this
+name, so two machines with one name would BOTH act as it — two dispatchers sending from the
+same accounts on two networks. Never copy another machine's `.env` without changing it.
+
 Check it worked:
 
 ```bash

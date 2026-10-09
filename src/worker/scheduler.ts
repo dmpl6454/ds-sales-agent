@@ -65,7 +65,7 @@ export interface SchedulerHeartbeat {
 
 /** This host's name, as recorded on a heartbeat. `DS_DEVICE_NAME` lets a deploy label itself. */
 export function machineId(): string {
-  return process.env.DS_DEVICE_NAME ?? osHostname()
+  return process.env.DS_DEVICE_NAME?.trim() || osHostname() // blank is no name — same rule as deviceId()
 }
 
 async function writeHeartbeat(host: SchedulerHeartbeat['host']): Promise<void> {

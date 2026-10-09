@@ -21,6 +21,20 @@ export async function POST(req: Request): Promise<Response> {
     return NextResponse.json({ error: 'deviceName and publicKey are required strings' }, { status: 400 })
   }
   const r = await startEnrolment({ deviceName, publicKey })
+  if (!r.ok && (r.code === 'name-taken' || r.code === 'name-shared')) {
+    /**
+     * A TAKEN NAME IS ANSWERED WITH 200 (2026-10-09), on purpose. Installers already handed out
+     * call this with `curl -f`, which discards the body of any 4xx and says "check the internet
+     * connection" — the wrong remedy, about a sentence the person needed to read. A 200 with no
+     * userCode reaches their "The dashboard refused the pairing request: <body>" branch instead,
+     * and `error` comes FIRST so the sentence is the first thing in that dialog. New installers
+     * read `status` and ask for another name. Malformed input and a full queue stay 400.
+     */
+    return NextResponse.json(
+      { error: r.reason, status: r.code, deviceName: r.name, suggestion: r.suggestion ?? null },
+      { headers: { 'Cache-Control': 'no-store' } },
+    )
+  }
   if (!r.ok) return NextResponse.json({ error: r.reason }, { status: 400 })
   return NextResponse.json(
     {

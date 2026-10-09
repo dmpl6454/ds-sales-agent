@@ -1603,6 +1603,25 @@ export async function setActiveDevice(device: string): Promise<{ ok: boolean; me
   if (!known.has(name)) {
     return { ok: false, message: `${name || '(nothing)'} is not a paired or online Mac — nothing changed.` }
   }
+  /**
+   * A NAME TWO MACS CARRY CANNOT BE CHOSEN (2026-10-09). The sending Mac is whichever Mac's name
+   * equals this Setting, so selecting a name two Macs run under makes BOTH of them the sending Mac
+   * — two dispatchers, two home IPs, one set of accounts. Refused before anything is written.
+   */
+  const now = Date.now()
+  const beatingUnderName = (await readPresence()).filter((d) => d.device === name && now - new Date(d.at).getTime() < DEVICE_FRESH_MS)
+  if (beatingUnderName.length > 1) {
+    return {
+      ok: false,
+      message: `Two Macs are running as “${name}” — selecting it would make both of them send. Give one of them another name first (remove it under Paired Macs, then open DS Sales Agent on it again); nothing changed.`,
+    }
+  }
+  if (new Set(listPairedDevices().filter((d) => d.name === name).map((d) => d.fingerprint)).size > 1) {
+    return {
+      ok: false,
+      message: `Two paired Macs carry the name “${name}” — selecting it would make both of them send. Remove one under Paired Macs (each is listed with its key) and pair it again under another name; nothing changed.`,
+    }
+  }
   const prev = (await getSettings()).activeDevice
   if (prev === name) return { ok: true, message: `${name} is already the sending Mac.` }
   await setSetting(SETTING_KEYS.activeDevice, name)
@@ -2984,11 +3003,22 @@ export async function approveDevice(formData: FormData): Promise<void> {
   redirect(`/senders?paired=${encodeURIComponent(r.deviceName)}`)
 }
 
-/** Removes one Mac's tunnel key. Its agent loses the database on the next reconnect; nothing else changes. */
+/**
+ * Removes one Mac's tunnel key. Its agent loses the database on the next reconnect; nothing else changes.
+ *
+ * BY KEY FINGERPRINT (2026-10-09): by name, revoking one of two Macs that shared a name removed
+ * both. The name travels only for the audit row a person reads.
+ */
 export async function revokeDevice(formData: FormData): Promise<void> {
   const user = await requireOperator()
+  const fingerprint = String(formData.get('fingerprint') ?? '')
   const name = String(formData.get('name') ?? '')
-  const removed = revokePairedDevice(name)
-  await audit(user.email, 'device.revoked', `Device:${name}`, removed > 0 ? `${removed} tunnel key line(s) removed` : 'no key found under that name')
+  const removed = await revokePairedDevice(fingerprint)
+  await audit(
+    user.email,
+    'device.revoked',
+    `Device:${name}`,
+    removed > 0 ? `${fingerprint}: ${removed} tunnel key line(s) removed` : `${fingerprint}: no paired key with that fingerprint`,
+  )
   refreshPath('/senders')
 }

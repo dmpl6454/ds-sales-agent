@@ -1,6 +1,7 @@
 import { redirect } from 'next/navigation'
 import { currentUser } from '@/lib/session'
-import { findByUserCode, enrolmentExpired, keyFingerprint } from '@/lib/deviceEnrol'
+import { findByUserCode, enrolmentExpired, keyBlob, keyFingerprint, pairedKeyLines } from '@/lib/deviceEnrol'
+import { getSettings } from '@/lib/settings'
 import { approveDevice } from '../../actions'
 import { Nav } from '../../nav'
 import { PageHead } from '../../page-head'
@@ -50,6 +51,13 @@ export default async function EnrolPage({
         Mac again and approve promptly.
       </p>
     )
+  } else if (e.withdrawnAt) {
+    body = (
+      <p>
+        This request was withdrawn rather than approved: another Mac on this dashboard already uses the name{' '}
+        <strong>{e.deviceName}</strong>. The Mac that asked is told why the next time it checks.
+      </p>
+    )
   } else if (enrolmentExpired(e.createdAt)) {
     body = <p>This request expired (15 minutes). Run the installer on the Mac again and approve promptly.</p>
   } else if (e.approvedAt) {
@@ -61,6 +69,8 @@ export default async function EnrolPage({
     )
   } else {
     const minutesAgo = Math.max(0, Math.round((Date.now() - new Date(e.createdAt).getTime()) / 60000))
+    const alreadyPaired = pairedKeyLines().some((l) => l.blob === keyBlob(e.publicKey))
+    const activeDevice = alreadyPaired && e.requestedName ? (await getSettings()).activeDevice : null
     body = (
       <>
         <p>
@@ -69,6 +79,25 @@ export default async function EnrolPage({
           through a tunnel that can do nothing else — no shell, no files, one port — and it can be removed from
           the Senders page at any time.
         </p>
+        {/*
+          WHICH KIND OF APPROVAL THIS IS (2026-10-09). A key already in authorized_keys is a Mac
+          re-running its installer; it keeps its paired name. Said here because approving re-sends
+          the connection details to whoever holds that key — and `start` cannot prove it is them.
+        */}
+        {alreadyPaired && (
+          <p>
+            This key is already paired as <strong>{e.deviceName}</strong> — approving re-sends it the connection
+            details. Approve only if you just re-ran the installer on {e.deviceName}.
+            {e.requestedName && e.requestedName !== e.deviceName && (
+              <>
+                {' '}It asked to be called {e.requestedName} and keeps the name {e.deviceName}
+                {activeDevice === e.requestedName
+                  ? `; ${e.requestedName} is the selected sending Mac, so choose ${e.deviceName} on Senders → Sending Mac after approving, or nothing sends.`
+                  : '.'}
+              </>
+            )}
+          </p>
+        )}
         <p className="muted">
           The installer on that Mac is showing this code: <code>{e.userCode}</code> and this key:{' '}
           <code>{keyFingerprint(e.publicKey)}</code>. If they do not match what you see on the Mac, do not

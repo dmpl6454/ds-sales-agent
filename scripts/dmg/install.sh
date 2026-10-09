@@ -109,11 +109,13 @@ if [ -f "$DEST/.version" ] || [ -d "$DEST/src" ]; then
   rm -rf "$DEST/src" "$DEST/scripts" "$DEST/tests" "$DEST/docs"
 fi
 tar -xzf "$RES/ds-sales-agent.tar.gz" -C "$DEST"
-# The stamp the launcher compares against the image's VERSION, and what the agent reports as
-# its build on /senders (src/lib/buildVersion.ts reads it).
-[ -f "$RES/VERSION" ] && cp "$RES/VERSION" "$DEST/.version"
-echo "code unpacked to $DEST (build $(cat "$DEST/.version" 2>/dev/null || echo unknown))"
+# The build STAMP (.version) is written near the END now, just before the agent is restarted —
+# see the comment there. Until then an update that stops partway leaves the old stamp behind.
+echo "code unpacked to $DEST (build $(cat "$RES/VERSION" 2>/dev/null || echo unknown))"
 
+# The line write_env leaves in a .env it finished writing. Read by the KEPT decision below and by
+# pair_this_mac (which offers the kept name), so it is defined before either.
+ENV_DONE_MARK="written by the DS Sales Agent installer"
 set_env() { # REPLACE a key, never append beside it — dotenv keeps the FIRST occurrence (measured 1 Sept)
   grep -v "^${1}=" "$DEST/.env" > "$DEST/.env.tmp" && mv "$DEST/.env.tmp" "$DEST/.env"
   printf '%s=%s\n' "$1" "$2" >> "$DEST/.env"
@@ -175,17 +177,42 @@ manual_secrets() {
   write_ssh_config "$SRV" root
 }
 
+# The dashboard's answer to a pairing request, read into a TAG line and then one field per line —
+# names have spaces, so the space-split read the poll uses cannot carry them:
+#   ok / userCode / deviceCode / approvePath / deviceName
+#   taken / deviceName / suggestion     another Mac uses that name; ask for another
+#   refused / the dashboard's sentence  anything else it said no to (shown as it said it)
+#   unreachable                         not JSON at all — a proxy's error page, a timeout body
+# A top-level variable rather than inline so tests can run this exact program against bodies.
+START_PARSER='let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{let j;try{j=JSON.parse(s)}catch(e){console.log("unreachable");return}if(!j||typeof j!=="object"){console.log("unreachable");return}const f=v=>String(v==null?"":v).replace(/[\r\n]+/g," ");if(j.userCode&&j.deviceCode){console.log(["ok",j.userCode,j.deviceCode,j.approvePath,j.deviceName].map(f).join("\n"));return}if(j.status==="name-taken"){console.log(["taken",j.deviceName,j.suggestion].map(f).join("\n"));return}console.log(["refused",j.error||"the dashboard refused the pairing request"].map(f).join("\n"))})'
+
 pair_this_mac() {
   # ── 3b. PAIR THIS MAC: its own key, approved in the browser, handed the URL once ─
   # A FUNCTION, because it runs twice: on a fresh Mac, and on a re-run whose kept tunnel
   # settings no longer reach a server (the server moved, 9 Sept 2026). The hand-off is the only
   # channel that carries the current address; an existing key is offered again, and a key already
-  # authorised on the new server makes the approval a formality.
-  DEFAULT_NAME="$(scutil --get ComputerName 2>/dev/null || hostname -s)"
-  DEFAULT_NAME="$(printf '%s' "$DEFAULT_NAME" | tr -cd 'A-Za-z0-9 ._-' | cut -c1-40)"
+  # authorised keeps the name it is paired under. It is STILL approved by a person: a public key
+  # is not a secret, and approving hands over the database URL.
+  #
+  # THE NAME IS THIS MAC'S IDENTITY ON THE DASHBOARD (2026-10-09): the sending Mac is chosen by
+  # name, so two Macs with one name would both send. A Mac re-pairing offers the name it already
+  # runs as (its kept .env), so a re-pair does not quietly rename the selected sending Mac — but
+  # only from a .env THIS installer finished writing, and never the example file's placeholder.
+  DEFAULT_NAME=""
+  if [ -f "$DEST/.env" ] && grep -qF "$ENV_DONE_MARK" "$DEST/.env"; then
+    DEFAULT_NAME="$(sed -n 's/^DS_DEVICE_NAME=//p' "$DEST/.env" | head -n 1)"
+    DEFAULT_NAME="${DEFAULT_NAME#\"}"; DEFAULT_NAME="${DEFAULT_NAME%\"}"
+    DEFAULT_NAME="$(printf '%s' "$DEFAULT_NAME" | tr -cd 'A-Za-z0-9 ._-' | cut -c1-40)"
+    if [ -z "$(printf '%s' "$DEFAULT_NAME" | tr -d ' ')" ] || [ "$DEFAULT_NAME" = "my-mac" ]; then DEFAULT_NAME=""; fi
+  fi
+  if [ -z "$DEFAULT_NAME" ]; then
+    DEFAULT_NAME="$(scutil --get ComputerName 2>/dev/null || hostname -s)"
+    DEFAULT_NAME="$(printf '%s' "$DEFAULT_NAME" | tr -cd 'A-Za-z0-9 ._-' | cut -c1-40)"
+  fi
   NAME=$(ask "Name this Mac (it shows on the dashboard):" "${DEFAULT_NAME:-mac}")
   NAME="$(printf '%s' "$NAME" | tr -cd 'A-Za-z0-9 ._-' | cut -c1-40)"
-  [ -n "$NAME" ] || NAME=mac
+  # A name of only spaces (a ComputerName in a non-Latin script survives `tr` as spaces) is no name.
+  [ -n "$(printf '%s' "$NAME" | tr -d ' ')" ] || NAME=mac
 
   mkdir -p "$HOME/.ssh"; chmod 700 "$HOME/.ssh"
   if [ -f "$KEY" ] && [ ! -f "$KEY.pub" ]; then
@@ -200,12 +227,46 @@ pair_this_mac() {
   FPR="$(ssh-keygen -lf "$KEY.pub" | awk '{print $2}')"
 
   say "Asking the dashboard to pair this Mac…"
-  RESP=$(node -e 'const [n,k]=process.argv.slice(1);process.stdout.write(JSON.stringify({deviceName:n,publicKey:k}))' "$NAME" "$PUB" \
-    | curl -fsS -X POST -H 'Content-Type: application/json' --data-binary @- "$DASHBOARD_URL/api/device/enrol/start") \
-    || fail "Could not reach $DASHBOARD_URL — check the internet connection and try again."
-  PARSED=$(printf '%s' "$RESP" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const j=JSON.parse(s);if(!j.userCode){console.error(j.error||s);process.exit(1)}console.log(j.userCode,j.deviceCode,j.approvePath)})') \
-    || fail "The dashboard refused the pairing request: $RESP"
-  read -r USER_CODE DEVICE_CODE APPROVE_PATH <<< "$PARSED"
+  # ── ONE NAME PER MAC, ASKED OF THE DASHBOARD (2026-10-09) ────────────────────
+  #
+  # The dashboard refuses a name another Mac already uses — two Macs with one name would both act
+  # as that Mac, both send, and revoking one would revoke both. A refused name is asked for again
+  # here, with the dashboard's suggestion as the default, at most five times. `curl` runs WITHOUT
+  # -f: with -f every refusal's body was discarded and the person was told to check their internet
+  # connection, whatever the dashboard had actually said.
+  USER_CODE=""; DEVICE_CODE=""; APPROVE_PATH=""; SERVER_NAME=""
+  TRIES=0
+  while :; do
+    TRIES=$((TRIES + 1))
+    RESP=$(node -e 'const [n,k]=process.argv.slice(1);process.stdout.write(JSON.stringify({deviceName:n,publicKey:k}))' "$NAME" "$PUB" \
+      | curl -sS -X POST -H 'Content-Type: application/json' --data-binary @- "$DASHBOARD_URL/api/device/enrol/start") \
+      || fail "Could not reach $DASHBOARD_URL — check the internet connection and try again."
+    PARSED=$(printf '%s' "$RESP" | node -e "$START_PARSER") || PARSED=unreachable
+    TAG=""; F1=""; F2=""; F3=""; F4=""
+    { IFS= read -r TAG; IFS= read -r F1; IFS= read -r F2; IFS= read -r F3; IFS= read -r F4; } <<< "$PARSED" || true
+    case "$TAG" in
+      ok) USER_CODE="$F1"; DEVICE_CODE="$F2"; APPROVE_PATH="$F3"; SERVER_NAME="$F4"; break ;;
+      taken)
+        [ "$TRIES" -lt 5 ] || fail "Could not find a free name — ask whoever runs the dashboard which names are in use."
+        if ! NAME=$(ask "Another Mac on the dashboard already uses the name “$F1”. Two Macs with one name would both act as that Mac, so each needs its own. Choose a name for THIS Mac:" "$F2"); then
+          fail "Setup was cancelled — open DS Sales Agent again to finish."
+        fi
+        NAME="$(printf '%s' "$NAME" | tr -cd 'A-Za-z0-9 ._-' | cut -c1-40)"
+        [ -n "$(printf '%s' "$NAME" | tr -d ' ')" ] || NAME=mac
+        ;;
+      refused) fail "The dashboard refused the pairing request: $F1" ;;
+      *) fail "Could not reach $DASHBOARD_URL — check the internet connection and try again." ;;
+    esac
+  done
+  # THE DASHBOARD'S NAME IS THE NAME. A key already paired keeps the name it is paired under, and
+  # the server cleans names its own way; writing the name typed here instead is how a Mac came to
+  # run under a name nothing on the server reserved. Cleaned again because set_env writes it raw.
+  TYPED_NAME="$NAME"
+  if [ -n "$SERVER_NAME" ]; then
+    NAME="$(printf '%s' "$SERVER_NAME" | tr -cd 'A-Za-z0-9 ._-' | cut -c1-40)"
+    [ -n "$(printf '%s' "$NAME" | tr -d ' ')" ] || NAME="$TYPED_NAME"
+  fi
+  [ "$NAME" = "$TYPED_NAME" ] || say "The dashboard knows this Mac as “$NAME” — it keeps that name."
 
   open "$DASHBOARD_URL$APPROVE_PATH"
   # ── YOU DO NOT NEED A DASHBOARD LOGIN TO PAIR THIS MAC (2026-09-07) ──────────
@@ -220,6 +281,7 @@ pair_this_mac() {
   # it yourself is the alternative, not the requirement.
   MSG="This Mac is waiting to be approved. Read the code and key below to whoever runs the dashboard — it is already showing on their Senders page under “Macs waiting to be approved”, and they can approve it from there.
 
+Name:  $NAME
 Code:  $USER_CODE
 Key:   $FPR
 
@@ -242,7 +304,14 @@ This window closes by itself once approved. The request expires in 15 minutes �
     read -r ST DBURL SSH_HOST SSH_USER MODEL_KEY <<< "$STATUS"
     case "$ST" in
       approved) break ;;
-      expired|unknown) [ -n "$DLG" ] && kill "$DLG" 2>/dev/null || true; fail "The pairing request expired or was not found. Open DS Sales Agent again and approve within 15 minutes." ;;
+      expired|unknown)
+        [ -n "$DLG" ] && kill "$DLG" 2>/dev/null || true
+        # A request WITHDRAWN at approval says why (2026-10-09) — usually that another Mac took this
+        # name meanwhile — and that, not "approve faster", is what the person needs to read. Read
+        # apart from the space-split line above: a sentence would spill into the fields after it.
+        REASON=$(printf '%s' "$P" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{const j=JSON.parse(s);process.stdout.write(String(j.reason||"").replace(/[\r\n]+/g," "))}catch(e){}})' || true)
+        [ -n "$REASON" ] && fail "$REASON"
+        fail "The pairing request expired or was not found. Open DS Sales Agent again and approve within 15 minutes." ;;
       # The server has no endpoint to hand over (9 Sept 2026). Its .env is missing a key; this
       # Mac did nothing wrong and its request is still waiting, so it retries rather than dying.
       misconfigured) [ -n "$DLG" ] && kill "$DLG" 2>/dev/null || true; fail "This Mac was approved, but the dashboard server is not yet configured to hand over its address. Tell Tabish: the server's .env needs DEVICE_SSH_HOST and DEVICE_DATABASE_URL. Your request is still waiting — open DS Sales Agent again once that is set." ;;
@@ -260,7 +329,6 @@ This window closes by itself once approved. The request expires in 15 minutes �
   write_ssh_config "$SSH_HOST" "$SSH_USER"
 }
 
-ENV_DONE_MARK="written by the DS Sales Agent installer"
 KEPT=0
 if [ -f "$DEST/.env" ] && grep -qF "$ENV_DONE_MARK" "$DEST/.env" && [ -f "$KEY" ]; then
   echo ".env and tunnel key already present — keeping them (re-checked once the tunnel is tried)"
@@ -325,6 +393,15 @@ if ! tunnel_up; then
   fi
 fi
 echo "tunnel is up (127.0.0.1:15432 → the shared database)"
+# ── THE BUILD STAMP, WRITTEN ONLY ONCE EVERYTHING ABOVE HAS WORKED (2026-10-09) ──
+#
+# The stamp the launcher compares against the image's VERSION, and what the agent reports as its
+# build on /senders (src/lib/buildVersion.ts reads it at start, so it lands BEFORE the agent is
+# restarted below). It used to be written right after the unpack, so an UPDATE that failed later —
+# a refused name, a cancelled dialog, a pairing nobody approved — left a matching stamp, and the
+# launcher, seeing the sentinel and equal versions, opened the dashboard on every later click and
+# never ran this installer again: a Mac with a dead tunnel and no way back short of a newer image.
+[ -f "$RES/VERSION" ] && cp "$RES/VERSION" "$DEST/.version"
 bash scripts/install-watch.sh install
 
 # ── 5. Done ───────────────────────────────────────────────────────────────────

@@ -78,6 +78,16 @@ describe('.env.example documents the whole environment', () => {
     expect(/^\s*#?\s*Instagram=/m.test(EXAMPLE)).toBe(false)
   })
 
+  /**
+   * THE PLACEHOLDER NAME WAS A SHARED NAME (2026-10-09). `DS_DEVICE_NAME="my-mac"` was assigned,
+   * and the setup doc says `cp .env.example .env` — so every machine set up by hand was "my-mac",
+   * and the sending Mac is chosen by name. Documented, commented out: unset means the hostname.
+   */
+  it('documents DS_DEVICE_NAME without assigning a placeholder every copy would share', () => {
+    expect(documents('DS_DEVICE_NAME')).toBe(true)
+    expect(EXAMPLE).not.toMatch(/^\s*DS_DEVICE_NAME=/m)
+  })
+
   /** No real secret may sit in a file that is committed. */
   it('carries no credential-shaped values', () => {
     expect(EXAMPLE).not.toMatch(/sk-[A-Za-z0-9]{16,}/)
