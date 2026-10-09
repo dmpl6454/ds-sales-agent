@@ -9,7 +9,7 @@ import { BRAND_BLOCKS, checkRecipientIsNotAPerson } from '@/outreach/brandGuards
 import { materialAllowance, campaignsNamingHandleRows } from '@/outreach/materialAllowance'
 import { crossSpacingVerdict } from '@/outreach/crossSpacing'
 import { replyHaltFloor, replyHaltKey } from '@/outreach/replyHalt'
-import { eligibleFleetSenderIds, readSenderAvailability } from '@/outreach/availability'
+import { eligibleFleetSenders, readSenderAvailability } from '@/outreach/availability'
 import { fleetRingOrder, nextSender } from '@/outreach/rotation'
 import { categoriesFor, readCategoryMemberships, ringMembersFor, unavailableForTarget } from '@/outreach/categories'
 import { parkBlocksRoute } from '@/outreach/parkedRows'
@@ -194,7 +194,7 @@ const REST_RULES: Record<string, { label: string; needsAPerson: boolean; clock?:
     needsAPerson: false,
   },
   [SKIP_REASONS.TARGET_RECENTLY_CONTACTED]: {
-    label: 'every one of our pages has written to them this week — they rest until the oldest of those is seven days old',
+    label: 'every page that writes to them has written to them this week — they rest until the oldest of those is seven days old',
     needsAPerson: false,
   },
   [SKIP_REASONS.NO_NEW_MATERIAL]: {
@@ -366,7 +366,7 @@ async function computeRestTally(now: Date): Promise<RestTally> {
   /* Preload from the EARLIER of the two floors: the stub narrows per caller, it cannot widen. */
   const preloadFloor = allowanceFloor < materialFloor ? allowanceFloor : materialFloor
 
-  const [targetRows, posts, attempts, pairs, eligibleSenderIds, unavailable, campaignUsage, memberships] =
+  const [targetRows, posts, attempts, pairs, eligibleFleet, unavailable, campaignUsage, memberships] =
     await Promise.all([
       /**
        * EVERY target row in ONE query, partitioned in JS.
@@ -449,7 +449,7 @@ async function computeRestTally(now: Date): Promise<RestTally> {
         where: { sender: { fleetMember: true } },
         select: { id: true, targetId: true, senderId: true, sender: { select: { id: true, handle: true, cohort: true } } },
       }),
-      eligibleFleetSenderIds(),
+      eligibleFleetSenders(),
       readSenderAvailability(),
       /**
        * ── WHICH CAMPAIGNS EACH PAIR HAS ALREADY WRITTEN ABOUT, IN ONE QUERY ────
@@ -848,7 +848,11 @@ async function computeRestTally(now: Date): Promise<RestTally> {
       windowDays: settings.defaultCooldownDays,
       crossPageGapHours: settings.crossPageGapHours,
       thisSenderId: electedId,
-      eligibleSenderIds: [...eligibleSenderIds],
+      /* Fleet-wide; the verdict narrows it to this recipient's fleet (M12), from the same
+         memberships the ring above was filtered by. */
+      eligibleSenders: eligibleFleet,
+      targetHandle: p.handle,
+      memberships,
       lastDeliveryBySender: lastBySenderPerTarget.get(p.id) ?? new Map(),
     })
     if (spacing.held) {

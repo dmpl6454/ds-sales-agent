@@ -1,5 +1,5 @@
 /**
- * `eligibleFleetSenderIds` — the PRODUCER of the ring rule's "all our pages" set,
+ * `eligibleFleetSenders` — the PRODUCER of the ring rule's "all our pages" set,
  * against a real database file.
  *
  * `tests/cross-spacing.test.ts` proves what the ring predicate DOES with an eligible
@@ -61,11 +61,16 @@ bootstrap.exec(`
 bootstrap.close()
 
 process.env.DATABASE_URL = `file:${dbPath}`
-const { eligibleFleetSenderIds } = await import('@/outreach/availability')
+const { eligibleFleetSenders } = await import('@/outreach/availability')
 
-describe('eligibleFleetSenderIds', () => {
+describe('eligibleFleetSenders', () => {
+  /**
+   * FLEET-WIDE, with the handle carried. The narrowing to a recipient's own fleet happens
+   * inside `crossSpacingVerdict` (M12), keyed by handle — so the producer must hand the handle
+   * over and must NOT filter by category itself, or two places would own the fleet rule.
+   */
   it('counts exactly the fleet members rotation could elect — and no one else', async () => {
-    const ids = await eligibleFleetSenderIds()
-    expect(ids).toEqual(['s-eligible'])
+    const senders = await eligibleFleetSenders()
+    expect(senders).toEqual([{ id: 's-eligible', handle: 's-eligible' }])
   })
 })

@@ -114,3 +114,54 @@ export function crossCategoryDetail(
   const t = effectiveCategories(targetSlugs).join(', ')
   return `this page sends for ${s} and this recipient belongs to ${t} — the two fleets never write to each other's companies`
 }
+
+/**
+ * WHICH CATEGORY DOES EACH SENDER AND EACH RECIPIENT BELONG TO — the SHAPE of the answer.
+ *
+ * The reader (`readCategoryMemberships`, two queries for the whole fleet) lives in
+ * `categories.ts`, which touches the database. The shape and the lookups over it live
+ * here, beside `sameCategory`, so a PURE module (`crossSpacing.ts`, which `governor.ts`
+ * imports) can apply the fleet rule without importing Prisma. `categories.ts` re-exports
+ * both, so every existing import keeps working.
+ *
+ * Keyed by HANDLE, because `routes.ts` asks in handles — a sender row and a target row for
+ * the same account are two different ids, and an id-keyed map would silently answer for the
+ * wrong one.
+ *
+ * An EMPTY list for a handle is the correct and common answer, and it does not mean
+ * "unrestricted": `effectiveCategories` reads it as the default category.
+ */
+export interface CategoryMemberships {
+  bySenderHandle: ReadonlyMap<string, string[]>
+  byTargetHandle: ReadonlyMap<string, string[]>
+}
+
+/** The categories one handle belongs to, or `[]` — which `effectiveCategories` reads as the default. */
+export function categoriesFor(map: ReadonlyMap<string, string[]>, handle: string): readonly string[] {
+  return map.get(handle.toLowerCase()) ?? []
+}
+
+/**
+ * THE PAGES THAT CAN WRITE TO THIS RECIPIENT ON CATEGORY GROUNDS — the ONE fleet filter.
+ *
+ * Two questions ask it and they must not disagree (rule 45, *every ring passes through the
+ * fleet filter*):
+ *
+ *   rotation       who may be ELECTED to write next (`ringMembersFor` delegates here)
+ *   the ring rule  who counts as "all our pages" for the 7-day rest (`crossSpacingVerdict`)
+ *
+ * M12, 2026-10-09: the ring rule counted the WHOLE fleet. @madaboutmarketingg holds only
+ * `marketing`, so it can never deliver to a bollywood recipient — `routes.ts` refuses the
+ * route, `gate.ts` refuses the send, rotation never elects it — and "every page has written"
+ * was therefore unsatisfiable for every bollywood recipient. The rest Tabish asked for
+ * ("the 7 day constraint … only if target has been contacted by all targets") never fired
+ * on the fleet that sends most. A page that can never write here is not one of "all".
+ */
+export function fleetMembersFor<T extends { handle: string }>(
+  senders: readonly T[],
+  targetHandle: string,
+  memberships: CategoryMemberships,
+): T[] {
+  const targetCats = categoriesFor(memberships.byTargetHandle, targetHandle)
+  return senders.filter((s) => sameCategory(categoriesFor(memberships.bySenderHandle, s.handle), targetCats))
+}

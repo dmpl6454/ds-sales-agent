@@ -1,7 +1,8 @@
 import { describe, it, expect } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
-import { templateForRoute, routeFleets, fleetTemplateKey } from '@/outreach/fleetTemplate'
+import { templateForRoute, routeFleets, fleetTemplateKey, isStandardMessageBody, SINGLE_TEMPLATE_MIDDLE } from '@/outreach/fleetTemplate'
+import { FOLLOW_UP_POST_TOKEN, followUpPostReference, renderFollowUp } from '@/outreach/followUpTemplate'
 import { DEFAULT_CATEGORY_SLUG, MARKETING_CATEGORY_SLUG } from '@/outreach/senderCategories'
 
 const ROOT_DIR = resolve(__dirname, '..')
@@ -217,5 +218,59 @@ describe('the composer cannot quietly fall back to the default copy', () => {
     const m = rule.match(/export const SINGLE_TEMPLATE_MIDDLE = `([^`]+)`/)
     expect(m, 'the shipped standard message is no longer where this test looks for it').toBeTruthy()
     expect(m![1]!.trim().length).toBeGreaterThan(40)
+  })
+})
+
+/**
+ * ── IS THIS STORED BODY OUR INTRODUCTION? (H5, 2026-10-09) ─────────────────
+ *
+ * The gate and the planner's sweep refuse/discard our introduction to a company that already
+ * knows us, and they recognise the introduction BY ITS BYTES: the composer writes a first
+ * touch as the fleet's copy verbatim. A SET of every standard message, so a draft written with
+ * the shipped copy before an override was saved is still recognised, and so is any fleet's.
+ */
+describe('isStandardMessageBody', () => {
+  const OVERRIDE = 'Hi,An override of the standard message, long enough to be a sendable template.'
+  const MARKETING = 'Hi,The marketing fleet’s own standard message, also long enough to be sendable.'
+  const none = { singleTemplateBody: null, fleetTemplateBodies: new Map<string, string>() }
+  const withOverride = { singleTemplateBody: OVERRIDE, fleetTemplateBodies: new Map([[MARKETING_CATEGORY_SLUG, MARKETING]]) }
+
+  it('the shipped copy is our introduction with no override saved', () => {
+    expect(isStandardMessageBody(SINGLE_TEMPLATE_MIDDLE, none)).toBe(true)
+  })
+
+  it('the shipped copy is STILL our introduction after an override is saved — a draft written before it carries those bytes', () => {
+    expect(isStandardMessageBody(SINGLE_TEMPLATE_MIDDLE, withOverride)).toBe(true)
+  })
+
+  it('the override, and another fleet’s copy, are introductions too', () => {
+    expect(isStandardMessageBody(OVERRIDE, withOverride)).toBe(true)
+    expect(isStandardMessageBody(MARKETING, withOverride)).toBe(true)
+  })
+
+  it('surrounding whitespace does not hide one — every writer trims', () => {
+    expect(isStandardMessageBody(`\n  ${SINGLE_TEMPLATE_MIDDLE}  \n`, none)).toBe(true)
+    expect(isStandardMessageBody(`  ${OVERRIDE}\n`, withOverride)).toBe(true)
+  })
+
+  it('a follow-up is never one — its body names a post, and {{post}} is required in that copy', () => {
+    const followUp = renderFollowUp(
+      `Hi,Following up on ${FOLLOW_UP_POST_TOKEN} — we can put that same campaign in front of 300M+ daily views.`,
+      followUpPostReference({ postedAt: new Date('2026-10-08T06:00:00Z'), subject: 'Toxic' }),
+    )
+    expect(isStandardMessageBody(followUp, withOverride)).toBe(false)
+  })
+
+  it('null, empty and an unrelated body are not — absence is not a refusal', () => {
+    expect(isStandardMessageBody(null, withOverride)).toBe(false)
+    expect(isStandardMessageBody('', withOverride)).toBe(false)
+    expect(isStandardMessageBody('   ', withOverride)).toBe(false)
+    expect(isStandardMessageBody('a hand-edited message a person chose the words of', withOverride)).toBe(false)
+  })
+
+  it('an empty fleet body in the map never makes the empty string a standard message', () => {
+    const blank = { singleTemplateBody: null, fleetTemplateBodies: new Map([[MARKETING_CATEGORY_SLUG, '   ']]) }
+    expect(isStandardMessageBody('', blank)).toBe(false)
+    expect(isStandardMessageBody(' ', blank)).toBe(false)
   })
 })

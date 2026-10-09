@@ -216,6 +216,45 @@ export function isFollowUp(args: { touchesSoFar: number; targetHasEverReplied: b
 }
 
 /**
+ * OUR INTRODUCTION, ABOUT TO GO TO SOMEONE WHO ALREADY KNOWS US (H5, 2026-10-09) — the ONE rule.
+ *
+ * Tabish, 2026-09-04: *"if the 7 day period has passed and they have replied then we don't
+ * need to ever send the normal message to them again ever."* The COMPOSERS obey it — they ask
+ * `isFollowUp` with `targetHasEverReplied` and write follow-up bytes. A DRAFT written before
+ * the reply was recorded does not: page B's introduction, queued while page A's conversation
+ * was still silent, sat READY with the standard bytes; A's recipient replied; in pair scope
+ * B's draft is not reply-halted, the gate read `isFollowUp` as true and asked only the
+ * follow-up stops (same day, copy written, date-only), none of which looks at what the bytes
+ * ARE — so the introduction went out to a company already in a conversation with us. In target
+ * scope the same thing happened once the reply was seven days old.
+ *
+ * The test: the stored body is one of our standard messages AND this message counts as a
+ * follow-up. "Follow-up" is read from LIVE facts, not only the stored touch number:
+ *   - `targetHasEverReplied` — they have answered one of our pages;
+ *   - `pairHasDelivered` — THIS page has already delivered to them. The stored touch number
+ *     can be 1 on a pair that has a delivery (the on-demand dialog may cross a waiting draft
+ *     and deliver a second one), and without this the queued introduction would go out as the
+ *     pair's second message.
+ *
+ * Two callers and they must not disagree: the gate (refuses to send it) and the planner's
+ * sweep (`staleIntroductions.ts`, discards it so the page's turn is not held forever). PURE.
+ */
+export function isIntroductionToSomeoneWhoKnowsUs(a: {
+  storedBodyIsStandardMessage: boolean
+  storedTouchNumber: number
+  pairHasDelivered: boolean
+  targetHasEverReplied: boolean
+}): boolean {
+  return (
+    a.storedBodyIsStandardMessage &&
+    isFollowUp({
+      touchesSoFar: Math.max(a.storedTouchNumber - 1, a.pairHasDelivered ? 1 : 0),
+      targetHasEverReplied: a.targetHasEverReplied,
+    })
+  )
+}
+
+/**
  * HOW A FOLLOW-UP NAMES THE POST IT IS FOR — "your placement on 30 Aug", and NOTHING ELSE.
  *
  * ── WE NEVER NAME THE PUBLISHER. THIS FUNCTION CANNOT (2026-09-01, Tabish) ────

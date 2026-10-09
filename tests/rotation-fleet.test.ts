@@ -830,6 +830,72 @@ describe('rotation never elects a page the enforcers refuse', () => {
     for (const c of calls) expect(c, `unfiltered fleet ring: ${c}`).toMatch(/:\s*ringMembersFor\(/)
   })
 
+  /**
+   * ROTATION AND THE RING RULE SHARE ONE FLEET FILTER (M12, rule 45). The ring rule's "all
+   * our pages" counted the whole fleet while rotation counted the recipient's own, so a
+   * marketing-only page that rotation never elects for a bollywood recipient was still one of
+   * "all" — and the 7-day rest could never fire. Both now go through `fleetMembersFor`; this
+   * pins it structurally (a new private copy of the filter fails here) and behaviourally (the
+   * ring rotation elects from IS the ring the rest counts).
+   */
+  it('rotation and the 7-day ring rule ask the same fleet filter', async () => {
+    const { readFileSync, readdirSync, statSync } = await import('node:fs')
+    const { join: j, relative } = await import('node:path')
+    const strip = (s: string) => s.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')
+    const body = (rel: string, fn: string) => {
+      const src = strip(readFileSync(j(process.cwd(), rel), 'utf8'))
+      const at = src.indexOf(`export function ${fn}`)
+      expect(at, `${rel}: ${fn} not found`).toBeGreaterThanOrEqual(0)
+      return src.slice(at, src.indexOf('\n}\n', at))
+    }
+    expect(body('src/outreach/categories.ts', 'ringMembersFor')).toContain('fleetMembersFor(')
+    expect(body('src/outreach/crossSpacing.ts', 'crossSpacingVerdict')).toContain('fleetMembersFor(')
+
+    // No third private fleet filter: `sameCategory(` is asked per PAIR by routes.ts and
+    // gate.ts, and over a sender LIST only by the one filter in senderCategories.ts.
+    const walk = (d: string): string[] =>
+      readdirSync(d).flatMap((n) => {
+        const p = j(d, n)
+        return statSync(p).isDirectory() ? (n === 'generated' ? [] : walk(p)) : /\.tsx?$/.test(n) ? [p] : []
+      })
+    const askers = walk(j(process.cwd(), 'src'))
+      .filter((f) => /\bsameCategory\(/.test(strip(readFileSync(f, 'utf8')).replace(/export function sameCategory\(/, '')))
+      .map((f) => relative(process.cwd(), f))
+      .sort()
+    expect(askers).toEqual(['src/outreach/gate.ts', 'src/outreach/routes.ts', 'src/outreach/senderCategories.ts'])
+
+    const { ringMembersFor } = await import('@/outreach/categories')
+    const { crossSpacingVerdict } = await import('@/outreach/crossSpacing')
+    const memberships = {
+      bySenderHandle: new Map<string, string[]>([
+        ['chron', ['bollywood', 'marketing']],
+        ['soc', ['bollywood', 'marketing']],
+        ['mad', ['marketing']],
+      ]),
+      byTargetHandle: new Map<string, string[]>([['mkt-co', ['marketing']]]),
+    }
+    const fleet = ['chron', 'soc', 'mad', 'plain'].map((h, i) => ({ id: `id_${h}`, handle: h, cohort: i + 1 }))
+    const now = new Date('2026-10-09T12:00:00Z')
+    const everyoneWrote = new Map(fleet.map((s) => [s.id, { sentAt: new Date(now.getTime() - 3_600_000), handle: s.handle }]))
+    for (const target of ['boll-co', 'mkt-co']) {
+      const rotationRing = ringMembersFor(fleet, target, memberships)
+      const v = crossSpacingVerdict({
+        now,
+        windowDays: 7,
+        crossPageGapHours: 0,
+        thisSenderId: fleet[0]!.id,
+        eligibleSenders: fleet,
+        targetHandle: target,
+        memberships,
+        lastDeliveryBySender: everyoneWrote,
+      })
+      expect(v.held && v.kind === 'ring-complete' && v.senderCount, target).toBe(rotationRing.length)
+    }
+    // And the two fleets genuinely differ here, or the comparison above proves nothing.
+    expect(ringMembersFor(fleet, 'boll-co', memberships).map((s) => s.handle)).toEqual(['chron', 'soc', 'plain'])
+    expect(ringMembersFor(fleet, 'mkt-co', memberships).map((s) => s.handle)).toEqual(['chron', 'soc', 'mad'])
+  })
+
   it('an unreadable park rests its page for a week, not forever and not never; a failed send rests it until settled', async () => {
     await addSender('alpha')
     await addSender('bravo')

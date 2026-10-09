@@ -21,7 +21,8 @@ import { recheckBeforeSend } from '@/outreach/gate'
 import { replyHaltFloor, replyHaltKey } from '@/outreach/replyHalt'
 import { crossSpacingVerdict, crossSpacingDetail } from '@/outreach/crossSpacing'
 import { materialAllowance, materialAllowanceDetail, campaignsNamingHandle } from '@/outreach/materialAllowance'
-import { eligibleFleetSenderIds } from '@/outreach/availability'
+import { eligibleFleetSenders } from '@/outreach/availability'
+import { readCategoryMemberships } from '@/outreach/categories'
 import type { OnDemandRecipient, OnDemandSender } from '../on-demand'
 
 /**
@@ -400,11 +401,13 @@ async function computeMessagesPage(): Promise<MessagesPageView> {
    *             (TARGET_REPLIED), resume time from the same arithmetic as replyHalt.ts.
    *
    * Three reads for the whole queue: deliveries-in-window, replies-in-window, and the
-   * eligible-sender set.
+   * eligible-sender set — plus the fleet memberships, which the ring rule narrows that set
+   * by (M12). Request-cached: the head-row gate call and `buildRestTally` on `/` read them
+   * in the same render, so they cost nothing extra there.
    */
   const now = new Date()
   const cooldownFloor = new Date(now.getTime() - settings.defaultCooldownDays * 24 * 60 * 60 * 1000)
-  const [recentDeliveries, repliedRows, eligibleSenderIds] = await Promise.all([
+  const [recentDeliveries, repliedRows, eligibleFleet, memberships] = await Promise.all([
     prisma.outreachAttempt.findMany({
       where: { status: { in: [...DELIVERED_STATUSES] }, sentAt: { gte: cooldownFloor } },
       select: { targetId: true, sentAt: true, pair: { select: { senderId: true, sender: { select: { handle: true } } } } },
@@ -420,7 +423,8 @@ async function computeMessagesPage(): Promise<MessagesPageView> {
          gate dropped is the same defect as a page promising a send the gate refuses. */
       select: { targetId: true, senderId: true, replyPostedAt: true },
     }),
-    eligibleFleetSenderIds(),
+    eligibleFleetSenders(),
+    readCategoryMemberships(),
   ])
   /** target → (senderId → that page's newest in-window delivery). Asc order: later rows win. */
   const deliveriesByTarget = new Map<string, Map<string, { sentAt: Date; handle: string }>>()
@@ -504,7 +508,9 @@ async function computeMessagesPage(): Promise<MessagesPageView> {
   }
 
   /** Reply first, then material, then spacing — the gate's own order, so the sentence names the deeper stop. */
-  const holdFor = (draft: { senderId: string; targetId: string; targetHandle?: string }): { why: string; resumesAt: Date } | null => {
+  /* `targetHandle` is REQUIRED: the ring rule reads the recipient's fleet from it, and an
+     optional handle would silently read as the default fleet (M12). */
+  const holdFor = (draft: { senderId: string; targetId: string; targetHandle: string }): { why: string; resumesAt: Date } | null => {
     const replyResume = replyResumesAt.get(
       replyHaltKey(settings.replyHaltScope, { senderId: draft.senderId, targetId: draft.targetId }),
     )
@@ -535,7 +541,9 @@ async function computeMessagesPage(): Promise<MessagesPageView> {
       windowDays: settings.defaultCooldownDays,
       crossPageGapHours: settings.crossPageGapHours,
       thisSenderId: draft.senderId,
-      eligibleSenderIds,
+      eligibleSenders: eligibleFleet,
+      targetHandle: draft.targetHandle,
+      memberships,
       lastDeliveryBySender: deliveriesByTarget.get(draft.targetId) ?? new Map(),
     })
     return v.held ? { why: crossSpacingDetail(v)!, resumesAt: v.resumesAt } : null

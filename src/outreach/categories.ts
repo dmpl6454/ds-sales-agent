@@ -2,7 +2,7 @@ import { cache } from 'react'
 import { prisma } from '@/lib/db'
 import { DELIVERED_STATUSES } from '@/lib/constants'
 import { fleetRingOrder, nextSender, type RingMember, type RotationChoice } from './rotation'
-import { sameCategory } from './senderCategories'
+import { categoriesFor, fleetMembersFor, type CategoryMemberships } from './senderCategories'
 import { replyHaltFloor, type ReplyHaltScope } from './replyHalt'
 import { getSettings } from '@/lib/settings'
 import { parkBlocksRoute } from './parkedRows'
@@ -191,8 +191,8 @@ export function ringMembersFor<T extends { id: string; handle: string; cohort: n
   targetHandle: string,
   memberships: CategoryMemberships,
 ): T[] {
-  const targetCats = categoriesFor(memberships.byTargetHandle, targetHandle)
-  return senders.filter((s) => sameCategory(categoriesFor(memberships.bySenderHandle, s.handle), targetCats))
+  /* ONE fleet filter for rotation and the ring rule (rule 45; M12) — see fleetMembersFor. */
+  return fleetMembersFor(senders, targetHandle, memberships)
 }
 
 /**
@@ -611,6 +611,11 @@ export async function reorderRing(categoryId: string, senderIdsInOrder: readonly
   }
 }
 
+/* The shape and the lookups over it moved to `senderCategories.ts` (M12) so the PURE ring
+   rule can apply the fleet filter without importing Prisma; re-exported so every existing
+   import keeps working. */
+export { categoriesFor, type CategoryMemberships }
+
 /**
  * WHICH CATEGORY DOES EACH SENDER AND EACH RECIPIENT BELONG TO?
  *
@@ -627,11 +632,6 @@ export async function reorderRing(categoryId: string, senderIdsInOrder: readonly
  * "unrestricted": `effectiveCategories` reads it as the default category. See
  * `senderCategories.ts`.
  */
-export interface CategoryMemberships {
-  bySenderHandle: ReadonlyMap<string, string[]>
-  byTargetHandle: ReadonlyMap<string, string[]>
-}
-
 export const readCategoryMemberships = cache(async (): Promise<CategoryMemberships> => {
   const [senderRows, targetRows] = await Promise.all([
     prisma.categorySender.findMany({
@@ -659,8 +659,3 @@ export const readCategoryMemberships = cache(async (): Promise<CategoryMembershi
   }
   return { bySenderHandle, byTargetHandle }
 })
-
-/** The categories one handle belongs to, or `[]` — which `effectiveCategories` reads as the default. */
-export function categoriesFor(map: ReadonlyMap<string, string[]>, handle: string): readonly string[] {
-  return map.get(handle.toLowerCase()) ?? []
-}

@@ -62,7 +62,7 @@ vi.mock('@/lib/db', () => ({
 const { composeForPair, unusedCampaignCount, NoVariantsError, VariantsExhaustedError, SINGLE_TEMPLATE_MIDDLE } =
   await import('@/outreach/compose')
 const { newMaterialFloor } = await import('@/lib/cutoff')
-import { templateForSettings } from '@/outreach/fleetTemplate'
+import { templateForSettings, isStandardMessageBody } from '@/outreach/fleetTemplate'
 import { followUpForSettings } from '@/outreach/followUpTemplate'
 
 /**
@@ -195,6 +195,43 @@ describe('the standard template is what composing returns by default', () => {
     expect(r.body).toBe(SINGLE_TEMPLATE_MIDDLE)
     // The pool is ordered least-recently-used first, so the wrap lands on its head.
     expect(r.variantId).toBe('var_1')
+  })
+
+  /**
+   * ── THE WRITER AND THE PROBE SHARE BYTES (H5, 2026-10-09) ─────────────────────
+   *
+   * The gate and the planner's sweep recognise our INTRODUCTION by its stored bytes
+   * (`isStandardMessageBody`). That only works while the composer writes the fleet's copy
+   * verbatim — a composer that prepended or appended anything would make every stale
+   * introduction invisible to both, silently. Driven with the shipped copy and with an
+   * override, because the probe must recognise both.
+   */
+  it('a first touch is recognised as our introduction by the same predicate the gate asks', async () => {
+    settingRows.mockReturnValue([])
+    const shipped = { singleTemplateBody: null, fleetTemplateBodies: new Map<string, string>() }
+    const r = await composeForPair({
+      fleetTemplate: templateForSettings(shipped, [], []),
+      followUpTemplate: FOLLOW_UP_WRITTEN,
+      pair: pair(),
+      senderHandle: 'bollywoodsocietyy',
+      touchNumber: 1,
+      targetHasEverReplied: false,
+    })
+    expect(isStandardMessageBody(r.body, shipped)).toBe(true)
+
+    const override = {
+      singleTemplateBody: '  Hi,An override of the standard message, long enough to be a sendable template.  ',
+      fleetTemplateBodies: new Map<string, string>(),
+    }
+    const o = await composeForPair({
+      fleetTemplate: templateForSettings(override, [], []),
+      followUpTemplate: FOLLOW_UP_WRITTEN,
+      pair: pair(),
+      senderHandle: 'bollywoodsocietyy',
+      touchNumber: 1,
+      targetHasEverReplied: false,
+    })
+    expect(isStandardMessageBody(o.body, override)).toBe(true)
   })
 })
 

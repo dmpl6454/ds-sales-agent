@@ -53,11 +53,16 @@ export async function readSenderAvailability(): Promise<Map<string, string>> {
  * Linode and the gate asks on the Mac, and a filesystem fact here would make the two
  * enforcers disagree (the trap this file's header documents). Built ON
  * readSenderAvailability so "who rotation skips" and "who the ring counts" never drift.
+ *
+ * FLEET-WIDE, deliberately, with the HANDLE carried: which of these pages may write to a
+ * given recipient is a question about that recipient, and `crossSpacingVerdict` answers it
+ * through the same fleet filter rotation uses (M12). Returning bare ids is how the ring
+ * rule came to count a marketing page as one of "all" for every bollywood recipient.
  */
-export async function eligibleFleetSenderIds(): Promise<string[]> {
+export async function eligibleFleetSenders(): Promise<{ id: string; handle: string }[]> {
   const [fleet, unavailable] = await Promise.all([
-    prisma.senderAccount.findMany({ where: { fleetMember: true, status: 'ACTIVE' }, select: { id: true } }),
+    prisma.senderAccount.findMany({ where: { fleetMember: true, status: 'ACTIVE' }, select: { id: true, handle: true } }),
     readSenderAvailability(),
   ])
-  return fleet.map((s) => s.id).filter((id) => !unavailable.has(id))
+  return fleet.filter((s) => !unavailable.has(s.id))
 }

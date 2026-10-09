@@ -91,7 +91,12 @@ const RING_HOLD = crossSpacingVerdict({
   windowDays: 7,
   crossPageGapHours: 24,
   thisSenderId: 's1',
-  eligibleSenderIds: ['s1', 's2'],
+  eligibleSenders: [
+    { id: 's1', handle: 's1' },
+    { id: 's2', handle: 's2' },
+  ],
+  targetHandle: 't',
+  memberships: { bySenderHandle: new Map(), byTargetHandle: new Map() },
   lastDeliveryBySender: new Map([
     ['s1', { sentAt: new Date(NOW.getTime() - 3 * 86_400_000), handle: 'bollywoodchronicle' }],
     ['s2', { sentAt: new Date(NOW.getTime() - 2 * 86_400_000), handle: 'bollywoodsocietyy' }],
@@ -266,6 +271,7 @@ function gateInput(over: Record<string, unknown> = {}) {
     maxPerPairPerDay: 5,
     crossSpacing: { held: false },
     isFollowUp: false,
+    introducesUsToSomeoneWhoKnowsUs: false,
     followUpCitesOnlyADate: false,
     followUpTemplate: FOLLOW_UP_WRITTEN,
     ...over,
@@ -305,6 +311,12 @@ const GATE_CASES: Array<[string, Record<string, unknown>]> = [
   ],
   // Verified only (2026-08-20). NULL is refused too — see the second case.
   [RESEND_BLOCKS.TARGET_NOT_VERIFIED, { targetIsVerified: false }],
+  /**
+   * OUR INTRODUCTION TO SOMEONE WHO KNOWS US (H5, 2026-10-09). A draft written before the
+   * recipient replied to another of our pages still carries the standard bytes; the composers
+   * would never write it now ("never send the normal message to them again ever").
+   */
+  [RESEND_BLOCKS.INTRODUCTION_TO_SOMEONE_WHO_KNOWS_US, { introducesUsToSomeoneWhoKnowsUs: true }],
   [RESEND_BLOCKS.TARGET_REPLIED, { targetRepliedAt: new Date('2026-08-19T12:00:00Z') }],
   /**
    * ── THE DUPLICATE GUARD (2026-08-21) ──────────────────────────────────────
@@ -333,9 +345,11 @@ const GATE_CASES: Array<[string, Record<string, unknown>]> = [
   /**
    * ── A FOLLOW-UP DRAFT WITH NO FOLLOW-UP MESSAGE (2026-09-01) ─────────────
    *
-   * The gate's end of the governor's twin above. Reachable only on a draft whose stored
-   * `touchNumber > 1` — a first touch never sees it, which is what makes an unwritten
-   * follow-up leave first-touch sending byte-for-byte as it was.
+   * The gate's end of the governor's twin above. Reachable only on a message that counts as a
+   * follow-up — a stored `touchNumber > 1`, or (since 2026-09-04) a recipient who has ever
+   * replied to any of our pages. A genuine first touch to someone who has never answered us
+   * never sees it, which is what makes an unwritten follow-up leave first-touch sending
+   * byte-for-byte as it was.
    */
   [RESEND_BLOCKS.FOLLOW_UP_TEMPLATE_NOT_SET, { isFollowUp: true, followUpTemplate: FOLLOW_UP_UNWRITTEN }],
   /**
@@ -393,6 +407,24 @@ describe('every gate stop is reachable and explains itself', () => {
     )
     expect(r.ok, 'an override sent a message Instagram will silently drop').toBe(false)
     if (!r.ok) expect(r.reason).toBe(RESEND_BLOCKS.IDENTICAL_TO_A_SENT_MESSAGE)
+  })
+
+  /**
+   * NOT OVERRIDABLE, and the one crossable stop is no back door to it. A present person may
+   * cross the reply halt; doing so must not deliver our INTRODUCTION to the company that
+   * replied — they receive follow-ups, and the on-demand dialog composes one.
+   */
+  it('refuses to let anyone override an introduction to someone who knows us — even beside a crossed reply halt', () => {
+    const r = evaluateResend(
+      gateInput({
+        introducesUsToSomeoneWhoKnowsUs: true,
+        targetRepliedAt: new Date('2026-10-09T08:00:00Z'),
+        unattended: false,
+        overrides: [RESEND_BLOCKS.TARGET_REPLIED, RESEND_BLOCKS.INTRODUCTION_TO_SOMEONE_WHO_KNOWS_US],
+      }),
+    )
+    expect(r.ok, 'an override delivered our introduction to a company already talking to us').toBe(false)
+    if (!r.ok) expect(r.reason).toBe(RESEND_BLOCKS.INTRODUCTION_TO_SOMEONE_WHO_KNOWS_US)
   })
 
   it('refuses to let anyone override a missing follow-up message', () => {
@@ -560,6 +592,9 @@ describe('every gate stop is reachable and explains itself', () => {
       /* WHAT THE MESSAGE SAYS. There are no bytes to send, so there is nothing to cross —
          the remedy is a textarea, exactly as for the standard message above. */
       RESEND_BLOCKS.FOLLOW_UP_TEMPLATE_NOT_SET,
+      /* WHAT THE MESSAGE SAYS AND TO WHOM: our introduction, to a company that already knows
+         us. Tabish's words are absolute ("never … again ever"). */
+      RESEND_BLOCKS.INTRODUCTION_TO_SOMEONE_WHO_KNOWS_US,
     ]
     for (const code of absolute) {
       expect(OVERRIDABLE_BLOCKS, `${code} must never be crossable`).not.toContain(code)

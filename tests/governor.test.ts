@@ -280,7 +280,11 @@ describe('cross-account spacing at drafting (the ring rule since 2026-08-19)', (
       windowDays: 7,
       crossPageGapHours: 24,
       thisSenderId: 's1',
-      eligibleSenderIds: args.eligible,
+      /* No fleet memberships: everyone reads as the default fleet, so the ring is exactly
+         `eligible` — the meaning these cases had before the ring was narrowed by fleet (M12). */
+      eligibleSenders: args.eligible.map((id) => ({ id, handle: id })),
+      targetHandle: 't',
+      memberships: { bySenderHandle: new Map(), byTargetHandle: new Map() },
       lastDeliveryBySender: new Map(
         args.deliveredHoursAgo.map(([id, h]) => [id, { sentAt: new Date(NOW.getTime() - h * HOUR), handle: id }]),
       ),

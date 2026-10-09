@@ -2,7 +2,7 @@ import { profileGoneFloor, splitParks } from './parkedRows'
 import { prisma } from '@/lib/db'
 import { templateForSettings, type FleetTemplate } from './fleetTemplate'
 import { env } from '@/lib/env'
-import { log } from '@/lib/logger'
+import { describeError, log } from '@/lib/logger'
 import { getSettings } from '@/lib/settings'
 import { istDayStart } from '@/lib/time'
 import { newMaterialFloor } from '@/lib/cutoff'
@@ -10,7 +10,7 @@ import { DELIVERED_STATUSES, IN_FLIGHT_STATUSES } from '@/lib/constants'
 import { evaluatePair, type GovernorDecision } from './governor'
 import { crossSpacingVerdict } from './crossSpacing'
 import { materialAllowance, campaignsNamingHandle, campaignsNamingHandleRows } from './materialAllowance'
-import { eligibleFleetSenderIds } from './availability'
+import { eligibleFleetSenders } from './availability'
 import { routeAllowed } from './routes'
 import { readCategoryMemberships, categoriesFor, ringMembersFor } from './categories'
 import { composeForPair, freshCampaignsFor, readPersonHandles, readWatchChannels } from './compose'
@@ -26,6 +26,7 @@ import { describeRing, whoseTurn, type WhoseTurnResult } from './categories'
 import { fleetRingOrder } from './rotation'
 import { checkNewBrandTouchCap, checkRecipientIsNotAPerson } from './brandGuards'
 import { readNewBrandTouchCounts } from './brandTouchCounts'
+import { discardIntroductionsToRecipientsWhoKnowUs } from './staleIntroductions'
 /**
  * The ONLY sender this file imports, since Phase 5. `browserSender` was here too and is
  * deliberately not any more: the planner prepares and `dispatchTick` delivers, so a second
@@ -185,6 +186,30 @@ export async function runOutreach(): Promise<PlanSummary> {
   const dayStart = istDayStart(now)
 
   await ensureFleetPairs()
+
+  /**
+   * ── FIRST, RELEASE THE INTRODUCTIONS THAT CAN NEVER BE SENT (H5) ─────────
+   *
+   * A waiting introduction to a recipient who has since replied to one of our pages (or that
+   * this page has already delivered to) is refused by the gate forever, and while it waits it
+   * holds its pair (`hasPendingAttempt`) — and through rotation, the recipient. Discarded HERE,
+   * before the pending counts below are read, so the same pass can write that page's follow-up
+   * instead. See staleIntroductions.ts for why the planner, not the dispatcher.
+   *
+   * It must never fail a planning pass: the gate keeps refusing these in the meantime, so a
+   * failed sweep costs a stalled pair for fifteen minutes, while a thrown pass costs every
+   * draft in the fleet. Alarmed, never swallowed silently.
+   */
+  try {
+    const swept = await discardIntroductionsToRecipientsWhoKnowUs({ settings, actor: 'planner' })
+    if (swept.discarded > 0) {
+      log.info('discarded introductions to recipients who already know us', { discarded: swept.discarded })
+    }
+  } catch (err) {
+    log.alarm('the sweep for introductions to recipients who already know us failed — the gate still refuses them', {
+      error: describeError(err),
+    })
+  }
 
   /**
    * Scoped to the FLEET. `ensureFleetPairs` only ever creates fleet rows, but historical
@@ -385,8 +410,9 @@ export async function runOutreach(): Promise<PlanSummary> {
   /**
    * The ring rule's "all our pages" set — ONE query per run, not per pair. `/`'s query
    * budget is a ceiling over a bounded design, and this loop already runs per pair.
+   * Fleet-wide here; `crossSpacingVerdict` narrows it to each recipient's own fleet (M12).
    */
-  const eligibleSenderIds = await eligibleFleetSenderIds()
+  const eligibleFleet = await eligibleFleetSenders()
 
   /**
    * Bodies each pair has already DELIVERED — one query for the whole run, not one per pair.
@@ -633,7 +659,9 @@ export async function runOutreach(): Promise<PlanSummary> {
         windowDays: settings.defaultCooldownDays,
         crossPageGapHours: settings.crossPageGapHours,
         thisSenderId: pair.senderId,
-        eligibleSenderIds,
+        eligibleSenders: eligibleFleet,
+        targetHandle: pair.target.handle,
+        memberships,
         lastDeliveryBySender: new Map(
           ringDeliveries
             .filter((r) => r.sentAt !== null)

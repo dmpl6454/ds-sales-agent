@@ -64,6 +64,7 @@ const gateInput = (over: Record<string, unknown> = {}) =>
   fleetTemplate: DEFAULT_FLEET_TEMPLATE,
     /* A first touch — the follow-up rule is a separate one and must not mask this file's. */
     isFollowUp: false,
+    introducesUsToSomeoneWhoKnowsUs: false,
     followUpCitesOnlyADate: false,
     followUpTemplate: FOLLOW_UP_WRITTEN,
     /* Both empty = the DEFAULT category on either side, which is the permitted case — the

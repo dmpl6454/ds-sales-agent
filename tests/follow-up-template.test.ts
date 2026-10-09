@@ -13,6 +13,7 @@ import {
   followUpPostReference,
   followUpSubject,
   followUpTemplateKey,
+  isIntroductionToSomeoneWhoKnowsUs,
   renderFollowUp,
 } from '@/outreach/followUpTemplate'
 import { checkFollowUpBody, checkTemplateBody } from '@/outreach/templateGuard'
@@ -707,5 +708,53 @@ describe('composing the second message', () => {
         now: NOW,
       }),
     ).rejects.toBeInstanceOf(NoMaterialForFollowUpError)
+  })
+})
+
+/**
+ * ── OUR INTRODUCTION, TO SOMEONE WHO ALREADY KNOWS US (H5, 2026-10-09) ─────────
+ *
+ * The ONE rule the gate and the planner's sweep share. The full truth table, because each
+ * conjunct has its own way of going wrong: drop the body test and every follow-up is refused;
+ * drop the "follow-up" test and every first touch is refused (a fleet-wide outage); ignore
+ * `pairHasDelivered` and an introduction goes out as a pair's SECOND message after the
+ * on-demand dialog crossed a waiting draft.
+ */
+describe('isIntroductionToSomeoneWhoKnowsUs', () => {
+  const rows: Array<[boolean, number, boolean, boolean, boolean]> = []
+  for (const standard of [true, false])
+    for (const touch of [1, 2])
+      for (const delivered of [true, false])
+        for (const replied of [true, false]) {
+          // Expected: a standard body AND (a second touch OR this page delivered OR they replied).
+          const expected = standard && (touch > 1 || delivered || replied)
+          rows.push([standard, touch, delivered, replied, expected])
+        }
+
+  it.each(rows)(
+    'standard=%s touch=%s pairDelivered=%s everReplied=%s → %s',
+    (storedBodyIsStandardMessage, storedTouchNumber, pairHasDelivered, targetHasEverReplied, expected) => {
+      expect(
+        isIntroductionToSomeoneWhoKnowsUs({ storedBodyIsStandardMessage, storedTouchNumber, pairHasDelivered, targetHasEverReplied }),
+      ).toBe(expected)
+    },
+  )
+
+  it('the founding case: a first-touch introduction, written before the recipient replied to ANOTHER page', () => {
+    expect(
+      isIntroductionToSomeoneWhoKnowsUs({ storedBodyIsStandardMessage: true, storedTouchNumber: 1, pairHasDelivered: false, targetHasEverReplied: true }),
+    ).toBe(true)
+  })
+
+  it('the on-demand two-draft case: no reply anywhere, but THIS page already delivered — still refused', () => {
+    expect(
+      isIntroductionToSomeoneWhoKnowsUs({ storedBodyIsStandardMessage: true, storedTouchNumber: 1, pairHasDelivered: true, targetHasEverReplied: false }),
+    ).toBe(true)
+  })
+
+  it('a genuine first touch to someone who has never heard from us is NOT refused', () => {
+    expect(
+      isIntroductionToSomeoneWhoKnowsUs({ storedBodyIsStandardMessage: true, storedTouchNumber: 1, pairHasDelivered: false, targetHasEverReplied: false }),
+    ).toBe(false)
   })
 })

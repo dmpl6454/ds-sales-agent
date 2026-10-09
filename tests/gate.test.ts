@@ -53,6 +53,8 @@ function ok(): ResendInput {
   /* A first touch: the follow-up rule is not about this file. Both directions live in
      tests/follow-up-template.test.ts. */
   isFollowUp: false,
+  /* Not our introduction to someone who knows us — that stop is driven below. */
+  introducesUsToSomeoneWhoKnowsUs: false,
   followUpTemplate: FOLLOW_UP_WRITTEN,
   followUpCitesOnlyADate: false,
   repeatsADeliveredBody: false,
@@ -321,5 +323,55 @@ describe('cross-account spacing (the ring rule since 2026-08-19)', () => {
       overrides: [RESEND_BLOCKS.TARGET_RECENTLY_CONTACTED],
     })
     expect(r.ok, 'an absolute stop was crossed by passing its own code as an override').toBe(false)
+  })
+})
+
+/**
+ * ── OUR INTRODUCTION, TO A COMPANY THAT ALREADY KNOWS US (H5, 2026-10-09) ────
+ *
+ * Placement is part of the rule. It is a permanent fact about who the recipient is to us, so
+ * it is reported ahead of the reply halt (which promises "resumes on its own" — false about a
+ * draft that will never be sent), ahead of the session (a seeded account has none), and
+ * ahead of the material allowance. All three are set here at once; a stop moved below any of
+ * them reports that one instead.
+ */
+describe('the introduction to someone who already knows us', () => {
+  it('outranks the reply halt, a missing session and a spent allowance', () => {
+    const r = evaluateResend({
+      ...ok(),
+      unattended: true,
+      introducesUsToSomeoneWhoKnowsUs: true,
+      targetRepliedAt: new Date('2026-10-09T06:00:00Z'),
+      senderHasSession: false,
+      material: { held: true, allowance: 1, delivered: 1, campaigns: 1 },
+    })
+    expect(r.ok).toBe(false)
+    if (!r.ok) {
+      expect(r.reason).toBe(RESEND_BLOCKS.INTRODUCTION_TO_SOMEONE_WHO_KNOWS_US)
+      expect(r.detail).toMatch(/introduction/)
+    }
+  })
+
+  it('still answers beneath the facts about WHO — a retired or unverified recipient names those first', () => {
+    const retired = evaluateResend({ ...ok(), introducesUsToSomeoneWhoKnowsUs: true, targetOptedOut: true })
+    expect(retired.ok === false && retired.reason).toBe(RESEND_BLOCKS.TARGET_OPTED_OUT)
+    const unverified = evaluateResend({ ...ok(), introducesUsToSomeoneWhoKnowsUs: true, targetIsVerified: false })
+    expect(unverified.ok === false && unverified.reason).toBe(RESEND_BLOCKS.TARGET_NOT_VERIFIED)
+  })
+
+  it('a present person who crosses the reply halt still cannot send it', () => {
+    const r = evaluateResend({
+      ...ok(),
+      unattended: false,
+      introducesUsToSomeoneWhoKnowsUs: true,
+      targetRepliedAt: new Date('2026-10-09T06:00:00Z'),
+      overrides: [RESEND_BLOCKS.TARGET_REPLIED, RESEND_BLOCKS.INTRODUCTION_TO_SOMEONE_WHO_KNOWS_US],
+    })
+    expect(r.ok).toBe(false)
+    if (!r.ok) expect(r.reason).toBe(RESEND_BLOCKS.INTRODUCTION_TO_SOMEONE_WHO_KNOWS_US)
+  })
+
+  it('the permitting direction: with the flag false, the same clean draft goes', () => {
+    expect(evaluateResend({ ...ok(), introducesUsToSomeoneWhoKnowsUs: false }).ok).toBe(true)
   })
 })

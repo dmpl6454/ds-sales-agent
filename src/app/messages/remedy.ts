@@ -120,6 +120,17 @@ export const REMEDIES = {
     label: 'Only verified accounts are messaged — find the company’s verified page, or discard this draft',
   },
   /**
+   * Nothing to press, and that is true rather than a missing control: the planner discards
+   * these at the top of every pass (`staleIntroductions.ts`), whether or not autopilot is on,
+   * so the page's turn is not held behind a draft that can never be sent. There is no Discard
+   * control on a waiting draft on `/`, so pointing at one would point at nothing.
+   */
+  [RESEND_BLOCKS.INTRODUCTION_TO_SOMEONE_WHO_KNOWS_US]: {
+    href: null,
+    label:
+      'Nothing to press — the next planning pass discards it and writes a follow-up that names a post of theirs, when one exists.',
+  },
+  /**
    * Two fleets, and they never write to each other's companies (2026-08-25, Tabish). A draft
    * carrying this was written before the categories existed, or the memberships changed under
    * it. The remedy is /targets, where a recipient can be put in BOTH categories — which is the
@@ -192,13 +203,13 @@ export const REMEDIES = {
   [RESEND_BLOCKS.FOLLOW_UP_SAME_DAY]: { href: null, label: 'It goes out tomorrow.' },
 
   /**
-   * No control, deliberately. The remedy for "another of our pages already wrote to this
-   * person" is to leave them alone, and offering a way to shorten the window would be
-   * offering to do the thing the rule exists to stop.
+   * No control, deliberately. The remedy for "every page that writes to this person already
+   * has" is to leave them alone, and offering a way to shorten the window would be offering
+   * to do the thing the rule exists to stop.
    */
   [RESEND_BLOCKS.TARGET_RECENTLY_CONTACTED]: {
     href: null,
-    label: 'Waits by itself — one recipient hears from one of our pages at a time.',
+    label: 'Waits by itself — once every page that writes to this recipient has written, they rest a week.',
   },
 
   /**

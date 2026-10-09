@@ -49,6 +49,8 @@ const STOP_LABELS: Record<(typeof RESEND_BLOCKS)[keyof typeof RESEND_BLOCKS], st
     'this page and this company belong to different fleets — the two never write to each other\u2019s companies',
   [RESEND_BLOCKS.TARGET_NOT_VERIFIED]:
     'the recipient has no verified badge on Instagram — only verified accounts are messaged',
+  [RESEND_BLOCKS.INTRODUCTION_TO_SOMEONE_WHO_KNOWS_US]:
+    'it is our introduction, and they already know us — a company that has replied to any of our pages, or that this page has already written to, only ever receives follow-ups',
   [RESEND_BLOCKS.IDENTICAL_TO_A_SENT_MESSAGE]:
     'it is word for word the message this page already sent them — Instagram accepts a repeat and never delivers it',
   [RESEND_BLOCKS.FLEET_TEMPLATE_NOT_SET]:
@@ -72,7 +74,7 @@ const STOP_LABELS: Record<(typeof RESEND_BLOCKS)[keyof typeof RESEND_BLOCKS], st
   [RESEND_BLOCKS.FOLLOW_UP_SAME_DAY]:
     'this account already wrote to this recipient today, and a second message from the same page waits for tomorrow',
   [RESEND_BLOCKS.TARGET_RECENTLY_CONTACTED]:
-    'every one of our pages has already written to this recipient this week — they rest until the oldest of those messages is seven days old',
+    'every page that writes to them — the pages of their own fleet — has already written to this recipient this week; they rest until the oldest of those messages is seven days old',
   [RESEND_BLOCKS.COHORT_NOT_CLEARED]: 'the account’s onboarding group is not cleared yet',
 }
 

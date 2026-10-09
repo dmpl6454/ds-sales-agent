@@ -5,14 +5,20 @@ import { getSettings } from '@/lib/settings'
 import { mayArmAccount } from './cohorts'
 import { replyHaltWhere } from './replyHalt'
 import { sameCategory, crossCategoryDetail } from './senderCategories'
-import { templateForSettings, type FleetTemplate } from './fleetTemplate'
-import { citesOnlyADate, followUpForSettings, isFollowUp, type FollowUpTemplate } from './followUpTemplate'
+import { isStandardMessageBody, templateForSettings, type FleetTemplate } from './fleetTemplate'
+import {
+  citesOnlyADate,
+  followUpForSettings,
+  isFollowUp,
+  isIntroductionToSomeoneWhoKnowsUs,
+  type FollowUpTemplate,
+} from './followUpTemplate'
 import { readCategoryMemberships, categoriesFor } from './categories'
 import { profileStatus } from './browser/profile'
 import { sessionUsable } from './sessionHealth'
 import { crossSpacingVerdict, crossSpacingDetail, type CrossSpacingVerdict } from './crossSpacing'
 import { materialAllowance, materialAllowanceDetail, campaignsNamingHandle, type MaterialVerdict } from './materialAllowance'
-import { eligibleFleetSenderIds } from './availability'
+import { eligibleFleetSenders } from './availability'
 import { DELIVERED_STATUSES } from '@/lib/constants'
 
 /**
@@ -115,13 +121,25 @@ export interface ResendInput {
    */
   fleetTemplate: FleetTemplate
   /**
-   * Is this a SECOND message on this pair? `OutreachAttempt.touchNumber > 1` (2026-09-01).
+   * Is this message a FOLLOW-UP — `isFollowUp` over two facts (2026-09-04): the draft's stored
+   * touch number (> 1 is a second message on this pair, the number the composer wrote the body
+   * against) OR the recipient has EVER replied to any of our pages, which `recheckBeforeSend`
+   * reads LIVE. It is not the stored touch number alone, and has not been since that day: a
+   * recipient who has answered us receives only follow-ups, from every page.
    *
-   * Read from the draft's own stored touch number rather than recounted, because that is
-   * the number the composer wrote the body against: a follow-up is the row that carries
-   * follow-up bytes, and a recount could disagree with it if a delivery landed in between.
+   * What it does NOT establish is that the BYTES are follow-up bytes — a draft written before
+   * the reply carries the introduction. That is `introducesUsToSomeoneWhoKnowsUs`, below.
    */
   isFollowUp: boolean
+  /**
+   * Is the stored body our INTRODUCTION (a standard message, byte for byte) while this
+   * message counts as a follow-up — they have replied to one of our pages, or this page has
+   * already delivered to them? Computed by the caller with `isIntroductionToSomeoneWhoKnowsUs`,
+   * the ONE rule the planner's sweep also asks. REQUIRED with no default, for the reason
+   * `fleetTemplate` is: a default of "fine" makes the stop unreachable from whichever caller
+   * forgot it. See `RESEND_BLOCKS.INTRODUCTION_TO_SOMEONE_WHO_KNOWS_US`.
+   */
+  introducesUsToSomeoneWhoKnowsUs: boolean
   /**
    * WHAT A SECOND MESSAGE ON THIS ROUTE SAYS, or why there is none.
    *
@@ -206,7 +224,8 @@ export interface ResendInput {
    * 33/33 waiting drafts held, first clear five days out, 76 recipients locked by ONE
    * page each. The rule is now `crossSpacingVerdict` (crossSpacing.ts, the ONE
    * implementation shared with the planner and the dashboard): hold only when EVERY
-   * eligible page has written inside the window, plus a short inter-page gap
+   * eligible page — every page of the recipient's OWN fleet able to send (M12) — has
+   * written inside the window, plus a short inter-page gap
    * (`crossPageGapHours`, default 24h, Tabish's lever) so the ring cannot walk through
    * one inbox in an afternoon. The ban-pattern risk of up to five near-identical
    * templates per inbox per week was stated and is recorded as his call.
@@ -293,6 +312,33 @@ export const RESEND_BLOCKS = {
    */
   IDENTICAL_TO_A_SENT_MESSAGE: 'identical-to-a-message-they-already-have',
   TARGET_NOT_VERIFIED: 'target-not-verified',
+  /**
+   * ── OUR INTRODUCTION, TO A COMPANY THAT ALREADY KNOWS US (H5, 2026-10-09) ────
+   *
+   * Tabish, 2026-09-04: *"if the 7 day period has passed and they have replied then we don't
+   * need to ever send the normal message to them again ever."* The composers obey it; a draft
+   * written BEFORE the reply did not. Traced: page A's recipient replied; page B still held a
+   * READY introduction from before; in pair scope nothing halts B, the gate counted the
+   * message as a follow-up and asked only the follow-up stops — none of which reads what the
+   * stored bytes ARE — and the introduction went out to someone already talking to us. In
+   * target scope the same happened once the reply was seven days old.
+   *
+   * Checked right after the badge and BEFORE the reply halt: it is a permanent fact about who
+   * the recipient is to us, and the reply halt says "resumes on its own", which would be a
+   * false promise about a draft that will never be sent. A present person is told the
+   * permanent fact first rather than crossing the one overridable stop to meet this one.
+   *
+   * ABSOLUTE, and deliberately absent from `OVERRIDABLE_BLOCKS`. Every stop a human may cross
+   * is about TIMING; this is about what the message says and to whom, in words that are
+   * absolute ("never … again ever"). Someone who wants to reach a replier uses the on-demand
+   * dialog, which composes a follow-up, or writes in the thread by hand. Editing the draft's
+   * words changes the bytes — a person choosing the words — and releases it.
+   *
+   * The planner discards these drafts at the top of every pass (`staleIntroductions.ts`), so
+   * the page's turn is not held behind a draft that can never be sent; this stop covers the
+   * minutes in between, and every send path, whatever the planner has done.
+   */
+  INTRODUCTION_TO_SOMEONE_WHO_KNOWS_US: 'introduction-to-someone-who-knows-us',
   TARGET_REPLIED: 'target-replied',
   NO_SESSION: 'no-session',
   /**
@@ -552,6 +598,19 @@ export function evaluateResend(input: ResendInput): ResendResult {
     }
   }
 
+  /**
+   * OUR INTRODUCTION TO SOMEONE WHO ALREADY KNOWS US. Before the reply halt on purpose — see
+   * RESEND_BLOCKS.INTRODUCTION_TO_SOMEONE_WHO_KNOWS_US. NOT overridable.
+   */
+  if (input.introducesUsToSomeoneWhoKnowsUs) {
+    return {
+      ok: false,
+      reason: RESEND_BLOCKS.INTRODUCTION_TO_SOMEONE_WHO_KNOWS_US,
+      detail:
+        'this is our introduction, and they already know us — they have replied to one of our pages, or this page has already written to them — so it is never sent; a company that knows us only receives a follow-up that names a post of theirs',
+    }
+  }
+
   // A reply means a human conversation started. Continuing to fire a queued cold
   // pitch into it is the single most damaging thing this system could do, so it halts
   // every sender to this target, not just the one that got the reply.
@@ -730,7 +789,7 @@ export async function recheckBeforeSend(
   const { sender, target, senderId, targetId } = attempt.pair
 
   const materialWindowFloor = new Date(Date.now() - settings.defaultCooldownDays * 86_400_000)
-  const [replied, pairToday, ringDeliveries, eligibleSenderIds, ladder, senderRow, parked, targetCampaigns, targetDelivered, memberships, thisDraft, deliveredRows, everRepliedCount] =
+  const [replied, pairToday, ringDeliveries, eligibleFleet, ladder, senderRow, parked, targetCampaigns, targetDelivered, memberships, thisDraft, deliveredRows, everRepliedCount] =
     await Promise.all([
     prisma.outreachAttempt.findFirst({
       /**
@@ -780,7 +839,7 @@ export async function recheckBeforeSend(
       orderBy: { sentAt: 'asc' },
       select: { sentAt: true, pair: { select: { senderId: true, sender: { select: { handle: true } } } } },
     }),
-    eligibleFleetSenderIds(),
+    eligibleFleetSenders(),
     /**
      * The cohort ladder, asked HERE rather than trusted from `autoSendEnabled`.
      *
@@ -903,6 +962,16 @@ export async function recheckBeforeSend(
       touchesSoFar: (thisDraft?.touchNumber ?? 1) - 1,
       targetHasEverReplied: targetEverReplied,
     }),
+    /* The STORED bytes, against every standard message we have; every input is already loaded
+       above, so this costs the gate (and the dashboard's head row) no query. A null body is not
+       a refusal — the same rule as the repeat check below. `pairHasDelivered` is the live fact
+       that closes the on-demand two-draft case (see isIntroductionToSomeoneWhoKnowsUs). */
+    introducesUsToSomeoneWhoKnowsUs: isIntroductionToSomeoneWhoKnowsUs({
+      storedBodyIsStandardMessage: thisBody !== null && isStandardMessageBody(thisBody, settings),
+      storedTouchNumber: thisDraft?.touchNumber ?? 1,
+      pairHasDelivered: deliveredRows.length > 0,
+      targetHasEverReplied: targetEverReplied,
+    }),
     followUpTemplate: followUpForSettings(
       settings,
       categoriesFor(memberships.bySenderHandle, sender.handle),
@@ -925,7 +994,10 @@ export async function recheckBeforeSend(
       windowDays: settings.defaultCooldownDays,
       crossPageGapHours: settings.crossPageGapHours,
       thisSenderId: senderId,
-      eligibleSenderIds,
+      /* Fleet-wide, narrowed to this recipient's fleet INSIDE the verdict (M12). */
+      eligibleSenders: eligibleFleet,
+      targetHandle: target.handle,
+      memberships,
       lastDeliveryBySender: new Map(
         ringDeliveries
           .filter((r) => r.sentAt !== null)

@@ -217,6 +217,38 @@ export function defaultFleetBody(settings: Pick<TemplateSettings, 'singleTemplat
 }
 
 /**
+ * IS THIS STORED BODY ONE OF OUR STANDARD MESSAGES — i.e. our INTRODUCTION? (H5, 2026-10-09)
+ *
+ * The composer writes a first touch as the fleet's copy byte for byte (`compose.ts`, under
+ * `singleTemplate`), so a stored body that IS one of these strings is an introduction, and a
+ * follow-up never is: its body is `renderFollowUp(copy, reference)`, `{{post}}` is required in
+ * that copy, and the standard copy refuses braces.
+ *
+ * A SET, not "the copy this route would use today", deliberately:
+ *   - a draft written with the shipped copy BEFORE an override was saved still carries the
+ *     shipped bytes, and is still our introduction;
+ *   - any fleet's standard message is an introduction, whichever fleet the route is in now.
+ *
+ * Trimmed on both sides, because every writer trims (the override, the per-fleet bodies, and
+ * the shipped constant has no surrounding whitespace). Null or empty is NOT a standard
+ * message — absence of data must not become a refusal any more than a permission.
+ *
+ * What it cannot see, stated: a hand-edited introduction (a person chose those words), and
+ * one written under an intermediate override since replaced. `pnpm ig:discard-stale-drafts`
+ * after a template edit covers the second. PURE.
+ */
+export function isStandardMessageBody(body: string | null, settings: TemplateSettings): boolean {
+  const b = body?.trim() ?? ''
+  if (b.length === 0) return false
+  const standard = new Set<string>([SINGLE_TEMPLATE_MIDDLE, defaultFleetBody(settings)])
+  for (const raw of settings.fleetTemplateBodies.values()) {
+    const t = raw.trim()
+    if (t.length > 0) standard.add(t)
+  }
+  return standard.has(b)
+}
+
+/**
  * ONE CALL, THREE CALLERS — the planner (which refuses to draft), the gate (which refuses
  * to send) and the composer (which writes the bytes).
  *

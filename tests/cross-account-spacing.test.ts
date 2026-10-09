@@ -1,9 +1,9 @@
 import { describe, expect, it } from 'vitest'
-import { readFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { readFileSync, readdirSync, statSync } from 'node:fs'
+import { join, relative } from 'node:path'
 
 /**
- * ── ONE SPACING RULE, THREE CALL SITES (the ring rule, 2026-08-19) ─────────
+ * ── ONE SPACING RULE, FOUR CALL SITES (the ring rule, 2026-08-19) ──────────
  *
  * A SOURCE GREP, because the failure mode is a call site nobody has written yet and no
  * behavioural test can fail for a shape that reads perfectly.
@@ -15,10 +15,12 @@ import { join } from 'node:path'
  * any-other-page rule that halted the whole fleet on 2026-08-19 (MEASURED: 33/33
  * waiting drafts held, first clear five days out, 76 recipients locked by ONE page).
  *
- * Three sites must share the ONE predicate — the gate (delivery), the planner
- * (drafting) and the messages page (the screen). A rule fixed on one path and not the
- * others is this codebase's most repeated defect, and the UI mirroring the rule by
- * hand is exactly how the old shape drifted.
+ * Four sites must share the ONE predicate — the gate (delivery), the planner
+ * (drafting), the messages page (Up next) and the rest tally (why a recipient is
+ * resting). A rule fixed on one path and not the others is this codebase's most
+ * repeated defect, and the UI mirroring the rule by hand is exactly how the old shape
+ * drifted. The rest tally was a fourth caller missing from this list (M12): the list was
+ * hand-kept, so the discovery walk below finds the callers instead of trusting it.
  */
 const read = (rel: string): string => readFileSync(join(process.cwd(), rel), 'utf8')
 
@@ -31,7 +33,20 @@ const CALL_SITES = [
   ['the gate, at delivery', 'src/outreach/gate.ts'],
   ['the planner, at drafting', 'src/outreach/plan.ts'],
   ['the screen, in Up next', 'src/app/view-model/messages-page.ts'],
+  ['the screen, why a recipient is resting', 'src/app/view-model/rest-tally.ts'],
 ] as const
+
+/** Every .ts/.tsx under src/, generated code excluded. */
+function walkSrc(dir: string, out: string[] = []): string[] {
+  for (const name of readdirSync(dir)) {
+    const full = join(dir, name)
+    if (statSync(full).isDirectory()) {
+      if (name === 'generated' || name === 'node_modules') continue
+      walkSrc(full, out)
+    } else if (/\.(ts|tsx)$/.test(name)) out.push(full)
+  }
+  return out
+}
 
 describe('the ring rule has ONE implementation and every enforcer calls it', () => {
   it.each(CALL_SITES)('%s calls crossSpacingVerdict', (_label, file) => {
@@ -42,6 +57,40 @@ describe('the ring rule has ONE implementation and every enforcer calls it', () 
       `${file}: no longer calls the shared spacing predicate — a private copy here is how ` +
         `the gate, the planner and the screen come to disagree about who may be messaged`,
     ).toBe(true)
+  })
+
+  /**
+   * DISCOVERY, not a hand-kept list — the list above missed rest-tally.ts for weeks. Every
+   * file that calls the predicate must be one of the named call sites (so each new caller
+   * is looked at, and inherits the assertions on this page), and at least four calls must
+   * be found: a walk that matched nothing would otherwise report success.
+   */
+  it('every caller of crossSpacingVerdict is a named call site, and there are at least four', () => {
+    const root = process.cwd()
+    const callers: string[] = []
+    for (const file of walkSrc(join(root, 'src'))) {
+      const rel = relative(root, file)
+      if (rel === join('src', 'outreach', 'crossSpacing.ts')) continue
+      const calls = codeOnly(readFileSync(file, 'utf8')).match(/crossSpacingVerdict\(/g) ?? []
+      for (let i = 0; i < calls.length; i++) callers.push(rel)
+    }
+    expect(callers.length, 'found fewer callers of the ring rule than the four enforcers').toBeGreaterThanOrEqual(4)
+    const named = new Set<string>(CALL_SITES.map(([, f]) => f))
+    for (const c of callers) {
+      expect(named.has(c), `${c} calls crossSpacingVerdict but is not a named call site — add it above`).toBe(true)
+    }
+  })
+
+  /**
+   * The unfiltered id-list producer must not come back (M12). It handed every caller the
+   * WHOLE fleet as "all our pages", and the ring rule then counted a marketing-only page
+   * for every bollywood recipient — a rest that could never fire.
+   */
+  it('the fleet-wide id-list producer is gone from src/', () => {
+    const offenders = walkSrc(join(process.cwd(), 'src')).filter((f) =>
+      codeOnly(readFileSync(f, 'utf8')).includes('eligibleFleetSenderIds'),
+    )
+    expect(offenders).toEqual([])
   })
 
   /**
