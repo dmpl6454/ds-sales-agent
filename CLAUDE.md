@@ -5,6 +5,88 @@ changing anything that touches sending.
 
 ---
 
+## 9–14 OCTOBER — "KEEP GOING": THE FOUR CRITICAL AND THE REMAINING HIGH FINDINGS OF THE AUDIT, FIXED, THEN REVIEWED ACROSS LANES
+
+**Asked: *"keep going"*** after the robustness pass below. Read as: the four critical findings of
+`docs/AUDIT-2026-10-09.md` (C1–C4) and every high one not already closed (H3, H4, H5, H6, H8, H9),
+plus M12, which H1's fix left half-done. **NOT DEPLOYED, and not run against the live system** —
+no Instagram, no tunnel, no box from here. Every finding was re-traced at HEAD, a fix designed,
+the design attacked by a second reviewer (every first design had a flaw), implemented with a test
+that fails when the fix is reverted, and the merged result reviewed again through nine lenses.
+
+| finding | what could happen | now |
+|---|---|---|
+| **C1** inbox route | a profile with no door sent the pitch through the inbox To: search, which clicked the first span matching `/^handle$/i` — a DISPLAY NAME qualifies (@tips and @tips_india both read "TIPS"), and nothing after Chat checked who opened. The read path used the same door, so it could vouch silence or record a stranger's bubble as the target's reply | the matcher is the username line, case-sensitive; after Chat the opened conversation must NAME the recipient (anchored `/direct/t/<id>` URL + the profile links in the pane, two agreeing readings, sender excluded, set equality; the request panel's `(username)` prose) or `RecipientUnconfirmedError` refuses BEFORE anything is typed or accepted. A checkpoint still outranks the refusal. A demonstrable MISMATCH parks on first sight (`recipient-unconfirmed`); an unreadable or ambiguous one retries through the ordinary cap, because a retry starts again at the profile door. **THE READER IS INFERRED, NOT OBSERVED** — no inbox-opened thread's DOM has ever been recorded, so until one read-only open of a door-less recipient (e.g. @idfreshfood) is logged on the sending Mac and the reader tuned from its `path`/`hrefs` line, inbox-route sends park and inbox-route reads hold |
+| **C2** swallowed reply | a textless reply marker (an inbox "sent an attachment") was BACKFILLED with the newest bubble's text before fresh replies were computed, so a new reply was absorbed, the halt never re-armed, and the follow-up went into the answered thread. Replies were also attached to whichever page delivered last, so under pair scope the wrong page paused | the backfill is deleted; known texts are pair-scoped; one writer, `recordReplyOnPair`, attaches to THIS pair (its free delivered row, else supersedes its waiting draft to SKIPPED carrying the reply, else writes forward), dated by `plausibleReplyDate`; a partial read never stamps verified silence |
+| **C3** Remove a watched channel | `removeTarget` hard-deleted any row with no delivered message — every WATCH page — and `DetectedCampaign.target` cascades: 1,000+ posts, labels and frame text, unrecoverable past the 48-post window | a WATCH page is deleted only with 0 posts and 0 attempts, the check INSIDE the one `DELETE`; otherwise retired (`optedOut`, `watchEnabled: false`, role kept) and revived by re-adding it through the same vet as a new page. A prospect is always retired. **Its stored posts still count toward who we message until they age out** — whether a removed page's posts should stop counting at once is Tabish's call |
+| **C4** two Macs, one name | `deviceId()` is the typed name, nothing checked uniqueness, and two Macs with one name were both "the sending Mac", each reading the other's lock row as its own crashed holder; revoke removed every key with that name | the server refuses a name another key holds (paired, pending, beating within 30 days, or the selection), keeps a re-pairing key's paired name, re-checks at approval, and answers 200 with the sentence first so installers in the field show it; revoke is by key fingerprint; the lock row and presence carry a host id, so a same-name twin's live lock is honoured and a dead one released; a lock row written before this Mac booted is free whatever its pid now answers. **An EXISTING same-name pair still both send (now serialised)** — binding the selection to a machine, twin-aware screens and relay, and self-service rename are Tabish's |
+| **H3** two frame paths | the semantic detector ran its own caption→OCR→frame call without the own-watermark strip, so @filmygyan's logo still read as a paid placement, and every ORGANIC post with footage was judged twice | footage is judged only in `judge.ts`; inputs (tags, publisher) are built once and handed to both calls; the strip works on structured OCR items with its OWN word test (`isOwnFrameMark`) — the caption rule dropped run-together collab cards (`FILMYGYANxACER`, `ViralBhayaniXNykaa`) and code-shaped brands (`VH1`, `MG4`) the moment it first ran in production, which the review caught. `pnpm reclassify` (it overwrote human labels) now refuses and names the replacements. Re-judging rows the watermark already escalated, and `ig:accuracy --repeat 3` before/after, are a person's steps |
+| **H4** open redirect | `/sign-in?next=/%09/evil.com` passed `safeNext` and the browser's parser turned it into `https://evil.com/` | `safeNext` accepts a value only if the WHATWG parser leaves it byte-identical, stays same-origin, and carries no `;` (Next's client splits the redirect header on it) |
+| **H5** introduction to someone who knows us | a queued standard introduction from page B went out to a company already talking to page A | `INTRODUCTION_TO_SOMEONE_WHO_KNOWS_US` at the gate (not overridable), and the planner discards such drafts each pass through `discardAttempt` |
+| **H6** sender removal | the hand-off moved a draft's bytes onto another page, so a follow-up arrived as that page's first message; no status guard | release, never re-point: the leaving page's waiting drafts are discarded and the planner writes the page rotation elects next its own message within one pass |
+| **H8** hosted queue | the queue read the env-floored switch (false on the Linode by design), so it said "waiting for Autopilot" about a sending fleet | one `queueMotion` derivation from the switch card's own state; the head row and the partition use the SENDING MAC's presence witness, never this host's disk; enforcement reads unchanged |
+| **H9** reply-halt copy | five screens said a reply pauses every page; since 1 Sept only the answered page pauses | one client-safe copy owner, every sentence from `replyHaltScope` |
+| **M12** ring rest | the 7-day "all pages have written" rest counted the marketing page, which may never write to a bollywood company, so it could never fire | counted over the recipient's own fleet (`fleetMembersFor`, the same filter rotation uses). Bollywood recipients now rest — fewer messages, the rule returning |
+
+**THE CROSS-LANE REVIEW FOUND WHAT NO LANE COULD.** The fixes were built in parallel in isolated
+worktrees and merged afterwards; nine reviewers then read the merged change. The worst find was an
+interaction: **removing a never-delivered sender deleted the rows the new hand-off deliberately
+keeps** — a may-have-arrived `not-in-thread` park, a profile-gone stop, a SENDING row mid-drive,
+and C2's reply-carrying superseded drafts (erasing the "they know us" fact H5 depends on). Before
+H6 that delete threw a foreign-key error and so protected them by accident; H6 removed the throw,
+C2 created the reply rows, and neither lane could see the other. The others: the C2 freshness
+clear was dead code for a page that had never written (its test hard-coded a touch number the
+planner cannot produce), the queue said "Not a fault … sends itself" over drafts waiting on a
+sign-in, the frame strip above, a pre-boot lock wedge, two tests that passed with their guard
+deleted, and three sentences on screen. All fixed, each reproduced by a failing test first:
+
+| review finding | now |
+|---|---|
+| removing a never-delivered sender cascaded the kept rows | one guarded `DELETE` that refuses while any row other than a reply-less SKIPPED draft remains (its own, its pairs', or another account's attempt on its variants); otherwise **retired with its status untouched** — no longer `PAUSED`, which hid its threads from the ACTIVE-only reply sweep (the 1 Sept @bachelorssociety lesson) and overwrote CHALLENGED. Drafts the hand-off kept for want of another page are withdrawn through `discardAttempt`, because a retired-but-ACTIVE account would otherwise deliver them |
+| a page a company wrote to FIRST sent its first message unread | the inbox records the reply on any row of that pair that never returns to the queue, else leaves a `reply.unattached` audit row (`Conversation:<sender>:<target>`); `ensureConversationChecked` now reads a touch-1 draft's thread when that evidence is newer than the pair's last read or the pair already carries a reply. An ordinary first touch still opens no browser |
+| write-forward re-recorded the replaced reply as new | the replaced text is kept in a `reply.replaced` audit row whose detail is exactly the text, and read back as known |
+| one door miss parked a route forever | only a demonstrable mismatch parks on first sight (above) |
+| "sends itself" over sign-in holds; an offline Mac listed as next in line; twins flapped | the queue names the accounts waiting on a sign-in on the sending Mac; an offline Mac is partitioned by its last heartbeat; twins' handles are unioned |
+| a send-lock row from before a reboot, its pid reused by a system process (EPERM) | a local row written before this Mac booted is free |
+| two tests passed with their guard deleted; the route-immutability check missed `pair: { connect }` | driven behaviourally / extended, each proven to fail on the broken shape |
+| /rules, the name-refusal sentence | say the rule that is enforced, and every way a name frees up |
+
+**What is a person's, collected:** observe one inbox-route open on the sending Mac before
+relying on door-less recipients (C1); measure the C2 one-time effect first —
+`SELECT count(*) FROM "OutreachAttempt" WHERE "repliedAt" IS NOT NULL AND "replyText" IS NULL` —
+each such marker whose content was text is recorded once on its first pre-send read and may
+re-pause its pair; whether a removed watch page's posts keep counting (C3); B5/B6/B7 and
+self-service rename for an existing same-name pair, and `NAME_RESERVED_MS` = 30 days (C4); the
+H3 re-judge of already-escalated watermark rows and `ig:accuracy --repeat 3` after deploy; the
+M12 one-page-ring self-hold (pinned as the literal reading) and a measurement before announcing
+the volume drop; whether hand-edited introductions should also be caught (H5). **Deploy order:**
+server first (`pnpm test && build-dmg.sh && deploy.sh`, rule 34), then the DMG — the gate halves,
+the C1 browser path, the C4 lock/host and the installer reach a Mac only through a new image.
+
+**Still failing in the suite, pre-existing and unrelated:** the two `tests/route-rule.test.ts`
+cases that call the real Instagram feed and time out offline. Suite **2,940 / 2,942**, typecheck
+and `next build` clean.
+
+### RULES, ADDED TO THE STANDING LIST
+
+48. **A search result is not a recipient.** Whatever a search clicked, confirm the opened
+    conversation names the account before typing — and when it cannot be confirmed, refuse.
+49. **A marker never absorbs a new reply,** and a reply is recorded on the pair whose conversation
+    showed it.
+50. **A delete carries its own guard in the statement,** for every parent whose children are
+    history. Counting first and deleting after is not a guard; neither is a foreign key that
+    happens to throw today.
+51. **A name is not an identity.** Two machines need distinct names at pairing AND a host id in
+    every row that decides "is this mine".
+52. **A rule written for one input is not a rule for another.** The caption own-mark test, run
+    over OCR words, deleted real brands.
+53. **A guard's output is the bytes it checked.** Accept a redirect only if the parser that will
+    act on it leaves it unchanged.
+54. **Lanes built in isolation need a review of the merge.** Three of this pass's worst findings
+    were interactions between correct changes.
+
+---
+
 ## 9 OCTOBER — "MAKE IT MORE ROBUST, IT SHOULD NOT STOP": THE STALL, HANG AND STUCK-ROW FINDINGS OF THE AUDIT, FIXED
 
 **Asked: *"make it more robust it should not stop."*** Read as: every finding in
