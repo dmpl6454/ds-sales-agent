@@ -1,4 +1,5 @@
 import { prisma } from '@/lib/db'
+import type { Prisma } from '@/generated/prisma/client'
 import { log } from '@/lib/logger'
 import { fleetRingFor } from './categories'
 import { ensureFleetPairs } from './plan'
@@ -66,12 +67,34 @@ import { discardAttempt } from './discard'
  *   a recipient already covered    → discarded: another page holds a draft for them, or is
  *                                    sending one right now (SENDING counts)
  *   a retired recipient            → discarded — retirement outranks everything
- *   no other page in their fleet   → KEPT on the leaving account and said so; releasing it
- *                                    would leave nobody to write, and re-adding the page
- *                                    finds it where it was
+ *   no other page in their fleet   → KEPT here and said so, because the hand-off alone has
+ *                                    nobody to give it to. `removeSender` then WITHDRAWS it
+ *                                    (same predicate, `releasableWhere`, same writer): a
+ *                                    retired account stays ACTIVE so its conversations stay
+ *                                    readable, and the dispatcher delivers any READY draft of
+ *                                    an ACTIVE account — it never reads `fleetMember`. A kept
+ *                                    draft would go on sending from an account just removed.
+ *                                    Re-adding the page lets the planner write to them again
  *
  * Delivered history is never touched — that is the removal rule that predates this file.
  */
+
+/**
+ * WHAT A LEAVING ACCOUNT'S QUEUE MAY RELEASE — one predicate, two callers: the hand-off below,
+ * and `removeSender`, which withdraws what the hand-off kept for want of a page. Two copies of
+ * this list are how a `profile-gone` park once became movable here while every other reader
+ * treated it as the recipient's stop.
+ */
+export function releasableWhere(senderId: string): Prisma.OutreachAttemptWhereInput {
+  return {
+    senderId,
+    OR: [
+      { status: { in: ['READY', 'QUEUED'] } },
+      /* not-in-thread: they may have it. profile-gone: the recipient's own 7-day stop. */
+      { status: 'FAILED', failureCode: { notIn: ['not-in-thread', 'profile-gone'] } },
+    ],
+  }
+}
 
 export interface HandOffSummary {
   /** Released for the planner to re-write from whichever page rotation elects next. */
@@ -106,14 +129,7 @@ export async function handOffWaitingDrafts(args: {
   if (otherFleet > 0) await ensureFleetPairs()
 
   const releasable = await prisma.outreachAttempt.findMany({
-    where: {
-      senderId,
-      OR: [
-        { status: { in: ['READY', 'QUEUED'] } },
-        /* not-in-thread: they may have it. profile-gone: the recipient's own 7-day stop. */
-        { status: 'FAILED', failureCode: { notIn: ['not-in-thread', 'profile-gone'] } },
-      ],
-    },
+    where: releasableWhere(senderId),
     include: { pair: { include: { target: true } } },
     orderBy: { queuedAt: 'asc' },
   })

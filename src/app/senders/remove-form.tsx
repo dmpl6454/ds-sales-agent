@@ -3,6 +3,7 @@
 import { useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { removeSender } from '../actions'
+import { REMOVE_SENDER_BLURB } from '../remove-sender-message'
 
 /**
  * REMOVE A SENDING ACCOUNT — with its queue handed off, never dropped.
@@ -19,10 +20,15 @@ import { removeSender } from '../actions'
  * next, as that account's OWN message — `handOff.ts` records why moving the bytes made a
  * follow-up into another page's first message.
  *
- * The copy states both halves of what removal actually does, because they differ by
- * history: an account that has DELIVERED messages is retired (its send history is what
- * stops anyone being contacted twice — the standing removal rule), an account that never
- * delivered is deleted outright. Either way the queue is handed off first.
+ * The copy states both halves of what removal actually does, because they differ by what
+ * the account HOLDS: anything a rule still reads (a delivered message, one that may have
+ * reached someone, a send in progress, a recorded reply) keeps it and it is retired; an
+ * account holding none of it is deleted outright. Either way the queue is handed off first.
+ * Until 2026-10-09 this said "has already delivered", and the action deleted on that test —
+ * erasing a never-delivered account's parks, its send in flight and its recorded replies
+ * while this copy promised "a message that may already have reached someone stays with this
+ * account". The words now come from `remove-sender-message.ts`, beside the result sentence,
+ * so the form and the action cannot describe two different rules.
  *
  * A typed confirmation rather than a checkbox: this is the one control on the page that
  * takes an account out of the rotation, and a select-plus-click can be an accident.
@@ -60,12 +66,7 @@ export function RemoveSenderForm({ handles }: { handles: string[] }) {
   return (
     <section>
       <h2>Remove a sending account</h2>
-      <p className="blurb">
-        Nobody it was about to write to is dropped: within 15 minutes each of them is written to by the
-        account the rotation picks next, as that account&apos;s own message. A message that may already
-        have reached someone stays with this account. An account that has already delivered messages is
-        retired rather than deleted, because that history is what stops anyone being contacted twice.
-      </p>
+      <p className="blurb">{REMOVE_SENDER_BLURB}</p>
 
       <div className="addform">
         <div className="addform-row">

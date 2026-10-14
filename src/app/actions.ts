@@ -6,6 +6,7 @@ import { revalidatePath } from 'next/cache'
 import { approveEnrolment, revokePairedDevice, listPairedDevices } from '@/lib/deviceEnrol'
 import { redirect } from 'next/navigation'
 import { prisma } from '@/lib/db'
+import type { Prisma } from '@/generated/prisma/client'
 import { env } from '@/lib/env'
 import { runSlot } from '@/worker/runSlot'
 import { browserSender } from '@/outreach/senders/browser'
@@ -46,7 +47,8 @@ import { routeAllowed, fleetHandles } from '@/outreach/routes'
 import { readCategoryMemberships, categoriesFor } from '@/outreach/categories'
 import { ensureCategory, addTargetToCategory } from '@/outreach/categories'
 import { discardAttempt } from '@/outreach/discard'
-import { handOffWaitingDrafts } from '@/outreach/handOff'
+import { handOffWaitingDrafts, releasableWhere } from '@/outreach/handOff'
+import { removeSenderResult, tallyHeld } from './remove-sender-message'
 import { log } from '@/lib/logger'
 import { validatePersona } from '@/outreach/render'
 import { checkFollowUpBody, checkTemplateBody } from '@/outreach/templateGuard'
@@ -1182,8 +1184,9 @@ export async function rejoinFleet(
   /**
    * ── A RETIRED ACCOUNT COMES BACK ACTIVE, BUT A FLAGGED ONE NEVER DOES ────
    *
-   * `removeSender` retires with `status: 'PAUSED'`, and the gate refuses a non-ACTIVE sender
-   * (`SENDER_NOT_ACTIVE`). Rejoining without clearing that gives an account with routes,
+   * `removeSender` retired with `status: 'PAUSED'` until 2026-10-09 — it leaves status alone
+   * now, but every account retired before then still carries it — and the gate refuses a
+   * non-ACTIVE sender (`SENDER_NOT_ACTIVE`). Rejoining without clearing that gives an account with routes,
    * a session and a fleet flag that still cannot send a single message — a control that
    * appears to work and does not, which is this codebase's signature failure.
    *
@@ -2057,9 +2060,30 @@ export async function addSender(
  * History is never deleted. Attempts record what was actually sent to real people,
  * and that record is what spacing, the unanswered-touch cap and the new-material
  * rule are computed from — deleting it would let the system re-contact someone it
- * has already written to. So an account with send history is retired (disabled,
- * disarmed, PAUSED) rather than destroyed; only a never-used account is deleted
- * outright.
+ * has already written to. So an account holding anything a rule still reads is
+ * RETIRED (out of the rotation, row and rows kept) rather than destroyed; only an
+ * account holding nothing but drafts released unsent is deleted outright.
+ *
+ * ── DELIVERED WAS THE WRONG TEST FOR "HOLDS NOTHING" (2026-10-09) ─────────
+ *
+ * This counted SENT/REPLIED alone and, at zero, ran `senderAccount.delete` — and
+ * `OutreachPair.sender` and `OutreachAttempt.sender` are ON DELETE CASCADE. So on an
+ * account that had never delivered it erased exactly what the hand-off had just kept:
+ * a `not-in-thread` park (the recipient may HAVE it), a `profile-gone` park (the
+ * recipient's 7-day stop), a SENDING row mid-drive (whose delivery then had no row to
+ * land on), and a superseded draft carrying a reply (the permanent fact that retires
+ * the standard introduction for that recipient). `remove-sender-message.ts` has the
+ * rule; the delete below carries it.
+ *
+ * ── A RETIRED ACCOUNT IS NOT PAUSED ───────────────────────────────────────
+ *
+ * Retiring wrote `status: 'PAUSED'`, and the reply sweep reads only ACTIVE senders'
+ * threads — so a retired account's open conversations dropped out of it: 430 for
+ * @bachelorssociety, 299 never read (1 Sept), fixed then by hand as ACTIVE +
+ * `fleetMember: false`, the burner's shape. Status is left as it is, which also means
+ * a CHALLENGED flag is never cleared as a side effect. What PAUSED did incidentally —
+ * hold that account's waiting drafts — is done explicitly below: nothing waiting is
+ * left on it, because the dispatcher delivers any READY draft of an ACTIVE account.
  *
  * The Chrome profile is deliberately left on disk. Deleting it would throw away the
  * device identity built up by the hand login, which is unrecoverable and would make
@@ -2067,10 +2091,7 @@ export async function addSender(
  */
 export async function removeSender(handle: string): Promise<MutationResult> {
   const user = await requireOperator()
-  const sender = await prisma.senderAccount.findUnique({
-    where: { handle },
-    include: { pairs: { include: { attempts: { where: { status: { in: ['SENT', 'REPLIED'] } } } } } },
-  })
+  const sender = await prisma.senderAccount.findUnique({ where: { handle }, select: { id: true } })
   if (!sender) return { ok: false, message: `@${handle} not found.` }
 
   await cancelConnect(handle)
@@ -2093,49 +2114,99 @@ export async function removeSender(handle: string): Promise<MutationResult> {
    */
   await prisma.senderAccount.update({ where: { handle }, data: { fleetMember: false } })
   const handOff = await handOffWaitingDrafts({ senderId: sender.id, senderHandle: handle, actor: user.email })
-  const handOffDetail = `hand-off: ${handOff.released} released, ${handOff.discarded} discarded, ${handOff.kept} kept`
-  const movedNote =
-    handOff.released + handOff.discarded + handOff.kept === 0
-      ? ''
-      : ` Queue: ${handOff.released} waiting message${handOff.released === 1 ? '' : 's'} released — ` +
-        `the account rotation picks next writes to each recipient on the next planning pass (within 15 minutes)` +
-        (handOff.discarded > 0 ? `; ${handOff.discarded} discarded as already covered or retired` : '') +
-        (handOff.kept > 0
-          ? `; ${handOff.kept} stayed with @${handle} (no other page sends for their fleet, or it was mid-send)`
-          : '') +
-        '.'
 
-  const sentCount = sender.pairs.reduce((n, p) => n + p.attempts.length, 0)
+  /**
+   * WHAT THE HAND-OFF KEPT FOR WANT OF A PAGE IS WITHDRAWN, NOT LEFT TO SEND.
+   *
+   * The hand-off keeps a draft when no other page sends for that recipient's fleet. Left
+   * here it would be delivered by the dispatcher from an account that was just removed —
+   * a retired account stays ACTIVE (above) and the dispatcher never reads `fleetMember`.
+   * The same predicate the hand-off released by, the same writer, audited. A send already
+   * in flight is refused by that writer's status guard and stays where it is.
+   */
+  let withdrawn = 0
+  const stranded = await prisma.outreachAttempt.findMany({ where: releasableWhere(sender.id), select: { id: true } })
+  for (const a of stranded) {
+    const r = await discardAttempt({
+      attemptId: a.id,
+      reason:
+        `@${handle} was removed and no other account sends for this recipient's fleet — withdrawn unsent; ` +
+        `the planner writes to them again once an account for their fleet exists`,
+      actor: user.email,
+    })
+    if (r.ok) withdrawn += 1
+  }
+  const queue = { released: handOff.released, discarded: handOff.discarded, withdrawn }
+  const handOffDetail =
+    `hand-off: ${handOff.released} released, ${handOff.discarded} discarded, ${handOff.kept} kept; ` +
+    `${withdrawn} withdrawn on removal`
 
-  if (sentCount === 0) {
-    await prisma.senderAccount.delete({ where: { handle } })
-    await audit(
-      user.email,
-      'sender.deleted',
-      `SenderAccount:${handle}`,
-      `no send history; ${handOffDetail}`,
-    )
+  /**
+   * THE CHECK IS THE STATEMENT, as in `removeTarget`. A count read a moment earlier is passed
+   * by a send that lands in between. A row keeps this account when anything still reads it —
+   * every status but SKIPPED, and a SKIPPED row carrying a reply (`keepsSender`).
+   *
+   * Three clauses, one per way a delete reaches a row this account does not solely own:
+   *   - its own attempts (the `OutreachAttempt.sender` cascade);
+   *   - its PAIRS' attempts — an attempt whose denormalised `senderId` drifted from its pair's
+   *     is not in the first relation, and the pair cascade takes it all the same;
+   *   - its VARIANTS' attempts on another account — the old re-pointing hand-off left those, and
+   *     `OutreachAttempt.variant` is ON DELETE RESTRICT, so the cascade to this account's
+   *     variants would throw after `fleetMember` and the hand-off had committed.
+   * Any of them present → nothing is deleted, and the account is retired below.
+   */
+  const keeps = {
+    OR: [{ status: { not: 'SKIPPED' } }, { repliedAt: { not: null } }, { replyPostedAt: { not: null } }],
+  } satisfies Prisma.OutreachAttemptWhereInput
+  const del = await prisma.senderAccount.deleteMany({
+    where: {
+      id: sender.id,
+      attempts: { none: keeps },
+      pairs: { none: { attempts: { some: keeps } } },
+      variants: { none: { attempts: { some: { senderId: { not: sender.id } } } } },
+    },
+  })
+
+  if (del.count === 1) {
+    await audit(user.email, 'sender.deleted', `SenderAccount:${handle}`, `held nothing a rule reads; ${handOffDetail}`)
     refreshPath('/')
-    return { ok: true, message: `Removed @${handle}. Its Chrome profile is left on disk in case you re-add it.${movedNote}` }
+    return { ok: true, message: removeSenderResult({ handle, outcome: 'deleted', queue }) }
   }
 
-  await prisma.$transaction([
-    prisma.senderAccount.update({ where: { handle }, data: { autoSendEnabled: false, status: 'PAUSED' } }),
+  /** Worded from what it holds NOW, read after the delete refused — never from a count taken before. */
+  const [rows, borrowed] = await Promise.all([
+    prisma.outreachAttempt.findMany({
+      where: { OR: [{ senderId: sender.id }, { pair: { senderId: sender.id } }] },
+      select: { status: true, failureCode: true, repliedAt: true, replyPostedAt: true },
+    }),
+    prisma.outreachAttempt.count({
+      where: {
+        variant: { senderId: sender.id },
+        NOT: { OR: [{ senderId: sender.id }, { pair: { senderId: sender.id } }] },
+      },
+    }),
+  ])
+  const held = tallyHeld(rows)
+
+  /**
+   * Never `status` — see the docblock: PAUSED hides its conversations from the reply sweep,
+   * and writing ACTIVE would clear a CHALLENGED flag. `fleetMember` is already false.
+   */
+  const [retired] = await prisma.$transaction([
+    prisma.senderAccount.updateMany({ where: { id: sender.id }, data: { autoSendEnabled: false } }),
     prisma.outreachPair.updateMany({ where: { senderId: sender.id }, data: { enabled: false } }),
   ])
+  if (retired.count === 0) return { ok: false, message: `@${handle} was removed by someone else meanwhile.` }
   await audit(
     user.email,
     'sender.retired',
     `SenderAccount:${handle}`,
-    `${sentCount} sent messages kept; ${handOffDetail}`,
+    `kept: ${held.delivered} delivered, ${held.mayHaveReached} may have reached, ${held.pageGone} page gone, ` +
+      `${held.sending} sending, ${held.replies} replies, ${held.other} other, ${borrowed} borrowed-variant; ` +
+      handOffDetail,
   )
   refreshPath('/')
-  return {
-    ok: true,
-    message:
-      `@${handle} has sent ${sentCount} message${sentCount === 1 ? '' : 's'}, so it is retired rather than deleted — ` +
-      `that history is what stops anyone being contacted twice.${movedNote}`,
-  }
+  return { ok: true, message: removeSenderResult({ handle, outcome: 'retired', queue, held, borrowed }) }
 }
 
 // ── Managing channels ───────────────────────────────────────────────────────
