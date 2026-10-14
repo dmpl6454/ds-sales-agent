@@ -38,7 +38,8 @@ vi.mock('@/lib/db', () => ({
       update: (...a: unknown[]) => update(...a),
       updateMany: async () => ({ count: 0 }),
     },
-    auditLog: { create: vi.fn() },
+    // `checkConversation` reads `reply.replaced` rows back as known texts (review of C2, finding B).
+    auditLog: { create: vi.fn(), findMany: async () => [], findFirst: async () => null },
     $transaction: async () => [],
   },
 }))

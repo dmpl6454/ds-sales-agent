@@ -144,6 +144,47 @@ export const REPLY_FRESHNESS_HOURS = 24
  */
 export const REPLY_TEXT_MAX = 2000
 
+/**
+ * ── TWO AUDIT ROWS THIS MODULE READS BACK (review of C2, 2026-10-09) ─────────────────
+ *
+ * Both are keyed on ONE conversation — `conversationEntity` — and both are read by a query on
+ * `entity` + `action`, never by parsing an audit sentence. Prose is for people; these are data.
+ *
+ * `reply.unattached` — the inbox saw THEY wrote last in this page's conversation and the reply
+ * could not be recorded on any row of this pair (finding A). Nothing on the pair halts it, and its
+ * next message may be a FIRST touch, which the pre-send read used to skip. While this is newer
+ * than the pair's last verified read, `ensureConversationChecked` reads the thread whatever the
+ * touch number. Its `detail` is prose and is never read; only `at` is.
+ *
+ * `reply.replaced` — a reply written FORWARD onto a row that already carried one (finding B). Its
+ * `detail` is EXACTLY the words it replaced, and the known-texts test reads it back, or those
+ * words would come back as a "new" reply on the next thread read.
+ */
+export const REPLY_UNATTACHED = 'reply.unattached'
+export const REPLY_REPLACED = 'reply.replaced'
+
+/**
+ * The audit entity for one conversation. A conversation is per account PAIR (module header), so it
+ * is keyed on the two ACCOUNT ids rather than the `OutreachPair` row's id: evidence must outlive a
+ * route being removed and created again, and the inbox can see a reply before any pair row exists.
+ */
+export function conversationEntity(senderId: string, targetId: string): string {
+  return `Conversation:${senderId}:${targetId}`
+}
+
+/**
+ * The newest `reply.unattached` evidence for this conversation that is NEWER than `since` — the
+ * pair's last verified read — or null. Null `since` (never read, or its stamps cleared) means any.
+ */
+async function unattachedReplySince(senderId: string, targetId: string, since: Date | null): Promise<Date | null> {
+  const evidence = await prisma.auditLog.findFirst({
+    where: { entity: conversationEntity(senderId, targetId), action: REPLY_UNATTACHED, ...(since ? { at: { gt: since } } : {}) },
+    orderBy: { at: 'desc' },
+    select: { at: true },
+  })
+  return evidence?.at ?? null
+}
+
 export interface ReplyCheckOutcome {
   pairKey: string
   status: 'reply-found' | 'no-reply' | 'unreadable' | 'incomplete' | 'skipped'
@@ -420,13 +461,26 @@ export async function checkConversation(args: {
    *
    * (It used to say "HANDLED ONES INCLUDED". Moot: `replyHandledAt` has had no writer since the
    * early-release button was removed on 2026-08-25.)
+   *
+   * AND THE WORDS A WRITE-FORWARD REPLACED (review of C2, finding B). `recordReplyOnPair` (c)
+   * overwrites a row's `replyText` with the newer reply; reading only `replyText` made the older
+   * words "new" again on the next read — superseding a draft and re-arming the pause with weeks-old
+   * words. They are kept exactly in a `reply.replaced` row for this conversation and read back here.
    */
-  const knownReplies = (
-    await prisma.outreachAttempt.findMany({
-      where: { senderId, targetId, replyText: { not: null } },
-      select: { replyText: true },
-    })
-  ).map((r) => normalise(r.replyText!))
+  const knownReplies = [
+    ...(
+      await prisma.outreachAttempt.findMany({
+        where: { senderId, targetId, replyText: { not: null } },
+        select: { replyText: true },
+      })
+    ).map((r) => r.replyText!),
+    ...(
+      await prisma.auditLog.findMany({
+        where: { entity: conversationEntity(senderId, targetId), action: REPLY_REPLACED },
+        select: { detail: true },
+      })
+    ).flatMap((r) => (r.detail === null ? [] : [r.detail])),
+  ].map((t) => normalise(t))
 
   /**
    * ── A TEXTLESS REPLY ROW IS A MARKER, AND NOTHING FILLS IT FROM THE THREAD (audit C2) ──
@@ -565,6 +619,12 @@ export type ReplyRecord =
   | { written: 'superseded-draft'; attemptId: string }
   /** Every delivered row of this pair already carried a reply: written forward on the newest. */
   | { written: 'forward'; attemptId: string }
+  /**
+   * Inbox only: this pair delivered nothing and has no waiting draft, but has a row that never goes
+   * back to the queue (a discarded or superseded draft, a parked uncertain send); it carries the
+   * reply, status unchanged, so THIS pair halts (review of C2, finding A).
+   */
+  | { written: 'resting-row'; attemptId: string }
   /** Inbox only: this pair has no row of its own, so the lead sits on another page's row. */
   | { written: 'other-page'; attemptId: string }
   | { written: 'none'; why: 'raced' | 'no-row' | 'same-words-on-another-page' }
@@ -599,13 +659,26 @@ function lostRace(err: unknown): false {
  *       rule); a dashboard Send that claimed the draft meanwhile makes it throw P2025, and then
  *       NOTHING is written — the caller holds, and the next read records it on the sent row.
  *   (c) else every delivered row of this pair already carries a reply: the new one is written
- *       FORWARD onto the newest, so THIS pair's halt re-arms from its own date, and the reply it
- *       replaces is kept, verbatim, in the audit row (audit H9's recommended option).
- *   (d) else, the inbox scan only (`otherPage`): this pair has no row at all — a name-matched
- *       inbound message to a page that never wrote to them. It sits on another page's newest
- *       free row so the lead stays visible, unless the same words are already recorded on the
- *       target (that skip is what stops the @medlinkstrichology walk-down, and it applies only
- *       here — on this pair's own rows `shouldRecordInboxReply` already dedupes).
+ *       FORWARD onto the newest, so THIS pair's halt re-arms from its own date. The words it
+ *       replaces are kept EXACTLY in a `reply.replaced` row for this conversation, which the
+ *       known-texts test reads back — keeping them only inside the audit SENTENCE left them unknown,
+ *       and the next thread read re-recorded weeks-old words as a fresh reply (review, finding B).
+ *       With NO delivered row, the same write lands on this pair's newest row that never goes back
+ *       to the queue — SKIPPED, a `not-in-thread` park, or a never-sent row an older path marked
+ *       REPLIED — status unchanged (review, finding A). Any other FAILED row is NOT used, a
+ *       `profile-gone` park included: `requeueParkedAttempt` returns every FAILED code but
+ *       `not-in-thread` to the queue (and the hand-off moves the rest to ANOTHER page), and a
+ *       READY draft already carrying a reply can never be superseded by (b), whose guard
+ *       requires `repliedAt: null` — every pre-send read of it would drive the browser, see the
+ *       reply, fail to record it, and hold without spending an attempt, on every tick. Those
+ *       fall through to (d), whose evidence forces the read instead.
+ *   (d) else, the inbox scan only (`otherPage`): this pair has no row that can carry it — a
+ *       name-matched inbound message to a page that never wrote to them. It sits on another
+ *       page's newest free row so the lead stays visible, unless the same words are already
+ *       recorded on the target (that skip is what stops the @medlinkstrichology walk-down, and it
+ *       applies only here — on this pair's own rows `shouldRecordInboxReply` already dedupes).
+ *       Nothing on THIS pair then halts it, so the inbox phase leaves `reply.unattached` evidence
+ *       and the pre-send read honours it for any message of this pair, a first one included.
  *
  * Every write is one `$transaction` with its audit row(s). `vouch` — a COMPLETE thread read —
  * is the only thing that stamps `replyCheckedAt`.
@@ -692,28 +765,57 @@ async function recordReplyOnPair(args: {
     return done ? { written: 'superseded-draft', attemptId: draftId } : raced(draftId)
   }
 
-  // (c) every delivered row of this pair already carries a reply: write forward on the newest.
+  // (c) every delivered row of this pair already carries a reply: write forward on the newest —
+  //     or, with no delivered row, on this pair's newest row that never returns to the queue.
   const newestOwn = await prisma.outreachAttempt.findFirst({
     where: { senderId, targetId, status: { in: [...DELIVERED_STATUSES] }, sentAt: { not: null } },
     orderBy: { sentAt: 'desc' },
-    select: { id: true, replyText: true, replyPostedAt: true },
+    select: { id: true, status: true, repliedAt: true, replyText: true, replyPostedAt: true },
   })
-  if (newestOwn) {
+  const resting = newestOwn
+    ? null
+    : await prisma.outreachAttempt.findFirst({
+        where: {
+          senderId,
+          targetId,
+          /* Only rows nothing returns to the queue — see (c) above for why `profile-gone` is not. */
+          OR: [
+            { status: 'SKIPPED' },
+            { status: 'FAILED', failureCode: 'not-in-thread' },
+            { status: { in: [...DELIVERED_STATUSES] }, sentAt: null },
+          ],
+        },
+        orderBy: { queuedAt: 'desc' },
+        select: { id: true, status: true, repliedAt: true, replyText: true, replyPostedAt: true },
+      })
+  const own = newestOwn ?? resting
+  if (own) {
     const replaced =
-      newestOwn.replyText === null
+      own.replyText === null
         ? 'a reply recorded without its words'
-        : `the earlier reply "${newestOwn.replyText}"`
+        : `the earlier reply "${own.replyText}"`
     const done = await prisma
       .$transaction([
-        prisma.outreachAttempt.update({ where: { id: newestOwn.id }, data: { ...reply, status: 'REPLIED' } }),
+        newestOwn
+          ? prisma.outreachAttempt.update({ where: { id: own.id }, data: { ...reply, status: 'REPLIED' } })
+          : /* Status unchanged, and guarded inside the update: a row that moved on meanwhile makes
+               it P2025 — a lost race, recorded by the next read. */
+            prisma.outreachAttempt.update({ where: { id: own.id, status: own.status }, data: { ...reply } }),
         auditRow(
-          newestOwn.id,
+          own.id,
           args.audit.action,
-          `${args.audit.detail} — every message in this conversation already carried a reply, so it is written forward on the newest, replacing ${replaced} (written ${newestOwn.replyPostedAt ? newestOwn.replyPostedAt.toISOString() : 'undated'})`,
+          newestOwn
+            ? `${args.audit.detail} — every message in this conversation already carried a reply, so it is written forward on the newest, replacing ${replaced} (written ${own.replyPostedAt ? own.replyPostedAt.toISOString() : 'undated'})`
+            : `${args.audit.detail} — @${senderHandle} has delivered nothing in this conversation, so it is recorded on its ${own.status.toLowerCase()} message there, which stays ${own.status.toLowerCase()}${own.repliedAt === null ? '' : `, replacing ${replaced}`}`,
         ),
+        /* The replaced words, exactly, where the known-texts test reads them (finding B). */
+        ...(own.replyText === null
+          ? []
+          : [prisma.auditLog.create({ data: { actor: 'reply-check', action: REPLY_REPLACED, entity: conversationEntity(senderId, targetId), detail: own.replyText, at: now } })]),
       ])
       .then(() => true, lostRace)
-    return done ? { written: 'forward', attemptId: newestOwn.id } : raced(newestOwn.id)
+    if (!done) return raced(own.id)
+    return newestOwn ? { written: 'forward', attemptId: own.id } : { written: 'resting-row', attemptId: own.id }
   }
 
   // (d) the inbox only: no row of this pair at all — keep the lead visible on another page's row.
@@ -746,7 +848,7 @@ async function recordReplyOnPair(args: {
       auditRow(
         other.id,
         args.audit.action,
-        `${args.audit.detail} — @${senderHandle} has no message of ours in this conversation, so it is kept on another page's row to stay visible; @${senderHandle} reads its own thread before writing to them`,
+        `${args.audit.detail} — @${senderHandle} has no message of ours here that could carry it, so it is kept on another page's row to stay visible; nothing on @${senderHandle} halts for it, so @${senderHandle}'s next message to them, a first one included, reads this conversation before it is sent`,
       ),
     ])
     .then(() => true, lostRace)
@@ -958,8 +1060,10 @@ async function inboxPhase(
        * which row a reply sits on: this pair's free delivered row, else its waiting draft
        * (superseded — this closes the hole where a draft read "fresh" less than a day ago went
        * out without a read after a new inbox reply), else written forward on this pair's newest
-       * row, else — only when this page has no row in the conversation at all — another page's
-       * row, so an inbound lead stays visible. An inbox row never vouches for a conversation.
+       * delivered row, else on its newest row that never returns to the queue, else — only when
+       * this page has no row that can carry it — another page's row, so an inbound lead stays
+       * visible, with `reply.unattached` evidence for this pair below. An inbox row never vouches
+       * for a conversation.
        */
       const outcome = await recordReplyOnPair({
         senderId: sender.id,
@@ -987,13 +1091,39 @@ async function inboxPhase(
          * a conversation the inbox just showed them answering. Clearing this pair's freshness
          * forces that read; the reply is then recorded on the right pair. The stamps only order
          * the sweep and feed the coverage figure, so clearing them costs nothing that guards.
+         *
+         * ── AND A FIRST TOUCH HAD NO READ TO FORCE (review of C2, finding A) ──
+         *
+         * Clearing stamps reaches a FOLLOW-UP only. A page that never wrote to them has no rows to
+         * clear, and with the reply parked on another page's row (which halts THAT page) rotation
+         * elects this one and the planner drafts it a first touch — which the pre-send read
+         * exempted. So the inbox leaves `reply.unattached` evidence for this conversation, and
+         * `ensureConversationChecked` reads the thread for ANY message of this pair while that
+         * evidence is newer than the pair's last verified read. One row per unread stretch: the
+         * stamps were just cleared, so any earlier evidence is unspent again and already enough.
          */
         const cleared = await prisma.outreachAttempt.updateMany({
           where: { senderId: sender.id, targetId: target.id, replyCheckedAt: { not: null } },
           data: { replyCheckedAt: null },
         })
-        if (cleared.count > 0) {
-          log.step('an inbox reply could not sit on this conversation — its next follow-up will read the thread first', {
+        const evidenceNeeded = (await unattachedReplySince(sender.id, target.id, null)) === null
+        if (evidenceNeeded) {
+          await prisma.auditLog.create({
+            data: {
+              actor: 'reply-check',
+              action: REPLY_UNATTACHED,
+              entity: conversationEntity(sender.id, target.id),
+              detail:
+                `@${target.handle} wrote last in @${sender.handle}'s conversation and it could not be recorded on any message ` +
+                `of that conversation (${outcome.written === 'none' ? outcome.why : 'kept on another page'}) — @${sender.handle}'s ` +
+                `next message to them, a first one included, reads this conversation before it is sent`,
+              /* Set explicitly: it is compared with `replyCheckedAt`, written by this process. */
+              at: new Date(),
+            },
+          })
+        }
+        if (cleared.count > 0 || evidenceNeeded) {
+          log.step('an inbox reply could not sit on this conversation — its next message, a first one included, will read the thread first', {
             pair: `${sender.handle}→${target.handle}`,
             outcome: outcome.written === 'none' ? outcome.why : 'kept on another page',
           })
@@ -1004,7 +1134,7 @@ async function inboxPhase(
       recorded += 1
       log.info(
         outcome.written === 'other-page'
-          ? "reply recorded from the inbox list on another page's row, to stay visible — this page reads its thread before writing again"
+          ? "reply recorded from the inbox list on another page's row, to stay visible — this page's next message, a first one included, reads its thread first"
           : replyPostedAt
             ? 'reply recorded from the inbox list — this conversation is halted, counted from when they wrote'
             : 'reply recorded from the inbox list — it carries no date, so it holds no automatic pause',
@@ -1205,11 +1335,17 @@ export type EnsureResult =
  * not depend on the fleet's size at all. It costs one read per follow-up, and the
  * dispatcher already paces those.
  *
- * FIRST TOUCHES ARE EXEMPT, and that is not a shortcut: there is no conversation to read.
- * `openAndReadThread` would navigate to a profile that has never been messaged and find
- * no thread, which is indistinguishable from an unreadable one — so it would refuse every
- * first touch forever. The reply guard has nothing to say about a message to someone we
- * have never contacted.
+ * FIRST TOUCHES ARE EXEMPT — UNLESS THE RECIPIENT HAS WRITTEN TO THIS PAGE (review of C2,
+ * finding A). An ordinary first touch has no conversation to read, and a read on every one would
+ * double the browser drives against revenue accounts for nothing. But when the inbox saw the
+ * recipient write to THIS page and could not record it on any row of this pair
+ * (`reply.unattached`), the conversation exists and nothing on the pair halts — rotation elects
+ * this page precisely because the reply was parked on another page's row, and its first message
+ * would go into the thread they opened, unread. While that evidence is newer than the pair's last
+ * verified read, the thread is read whatever the touch number; and a first touch on a pair that
+ * already carries a recorded reply reads on the follow-up's freshness rule. Such a read cannot
+ * wedge: with nothing of ours delivered, `expected` is empty and `assessRead` calls it complete; a
+ * reply found SUPERSEDES the draft.
  *
  * FAILS CLOSED. An unreadable thread holds the send. The alternative is sending into a
  * conversation we could not read, which is exactly the case this guard exists for.
@@ -1224,10 +1360,6 @@ export async function ensureConversationChecked(args: {
   now?: Date
 }): Promise<EnsureResult> {
   const now = args.now ?? new Date()
-
-  if (args.touchNumber <= 1) {
-    return { ok: true, reason: 'fresh' }
-  }
 
   /**
    * Freshness is measured on THIS PAIR's thread, not on the target.
@@ -1245,8 +1377,33 @@ export async function ensureConversationChecked(args: {
     orderBy: { replyCheckedAt: 'desc' },
     select: { replyCheckedAt: true },
   })
+  const lastRead = lastChecked?.replyCheckedAt ?? null
+  const fresh = lastRead !== null && lastRead >= hoursAgo(REPLY_FRESHNESS_HOURS, now)
 
-  if (lastChecked?.replyCheckedAt && lastChecked.replyCheckedAt >= hoursAgo(REPLY_FRESHNESS_HOURS, now)) {
+  /**
+   * WHICH MESSAGES READ (review of C2, finding A). The touch number is only the first of three
+   * facts, asked cheapest first:
+   *
+   *   - a follow-up writes into a conversation we started, so it reads when the read is stale;
+   *   - a first touch into a conversation where THIS PAIR already holds a recorded reply — the
+   *     inbox put it on a discarded draft or a parked send (`recordReplyOnPair` (c)) — is writing
+   *     into an existing conversation too, and reads on the same freshness rule. Without this an
+   *     UNDATED reply there, which holds no pause by Tabish's rule, let the first touch go into
+   *     the thread they opened unread;
+   *   - unspent `reply.unattached` evidence reads whatever the stamp says, because the stamp
+   *     predates what the inbox saw.
+   *
+   * An ordinary first touch has none of the three and opens nothing.
+   */
+  const staleConversation =
+    !fresh &&
+    (args.touchNumber > 1 ||
+      (await prisma.outreachAttempt.findFirst({
+        where: { senderId: args.senderId, targetId: args.targetId, repliedAt: { not: null } },
+        select: { id: true },
+      })) !== null)
+  const mustRead = staleConversation || (await unattachedReplySince(args.senderId, args.targetId, lastRead)) !== null
+  if (!mustRead) {
     return { ok: true, reason: 'fresh' }
   }
 

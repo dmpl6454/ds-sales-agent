@@ -100,6 +100,9 @@ const openAndReadThread = vi.fn()
 const markChallenged = vi.fn()
 const attemptUpdate = vi.fn()
 const transaction = vi.fn()
+/** `reply.unattached` / `reply.replaced` rows (review of C2): the guard reads both back. */
+const auditFindFirst = vi.fn()
+const auditFindMany = vi.fn()
 
 vi.mock('@/lib/db', () => ({
   prisma: {
@@ -108,7 +111,11 @@ vi.mock('@/lib/db', () => ({
       findMany: (...a: unknown[]) => findMany(...a),
       update: (...a: unknown[]) => attemptUpdate(...a),
     },
-    auditLog: { create: vi.fn() },
+    auditLog: {
+      create: vi.fn(),
+      findFirst: (...a: unknown[]) => auditFindFirst(...a),
+      findMany: (...a: unknown[]) => auditFindMany(...a),
+    },
     $transaction: (...a: unknown[]) => transaction(...a),
   },
 }))
@@ -140,6 +147,8 @@ beforeEach(() => {
   findMany.mockReset().mockResolvedValue([])
   attemptUpdate.mockReset().mockResolvedValue({})
   transaction.mockReset().mockResolvedValue([])
+  auditFindFirst.mockReset().mockResolvedValue(null)
+  auditFindMany.mockReset().mockResolvedValue([])
   markChallenged.mockReset().mockResolvedValue(undefined)
   hasSession.mockReset().mockReturnValue({ dir: '/tmp/p', hasSession: true })
   openAndReadThread.mockReset().mockResolvedValue({ ok: true, messages: [], url: 'https://x' })
@@ -147,15 +156,46 @@ beforeEach(() => {
 
 describe('ensureConversationChecked — the guarantee the sweep cannot give', () => {
   /**
-   * A first touch has NO conversation to read. `openAndReadThread` on a profile that has
-   * never been messaged finds no thread, which is indistinguishable from an unreadable
-   * one — so without this exemption a fail-closed guard would refuse every first touch
-   * forever, and the reply guard has nothing to say about someone never contacted.
+   * An ORDINARY first touch has NO conversation to read. `openAndReadThread` on a profile
+   * that has never been messaged finds no thread, which is indistinguishable from an
+   * unreadable one — so without this exemption a fail-closed guard would refuse every first
+   * touch forever, and the reply guard has nothing to say about someone never contacted.
+   * (The two exceptions, both evidence that a conversation exists, are below.)
    */
-  it('exempts a first touch WITHOUT opening a browser', async () => {
+  it('exempts an ordinary first touch WITHOUT opening a browser', async () => {
     const r = await ensureConversationChecked({ ...args, touchNumber: 1 })
     expect(r).toEqual({ ok: true, reason: 'fresh' })
     expect(openAndReadThread).not.toHaveBeenCalled()
+  })
+
+  /**
+   * REVIEW OF C2, FINDING A — the exemption has two exceptions, and each is EVIDENCE that a
+   * conversation exists rather than a read on every first touch.
+   */
+  it('a first touch READS when the inbox left evidence newer than the last verified read', async () => {
+    auditFindFirst.mockResolvedValue({ at: new Date('2026-08-05T11:00:00Z') })
+    const r = await ensureConversationChecked({ ...args, touchNumber: 1 })
+    expect(openAndReadThread).toHaveBeenCalledOnce()
+    expect(r).toEqual({ ok: true, reason: 'checked-now' })
+    const where = (auditFindFirst.mock.calls[0]![0] as { where: Record<string, unknown> }).where
+    expect(where).toMatchObject({ entity: 'Conversation:send_1:targ_1', action: 'reply.unattached' })
+  })
+
+  it('evidence is asked only for what is newer than the pair’s last verified read', async () => {
+    const lastRead = new Date('2026-08-05T10:00:00Z')
+    findFirst.mockImplementation(async (q: { where: Record<string, unknown> }) => ('replyCheckedAt' in q.where ? { replyCheckedAt: lastRead } : null))
+    const r = await ensureConversationChecked({ ...args, touchNumber: 1 })
+    expect(r).toEqual({ ok: true, reason: 'fresh' })
+    expect(openAndReadThread).not.toHaveBeenCalled()
+    const where = (auditFindFirst.mock.calls[0]![0] as { where: { at?: { gt?: Date } } }).where
+    expect(where.at?.gt).toEqual(lastRead)
+  })
+
+  it('a first touch on a pair that already carries a recorded reply reads when the read is stale', async () => {
+    findFirst.mockImplementation(async (q: { where: Record<string, unknown> }) => ('repliedAt' in q.where ? { id: 'k1' } : null))
+    const r = await ensureConversationChecked({ ...args, touchNumber: 1 })
+    expect(openAndReadThread).toHaveBeenCalledOnce()
+    expect(r).toEqual({ ok: true, reason: 'checked-now' })
   })
 
   it('skips the read when this thread was checked recently', async () => {

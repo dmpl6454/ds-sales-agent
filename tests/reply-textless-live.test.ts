@@ -183,6 +183,7 @@ const { checkConversation, ensureConversationChecked, checkForReplies, resetRepl
   await import('@/outreach/replyCheck')
 const { replyHaltWhere } = await import('@/outreach/replyHalt')
 const { recheckBeforeSend, RESEND_BLOCKS } = await import('@/outreach/gate')
+const { assessRead } = await vi.importActual<typeof import('@/outreach/browser/readThread')>('@/outreach/browser/readThread')
 
 const H = 3_600_000
 const D = 24 * H
@@ -226,8 +227,20 @@ function complete(messages: Bubble[]) {
   return { ok: true, url: 'https://www.instagram.com/someone/', messages: m, foundOurs: 1, expectedOurs: 1, complete: true }
 }
 
-const ensure = (senderId: string, attemptId: string) =>
-  ensureConversationChecked({ senderId, senderHandle: senderId, targetId: T, targetHandle: T, attemptId, touchNumber: 2 })
+/**
+ * The pre-send read, asked with the draft's REAL touch number. This hard-coded 2 and was called on
+ * a touch-1 row, so it could not see that a first touch was exempt from reading the very
+ * conversation the inbox had just shown the recipient opening (review of C2, finding A).
+ */
+const ensure = async (senderId: string, attemptId: string) =>
+  ensureConversationChecked({
+    senderId,
+    senderHandle: senderId,
+    targetId: T,
+    targetHandle: T,
+    attemptId,
+    touchNumber: (await row(attemptId)).touchNumber,
+  })
 const check = (senderId: string, fallbackAttemptId: string, fallbackIsDraft: boolean) =>
   checkConversation({ senderId, senderHandle: senderId, targetId: T, targetHandle: T, fallbackAttemptId, fallbackIsDraft })
 
@@ -625,6 +638,196 @@ describe('C2 R7 — the inbox scan goes through the same writer', () => {
     openAndReadThread.mockClear()
     await ensure('s1', 'f1')
     expect(openAndReadThread).toHaveBeenCalledOnce()
+  })
+})
+
+/**
+ * REVIEW OF C2, FINDING A. A page that has never written to them — no delivered row, no draft —
+ * is DM'd by them. The inbox sees THEY wrote last in that page's conversation and has no row of
+ * the pair to put it on, so it parks the lead on another page's row (which halts THAT page). The
+ * page they actually wrote to is then the one rotation elects, the planner drafts it a FIRST touch
+ * (it has delivered nothing), and a first touch was exempt from the pre-send read — so it went
+ * into the conversation they had opened, unread. The reply on the other row could not stop it:
+ * under the pair-scoped halt it holds the other page only.
+ */
+describe('review A — a reply the pair could not carry is read before even a first message', () => {
+  const inboxRow = (snippet: string, ageText: string) => ({ displayName: T, snippet, ageText, unread: true, folder: 'primary' as const, threadUrl: null })
+  const unattached = () => prisma.auditLog.count({ where: { action: 'reply.unattached' } })
+
+  beforeEach(() => {
+    openAndReadThread.mockResolvedValue({ ok: false, reason: 'unreadable', detail: 'not under test' })
+  })
+
+  it('S1, never written to them, is DM\'d: its first message reads the thread, finds the reply and is withdrawn', async () => {
+    await addSender('s1')
+    await addSender('s2')
+    await attempt('b2', 's2', { sentAt: ago(3 * D), renderedBody: 'b2 body' })
+    scanInbox.mockImplementation(async (handle: string) => ({ ok: true, rows: handle === 's1' ? [inboxRow('hi, can we talk?', '1h')] : [] }))
+
+    await checkForReplies()
+    // The lead is still kept visible on the other page's row, as before.
+    expect((await row('b2')).replyText).toBe('hi, can we talk?')
+    // Nothing on S1's pair halts it — which is exactly why its next message must read first.
+    expect(await halted('s1')).toBe(false)
+
+    // What rotation and the planner then write for S1: a FIRST touch.
+    await attempt('d1', 's1', { status: 'READY', touchNumber: 1, renderedBody: 'first touch from s1' })
+    const said = ago(H)
+    openAndReadThread.mockClear().mockResolvedValue(complete([{ text: 'hi, can we talk?', ours: false, approxAt: said }]))
+
+    const r = await ensure('s1', 'd1')
+    expect(openAndReadThread).toHaveBeenCalledOnce()
+    expect(openAndReadThread.mock.calls[0]![0]).toBe('s1')
+    // A never-messaged pair expects none of our bodies, which the real assessor calls complete —
+    // so the read cannot wedge as "incomplete" forever.
+    expect((openAndReadThread.mock.calls[0]![2] as { expected: string[] }).expected).toEqual([])
+    expect(assessRead([{ text: 'hi, can we talk?', ours: false, approxAt: null }], []).complete).toBe(true)
+    expect(r.ok).toBe(false)
+    if (r.ok) throw new Error('unreachable')
+    expect(r.reason).toBe('reply-found')
+
+    const d1 = await row('d1')
+    expect(d1.status).toBe('SKIPPED')
+    expect(d1.sentAt).toBeNull()
+    expect(d1.replyText).toBe('hi, can we talk?')
+    expect(await halted('s1')).toBe(true)
+  })
+
+  it('the evidence is pair-scoped, written once per unread stretch, and spent by a verified read', async () => {
+    await addSender('s1')
+    await addSender('s2')
+    await addSender('s3')
+    await attempt('b2', 's2', { sentAt: ago(3 * D), renderedBody: 'b2 body' })
+    scanInbox.mockImplementation(async (handle: string) => ({ ok: true, rows: handle === 's1' ? [inboxRow('who is this?', '2h')] : [] }))
+
+    await checkForReplies()
+    await checkForReplies()
+    // The second sweep sees the same row and walks to "same words elsewhere" — one record, not two.
+    expect(await unattached()).toBe(1)
+
+    // Another page that never wrote to them is not affected: its first touch opens nothing.
+    await attempt('e3', 's3', { status: 'READY', touchNumber: 1, renderedBody: 'first touch from s3' })
+    openAndReadThread.mockClear()
+    expect(await ensure('s3', 'e3')).toEqual({ ok: true, reason: 'fresh' })
+    expect(openAndReadThread).not.toHaveBeenCalled()
+
+    // S1's read finds nothing new of theirs (the inbox matched a stranger by name): it is stamped,
+    // the evidence is spent, and the NEXT first touch is exempt again.
+    await attempt('d1', 's1', { status: 'READY', touchNumber: 1, renderedBody: 'first touch from s1' })
+    openAndReadThread.mockClear().mockResolvedValue(complete([]))
+    expect(await ensure('s1', 'd1')).toEqual({ ok: true, reason: 'checked-now' })
+    expect(openAndReadThread).toHaveBeenCalledOnce()
+    await attempt('d2', 's1', { status: 'READY', touchNumber: 1, renderedBody: 'another first touch from s1' })
+    openAndReadThread.mockClear()
+    expect(await ensure('s1', 'd2')).toEqual({ ok: true, reason: 'fresh' })
+    expect(openAndReadThread).not.toHaveBeenCalled()
+  })
+
+  /**
+   * A row of THIS pair that can never go back to the queue (a discarded draft, a parked uncertain
+   * send) carries the reply itself, so the pair's own halt and its known texts see it — and the
+   * page the recipient did NOT write to is left unhalted.
+   */
+  it('a pair row that never returns to the queue carries the reply; another page is not halted for it', async () => {
+    await addSender('s1')
+    await addSender('s2')
+    await attempt('k1', 's1', { status: 'SKIPPED', touchNumber: 1, renderedBody: 'discarded draft' })
+    await attempt('b2', 's2', { sentAt: ago(3 * D), renderedBody: 'b2 body' })
+    scanInbox.mockImplementation(async (handle: string) => ({ ok: true, rows: handle === 's1' ? [inboxRow('saw your page, rates?', '1h')] : [] }))
+
+    await checkForReplies()
+    const k1 = await row('k1')
+    expect(k1.status).toBe('SKIPPED')
+    expect(k1.sentAt).toBeNull()
+    expect(k1.replyText).toBe('saw your page, rates?')
+    expect(await halted('s1')).toBe(true)
+    expect((await row('b2')).repliedAt).toBeNull()
+    expect(await halted('s2')).toBe(false)
+    expect(await unattached()).toBe(0)
+  })
+
+  /**
+   * That row halts the pair only when the reply is DATED. An inbox row with no parseable age
+   * records it undated — no pause, by Tabish's rule — so rotation may draft S1 a first touch at
+   * once, and with no evidence row that first touch would go into their thread unread. A pair
+   * that carries a recorded reply is a conversation, and its first touch reads like a follow-up.
+   */
+  it('an UNDATED reply on such a row still makes S1’s first message read the thread first', async () => {
+    await addSender('s1')
+    await attempt('k1', 's1', { status: 'SKIPPED', touchNumber: 1, renderedBody: 'discarded draft' })
+    scanInbox.mockImplementation(async (handle: string) => ({
+      ok: true,
+      rows: handle === 's1' ? [{ displayName: T, snippet: 'interested, call me', ageText: null, unread: true, folder: 'primary' as const, threadUrl: null }] : [],
+    }))
+
+    await checkForReplies()
+    const k1 = await row('k1')
+    expect(k1.replyText).toBe('interested, call me')
+    expect(k1.replyPostedAt).toBeNull()
+    expect(await halted('s1')).toBe(false)
+
+    await attempt('d1', 's1', { status: 'READY', touchNumber: 1, renderedBody: 'first touch from s1' })
+    openAndReadThread.mockClear().mockResolvedValue(complete([{ text: 'interested, call me', ours: false, approxAt: null }]))
+    expect(await ensure('s1', 'd1')).toEqual({ ok: true, reason: 'checked-now' })
+    expect(openAndReadThread).toHaveBeenCalledOnce()
+    expect((await row('d1')).status).toBe('READY')
+  })
+
+  /**
+   * A `profile-gone` park is NOT such a row: `requeueParkedAttempt` returns it to the queue, and
+   * a READY draft carrying a reply can never be superseded — every pre-send read of it would
+   * see the reply, fail to record it, and hold, driving the browser on every tick. It falls
+   * through to another page's row and the evidence instead.
+   */
+  it('a profile-gone park does not carry the reply; the evidence forces the read instead', async () => {
+    await addSender('s1')
+    await addSender('s2')
+    await attempt('g1', 's1', { status: 'FAILED', failureCode: 'profile-gone', touchNumber: 1, renderedBody: 'parked draft' })
+    await attempt('b2', 's2', { sentAt: ago(3 * D), renderedBody: 'b2 body' })
+    scanInbox.mockImplementation(async (handle: string) => ({ ok: true, rows: handle === 's1' ? [inboxRow('we are back, talk?', '1h')] : [] }))
+
+    await checkForReplies()
+    expect((await row('g1')).repliedAt).toBeNull()
+    expect((await row('b2')).replyText).toBe('we are back, talk?')
+    expect(await unattached()).toBe(1)
+  })
+})
+
+/**
+ * REVIEW OF C2, FINDING B. Writing a new reply FORWARD onto the pair's newest row overwrote the
+ * earlier `replyText`, and the known-texts test reads only `replyText` — so the replaced words came
+ * back as a "new" reply on the next thread read, superseding a draft and re-arming the pause with
+ * weeks-old words dated up to our last send.
+ */
+describe('review B — a reply replaced by a write-forward stays known', () => {
+  const inboxRow = (snippet: string, ageText: string) => ({ displayName: T, snippet, ageText, unread: true, folder: 'primary' as const, threadUrl: null })
+
+  it('write forward, then a thread read showing [A1, X, Y], records nothing new', async () => {
+    await addSender('s1')
+    await attempt('a1', 's1', { status: 'REPLIED', sentAt: ago(20 * D), repliedAt: ago(19 * D), replyPostedAt: ago(19 * D), replyText: 'X: send the deck' })
+    openAndReadThread.mockResolvedValue({ ok: false, reason: 'unreadable', detail: 'not under test' })
+    scanInbox.mockImplementation(async (handle: string) => ({ ok: true, rows: handle === 's1' ? [inboxRow('Y: any update?', '2h')] : [] }))
+
+    await checkForReplies()
+    expect((await row('a1')).replyText).toBe('Y: any update?')
+
+    await attempt('d', 's1', { status: 'READY', touchNumber: 2, renderedBody: 'follow-up body' })
+    openAndReadThread.mockReset().mockResolvedValue(
+      complete([
+        { text: 'a1 body', ours: true },
+        { text: 'X: send the deck', ours: false, approxAt: ago(19 * D) },
+        { text: 'Y: any update?', ours: false, approxAt: ago(2 * H) },
+      ]),
+    )
+    const r = await check('s1', 'd', true)
+    expect(r.status).toBe('no-reply')
+    const d = await row('d')
+    expect(d.status).toBe('READY')
+    expect(d.replyText).toBeNull()
+    expect((await row('a1')).replyText).toBe('Y: any update?')
+    // The replaced words are kept EXACTLY, in a structured row of their own — never parsed from prose.
+    const kept = await prisma.auditLog.findMany({ where: { action: 'reply.replaced' } })
+    expect(kept.map((k) => k.detail)).toEqual(['X: send the deck'])
   })
 })
 

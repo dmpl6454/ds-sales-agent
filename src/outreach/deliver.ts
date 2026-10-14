@@ -228,15 +228,22 @@ export async function deliverWaiting(opts: DeliverOptions = {}): Promise<Deliver
      * halts every sender the moment a human answers would still be there, reading data
      * nobody had refreshed.
      *
-     * So the check moves to where the risk is. Only for follow-ups (a first touch has no
-     * conversation to read) and only when this pair's thread is stale, so its cost is
-     * proportional to messages sent rather than to prospects held.
+     * So the check moves to where the risk is, and only when this pair's thread is stale, so
+     * its cost is proportional to messages sent rather than to prospects held.
+     *
+     * ASKED FOR EVERY DRAFT, A FIRST TOUCH INCLUDED (review of C2, finding A). This was
+     * `touchNumber > 1`, on the reasoning that a first touch has no conversation to read. It
+     * can: when the recipient DM'd this page first, the inbox parks that reply on another
+     * page's row (halting THAT page), rotation then elects this one, and the planner drafts it
+     * a first touch — which went into the conversation they had opened, unread. The guard owns
+     * the rule now: an ordinary first touch costs it a few queries and opens no browser; one
+     * the inbox left evidence for, or whose pair already carries a reply, reads first.
      *
      * BEFORE the SENDING claim and before any reservation, so a hold leaves nothing to
      * unwind. And it FAILS CLOSED: a thread we could not read holds the message, because
      * "we could not look" must never be spent as though it were "nobody answered".
      */
-    if (attempt.touchNumber > 1) {
+    {
       const conversation = await ensureConversationChecked({
         senderId: attempt.senderId,
         senderHandle: sender.handle,
@@ -298,7 +305,7 @@ export async function deliverWaiting(opts: DeliverOptions = {}): Promise<Deliver
               : `held: ${conversation.detail} — retries after the rest of the queue`,
           })
           if (park) {
-            log.alarm('a follow-up’s conversation could not be read repeatedly and is parked — it will not be retried on its own', {
+            log.alarm('a waiting message’s conversation could not be read repeatedly and is parked — it will not be retried on its own', {
               pair: pairKey,
               attempts: totalAttempts,
               check: `pnpm ig:thread ${sender.handle} ${target.handle}`,

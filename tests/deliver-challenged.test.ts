@@ -176,11 +176,33 @@ describe('the agent stopping', () => {
  * failure this project has found most often.
  */
 describe('a follow-up reads its conversation before it is sent', () => {
-  it('does NOT read anything for a first touch', async () => {
+  /**
+   * CHANGED (review of C2, finding A): this asserted the guard was NOT ASKED for a first touch.
+   * That exemption lived here, keyed on `touchNumber`, so a first message from a page the
+   * recipient had just DM'd went into their conversation unread. The guard owns the rule now —
+   * it answers `fresh` without a browser unless the inbox left evidence for this pair — so the
+   * loop asks for every draft. "No browser for an ordinary first touch" is asserted where the
+   * decision lives, in reply-check.test.ts and reply-textless-live.test.ts.
+   */
+  it('asks the read guard about a first touch too, and a fresh answer sends', async () => {
     attemptFindMany.mockResolvedValue(twoDraftsFromOneSender(1))
     await deliverWaiting()
-    expect(ensureConversationChecked).not.toHaveBeenCalled()
+    expect(ensureConversationChecked).toHaveBeenCalledOnce()
+    expect(ensureConversationChecked.mock.calls[0]![0]).toMatchObject({ senderId: 'send_1', targetId: 'targ_a', touchNumber: 1 })
     expect(send).toHaveBeenCalledOnce()
+  })
+
+  it('HOLDS a first touch when the guard finds a reply in a conversation the recipient opened', async () => {
+    attemptFindMany.mockResolvedValue(twoDraftsFromOneSender(1))
+    ensureConversationChecked.mockResolvedValue({
+      ok: false,
+      reason: 'reply-found',
+      detail: "@target_a replied to @bollywoodsocietyy — this page's messages to them are paused until 16 Oct 2026, 10:30 IST",
+    })
+    const out = await deliverWaiting()
+    expect(send).not.toHaveBeenCalled()
+    expect(claimForAttempt).not.toHaveBeenCalled()
+    expect(out.outcomes[0]!.result).toContain('replied')
   })
 
   it('reads the conversation for a follow-up, before driving the send', async () => {
