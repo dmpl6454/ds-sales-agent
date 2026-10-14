@@ -21,7 +21,10 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 const NOW = Date.now()
 const state = vi.hoisted(() => ({
   settings: new Map<string, string>(),
-  presence: [] as { device: string; at: string; handles: string[] }[],
+  /** What `readPresenceForView` returns: the FRESH entries, newest first, as `readPresence` filters them. */
+  presence: [] as { device: string; at: string; handles: string[]; host?: string }[],
+  /** The raw `devicePresence` row — every entry, stale ones included (`readPresenceEntries`). */
+  entries: [] as { device: string; at: string; handles: string[]; host?: string }[],
 }))
 
 vi.mock('@/lib/env', async (orig) => {
@@ -51,7 +54,8 @@ vi.mock('@/lib/db', () => {
     {
       setting: {
         findMany: async () => [...state.settings].map(([key, value]) => ({ key, value })),
-        findUnique: async () => null,
+        findUnique: async (args: { where?: { key?: string } }) =>
+          args?.where?.key === 'devicePresence' ? { key: 'devicePresence', value: JSON.stringify(state.entries) } : null,
       },
       outreachAttempt: {
         ...empty,
@@ -97,6 +101,7 @@ beforeEach(() => {
     ['activeDevice', 'Studio'],
   ])
   state.presence = [{ device: 'Studio', at: new Date(NOW).toISOString(), handles: ['a'] }]
+  state.entries = [...state.presence]
 })
 
 describe('the hosted queue reads the sending Mac, not this host', () => {
@@ -146,11 +151,63 @@ describe('the hosted queue reads the sending Mac, not this host', () => {
     expect(m.upNext.map((r) => r.senderHandle)).toEqual(['b', 'a'])
   })
 
-  it('a chosen Mac that is not beating is the same: no verdict, no partition', async () => {
+  it('a chosen Mac that is not beating and was never seen is the same: no verdict, no partition', async () => {
     state.presence = []
+    state.entries = []
     const m = await buildMessagesPage()
     expect(gate.predictResendForQueue).not.toHaveBeenCalled()
     expect(m.upNext.map((r) => r.senderHandle)).toEqual(['b', 'a'])
     expect(m.upNext[0]!.clear).toBe(false)
+  })
+})
+
+/**
+ * WHICH ACCOUNTS "THE SENDING MAC" HOLDS — independent review of H8, two gaps in one `find`.
+ *
+ * `presence.find(d => d.device === activeDevice)` took ONE entry. Since C4 keeps two fresh entries
+ * under one name (two Macs that share it, on different hosts), the queue and the head row's witness
+ * followed whichever twin beat last, so the list flapped every poll. And a selected Mac that is NOT
+ * beating is filtered out of `readPresence` entirely, so no partition ran and a draft from an account
+ * that Mac does not hold was listed "next in line … start moving once that changes" — it will not.
+ */
+describe('the queue partitions by every entry under the sending Mac’s name, and by its last heartbeat', () => {
+  it('two fresh entries under the selected name: the UNION of their accounts drives the partition and the witness', async () => {
+    state.presence = [
+      { device: 'Studio', at: new Date(NOW).toISOString(), handles: ['a'], host: 'h1' },
+      { device: 'Studio', at: new Date(NOW - 5_000).toISOString(), handles: ['b'], host: 'h2' },
+    ]
+    state.entries = [...state.presence]
+    const m = await buildMessagesPage()
+    expect(m.upNext.map((r) => r.senderHandle), 'a twin holds @b, so @b is not held for a sign-in').toEqual(['b', 'a'])
+    expect(m.heldWaiting).toBe(0)
+    expect(m.notSignedIn).toBeNull()
+    const [attempt, witness] = vi.mocked(gate.predictResendForQueue).mock.calls[0]!
+    expect((attempt as { id: string }).id).toBe('d_b')
+    expect((witness as { device: string }).device).toBe('Studio')
+    expect([...(witness as { handles: readonly string[] }).handles].sort()).toEqual(['a', 'b'])
+  })
+
+  it('the view model counts the sign-in holds, so the lede can name them even when the rows are below the fold', async () => {
+    const m = await buildMessagesPage()
+    expect(m.notSignedIn).toEqual({ mac: 'Studio', macOnline: true, handles: ['b'], drafts: 1 })
+  })
+
+  it('a selected Mac that is NOT beating is partitioned by its LAST heartbeat — no verdict, and @b is not "next in line"', async () => {
+    state.presence = []
+    state.entries = [
+      { device: 'Studio', at: new Date(NOW - 20 * 60_000).toISOString(), handles: ['a'] },
+      /* Another Mac's stale entry — never read as the sending Mac's. */
+      { device: 'Other', at: new Date(NOW - 20 * 60_000).toISOString(), handles: ['b'] },
+    ]
+    const m = await buildMessagesPage()
+    expect(gate.predictResendForQueue, 'nothing is beating, so there is no next tick to predict').not.toHaveBeenCalled()
+    expect(gate.recheckBeforeSend).not.toHaveBeenCalled()
+    expect(m.upNext.map((r) => r.senderHandle)).toEqual(['a'])
+    expect(m.upNext[0]!.clear).toBe(false)
+    const b = m.heldUpNext.find((r) => r.senderHandle === 'b')
+    expect(b, 'Studio did not hold @b when it was last online — it will not send it when it returns').toBeDefined()
+    expect(b!.why).toMatch(/@b was not signed in on Studio, the sending Mac, when it was last online/)
+    expect(b!.resumesAt).toBeNull()
+    expect(m.notSignedIn).toEqual({ mac: 'Studio', macOnline: false, handles: ['b'], drafts: 1 })
   })
 })

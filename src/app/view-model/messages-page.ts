@@ -24,6 +24,7 @@ import { readNewBrandTouchCounts } from '@/outreach/brandTouchCounts'
  */
 import { predictResendForQueue } from '@/outreach/gate'
 import { readPresenceForView } from './presence'
+import { readPresenceEntries } from '@/outreach/devicePresence'
 import { replyHaltFloor, replyHaltKey } from '@/outreach/replyHalt'
 import { replyQueueHold } from '@/outreach/replyHaltCopy'
 import { crossSpacingVerdict, crossSpacingDetail } from '@/outreach/crossSpacing'
@@ -153,6 +154,18 @@ export interface MessagesPageView {
   heldWaiting: number
   /** The first held drafts, soonest release first — so "33 waiting" is never an invisible list. */
   heldUpNext: HeldRow[]
+  /**
+   * THE HELD DRAFTS NO CLOCK RELEASES — every one whose account the sending Mac holds no
+   * signed-in profile for, counted over the WHOLE queue (independent review of H8). Null when
+   * there are none.
+   *
+   * Carried apart from `heldUpNext` because that is the first eight rows with these sorted LAST:
+   * a queue with eight clocked holds in front hid them entirely, and the all-held lede then said
+   * "Not a fault … each draft below sends itself when its window clears" about drafts that move
+   * only when a person signs the account in there. `macOnline` false means `handles` is what the
+   * sending Mac held at its LAST heartbeat — it is not beating, so that is the best fact there is.
+   */
+  notSignedIn: { mac: string; macOnline: boolean; handles: string[]; drafts: number } | null
   /*
    * `autopilotOn` WAS HERE AND IS GONE (audit H8, 2026-10-09). It was `settings.autopilotEnabled`
    * — the env-floored ENFORCEMENT value, false on the hosted Linode by design — so the hosted
@@ -453,16 +466,38 @@ async function computeMessagesPage(): Promise<MessagesPageView> {
     settings.activeDevice !== null ? readPresenceForView() : Promise.resolve([]),
   ])
   /**
-   * THE SENDING MAC, AS THE SWITCH CARD DERIVES IT — the selected Mac, if it is beating.
+   * THE SENDING MAC, AS THE SWITCH CARD DERIVES IT — the selected Mac, beating or not.
    *
    * Its `handles` are the accounts it holds a signed-in profile for, which is what its own
    * dispatcher checks BEFORE the gate (deliver.ts: "this Mac holds no signed-in profile for @x")
    * and what every dashboard can read. Without it the hosted queue gave ETAs to drafts the
    * sending Mac skips on every tick — the 2026-08-21 "Up next shows drafts the enforcer holds"
    * class, one host along.
+   *
+   * EVERY ENTRY UNDER ITS NAME, NOT THE FIRST (independent review of H8). Since C4 a name can carry
+   * two fresh entries — two Macs that share it, on different hosts — and each one's dispatcher
+   * takes itself for the sending Mac, so between them they drive the UNION of their accounts.
+   * `find` took whichever beat last, so the queue and the head row's witness flapped every poll.
+   *
+   * AND ITS LAST HEARTBEAT WHEN IT IS NOT BEATING. `readPresence` filters an offline Mac out, so
+   * no partition ran and a draft from an account it does not hold was listed "next in line … start
+   * moving once that changes" — it will not, whenever the Mac returns. Its last entry is the best
+   * fact there is about what it holds; read only in that state, so a beating Mac costs no query.
+   * With no entry at all (never seen) there is nothing to partition by and the motion sentence
+   * carries the reason.
    */
-  const sendingMac = presence.find((d) => d.device === settings.activeDevice)
-  const sendingMacHolds = new Set(Array.isArray(sendingMac?.handles) ? sendingMac.handles : [])
+  const beatingAsSendingMac = presence.filter((d) => d.device === settings.activeDevice)
+  const sendingMacEntries =
+    settings.activeDevice === null
+      ? []
+      : beatingAsSendingMac.length > 0
+        ? beatingAsSendingMac
+        : (await readPresenceEntries()).filter((d) => d.device === settings.activeDevice)
+  const sendingMac =
+    settings.activeDevice !== null && sendingMacEntries.length > 0
+      ? { device: settings.activeDevice, beating: beatingAsSendingMac.length > 0 }
+      : null
+  const sendingMacHolds = new Set(sendingMacEntries.flatMap((d) => (Array.isArray(d.handles) ? d.handles : [])))
   /** target → (senderId → that page's newest in-window delivery). Asc order: later rows win. */
   const deliveriesByTarget = new Map<string, Map<string, { sentAt: Date; handle: string }>>()
   for (const r of recentDeliveries) {
@@ -583,6 +618,9 @@ async function computeMessagesPage(): Promise<MessagesPageView> {
 
   const sendableDrafts: typeof upNextRaw = []
   const heldRows: HeldRow[] = []
+  /** Accounts held for a sign-in on the sending Mac, and how many drafts that holds — the whole queue. */
+  const notSignedInHandles = new Set<string>()
+  let notSignedInDrafts = 0
   for (const a of upNextRaw) {
     const hold = holdFor({ senderId: a.senderId, targetId: a.targetId, targetHandle: a.pair.target.handle })
     if (hold !== null) {
@@ -596,16 +634,22 @@ async function computeMessagesPage(): Promise<MessagesPageView> {
     }
     /**
      * NOT SIGNED IN ON THE SENDING MAC — the dispatcher's own pre-gate hold (deliver.ts), asked of
-     * the Mac that will actually send rather than of this host's disk. Only when a sending Mac is
-     * beating: with none there is no tick to skip anything, and the motion sentence says why.
+     * the Mac that will actually send rather than of this host's disk. Whenever a sending Mac is
+     * chosen and has ever beaten: a Mac that is offline now still skips these on its first tick back,
+     * so "next in line" would be a promise it does not keep. With no entry at all there is nothing
+     * to read, and the motion sentence says why nothing goes out.
      */
     if (sendingMac && !sendingMacHolds.has(a.pair.sender.handle)) {
       heldRows.push({
         senderHandle: a.pair.sender.handle,
         targetHandle: a.pair.target.handle,
-        why: `@${a.pair.sender.handle} is not signed in on ${sendingMac.device}, the sending Mac — it sends only from accounts signed in there`,
+        why: sendingMac.beating
+          ? `@${a.pair.sender.handle} is not signed in on ${sendingMac.device}, the sending Mac — it sends only from accounts signed in there`
+          : `@${a.pair.sender.handle} was not signed in on ${sendingMac.device}, the sending Mac, when it was last online — it sends only from accounts signed in there`,
         resumesAt: null,
       })
+      notSignedInHandles.add(a.pair.sender.handle)
+      notSignedInDrafts += 1
       continue
     }
     sendableDrafts.push(a)
@@ -616,6 +660,10 @@ async function computeMessagesPage(): Promise<MessagesPageView> {
     a.resumesAt === null ? (b.resumesAt === null ? 0 : 1) : b.resumesAt === null ? -1 : a.resumesAt.getTime() - b.resumesAt.getTime(),
   )
   const heldUpNext = heldRows.slice(0, 8)
+  const notSignedIn =
+    sendingMac && notSignedInDrafts > 0
+      ? { mac: sendingMac.device, macOnline: sendingMac.beating, handles: [...notSignedInHandles].sort(), drafts: notSignedInDrafts }
+      : null
 
   /**
    * The head SENDABLE draft through the REAL gate — asked unattended, as the dispatcher asks it on
@@ -626,11 +674,12 @@ async function computeMessagesPage(): Promise<MessagesPageView> {
    * `~/.ds-sales-agent`, which on the hosted Linode holds no profile at all — so the head row could
    * only ever read "account is not connected" under a switch card saying the Studio sends.
    * `predictResendForQueue` is the same gate with the sending Mac's published handles in that one
-   * input; with no beating sending Mac there is no verdict to predict, and the motion sentence
-   * waiting.tsx renders carries the reason instead.
+   * input — every entry's under its name, as the partition reads them; with no BEATING sending Mac
+   * there is no next tick to predict (its last heartbeat says what it held, not what its gate will
+   * say), and the motion sentence waiting.tsx renders carries the reason instead.
    */
   const headVerdict =
-    sendingMac && sendableDrafts.length > 0
+    sendingMac?.beating && sendableDrafts.length > 0
       ? await predictResendForQueue(sendableDrafts[0]!, {
           device: sendingMac.device,
           handles: [...sendingMacHolds],
@@ -678,6 +727,7 @@ async function computeMessagesPage(): Promise<MessagesPageView> {
     upNext,
     heldWaiting,
     heldUpNext,
+    notSignedIn,
     queueBySender: waitingBySenderRaw
       .map((r) => ({ handle: senderHandles.get(r.senderId) ?? r.senderId, count: r._count._all }))
       .sort((a, b) => b.count - a.count),

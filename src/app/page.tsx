@@ -288,6 +288,7 @@ export default async function AutopilotPage() {
           upNext={m.upNext}
           heldWaiting={m.heldWaiting}
           heldUpNext={m.heldUpNext}
+          notSignedIn={m.notSignedIn}
           total={m.waitingTotal}
           motion={motion}
           resting={rest.total > 0 ? { resting: rest.resting, total: rest.total } : null}

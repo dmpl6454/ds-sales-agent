@@ -27,6 +27,50 @@ const whenIst = (d: Date) =>
  */
 const freesUp = (d: Date | null) => (d === null ? 'once signed in there' : `${whenIst(d)} IST`)
 
+/** `@a`, `@a and @b`, `@a, @b and @c`. */
+const handleList = (handles: readonly string[]) => {
+  const at = handles.map((h) => `@${h}`)
+  return at.length <= 1 ? (at[0] ?? '') : `${at.slice(0, -1).join(', ')} and ${at[at.length - 1]}`
+}
+
+/**
+ * THE ALL-HELD LEDE WHEN SOME OF THE HOLDS ARE A SIGN-IN (independent review of H8).
+ *
+ * The lede said "Not a fault: … each draft below sends itself when its window clears" whatever held
+ * the queue — and a draft whose account is not signed in on the sending Mac has no window: it moves
+ * only when a PERSON signs that account in there. So when any draft is held that way the lede names
+ * the account, the Mac and what releases it, drops "Not a fault", and keeps the clock sentence for
+ * the rest only. Reads `notSignedIn` — counted over the whole queue — not the visible rows, which
+ * are the first eight with these sorted last.
+ */
+function signInLede(
+  s: NonNullable<MessagesPageView['notSignedIn']>,
+  heldWaiting: number,
+  motion: QueueMotion,
+  holdReason: string | null,
+): string {
+  const one = s.handles.length === 1
+  const where = s.macOnline
+    ? `${one ? 'is' : 'are'} not signed in on ${s.mac}, the sending Mac`
+    : `${one ? 'was' : 'were'} not signed in on ${s.mac}, the sending Mac, when it was last online`
+  const release = `no clock releases ${s.drafts === 1 ? 'that draft' : 'those drafts'}; someone has to sign ${one ? 'it' : 'them'} in there.`
+  const parts = [
+    s.drafts >= heldWaiting
+      ? `This needs a person, not a clock: ${handleList(s.handles)} ${where} — ${release}`
+      : `${s.drafts} of them ${s.drafts === 1 ? 'is' : 'are'} from ${handleList(s.handles)}, which ${where} — ${release}`,
+  ]
+  if (s.drafts < heldWaiting) {
+    parts.push(
+      motion.kind === 'moving'
+        ? 'The rest send themselves as their windows clear — the dispatcher checks every minute.'
+        : 'The rest wait for their windows to clear.',
+    )
+  }
+  /* The switch card's own reason, for every held draft alike: a sign-in does not start a stopped fleet. */
+  if (holdReason !== null) parts.push(`Even then nothing goes out while ${holdReason}.`)
+  return parts.join(' ')
+}
+
 /**
  * The RESTING half of the queue, each row with the enforcer's own sentence and when it
  * frees up. Added 2026-08-19 after "the number changes but the list below it remains the
@@ -112,6 +156,7 @@ export function WaitingList({
   upNext,
   heldWaiting,
   heldUpNext,
+  notSignedIn,
   total,
   motion,
   resting,
@@ -119,6 +164,8 @@ export function WaitingList({
   upNext: MessagesPageView['upNext']
   heldWaiting: number
   heldUpNext: MessagesPageView['heldUpNext']
+  /** The held drafts no clock releases — the sending Mac holds no signed-in profile for their account. */
+  notSignedIn: MessagesPageView['notSignedIn']
   total: number
   /** Fleet-wide resting companies, for the heading above the held rows — see `HeldList`. */
   resting: { resting: number; total: number } | null
@@ -150,12 +197,19 @@ export function WaitingList({
           <p className="cardnote">
             Nothing is sendable right now{firstFree?.resumesAt ? <> until {whenIst(firstFree.resumesAt)} IST</> : null}{' '}
             &mdash; all {total} waiting {total === 1 ? 'draft is' : 'drafts are'} resting (spacing, a reply, the
-            material rule, or not signed in on the sending Mac). Not a fault:{' '}
-            {moving
-              ? 'Autopilot is on and the dispatcher checks every minute, so each draft below sends itself when its window clears.'
-              : motion.kind === 'switch-off'
-                ? 'each draft below is waiting for its window to clear AND for Autopilot to be switched back on.'
-                : `each draft below is waiting for its window to clear — and even then nothing goes out while ${holdReason}.`}
+            material rule, or not signed in on the sending Mac).{' '}
+            {notSignedIn !== null ? (
+              signInLede(notSignedIn, heldWaiting, motion, holdReason)
+            ) : (
+              <>
+                Not a fault:{' '}
+                {moving
+                  ? 'Autopilot is on and the dispatcher checks every minute, so each draft below sends itself when its window clears.'
+                  : motion.kind === 'switch-off'
+                    ? 'each draft below is waiting for its window to clear AND for Autopilot to be switched back on.'
+                    : `each draft below is waiting for its window to clear — and even then nothing goes out while ${holdReason}.`}
+              </>
+            )}
           </p>
           <HeldList heldUpNext={heldUpNext} heldWaiting={heldWaiting} resting={resting} />
         </>

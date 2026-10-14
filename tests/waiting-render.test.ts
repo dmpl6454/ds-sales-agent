@@ -28,9 +28,20 @@ const heldUpNext: MessagesPageView['heldUpNext'] = [
   },
 ]
 
+/* The view model's own account of the sign-in holds — the ONE held row above is one of them. */
+const notSignedIn: MessagesPageView['notSignedIn'] = { mac: 'Studio', macOnline: true, handles: ['b'], drafts: 1 }
+
 const render = (motion: QueueMotion, rows = upNext) =>
   renderToStaticMarkup(
-    createElement(WaitingList, { upNext: rows, heldWaiting: 1, heldUpNext, total: rows.length + 1, motion, resting: null }),
+    createElement(WaitingList, {
+      upNext: rows,
+      heldWaiting: 1,
+      heldUpNext,
+      notSignedIn,
+      total: rows.length + 1,
+      motion,
+      resting: null,
+    }),
   )
 
 describe('the queue promises a send only when the queue is moving', () => {
@@ -83,5 +94,83 @@ describe('the queue promises a send only when the queue is moving', () => {
     expect(html).toContain('Nothing is sendable right now')
     expect(html).toContain('not signed in on the sending Mac')
     expect(html).not.toMatch(/until .* IST/)
+  })
+})
+
+/**
+ * AN ALL-HELD QUEUE MUST NOT PROMISE THAT A SIGN-IN HOLD CLEARS ITSELF — independent review of H8.
+ *
+ * With the sending Mac selected and beating but holding only some accounts, every other account's
+ * draft is held with NO clock: it moves only when a person signs that account in on the sending
+ * Mac. The all-held lede still said "Not a fault: Autopilot is on and the dispatcher checks every
+ * minute, so each draft below sends itself when its window clears" — false for exactly those rows,
+ * on the screen whose job is saying why nothing is going out. And `heldUpNext` is the first eight
+ * rows with the no-clock rows sorted LAST, so the lede reads the view model's own count of them
+ * (`notSignedIn`) rather than whatever happens to be on screen.
+ */
+describe('an all-held queue names a sign-in hold instead of calling it not a fault', () => {
+  const clocked: MessagesPageView['heldUpNext'][number] = {
+    senderHandle: 'c',
+    targetHandle: 'tc',
+    why: 'every paid post we have seen from them has already been written about',
+    resumesAt: new Date('2026-10-12T06:30:00Z'),
+  }
+  const signIn: MessagesPageView['heldUpNext'][number] = heldUpNext[0]!
+  const allHeld = (
+    motion: QueueMotion,
+    rows: MessagesPageView['heldUpNext'],
+    held: MessagesPageView['notSignedIn'],
+    heldWaiting = rows.length,
+  ) =>
+    renderToStaticMarkup(
+      createElement(WaitingList, {
+        upNext: [],
+        heldWaiting,
+        heldUpNext: rows,
+        notSignedIn: held,
+        total: heldWaiting,
+        motion,
+        resting: null,
+      }),
+    )
+  const text = (html: string) => html.replace(/<[^>]+>/g, '').replace(/&mdash;/g, '—').replace(/\s+/g, ' ')
+
+  it('moving, and the only held draft waits on a sign-in: names the account and the Mac — no "not a fault", no "sends itself"', () => {
+    const t = text(allHeld({ kind: 'moving', mac: 'Studio' }, [signIn], notSignedIn))
+    expect(t).not.toContain('Not a fault')
+    expect(t).not.toMatch(/sends itself/)
+    expect(t).toMatch(/@b is not signed in on Studio, the sending Mac/)
+    expect(t).toMatch(/no clock releases/)
+    expect(t).toMatch(/sign it in there/)
+  })
+
+  it('a sign-in hold hidden BEHIND eight clocked rows is still named — the lede reads the count, not the visible rows', () => {
+    const eight = Array.from({ length: 8 }, (_, i) => ({ ...clocked, senderHandle: `c${i}`, targetHandle: `t${i}` }))
+    const t = text(allHeld({ kind: 'moving', mac: 'Studio' }, eight, { ...notSignedIn, drafts: 3 }, 11))
+    expect(t).not.toContain('Not a fault')
+    expect(t).toMatch(/3 of them are from @b, which is not signed in on Studio/)
+    /* The clocked rows keep their true sentence. */
+    expect(t).toMatch(/the rest send themselves as their windows clear/i)
+  })
+
+  it('not moving: the sign-in AND the switch card’s reason are both named', () => {
+    const t = text(allHeld({ kind: 'switch-off' }, [signIn], notSignedIn))
+    expect(t).not.toContain('Not a fault')
+    expect(t).toMatch(/@b is not signed in on Studio/)
+    expect(t).toMatch(/nothing goes out while Autopilot is off/)
+  })
+
+  it('the sending Mac is offline: the sign-in is what it reported when it was last online', () => {
+    const t = text(allHeld({ kind: 'mac-offline', mac: 'Studio' }, [signIn], { ...notSignedIn, macOnline: false }))
+    expect(t).not.toContain('Not a fault')
+    expect(t).toMatch(/@b was not signed in on Studio, the sending Mac, when it was last online/)
+    expect(t).toMatch(/Studio — the sending Mac — is not online/)
+  })
+
+  it('no sign-in hold: a moving all-held queue is still "not a fault" and still sends itself (the other direction)', () => {
+    const t = text(allHeld({ kind: 'moving', mac: 'Studio' }, [clocked], null))
+    expect(t).toContain('Not a fault')
+    expect(t).toMatch(/each draft below sends itself when its window clears/)
+    expect(t).not.toMatch(/not signed in on Studio/)
   })
 })

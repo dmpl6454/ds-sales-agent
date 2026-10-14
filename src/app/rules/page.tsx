@@ -148,12 +148,19 @@ export default async function RulesPage() {
         `${settings.maxPerPairPerDay} messages per day from one account to one recipient.`,
         /*
           THE RING RULE (2026-08-19, reshaped 2026-08-20 on Tabish's second instruction —
-          "7 day constraint only no other limitation"). Every page may write to a recipient;
-          the rest applies only once they ALL have. The 24h inter-page gap that shipped with
-          it was REMOVED after it was measured holding 23 of 23 drafts while the seven-day
-          rule held nobody. `crossPageGapHours` is 0 and is the one number that restores it.
+          "7 day constraint only no other limitation"). Every page of a recipient's own fleet may
+          write to them; the rest applies only once every one of those pages that is able to
+          send has. PER FLEET since M12 (2026-10-09): `crossSpacingVerdict` narrows "all" to the
+          recipient's own fleet through `fleetMembersFor`, because a marketing page can never
+          deliver to a bollywood company and counting it made the rest unreachable for the fleet
+          that sends most. This line said "once ALL of them have" until the review that followed
+          — the TARGET_RECENTLY_CONTACTED line in STOP_LABELS above was updated with the enforcer
+          and this one was not (tests/rules-ring-rule.test.ts renders it now). The
+          24h inter-page gap that shipped with the rule was REMOVED after it was measured holding
+          23 of 23 drafts while the seven-day rule held nobody. `crossPageGapHours` is 0 and is
+          the one number that restores it.
         */
-        `Every one of our pages may write to a recipient. Once ALL of them have, that recipient rests until the oldest of those messages is ${settings.defaultCooldownDays} days old — and nothing else spaces our pages apart${settings.crossPageGapHours > 0 ? `, beyond ${settings.crossPageGapHours}h between two different pages reaching the same inbox` : ''}. Sending volume is otherwise uncapped, by explicit decision.`,
+        `Every page of a recipient\u2019s own fleet may write to them. Once every one of those pages that is able to send has written, the recipient rests until the oldest of those messages is ${settings.defaultCooldownDays} days old — and nothing else spaces our pages apart${settings.crossPageGapHours > 0 ? `, beyond ${settings.crossPageGapHours}h between two different pages reaching the same inbox` : ''}. Sending volume is otherwise uncapped, by explicit decision.`,
         'A follow-up must reference a paid post not used before for that conversation — fresh material is what makes a second message new rather than a repeat, which is what Instagram penalises.',
         settings.fleetMaxPerDay === Number.POSITIVE_INFINITY
           ? 'No fleet-wide daily cap — chosen deliberately, one setting away from binding.'
