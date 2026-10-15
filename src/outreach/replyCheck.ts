@@ -13,6 +13,7 @@ import { normalise } from './matching'
 import { markChallenged } from './challenge'
 import { thisMacRole } from './activeDevice'
 import { browserShutdownRequested } from './shutdown'
+import { withSendLock } from './dispatcher'
 import { createFailureMemory } from '@/detection/lookupCooldown'
 
 /**
@@ -1151,6 +1152,141 @@ async function inboxPhase(
   }
 
   return { scanned: local.length, recorded, unmatched, checkpoint: false }
+}
+
+/**
+ * ── EVERY REPLY SWEEP RUNS UNDER THE FLEET SEND LOCK, THROUGH THIS ONE WRAPPER (Stage 1.2, 2026-10-15) ──
+ *
+ * THE DEFECT, VERIFIED AT HEAD (audit M26): a reply sweep drives the SAME Chrome profiles a
+ * send does — it opens a revenue account's inbox and its threads — and two processes on one
+ * profile is the thing this design forbids (MEASURED 9 Sept: three sends failed `unknown`
+ * because the scheduler's sweep already held the profile). The device agent's `replyPass` was
+ * the ONLY sweep caller that took the fleet send lock. The slot's 11:00/20:00 sweep
+ * (`runSlot.ts`), `pnpm ig:replies` and `pnpm ig:thread` took no lock at all; on the Linode
+ * the slot has never collided with a send only because `checkForReplies` refuses itself on the
+ * SEND_ENABLED floor there. A Mac running `DS_WATCH_MODE=scheduler`, or an operator running
+ * either CLI beside the agent, would open a profile the dispatcher may be mid-paste in. So
+ * there is now exactly one way to reach the browser-driving sweep, and it is this function:
+ * `tests/reply-sweep-under-lock.test.ts` pins every caller and greps for a fifth.
+ *
+ * ── AND IT WAITS FOR THE LOCK INSTEAD OF LOSING ITS TURN (9 Sept 2026, moved here from the agent) ──
+ *
+ * MEASURED in the agent log: the sweep ran at 13:07 and 13:31 IST and then twelve consecutive
+ * half-hourly ticks logged "a send is in progress — the reply sweep waits for the next pass".
+ * At the one-minute pace a send holds the fleet lock for ~47 of every ~60 seconds, so a single
+ * try at a random instant loses about three times in four, and nine hours passed without a
+ * conversation being read — the reply halt, the hardest guard in the system, going blind
+ * exactly as CLAUDE.md predicted a quietly falling coverage number would (rule 26: a guard
+ * that yields once to the hot path starves).
+ *
+ * So the wrapper POLLS for the lock: a send ends every minute and the next one starts only
+ * when the gap clears (~13 s later), and a 5-second poll lands in that window within a couple
+ * of tries. The wait is BOUNDED so a wedged lock cannot hold a tick or a slot forever
+ * (`tests/no-unbounded-waits.test.ts`), and nothing is held while waiting — each try is one
+ * `create` on the lock row that either wins or does not. Once the sweep holds the lock the
+ * dispatcher's ticks get `lockBusy` and wait, which is the documented trade (a sweep pauses
+ * sending for up to four bounded reads).
+ *
+ * ── THE PRE-CHECKS ARE A COURTESY, NEVER THE ENFORCEMENT ────────────────────────────────────
+ *
+ * `withSendLock` answers three refusals with the same bare `null` it answers a busy lock with:
+ * `SEND_ENABLED=false`, a shutdown in progress, and "not the selected Mac". A caller cannot
+ * tell them apart, and polling for three minutes on a host that may never send (the Linode's
+ * 11:00 slot — SEND_ENABLED=false by design) or on a standby Mac would delay the slot by three
+ * minutes for nothing while logging "a send is in progress" about a send that does not exist.
+ * So before the first try this asks the SAME three questions `withSendLock` asks first, IN THE
+ * SAME ORDER (floor, shutdown, role — see its body), and names the answer. `withSendLock`
+ * still asks all three itself on every try: a null from it after these pre-checks is a busy
+ * lock — or a role or shutdown that moved while waiting, which the bound caps. The shutdown
+ * flag is re-read between polls because it costs no I/O and an agent that is stopping should
+ * not spend its drain window polling for work it may not start.
+ *
+ * Imports `withSendLock` from the dispatcher, which imports `deliver.ts`, which imports this
+ * module: an ESM cycle that is benign because nothing here or there reads the other at
+ * module-evaluation time — every use is inside a function called at runtime.
+ */
+export type UnderLockResult<T> =
+  | { ok: true; value: T }
+  | { ok: false; why: 'send-disabled' | 'shutdown' | 'standby' | 'lock-busy' }
+
+/**
+ * The one sentence per refusal, for the two CLIs. A person who typed `pnpm ig:replies` beside a
+ * running agent needs to be told that NOTHING was read and why, in words that name the remedy;
+ * two scripts each writing their own four sentences is how copy drifts (`replyHaltScope`).
+ */
+export function describeLockRefusal(why: Exclude<UnderLockResult<never>, { ok: true }>['why']): string {
+  switch (why) {
+    case 'send-disabled':
+      return 'SEND_ENABLED is false on this machine, and a sweep drives the same browser profiles a send does'
+    case 'shutdown':
+      return 'the agent is stopping, so no new browser work may start'
+    case 'standby':
+      return 'this Mac is not the selected sending Mac (Senders → Sending Mac), and only the selected Mac may open a profile'
+    case 'lock-busy':
+      return `a send holds the fleet lock — waited ${REPLY_LOCK_WAIT_MS / 1000} s for it to free and it did not`
+  }
+}
+
+/** How long a sweep polls for the fleet lock before giving the pass up — see the docblock above. */
+export const REPLY_LOCK_WAIT_MS = 3 * 60_000
+/** The poll interval: a send's release-to-next-claim gap is ~13 s, so 5 s lands inside it. */
+export const REPLY_LOCK_POLL_MS = 5_000
+
+export async function sweepUnderLock<T>(
+  what: string,
+  fn: () => Promise<T>,
+  opts?: { waitMs?: number; pollMs?: number },
+): Promise<UnderLockResult<T>> {
+  const waitMs = opts?.waitMs ?? REPLY_LOCK_WAIT_MS
+  const pollMs = opts?.pollMs ?? REPLY_LOCK_POLL_MS
+
+  if (!env.SEND_ENABLED) {
+    log.step('this machine is not allowed to send (SEND_ENABLED=false) — the reply sweep opens no browser here', { what })
+    return { ok: false, why: 'send-disabled' }
+  }
+  if (browserShutdownRequested()) {
+    log.step('the agent is stopping — the reply sweep is not starting', { what })
+    return { ok: false, why: 'shutdown' }
+  }
+  const role = await thisMacRole()
+  if (!role.active) {
+    log.step('not the selected sending Mac — the reply sweep opens no browser here', { what, reason: role.reason, detail: role.detail })
+    return { ok: false, why: 'standby' }
+  }
+
+  /**
+   * Boxed, so a callback that legitimately resolves `null` or `undefined` (ig:thread's read
+   * returns nothing) is never mistaken for "the lock was not taken" — `withSendLock`'s only
+   * signal for that is a bare null.
+   */
+  const boxed = async (): Promise<{ value: T }> => ({ value: await fn() })
+  const started = Date.now()
+  let ran = await withSendLock(what, boxed)
+  let waited = false
+  while (ran === null && Date.now() - started < waitMs) {
+    if (browserShutdownRequested()) {
+      log.step('the agent is stopping — the reply sweep stops waiting for the lock', { what })
+      return { ok: false, why: 'shutdown' }
+    }
+    if (!waited) {
+      waited = true
+      log.step('a send is in progress — the reply sweep is waiting for the lock', { what, upToSeconds: waitMs / 1000 })
+    }
+    await new Promise((r) => setTimeout(r, pollMs))
+    ran = await withSendLock(what, boxed)
+  }
+  if (ran === null) {
+    // The lock never freed inside the wait. Nothing is lost: the next pass is half an hour
+    // away and the just-in-time check still reads any thread a follow-up is about to land
+    // in — but this line is the count to watch; twelve in a row was the defect.
+    log.step('a send is in progress — the reply sweep waits for the next pass', {
+      what,
+      waitedSeconds: Math.round((Date.now() - started) / 1000),
+    })
+    return { ok: false, why: 'lock-busy' }
+  }
+  if (waited) log.step('the reply sweep got the lock', { what, afterSeconds: Math.round((Date.now() - started) / 1000) })
+  return { ok: true, value: ran.value }
 }
 
 export async function checkForReplies(): Promise<ReplyCheckSummary> {

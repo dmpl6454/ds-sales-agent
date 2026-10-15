@@ -1,5 +1,5 @@
 import { prisma } from '@/lib/db'
-import { checkForReplies, REPLY_CHECK_SLOTS } from '@/outreach/replyCheck'
+import { checkForReplies, describeLockRefusal, REPLY_CHECK_SLOTS, sweepUnderLock } from '@/outreach/replyCheck'
 
 /**
  *   pnpm ig:replies
@@ -13,11 +13,25 @@ import { checkForReplies, REPLY_CHECK_SLOTS } from '@/outreach/replyCheck'
  *
  * Opens one real browser window per conversation, so it is not free: the caps inside
  * `checkForReplies` apply here too.
+ *
+ * UNDER THE FLEET SEND LOCK (Stage 1.2, audit M26). This command used to take no lock, so an
+ * operator running it beside the device agent opened a profile the dispatcher could be
+ * mid-paste in — two processes on one profile, the thing the whole design forbids. It goes
+ * through `sweepUnderLock` now, the same wrapper the agent and the slot use: it refuses by
+ * name on a host that may not send, on a standby Mac and while the agent is stopping, and it
+ * polls for a busy lock for up to three minutes before giving up. A refusal reads NOTHING and
+ * exits non-zero, so a shell script cannot mistake it for "no replies".
  */
 async function main(): Promise<void> {
   console.log(`\n  Checking open conversations for replies…\n`)
 
-  const r = await checkForReplies()
+  const under = await sweepUnderLock('reply-sweep', checkForReplies)
+  if (!under.ok) {
+    console.log(`  Not run: ${describeLockRefusal(under.why)}. Nothing was read.\n`)
+    process.exitCode = 1
+    return
+  }
+  const r = under.value
 
   for (const o of r.outcomes) {
     const mark =

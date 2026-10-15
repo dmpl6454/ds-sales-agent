@@ -75,7 +75,7 @@ const SEND_LOCK_STALE_MS = 6 * 60_000
  * about the next few seconds, not the next half minute: the tick asks again after this many
  * milliseconds (consumed with `min()` by the poll loop, like `too-soon`'s hint), so it lands
  * in the other dispatcher's gap. The reply sweep learned the same lesson the day before
- * (`REPLY_LOCK_POLL_MS`); CLAUDE.md rule 26.
+ * (`REPLY_LOCK_POLL_MS`, now in replyCheck.ts's `sweepUnderLock`); CLAUDE.md rule 26.
  */
 export const LOCK_BUSY_RETRY_MS = 5_000
 

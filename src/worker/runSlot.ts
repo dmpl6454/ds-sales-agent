@@ -9,7 +9,7 @@ import { runOutreach } from '@/outreach/plan'
 import { dispatchTick, holderIsSameMachine } from '@/outreach/dispatcher'
 import { deviceId } from '@/outreach/devicePresence'
 import { hostId } from '@/lib/hostId'
-import { checkForReplies, isReplyCheckSlot } from '@/outreach/replyCheck'
+import { checkForReplies, isReplyCheckSlot, sweepUnderLock } from '@/outreach/replyCheck'
 import { HEARTBEAT_STALE_MS, readSchedulerHeartbeat, type SchedulerHeartbeat } from './heartbeat'
 
 /**
@@ -872,30 +872,45 @@ async function runSlotLocked(slot: string, started: number): Promise<SlotResult>
   if (await progress('reply check')) {
     if (isReplyCheckSlot(slot)) {
       try {
-        const r = await checkForReplies()
-        detail.replyCheck = r.outcomes
-        if (r.repliesFound > 0) {
-          log.info(`${r.repliesFound} reply(ies) detected — outreach to those targets is halted`, {})
-        }
-        if (r.unreadable > 0) {
-          // PARTIAL, not silence: an unreadable thread means the guard could not be
-          // evaluated, and the operator has to be able to see that happened.
-          status = status === 'OK' ? 'PARTIAL' : status
-          errors.push(`${r.unreadable} conversation(s) could not be read`)
-        }
-        if (r.deferred > 0) {
-          /**
-           * Recorded, not silent. The sweep's budget is a constant and the number of
-           * conversations is not, so this number is the honest measure of how much of the
-           * sweep's coverage the fleet has outgrown. It is NOT an error — a follow-up into
-           * any of these reads its own thread first (`ensureConversationChecked`), which is
-           * the guarantee the sweep alone could never give.
-           */
-          detail.replyCheckDeferred = r.deferred
-          log.step('reply sweep did not reach every conversation', {
-            deferred: r.deferred,
-            note: 'each is still read before anything is sent into it',
-          })
+        /**
+         * THROUGH THE ONE LOCK WRAPPER (Stage 1.2, audit M26). The sweep drives the same Chrome
+         * profiles a send does; on the Linode it has only ever been stopped by the SEND_ENABLED
+         * floor inside `checkForReplies`, and on a Mac running the schedule it opened profiles
+         * the device agent was mid-paste in. A refusal is RECORDED and the run's status is
+         * UNTOUCHED: the Linode's 11:00 and 20:00 slots are refused by design on every day
+         * (`send-disabled`), and marking them PARTIAL would make /targets say "could not read
+         * every channel" about nothing, twice a day, forever (view-model.ts `degradedRuns`).
+         * The wrapper logs each refusal itself.
+         */
+        const under = await sweepUnderLock('reply-sweep', checkForReplies)
+        if (!under.ok) {
+          detail.replyCheck = { skipped: under.why }
+        } else {
+          const r = under.value
+          detail.replyCheck = r.outcomes
+          if (r.repliesFound > 0) {
+            log.info(`${r.repliesFound} reply(ies) detected — outreach to those targets is halted`, {})
+          }
+          if (r.unreadable > 0) {
+            // PARTIAL, not silence: an unreadable thread means the guard could not be
+            // evaluated, and the operator has to be able to see that happened.
+            status = status === 'OK' ? 'PARTIAL' : status
+            errors.push(`${r.unreadable} conversation(s) could not be read`)
+          }
+          if (r.deferred > 0) {
+            /**
+             * Recorded, not silent. The sweep's budget is a constant and the number of
+             * conversations is not, so this number is the honest measure of how much of the
+             * sweep's coverage the fleet has outgrown. It is NOT an error — a follow-up into
+             * any of these reads its own thread first (`ensureConversationChecked`), which is
+             * the guarantee the sweep alone could never give.
+             */
+            detail.replyCheckDeferred = r.deferred
+            log.step('reply sweep did not reach every conversation', {
+              deferred: r.deferred,
+              note: 'each is still read before anything is sent into it',
+            })
+          }
         }
       } catch (err) {
         status = status === 'OK' ? 'PARTIAL' : status

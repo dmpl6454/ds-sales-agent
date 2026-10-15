@@ -22,10 +22,20 @@ import { describe, expect, it, vi, beforeEach } from 'vitest'
 
 const getSettings = vi.fn()
 const checkForReplies = vi.fn()
+const sweepUnderLock = vi.fn()
 const withSendLock = vi.fn()
 
 vi.mock('@/lib/settings', () => ({ getSettings: (...a: unknown[]) => getSettings(...a) }))
-vi.mock('@/outreach/replyCheck', () => ({ checkForReplies: (...a: unknown[]) => checkForReplies(...a) }))
+/**
+ * Since Stage 1.2 (2026-10-15) the agent reaches the sweep only through `sweepUnderLock`, the
+ * lock wrapper in replyCheck.ts. Mocked to run its callback, so these cases still measure the
+ * GATE and not the lock — and the off cases assert the wrapper is never asked either, which is
+ * the same strength the `withSendLock` assertion carried when the agent took the lock itself.
+ */
+vi.mock('@/outreach/replyCheck', () => ({
+  checkForReplies: (...a: unknown[]) => checkForReplies(...a),
+  sweepUnderLock: (...a: unknown[]) => sweepUnderLock(...a),
+}))
 vi.mock('@/outreach/dispatcher', () => ({
   dispatchTick: vi.fn(),
   withSendLock: (...a: unknown[]) => withSendLock(...a),
@@ -59,6 +69,9 @@ beforeEach(() => {
   withSendLock
     .mockReset()
     .mockImplementation(async (_label: string, fn: () => Promise<unknown>) => fn())
+  sweepUnderLock
+    .mockReset()
+    .mockImplementation(async (_what: string, fn: () => Promise<unknown>) => ({ ok: true, value: await fn() }))
 })
 
 describe('the reply sweep and the autopilot switch', () => {
@@ -66,6 +79,7 @@ describe('the reply sweep and the autopilot switch', () => {
     getSettings.mockResolvedValue({ autopilotEnabled: false })
     await replyPass()
     expect(checkForReplies, 'the sweep read threads with the switch off — Chrome would open on a revenue account').not.toHaveBeenCalled()
+    expect(sweepUnderLock, 'it asked for the send lock before even asking the switch').not.toHaveBeenCalled()
     expect(withSendLock, 'it took the send lock before even asking the switch').not.toHaveBeenCalled()
   })
 
@@ -74,6 +88,8 @@ describe('the reply sweep and the autopilot switch', () => {
     getSettings.mockResolvedValue({ autopilotEnabled: true })
     await replyPass()
     expect(checkForReplies, 'the sweep never ran with the switch ON — replies would go undetected').toHaveBeenCalledTimes(1)
+    expect(sweepUnderLock, 'the sweep ran outside the lock wrapper').toHaveBeenCalledTimes(1)
+    expect(sweepUnderLock.mock.calls[0]![0]).toBe('reply-sweep')
   })
 
   /**
@@ -85,6 +101,7 @@ describe('the reply sweep and the autopilot switch', () => {
     getSettings.mockRejectedValue(new Error('database unreachable'))
     await expect(replyPass()).resolves.toBeUndefined()
     expect(checkForReplies, 'an unreadable switch was treated as permission').not.toHaveBeenCalled()
+    expect(sweepUnderLock).not.toHaveBeenCalled()
   })
 })
 

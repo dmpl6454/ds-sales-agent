@@ -2,6 +2,7 @@ import type { Locator, Page } from 'patchright'
 import { prisma } from '@/lib/db'
 import { profileUrl } from '@/lib/urls'
 import { istStamp } from '@/lib/time'
+import { describeLockRefusal, sweepUnderLock } from '@/outreach/replyCheck'
 import { isOneOfOurs } from '@/outreach/matching'
 import { assertLoggedInAs, assertNoCheckpoint, launchProfile } from '@/outreach/browser/session'
 import {
@@ -193,124 +194,140 @@ async function main(): Promise<void> {
   const ourBodies = bodies.allOurs
 
   console.log(`\n  Opening @${sender} → @${target} …`)
-  const context = await launchProfile(sender)
-  try {
-    const page = context.pages()[0] ?? (await context.newPage())
+  /**
+   * UNDER THE FLEET SEND LOCK (Stage 1.2, audit M26). This read used to launch the profile with
+   * no lock at all, so the tool every `not-in-thread` alarm names could open a profile the
+   * device agent was mid-paste in. The whole launch→read→record block runs inside
+   * `sweepUnderLock` — the same wrapper the agent, the slot and `ig:replies` use — so it is
+   * refused by name on a host that may not send, on a standby Mac and during a shutdown, and it
+   * waits for a busy lock for up to three minutes rather than stepping into a live drive. The
+   * context's `finally` stays inside the callback: the profile is closed before the lock is
+   * released, so nothing can take the lock while Chrome still holds the profile.
+   */
+  const under = await sweepUnderLock('thread-read', async () => {
+    const context = await launchProfile(sender)
+    try {
+      const page = context.pages()[0] ?? (await context.newPage())
 
-    await page.goto('https://www.instagram.com/', { waitUntil: 'domcontentloaded', timeout: 60_000 })
-    assertNoCheckpoint(page, sender)
-    await assertLoggedInAs(page, sender)
-    await browseBriefly(page)
+      await page.goto('https://www.instagram.com/', { waitUntil: 'domcontentloaded', timeout: 60_000 })
+      assertNoCheckpoint(page, sender)
+      await assertLoggedInAs(page, sender)
+      await browseBriefly(page)
 
-    await page.goto(profileUrl(target), { waitUntil: 'domcontentloaded', timeout: 60_000 })
-    assertNoCheckpoint(page, sender)
-    await jitter(1500, 3200)
+      await page.goto(profileUrl(target), { waitUntil: 'domcontentloaded', timeout: 60_000 })
+      assertNoCheckpoint(page, sender)
+      await jitter(1500, 3200)
 
-    const messageBtn = await firstVisible(
-      page,
-      [
-        page.getByRole('button', { name: /^message$/i }),
-        page.locator('div[role="button"]', { hasText: /^Message$/ }),
-      ],
-      15_000,
-    )
-    if (!messageBtn) {
-      console.log('\n  Could not find the Message button — cannot open the thread.\n')
-      process.exitCode = 1
-      return
+      const messageBtn = await firstVisible(
+        page,
+        [
+          page.getByRole('button', { name: /^message$/i }),
+          page.locator('div[role="button"]', { hasText: /^Message$/ }),
+        ],
+        15_000,
+      )
+      if (!messageBtn) {
+        console.log('\n  Could not find the Message button — cannot open the thread.\n')
+        process.exitCode = 1
+        return
+      }
+      await messageBtn.hover()
+      await jitter(300, 900)
+      await messageBtn.click()
+
+      // The dwell happens INSIDE the read now, so the window in which Instagram has the whole
+      // thread in the DOM is observed rather than slept through. See `collectMessages`.
+      const read = await collectMessages(page, bodies, 2000 + Math.floor(Math.random() * 1500))
+      assertNoCheckpoint(page, sender)
+
+      if (read === null || read.messages.length === 0) {
+        console.log(`\n  Could not read the thread. This is NOT the same as "empty" —`)
+        console.log(`  Instagram's layout may have changed. Check by hand.`)
+        if (debug) await describeDom(page, ourBodies)
+        else console.log(`  Re-run with --debug to see what the page actually contains.\n`)
+        process.exitCode = 1
+        return
+      }
+
+      const messages = read.messages
+      const url = page.url()
+
+      /**
+       * Say so when the read provably did not cover the conversation. The scheduled check
+       * treats this as a HOLD; a person running this by hand needs the same warning, or they
+       * will read "no reply" off a partial thread and trust it.
+       */
+      if (!read.complete) {
+        console.log(`\n  *** INCOMPLETE READ — only ${read.foundOurs} of the ${read.expectedOurs} messages we sent were visible.`)
+        console.log(`      "No reply" below CANNOT be trusted. Re-run; if it persists, use --debug.`)
+      }
+
+      console.log(`\n  ${messages.length} message(s) in the thread`)
+      console.log(`  ${url.includes('/direct/t/') ? url : '(thread opened over the profile; no /direct/t/ URL)'}\n`)
+
+      for (const m of messages) {
+        const who = m.ours ? 'US ' : 'THEM'
+        const oneLine = m.text.replace(/\s+/g, ' ').slice(0, 150)
+        console.log(`  [${who}] ${oneLine}${m.text.length > 150 ? '…' : ''}`)
+      }
+
+      const theirs = messages.filter((m) => !m.ours)
+      console.log('')
+
+      if (theirs.length === 0) {
+        console.log(`  No reply from @${target} visible in the thread.\n`)
+        return
+      }
+
+      console.log(`  ${theirs.length} message(s) in this thread are not ours — @${target} has replied.`)
+
+      if (!recordReply) {
+        console.log(`  Re-run with --record-reply to halt outreach to @${target}.\n`)
+        return
+      }
+
+      const latest = await prisma.outreachAttempt.findFirst({
+        where: { pairId: pair.id, status: { in: ['SENT', 'REPLIED'] } },
+        orderBy: { sentAt: 'desc' },
+      })
+      if (!latest) {
+        console.log(`  Nothing delivered on this pair, so there is no message to attach a reply to.\n`)
+        return
+      }
+      if (latest.repliedAt) {
+        console.log(`  Already recorded (${istStamp(latest.repliedAt)}). Nothing to do.\n`)
+        return
+      }
+
+      // The thread does not expose a machine-readable timestamp per bubble without
+      // more scraping than this is worth, so the recorded time is "when we observed
+      // it". `pnpm ig:reply <sender> <target> --at <ISO>` corrects it if the real
+      // time is known. Recording an approximate time is far better than leaving the
+      // guard unable to fire, which is where this started.
+      const at = new Date()
+      await prisma.$transaction([
+        prisma.outreachAttempt.update({ where: { id: latest.id }, data: { repliedAt: at, replyPostedAt: at, status: 'REPLIED' } }),
+        prisma.auditLog.create({
+          data: {
+            actor: 'ig:thread',
+            action: 'reply.record',
+            entity: `OutreachAttempt:${latest.id}`,
+            detail: `@${target} replied (observed in thread at ${at.toISOString()}; time is observation, not the reply itself)`,
+          },
+        }),
+      ])
+      console.log(`  Recorded. Outreach to @${target} is now halted for every sender.`)
+      console.log(`  Correct the time with: pnpm ig:reply ${sender} ${target} --at <ISO>\n`)
+    } finally {
+      await jitter(1000, 2000)
+      await context.close()
     }
-    await messageBtn.hover()
-    await jitter(300, 900)
-    await messageBtn.click()
-
-    // The dwell happens INSIDE the read now, so the window in which Instagram has the whole
-    // thread in the DOM is observed rather than slept through. See `collectMessages`.
-    const read = await collectMessages(page, bodies, 2000 + Math.floor(Math.random() * 1500))
-    assertNoCheckpoint(page, sender)
-
-    if (read === null || read.messages.length === 0) {
-      console.log(`\n  Could not read the thread. This is NOT the same as "empty" —`)
-      console.log(`  Instagram's layout may have changed. Check by hand.`)
-      if (debug) await describeDom(page, ourBodies)
-      else console.log(`  Re-run with --debug to see what the page actually contains.\n`)
-      process.exitCode = 1
-      return
-    }
-
-    const messages = read.messages
-    const url = page.url()
-
-    /**
-     * Say so when the read provably did not cover the conversation. The scheduled check
-     * treats this as a HOLD; a person running this by hand needs the same warning, or they
-     * will read "no reply" off a partial thread and trust it.
-     */
-    if (!read.complete) {
-      console.log(`\n  *** INCOMPLETE READ — only ${read.foundOurs} of the ${read.expectedOurs} messages we sent were visible.`)
-      console.log(`      "No reply" below CANNOT be trusted. Re-run; if it persists, use --debug.`)
-    }
-
-    console.log(`\n  ${messages.length} message(s) in the thread`)
-    console.log(`  ${url.includes('/direct/t/') ? url : '(thread opened over the profile; no /direct/t/ URL)'}\n`)
-
-    for (const m of messages) {
-      const who = m.ours ? 'US ' : 'THEM'
-      const oneLine = m.text.replace(/\s+/g, ' ').slice(0, 150)
-      console.log(`  [${who}] ${oneLine}${m.text.length > 150 ? '…' : ''}`)
-    }
-
-    const theirs = messages.filter((m) => !m.ours)
-    console.log('')
-
-    if (theirs.length === 0) {
-      console.log(`  No reply from @${target} visible in the thread.\n`)
-      return
-    }
-
-    console.log(`  ${theirs.length} message(s) in this thread are not ours — @${target} has replied.`)
-
-    if (!recordReply) {
-      console.log(`  Re-run with --record-reply to halt outreach to @${target}.\n`)
-      return
-    }
-
-    const latest = await prisma.outreachAttempt.findFirst({
-      where: { pairId: pair.id, status: { in: ['SENT', 'REPLIED'] } },
-      orderBy: { sentAt: 'desc' },
-    })
-    if (!latest) {
-      console.log(`  Nothing delivered on this pair, so there is no message to attach a reply to.\n`)
-      return
-    }
-    if (latest.repliedAt) {
-      console.log(`  Already recorded (${istStamp(latest.repliedAt)}). Nothing to do.\n`)
-      return
-    }
-
-    // The thread does not expose a machine-readable timestamp per bubble without
-    // more scraping than this is worth, so the recorded time is "when we observed
-    // it". `pnpm ig:reply <sender> <target> --at <ISO>` corrects it if the real
-    // time is known. Recording an approximate time is far better than leaving the
-    // guard unable to fire, which is where this started.
-    const at = new Date()
-    await prisma.$transaction([
-      prisma.outreachAttempt.update({ where: { id: latest.id }, data: { repliedAt: at, replyPostedAt: at, status: 'REPLIED' } }),
-      prisma.auditLog.create({
-        data: {
-          actor: 'ig:thread',
-          action: 'reply.record',
-          entity: `OutreachAttempt:${latest.id}`,
-          detail: `@${target} replied (observed in thread at ${at.toISOString()}; time is observation, not the reply itself)`,
-        },
-      }),
-    ])
-    console.log(`  Recorded. Outreach to @${target} is now halted for every sender.`)
-    console.log(`  Correct the time with: pnpm ig:reply ${sender} ${target} --at <ISO>\n`)
-  } finally {
-    await jitter(1000, 2000)
-    await context.close()
-    await prisma.$disconnect()
+  })
+  if (!under.ok) {
+    console.log(`\n  Not run: ${describeLockRefusal(under.why)}. Nothing was read.\n`)
+    process.exitCode = 1
   }
+  await prisma.$disconnect()
 }
 
 main().catch(async (err) => {

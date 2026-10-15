@@ -100,6 +100,19 @@ describe('the rule is asked at both ends and by every pass', () => {
     expect(sweep.indexOf('thisMacRole()', threadLoop) - threadLoop).toBeLessThan(250)
   })
 
+  it('the lock wrapper every sweep goes through asks too — after the floor, before the lock (Stage 1.2)', () => {
+    const sweep = strip(readFileSync('src/outreach/replyCheck.ts', 'utf8'))
+    const at = sweep.indexOf('export async function sweepUnderLock')
+    expect(at).toBeGreaterThan(-1)
+    const body = sweep.slice(at, sweep.indexOf('\n}\n', at))
+    const floor = body.indexOf('env.SEND_ENABLED')
+    const role = body.indexOf('thisMacRole()')
+    const lock = body.indexOf('withSendLock(')
+    expect(floor).toBeGreaterThan(-1)
+    expect(role).toBeGreaterThan(floor)
+    expect(lock).toBeGreaterThan(role)
+  })
+
   it('the connect relay does NOT ask — a Mac must be signable-in before it can be chosen', () => {
     const connect = strip(readFileSync('src/agent/connectPass.ts', 'utf8'))
     expect(connect).not.toContain('thisMacRole')

@@ -452,6 +452,18 @@ describe('acquireSlotLock, through withSlotLock — a Mac does not step over the
         } as unknown as DispatchTickResult)
         vi.mocked(runOutreach).mockResolvedValue({ outcomes: [], queued: 0, sent: 0, failed: 0, skipped: 0 })
         await prisma.scrapeRun.deleteMany()
+        /**
+         * Since Stage 1.2 the slot's sweep runs through `sweepUnderLock`, which refuses by name on
+         * a Mac that is not selected to send. This Mac is selected here, so the control case below
+         * proves the sweep runs UNDER the real fleet lock (`withSendLock` is real in this file) and
+         * not merely that the mock was wired. `tests/reply-sweep-under-lock.test.ts` pins the
+         * refusal on a standby Mac.
+         */
+        await prisma.setting.upsert({
+          where: { key: 'activeDevice' },
+          update: { value: THIS_DEVICE },
+          create: { key: 'activeDevice', value: THIS_DEVICE },
+        })
       })
 
       it('control: with the lock kept, an 11:00 slot runs all four stages and records OK', async () => {
@@ -465,6 +477,8 @@ describe('acquireSlotLock, through withSlotLock — a Mac does not step over the
         expect(run.status).toBe('OK')
         expect(run.error).toBeNull()
         expect(await slotRow()).toBeNull()
+        // The sweep ran under the real fleet lock and released it (Stage 1.2).
+        expect(await prisma.setting.findUnique({ where: { key: 'sendLock' } })).toBeNull()
       })
 
       it('detection outlived the lock and another machine took it: no reply sweep, no dispatch, NO PLANNING; the run is PARTIAL and names the loss; the new holder\'s row survives', async () => {

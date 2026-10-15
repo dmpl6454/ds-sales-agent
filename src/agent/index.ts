@@ -5,7 +5,7 @@ import { decideDetectionFailover, DETECTION_FAILOVER_INTERVAL_MS } from '@/detec
 import { prisma } from '@/lib/db'
 import { env } from '@/lib/env'
 import { log, describeError } from '@/lib/logger'
-import { dispatchTick, withSendLock } from '@/outreach/dispatcher'
+import { dispatchTick } from '@/outreach/dispatcher'
 import { thisMacRole } from '@/outreach/activeDevice'
 import { nextPollWait } from './pollWait'
 import { recordDispatchOk } from '@/outreach/dispatchHealth'
@@ -25,7 +25,7 @@ import { reconcileSessionRecords } from './reconcile'
 import { autoResolveBrands } from '@/detection/autoResolve'
 import { discoverOfficialPages } from '@/detection/officialDiscovery'
 import { badgeDoorPass } from '@/detection/badgeDoor'
-import { checkForReplies } from '@/outreach/replyCheck'
+import { checkForReplies, sweepUnderLock } from '@/outreach/replyCheck'
 import { getSettings } from '@/lib/settings'
 import { DISK_CARE_INTERVAL_MS, diskCareTick } from './diskCare'
 import { startConnectLoop } from './connectPass'
@@ -495,24 +495,13 @@ async function brandPass(): Promise<void> {
 let replyPassStartedAt: number | null = null
 
 /**
- * ── THE SWEEP WAITS FOR THE LOCK INSTEAD OF LOSING ITS TURN (9 Sept 2026) ──
- *
- * MEASURED in the agent log: the sweep ran at 13:07 and 13:31 IST and then twelve
- * consecutive half-hourly ticks logged "a send is in progress — the reply sweep waits for
- * the next pass". At the one-minute pace a send holds the fleet lock for ~47 of every ~60
- * seconds, so a single try at a random instant loses about three times in four, and nine
- * hours passed without a conversation being read — the reply halt, the hardest guard in the
- * system, going blind exactly as CLAUDE.md predicted a quietly falling coverage number would.
- *
- * So the pass POLLS for the lock: a send ends every minute and the next one starts only when
- * the gap clears (~13 s later), and a 5-second poll lands in that window within a couple of
- * tries. The wait is bounded so a wedged lock cannot hold this tick forever, and nothing is
- * held while waiting — each try is one `create` on the lock row that either wins or does not.
- * Once the sweep holds the lock the dispatcher's ticks get `lockBusy` and wait, which is the
- * documented trade (a sweep pauses sending for up to four bounded reads).
+ * The lock-and-wait — 9 Sept 2026: twelve consecutive half-hourly ticks lost to a one-try lock,
+ * nine blind hours — moved to `sweepUnderLock` in `src/outreach/replyCheck.ts` on 2026-10-15
+ * (Stage 1.2, audit M26) so the slot's sweep and both CLIs wait for the lock the same way this
+ * pass does. The bounds are re-exported here because tests and operators have imported them
+ * from the agent since the day they were measured.
  */
-export const REPLY_LOCK_WAIT_MS = 3 * 60_000
-export const REPLY_LOCK_POLL_MS = 5_000
+export { REPLY_LOCK_WAIT_MS, REPLY_LOCK_POLL_MS } from '@/outreach/replyCheck'
 
 /**
  * EXPORTED FOR ONE REASON: `tests/autopilot-off-drives-no-browser.test.ts` drives this
@@ -583,29 +572,14 @@ export async function replyPass(): Promise<void> {
   // checking, so replies are read around the clock too.
   replyPassStartedAt = Date.now()
   try {
-    const started = Date.now()
-    let summary = await withSendLock('reply-sweep', () => checkForReplies())
-    let waited = false
-    while (summary === null && Date.now() - started < REPLY_LOCK_WAIT_MS) {
-      if (!waited) {
-        waited = true
-        log.step('a send is in progress — the reply sweep is waiting for the lock', {
-          upToSeconds: REPLY_LOCK_WAIT_MS / 1000,
-        })
-      }
-      await new Promise((r) => setTimeout(r, REPLY_LOCK_POLL_MS))
-      summary = await withSendLock('reply-sweep', () => checkForReplies())
-    }
-    if (summary === null) {
-      // The lock never freed inside the wait. Nothing is lost: the next pass is half an
-      // hour away and the just-in-time check still reads any thread a follow-up is about
-      // to land in — but this line is the count to watch; twelve in a row was the defect.
-      log.step('a send is in progress — the reply sweep waits for the next pass', {
-        waitedSeconds: Math.round((Date.now() - started) / 1000),
-      })
-      return
-    }
-    if (waited) log.step('the reply sweep got the lock', { afterSeconds: Math.round((Date.now() - started) / 1000) })
+    /**
+     * The fleet lock, the bounded poll for it and the three refusals (floor, shutdown, role)
+     * live in `sweepUnderLock`, shared with the slot and both CLIs — one wrapper, four callers.
+     * It logs every refusal itself, so a `!ok` here has nothing to add.
+     */
+    const r = await sweepUnderLock('reply-sweep', checkForReplies)
+    if (!r.ok) return
+    const summary = r.value
     /**
      * Logged every pass, including the empty one — "nothing new" and "the sweep never
      * ran" are different facts, and for reply detection that difference was invisible
