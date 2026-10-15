@@ -93,7 +93,15 @@ describe('the rule is asked at both ends and by every pass', () => {
   it('the reply sweep asks on entry and re-asks before every inbox scan and every thread read', () => {
     const sweep = strip(readFileSync('src/outreach/replyCheck.ts', 'utf8'))
     const asks = sweep.match(/thisMacRole\(\)/g) ?? []
-    expect(asks.length, 'entry + inbox loop + thread loop').toBeGreaterThanOrEqual(3)
+    // The wrapper (`sweepUnderLock`) asks too since Stage 1.2, so a bare count of 3 no longer
+    // proves the entry ask exists — deleting it would leave 3 and stay green. Pin it BY POSITION.
+    expect(asks.length, 'wrapper + entry + inbox loop + thread loop').toBeGreaterThanOrEqual(4)
+    const sweepFn = sweep.indexOf('export async function checkForReplies')
+    expect(sweepFn).toBeGreaterThan(-1)
+    const entryAsk = sweep.indexOf('thisMacRole()', sweepFn)
+    const firstScan = sweep.indexOf('await inboxPhase(', sweepFn)
+    expect(entryAsk, 'checkForReplies no longer asks the role on entry').toBeGreaterThan(sweepFn)
+    expect(entryAsk, 'the entry ask must come before the first inbox scan can open Chrome').toBeLessThan(firstScan)
     const inboxLoop = sweep.indexOf('for (const sender of local)')
     const threadLoop = sweep.indexOf('for (const c of candidates)')
     expect(sweep.indexOf('thisMacRole()', inboxLoop) - inboxLoop).toBeLessThan(200)

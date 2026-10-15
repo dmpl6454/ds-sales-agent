@@ -135,7 +135,7 @@ const { readSchedulerHeartbeat, HEARTBEAT_KEY } = await import('@/worker/heartbe
 const { readHeartbeat } = await import('@/worker/scheduler')
 const { runDetection } = await import('@/detection/pipeline')
 const { checkForReplies } = await import('@/outreach/replyCheck')
-const { dispatchTick } = await import('@/outreach/dispatcher')
+const { dispatchTick, sendLockHeldHere } = await import('@/outreach/dispatcher')
 const { runOutreach } = await import('@/outreach/plan')
 
 afterAll(async () => {
@@ -466,7 +466,16 @@ describe('acquireSlotLock, through withSlotLock — a Mac does not step over the
         })
       })
 
-      it('control: with the lock kept, an 11:00 slot runs all four stages and records OK', async () => {
+      it('control: with the lock kept, an 11:00 slot runs all four stages and records OK — the sweep inside the REAL fleet lock', async () => {
+        // What the sweep sees WHILE it runs: this process must hold the fleet lock and the shared
+        // row must name the sweep. Checking only that the row is gone afterwards passes when the
+        // lock was never taken (M1: the slot calling `checkForReplies` directly leaves it null).
+        let during: { here: boolean; what: string | null } | null = null
+        vi.mocked(checkForReplies).mockImplementation(async () => {
+          const row = await prisma.setting.findUnique({ where: { key: 'sendLock' } })
+          during = { here: sendLockHeldHere(), what: row ? (JSON.parse(row.value) as { what?: string }).what ?? null : null }
+          return { checked: 0, repliesFound: 0, unreadable: 0, incomplete: 0, deferred: 0, outcomes: [] }
+        })
         const result = await runSlot('11:00')
         expect(result.status).toBe('OK')
         expect(vi.mocked(runDetection)).toHaveBeenCalledTimes(1)
@@ -477,7 +486,8 @@ describe('acquireSlotLock, through withSlotLock — a Mac does not step over the
         expect(run.status).toBe('OK')
         expect(run.error).toBeNull()
         expect(await slotRow()).toBeNull()
-        // The sweep ran under the real fleet lock and released it (Stage 1.2).
+        expect(during, 'the sweep never ran, or ran with no lock held').toEqual({ here: true, what: 'reply-sweep' })
+        // ...and it was released afterwards (Stage 1.2).
         expect(await prisma.setting.findUnique({ where: { key: 'sendLock' } })).toBeNull()
       })
 

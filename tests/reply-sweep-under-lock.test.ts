@@ -72,6 +72,16 @@ import type { ReplyCheckSummary, UnderLockResult } from '@/outreach/replyCheck'
  *       → 4 RED: the (b) floor case polled the lock (`withSendLock` called) instead of refusing
  *         by name, the floor-before-shutdown order case fell through to 'shutdown', the source
  *         order check lost its floor, and the (c) send-disabled slot case fell to 'standby'.
+ *   M4  the wrapper takes the lock with a no-op and runs the sweep body AFTER `withSendLock`
+ *       returned (`boxed` resolves nothing; `return { ok: true, value: await fn() }`) — added by
+ *       the review: every "was it called" assertion above stays green under it
+ *       → 3 RED: (a) case 1 and the (c) control read `holding === false` when the body ran, and
+ *         `tests/slot-lock-machine.test.ts`' control case saw no `sendLock` row and no
+ *         `sendLockHeldHere()` while the sweep ran.
+ *   M1 against `tests/slot-lock-machine.test.ts` → 1 RED there too (the control case), where it
+ *   used to stay green: its old assertion (the row is gone AFTERWARDS) is true when the lock was
+ *   never taken. `tests/active-device.test.ts`' entry-ask check is pinned by position now:
+ *   deleting `checkForReplies`' own role ask → 1 RED (a bare count of asks stayed at 3, green).
  *   Each restore was verified by hash against the pre-mutation file.
  */
 
@@ -160,12 +170,26 @@ const STANDBY = {
 } as const
 const summary: ReplyCheckSummary = { checked: 4, repliesFound: 0, unreadable: 0, incomplete: 0, deferred: 0, outcomes: [] }
 
+/**
+ * True only WHILE the stand-in lock is held, i.e. inside the callback `withSendLock` was handed.
+ * A sweep that takes the lock with a no-op and then runs its callback AFTER `withSendLock`
+ * returned would pass every "was it called" assertion in this file; recording `holding` at the
+ * moment the sweep body runs is what makes "under the lock" a checked fact rather than a name.
+ */
+let holding = false
+
 /** The real wrapper returns null when the lock is held; `busyTimes` stands in for the sends. */
 function lockBusyThenFree(busyTimes: number) {
   let calls = 0
   withSendLock.mockImplementation(async (_what: string, fn: () => Promise<unknown>) => {
     calls += 1
-    return calls <= busyTimes ? null : fn()
+    if (calls <= busyTimes) return null
+    holding = true
+    try {
+      return await fn()
+    } finally {
+      holding = false
+    }
   })
 }
 
@@ -192,6 +216,7 @@ async function drain(p: Promise<unknown>, stepMs: number): Promise<void> {
 beforeEach(() => {
   vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] })
   envState.SEND_ENABLED = true
+  holding = false
   withSendLock.mockReset()
   thisMacRole.mockReset().mockResolvedValue(ACTIVE)
   shutdownRequested.mockReset().mockReturnValue(false)
@@ -206,10 +231,15 @@ afterEach(() => vi.useRealTimers())
 describe('(a) sweepUnderLock polls for the fleet lock, bounded', () => {
   it('polls while a send holds the lock and runs the sweep once it frees — ONE run, with its value', async () => {
     lockBusyThenFree(2)
-    const fn = vi.fn(async () => summary)
+    const heldWhenRun: boolean[] = []
+    const fn = vi.fn(async () => {
+      heldWhenRun.push(holding)
+      return summary
+    })
     const p = sweepUnderLock('reply-sweep', fn)
     await drain(p, REPLY_LOCK_POLL_MS)
     expect(await p).toEqual({ ok: true, value: summary })
+    expect(heldWhenRun, 'the sweep body ran OUTSIDE the lock it took — a lock held by a no-op protects nothing').toEqual([true])
     expect(withSendLock).toHaveBeenCalledTimes(3)
     expect(withSendLock.mock.calls.every((c) => c[0] === 'reply-sweep'), 'the lock is taken under the caller\'s own name').toBe(true)
     expect(fn, 'the lock freed and the sweep still lost its turn, or ran twice').toHaveBeenCalledTimes(1)
@@ -407,9 +437,14 @@ describe('(c) the slot\'s 11:00 sweep goes through the wrapper; a refusal is rec
 
   it('control: with the lock free the sweep runs once, under the lock, and its outcomes are recorded as before', async () => {
     lockBusyThenFree(0)
-    checkForReplies.mockResolvedValue({ ...summary, outcomes: [{ pairKey: 'a→b', status: 'no-reply' }] })
+    const heldWhenSwept: boolean[] = []
+    checkForReplies.mockImplementation(async () => {
+      heldWhenSwept.push(holding)
+      return { ...summary, outcomes: [{ pairKey: 'a→b', status: 'no-reply' }] }
+    })
     const result = await runSlot('11:00')
     expect(result.status).toBe('OK')
+    expect(heldWhenSwept, 'the slot swept outside the fleet lock').toEqual([true])
     expect(checkForReplies).toHaveBeenCalledTimes(1)
     expect(withSendLock).toHaveBeenCalledTimes(1)
     expect(withSendLock.mock.calls[0]![0]).toBe('reply-sweep')
