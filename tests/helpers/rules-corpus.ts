@@ -1,5 +1,5 @@
 import type { GovernorInput } from '@/outreach/governor'
-import type { ResendInput } from '@/outreach/gate'
+import { RESEND_BLOCKS, type ResendInput } from '@/outreach/gate'
 import { crossSpacingVerdict, type CrossSpacingVerdict } from '@/outreach/crossSpacing'
 import { materialAllowance, type MaterialVerdict } from '@/outreach/materialAllowance'
 import { templateForSettings, type FleetTemplate } from '@/outreach/fleetTemplate'
@@ -25,26 +25,69 @@ import { followUpForSettings, isFollowUp, type FollowUpTemplate } from '@/outrea
  *
  * ── IMPOSSIBLE COMBINATIONS ARE INCLUDED ON PURPOSE ─────────────────────────
  *
- * `unreadable` never reaches either function in production (`splitParks` drops it); a
- * `pairSentTodayCount` of 1 with `touchesSoFar` 0 cannot happen (a delivery is a touch); the
- * gate's `isFollowUp` is set to disagree with its own derivation in some cases. They pin
- * TODAY's behaviour for those inputs too: a refactor that collapses the two functions into
- * one evaluator must answer every input identically, reachable or not, or say why it changed.
+ * `unreadable` never reaches either function in production (the parks query and `splitParks`
+ * both drop it); a `pairSentTodayCount` of 1 with `touchesSoFar` 0 cannot happen (a delivery
+ * is a touch); the gate's `isFollowUp` is set to disagree with its own derivation in some
+ * cases; `BOGUS` is not an attempt status at all. They pin TODAY's behaviour for those inputs
+ * too: a refactor that collapses the two functions into one evaluator must answer every
+ * input identically, reachable or not, or say why it changed. `BOGUS` in particular pins
+ * that `NOT_WAITING` is an ALLOW-list (`READY`/`QUEUED` may send) and not a deny-list of the
+ * statuses somebody remembered — a deny-list would pass an unknown status straight through.
  *
  * ── HOW IT IS GENERATED ────────────────────────────────────────────────────
  *
+ *   (baselines) the clean first touch itself, the follow-up baseline and the attended
+ *       on-demand baseline — the three starting points below, each pinned as a case.
  *   (a) every single-field deviation from the baseline clean first touch,
  *   (b) every PAIR of deviations (one value from each of two different fields),
- *   (c) `RANDOM_CASES` seeded pseudo-random full combinations from a tiny LCG — never
- *       `Math.random`, because a corpus that differs between runs cannot have a golden,
- *   (d) the same singles and pairs from a FOLLOW-UP baseline (`touchesSoFar` 1), restricted to
- *       the fields a follow-up's stops read — the five follow-up stops are ordered among
- *       themselves and against the ring rule and the pair cap, and (a)–(c) reach each of them
- *       only a handful of times because so many earlier stops fire first.
+ *   (c) `RANDOM_CASES` seeded pseudo-random SPARSE deviations: each field independently
+ *       leaves its baseline with probability `RANDOM_DEVIATION_RATE`, so a case carries a
+ *       handful of deviations and the three- and four-way interactions that reach the DEEP
+ *       stops (the follow-up family, the caps, the ring rule) actually occur. Never
+ *       `Math.random`, because a corpus that differs between runs cannot have a golden —
+ *       and never a shared LCG stream, see below.
+ *   (d) the same singles and pairs from a FOLLOW-UP baseline (`touchesSoFar` 1), restricted
+ *       to the fields a follow-up's stops read — the five follow-up stops are ordered among
+ *       themselves and against the ring rule and the pair cap, and (a)–(c) reach each of
+ *       them only a handful of times because so many earlier stops fire first.
+ *   (e) the ATTENDED slices — a present person, as the on-demand dialog sends. From the
+ *       attended-with-reply baseline (`unattended: false`, a recent reply, the reply halt
+ *       acknowledged): singles over EVERY field, and pairs of `overrides` × every other field.
+ *       From the plain attended baseline (`unattended: false`, nothing else): pairs of
+ *       `overrides` × every other field. From the attended FOLLOW-UP baseline
+ *       (`unattended: false`, `touchesSoFar` 1): singles and `overrides` pairs over the
+ *       follow-up fields. The only overridable stop is `TARGET_REPLIED`, and an override only
+ *       DOES anything when three fields leave their baselines together — so (a)–(d) never
+ *       exercised it: every override they carried was dropped by `unattended: true` or met no
+ *       reply to cross. These slices are what prove the gate gets PAST the reply halt on the
+ *       acknowledgement, and that every ABSOLUTE stop named in the `overrides` dimension stays
+ *       absolute when its own name is passed — alone, from the plain baseline, where no reply
+ *       halt sits in front of it; and beside a crossed reply halt, from the reply baseline.
  *
- * Each case carries a stable id: a hash of its own sorted JSON. Reordering the generator or
- * adding a dimension therefore changes nothing about existing ids — new cases simply appear
- * as missing from the golden, which the test reports by name.
+ * ── THE RANDOM SLICE DRAWS EACH FIELD FROM ITS OWN HASH ─────────────────────
+ *
+ * The first version drew `values[lcg() % values.length]` from one shared LCG stream, and a
+ * power-of-two LCG's low bits have a tiny period: every two-valued field got the SAME value
+ * in all 500 cases (`optedOut` always true, so the governor said `target-opted-out` 500 times
+ * out of 500), four-valued fields took two values, six-valued took three. "Drawn uniformly"
+ * was false and 22% of the corpus was filler. Now each (case index, field name) pair is
+ * hashed independently — FNV-1a, then murmur3's finaliser to spread the low bits — and the
+ * HIGH-precision unit interval decides both whether the field deviates and to which value.
+ * `tests/rules-golden.test.ts` asserts the coverage so this cannot come back silently.
+ *
+ * ── IDS ARE SPARSE, SO ADDING A DIMENSION CHANGES NO EXISTING ID ────────────
+ *
+ * Each case carries a stable id: a hash of the fields whose value DIFFERS from the baseline,
+ * keys sorted. A new dimension appended with its baseline value first therefore leaves every
+ * existing id untouched, and the fixture diff after adding one shows only the NEW cases.
+ * (The first version hashed every field, so a new dimension re-keyed all 2,309 cases and the
+ * diff was a whole-file replacement — defeating "the diff is the review".)
+ *
+ * What DOES change ids, and must be done knowingly: changing a dimension's BASELINE value
+ * (every case's sparse form moves), changing a dimension's LENGTH, `RANDOM_SEED`,
+ * `RANDOM_CASES` or `RANDOM_DEVIATION_RATE` (the random slice redraws), and re-spelling a
+ * value. Reordering the NON-baseline values of a dimension changes which random case gets
+ * which value, and nothing else.
  */
 
 export const NOW = new Date('2026-10-15T06:30:00.000Z')
@@ -53,7 +96,14 @@ export const REPLIED_AT = new Date('2026-10-13T09:15:00.000Z')
 /** A `profile-gone` park three days before NOW — inside PROFILE_GONE_RECHECK_DAYS. */
 export const PROFILE_GONE_AT = new Date('2026-10-12T04:00:00.000Z')
 
-/** The dimensions, each with its BASELINE value first. Order is load-bearing for ids only in that it is fixed. */
+/**
+ * The dimensions, each with its BASELINE value first.
+ *
+ * `attemptStatus` is TOTAL over `ATTEMPT_STATUSES` (asserted in the golden test), plus one
+ * value that is not a status at all. `overrides` is a NAME for a list — see `OVERRIDE_LISTS`:
+ * the one crossable stop, two absolute stops beside it, the empty list, a string that names
+ * no stop, and one entry per absolute stop a present person could reach.
+ */
 export const DIMENSIONS = {
   senderStatus: ['ACTIVE', 'PAUSED', 'CHALLENGED'],
   optedOut: [false, true],
@@ -74,9 +124,22 @@ export const DIMENSIONS = {
   fleetTemplate: ['ok', 'different-fleet', 'not-set', 'ambiguous'],
   followUpTemplate: ['written', 'unwritten'],
   repeatsADeliveredBody: [false, true],
-  attemptStatus: ['READY', 'QUEUED', 'SENT', 'SKIPPED', 'SENDING', 'FAILED'],
+  attemptStatus: ['READY', 'QUEUED', 'SENT', 'SKIPPED', 'SENDING', 'FAILED', 'REPLIED', 'BOGUS'],
   unattended: [true, false],
-  overrides: ['none', 'target-replied', 'sender-not-active'],
+  overrides: [
+    'none',
+    'target-replied',
+    'sender-not-active',
+    'empty',
+    'unknown-string',
+    'target-replied+pair-daily-cap',
+    'target-replied+sender-not-active',
+    'pair-daily-cap',
+    'follow-up-waits-for-tomorrow',
+    'no-session',
+    'target-not-verified',
+    'material-exhausted',
+  ],
   senderCohortCleared: ['undefined', 'true', 'false', 'false-no-detail'],
   senderHasSession: [true, false],
   targetIsWatchOnly: [false, true],
@@ -91,10 +154,46 @@ type Dimensions = typeof DIMENSIONS
 export type RuleFacts = { [K in keyof Dimensions]: Dimensions[K][number] }
 export type RuleCase = RuleFacts & { id: string }
 
-export const RANDOM_CASES = 500
-const LCG_SEED = 0x2f6e2b1
+/**
+ * What each `overrides` value hands the gate. `undefined` omits the key entirely — the shape
+ * the dispatcher sends. The stop names are the gate's own constants, never retyped, so a
+ * renamed stop here is a compile error rather than a silently inert override.
+ */
+export const OVERRIDE_LISTS: Record<RuleFacts['overrides'], readonly string[] | undefined> = {
+  none: undefined,
+  'target-replied': [RESEND_BLOCKS.TARGET_REPLIED],
+  'sender-not-active': [RESEND_BLOCKS.SENDER_NOT_ACTIVE],
+  empty: [],
+  'unknown-string': ['definitely-not-a-stop'],
+  'target-replied+pair-daily-cap': [RESEND_BLOCKS.TARGET_REPLIED, RESEND_BLOCKS.PAIR_DAILY_CAP],
+  'target-replied+sender-not-active': [RESEND_BLOCKS.TARGET_REPLIED, RESEND_BLOCKS.SENDER_NOT_ACTIVE],
+  'pair-daily-cap': [RESEND_BLOCKS.PAIR_DAILY_CAP],
+  'follow-up-waits-for-tomorrow': [RESEND_BLOCKS.FOLLOW_UP_SAME_DAY],
+  'no-session': [RESEND_BLOCKS.NO_SESSION],
+  'target-not-verified': [RESEND_BLOCKS.TARGET_NOT_VERIFIED],
+  'material-exhausted': [RESEND_BLOCKS.MATERIAL_EXHAUSTED],
+}
 
-const FIELDS = Object.keys(DIMENSIONS) as (keyof Dimensions)[]
+/**
+ * The absolute stops the `overrides` dimension names ALONE (one list, one stop). The golden
+ * test asserts that for each of these some corpus case passes exactly that override and is
+ * still refused with exactly that reason — "each one does nothing", proven per stop.
+ */
+export const ABSOLUTE_STOPS_OFFERED_AS_OVERRIDES: readonly { value: RuleFacts['overrides']; stop: string }[] = [
+  { value: 'sender-not-active', stop: RESEND_BLOCKS.SENDER_NOT_ACTIVE },
+  { value: 'pair-daily-cap', stop: RESEND_BLOCKS.PAIR_DAILY_CAP },
+  { value: 'follow-up-waits-for-tomorrow', stop: RESEND_BLOCKS.FOLLOW_UP_SAME_DAY },
+  { value: 'no-session', stop: RESEND_BLOCKS.NO_SESSION },
+  { value: 'target-not-verified', stop: RESEND_BLOCKS.TARGET_NOT_VERIFIED },
+  { value: 'material-exhausted', stop: RESEND_BLOCKS.MATERIAL_EXHAUSTED },
+]
+
+export const RANDOM_CASES = 800
+/** Per field, per random case: the chance it leaves its baseline. ~6 deviations a case over 30 fields. */
+export const RANDOM_DEVIATION_RATE = 0.22
+export const RANDOM_SEED = 'rules-corpus/2026-10-15'
+
+export const FIELDS = Object.keys(DIMENSIONS) as (keyof Dimensions)[]
 
 export function baselineFacts(): RuleFacts {
   const out: Record<string, unknown> = {}
@@ -102,38 +201,52 @@ export function baselineFacts(): RuleFacts {
   return out as RuleFacts
 }
 
-/** Canonical JSON: keys sorted, so two cases with the same facts always hash alike. */
+/**
+ * SPARSE canonical JSON: only the fields that differ from the baseline, keys sorted. The
+ * baseline itself is `{}`. See the module docblock for what this makes stable.
+ */
 export function canonicalJson(facts: RuleFacts): string {
-  const sorted: Record<string, unknown> = {}
-  for (const key of [...FIELDS].sort()) sorted[key] = facts[key]
-  return JSON.stringify(sorted)
+  const sparse: Record<string, unknown> = {}
+  for (const key of [...FIELDS].sort()) {
+    if (facts[key] !== DIMENSIONS[key][0]) sparse[key] = facts[key]
+  }
+  return JSON.stringify(sparse)
+}
+
+/** FNV-1a over a string, 32-bit. */
+function fnv1a(s: string, offset: number): number {
+  let h = offset >>> 0
+  for (let i = 0; i < s.length; i++) {
+    h ^= s.charCodeAt(i)
+    h = Math.imul(h, 0x01000193) >>> 0
+  }
+  return h
 }
 
 /** FNV-1a over the canonical JSON, twice with different offsets — 16 hex chars. */
 export function caseId(facts: RuleFacts): string {
   const s = canonicalJson(facts)
-  const fnv = (offset: number): string => {
-    let h = offset >>> 0
-    for (let i = 0; i < s.length; i++) {
-      h ^= s.charCodeAt(i)
-      h = Math.imul(h, 0x01000193) >>> 0
-    }
-    return h.toString(16).padStart(8, '0')
-  }
-  return fnv(0x811c9dc5) + fnv(0x050c5d1f)
+  return fnv1a(s, 0x811c9dc5).toString(16).padStart(8, '0') + fnv1a(s, 0x050c5d1f).toString(16).padStart(8, '0')
 }
 
 function withId(facts: RuleFacts): RuleCase {
   return { id: caseId(facts), ...facts }
 }
 
-/** A tiny LCG (Numerical Recipes constants) so the random slice is the same on every run. */
-function lcg(seed: number): () => number {
-  let state = seed >>> 0
-  return () => {
-    state = (Math.imul(state, 1664525) + 1013904223) >>> 0
-    return state
-  }
+/**
+ * A unit-interval draw for (case index, field) that depends on nothing else: FNV-1a over the
+ * three names, then murmur3's `fmix32` so the LOW bits are as well mixed as the high ones —
+ * the property the old LCG lacked. Dividing by 2^32 uses every bit of the hash, so a field
+ * with k values is reduced by MULTIPLYING, never by `% k`.
+ */
+function unitDraw(caseIndex: number, field: string): number {
+  let h = fnv1a(`${RANDOM_SEED}:${caseIndex}:${field}`, 0x811c9dc5)
+  h ^= h >>> 16
+  h = Math.imul(h, 0x85ebca6b) >>> 0
+  h ^= h >>> 13
+  h = Math.imul(h, 0xc2b2ae35) >>> 0
+  h ^= h >>> 16
+  return (h >>> 0) / 2 ** 32
 }
 
 /** The fields a follow-up's stops read, in both evaluators. */
@@ -152,6 +265,26 @@ const FOLLOW_UP_FIELDS = [
   'introducesUsToSomeoneWhoKnowsUs',
   'followUpCitesOnlyADate',
 ] as const satisfies readonly (keyof Dimensions)[]
+
+/** The starting points. Exported so the golden test can pin each one by name. */
+export function followUpBaseline(): RuleFacts {
+  return { ...baselineFacts(), touchesSoFar: 1 }
+}
+
+/** A present person and nothing else — the on-demand dialog's plain Send. */
+export function attendedBaseline(): RuleFacts {
+  return { ...baselineFacts(), unattended: false }
+}
+
+/** A present person, a recent reply, and the reply halt acknowledged — the dialog's crossed Send. */
+export function attendedReplyBaseline(): RuleFacts {
+  return { ...attendedBaseline(), overrides: 'target-replied', targetRepliedAt: 'recent' }
+}
+
+/** A present person sending a SECOND message — the follow-up stops, attended. */
+export function attendedFollowUpBaseline(): RuleFacts {
+  return { ...attendedBaseline(), touchesSoFar: 1 }
+}
 
 /** The corpus, generated once per process. */
 export const RULE_CORPUS: readonly RuleCase[] = generateCorpus()
@@ -282,6 +415,7 @@ export function toResendInput(c: RuleFacts): ResendInput {
         : c.senderCohortCleared === 'false'
           ? { senderCohortCleared: false, senderCohortDetail: COHORT_DETAIL }
           : { senderCohortCleared: false }
+  const overrides = OVERRIDE_LISTS[c.overrides]
   return {
     attemptStatus: c.attemptStatus,
     unattended: c.unattended,
@@ -311,12 +445,103 @@ export function toResendInput(c: RuleFacts): ResendInput {
     pairSentTodayCount: c.pairSentTodayCount,
     maxPerPairPerDay: c.maxPerPairPerDay,
     crossSpacing: CROSS[c.crossSpacing],
-    ...(c.overrides === 'none' ? {} : { overrides: [c.overrides] }),
+    ...(overrides === undefined ? {} : { overrides }),
+  }
+}
+
+export interface RuleSlices {
+  baselines: RuleFacts[]
+  singles: RuleFacts[]
+  pairs: RuleFacts[]
+  random: RuleFacts[]
+  followUp: RuleFacts[]
+  attended: RuleFacts[]
+}
+
+/** Every single-field deviation from `base`, over `fields`. */
+function singlesFrom(base: RuleFacts, fields: readonly (keyof Dimensions)[]): RuleFacts[] {
+  const out: RuleFacts[] = []
+  for (const f of fields) {
+    for (const v of DIMENSIONS[f]) {
+      if (v === base[f]) continue
+      out.push({ ...base, [f]: v })
+    }
+  }
+  return out
+}
+
+/**
+ * Every pair of deviations from `base`: one value from each of two different fields, the
+ * first from `left` and the second from `right`. When the two lists are the SAME list each
+ * unordered pair is produced once.
+ */
+function pairsFrom(
+  base: RuleFacts,
+  left: readonly (keyof Dimensions)[],
+  right: readonly (keyof Dimensions)[],
+): RuleFacts[] {
+  const out: RuleFacts[] = []
+  const same = left === right
+  for (let i = 0; i < left.length; i++) {
+    for (let j = same ? i + 1 : 0; j < right.length; j++) {
+      const fi = left[i]!
+      const fj = right[j]!
+      if (fi === fj) continue
+      for (const vi of DIMENSIONS[fi]) {
+        if (vi === base[fi]) continue
+        for (const vj of DIMENSIONS[fj]) {
+          if (vj === base[fj]) continue
+          out.push({ ...base, [fi]: vi, [fj]: vj })
+        }
+      }
+    }
+  }
+  return out
+}
+
+/** Slice (c): sparse random deviations from the clean baseline. See the module docblock. */
+export function randomSlice(): RuleFacts[] {
+  const base = baselineFacts()
+  const out: RuleFacts[] = []
+  for (let n = 0; n < RANDOM_CASES; n++) {
+    const facts: Record<string, unknown> = { ...base }
+    for (const f of FIELDS) {
+      const u = unitDraw(n, f)
+      if (u >= RANDOM_DEVIATION_RATE) continue
+      const values = DIMENSIONS[f]
+      /* Rescale the sub-threshold draw to [0, 1) and pick a NON-baseline value uniformly. */
+      const pick = 1 + Math.floor((u / RANDOM_DEVIATION_RATE) * (values.length - 1))
+      facts[f] = values[Math.min(pick, values.length - 1)]
+    }
+    out.push(facts as RuleFacts)
+  }
+  return out
+}
+
+/** The five slices, BEFORE deduplication — so a test can measure each one on its own. */
+export function generateSlices(): RuleSlices {
+  const base = baselineFacts()
+  const followUpBase = followUpBaseline()
+  const attendedBase = attendedBaseline()
+  const attendedReplyBase = attendedReplyBaseline()
+  const attendedFollowUpBase = attendedFollowUpBaseline()
+  return {
+    baselines: [base, followUpBase, attendedBase, attendedReplyBase, attendedFollowUpBase],
+    singles: singlesFrom(base, FIELDS),
+    pairs: pairsFrom(base, FIELDS, FIELDS),
+    random: randomSlice(),
+    followUp: [...singlesFrom(followUpBase, FOLLOW_UP_FIELDS), ...pairsFrom(followUpBase, FOLLOW_UP_FIELDS, FOLLOW_UP_FIELDS)],
+    attended: [
+      ...singlesFrom(attendedReplyBase, FIELDS),
+      ...pairsFrom(attendedReplyBase, ['overrides'], FIELDS),
+      ...pairsFrom(attendedBase, ['overrides'], FIELDS),
+      ...singlesFrom(attendedFollowUpBase, FOLLOW_UP_FIELDS),
+      ...pairsFrom(attendedFollowUpBase, ['overrides'], FOLLOW_UP_FIELDS),
+    ],
   }
 }
 
 export function generateCorpus(): RuleCase[] {
-  const base = baselineFacts()
   const seen = new Set<string>()
   const out: RuleCase[] = []
   const push = (facts: RuleFacts) => {
@@ -325,55 +550,12 @@ export function generateCorpus(): RuleCase[] {
     seen.add(c.id)
     out.push(c)
   }
-
-  // (a) every single-field deviation
-  for (const f of FIELDS) {
-    for (const v of DIMENSIONS[f].slice(1)) push({ ...base, [f]: v })
-  }
-
-  // (b) every pair of deviations
-  for (let i = 0; i < FIELDS.length; i++) {
-    for (let j = i + 1; j < FIELDS.length; j++) {
-      const fi = FIELDS[i]!
-      const fj = FIELDS[j]!
-      for (const vi of DIMENSIONS[fi].slice(1)) {
-        for (const vj of DIMENSIONS[fj].slice(1)) push({ ...base, [fi]: vi, [fj]: vj })
-      }
-    }
-  }
-
-  // (c) seeded pseudo-random full combinations, every dimension drawn uniformly
-  const next = lcg(LCG_SEED)
-  for (let n = 0; n < RANDOM_CASES; n++) {
-    const facts: Record<string, unknown> = {}
-    for (const f of FIELDS) {
-      const values = DIMENSIONS[f]
-      facts[f] = values[next() % values.length]
-    }
-    push(facts as RuleFacts)
-  }
-
-  // (d) singles and pairs from the follow-up baseline, over the follow-up-relevant fields
-  const followUpBase: RuleFacts = { ...base, touchesSoFar: 1 }
-  for (const f of FOLLOW_UP_FIELDS) {
-    for (const v of DIMENSIONS[f]) {
-      if (v === followUpBase[f]) continue
-      push({ ...followUpBase, [f]: v })
-    }
-  }
-  for (let i = 0; i < FOLLOW_UP_FIELDS.length; i++) {
-    for (let j = i + 1; j < FOLLOW_UP_FIELDS.length; j++) {
-      const fi = FOLLOW_UP_FIELDS[i]!
-      const fj = FOLLOW_UP_FIELDS[j]!
-      for (const vi of DIMENSIONS[fi]) {
-        if (vi === followUpBase[fi]) continue
-        for (const vj of DIMENSIONS[fj]) {
-          if (vj === followUpBase[fj]) continue
-          push({ ...followUpBase, [fi]: vi, [fj]: vj })
-        }
-      }
-    }
-  }
-
+  const slices = generateSlices()
+  for (const facts of slices.baselines) push(facts)
+  for (const facts of slices.singles) push(facts)
+  for (const facts of slices.pairs) push(facts)
+  for (const facts of slices.random) push(facts)
+  for (const facts of slices.followUp) push(facts)
+  for (const facts of slices.attended) push(facts)
   return out
 }
