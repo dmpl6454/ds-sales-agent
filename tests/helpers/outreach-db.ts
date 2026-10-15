@@ -1,5 +1,5 @@
 import Database from 'better-sqlite3'
-import { mkdtempSync } from 'node:fs'
+import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { PrismaClient } from '@/generated/prisma/client'
@@ -264,11 +264,25 @@ export const OUTREACH_DDL = `
 export interface OutreachDb {
   dbPath: string
   dir: string
+  /**
+   * Disconnect the client that was bound to this file and remove the directory. Call it from
+   * `afterAll`, passing the `prisma` the test imported AFTER `openOutreachDb` — the helper
+   * cannot import `@/lib/db` itself (see the module docblock), so the client is handed back in.
+   * The disconnect comes first because the SQLite file is held open by the adapter; removing
+   * the directory under a live handle leaves the file on disk until the process exits.
+   */
+  close: (prisma?: { $disconnect: () => Promise<void> }) => Promise<void>
 }
 
 /**
  * Create the file, execute the DDL, and point this process at it. See the module docblock
  * for why this must run before anything imports `@/lib/db`.
+ *
+ * The returned `close` is not optional housekeeping: the first version of this helper returned
+ * only the paths, `tests/planner-golden.test.ts` discarded them, and six leaked
+ * `/tmp/ds-planner-golden-*` directories (240 KB each) were found by the review. Every test
+ * that opens one of these must `close` it in `afterAll`, the convention of
+ * `tests/remove-sender-live.test.ts` and the thirty other live tests that `rmSync` their file.
  */
 export async function openOutreachDb(name: string): Promise<OutreachDb> {
   const dir = mkdtempSync(join(tmpdir(), `ds-${name}-`))
@@ -282,7 +296,11 @@ export async function openOutreachDb(name: string): Promise<OutreachDb> {
   process.env.DATABASE_URL = `file:${dbPath}`
   process.env.TZ = 'Asia/Kolkata'
   process.env.DS_QUERY_COUNT = '1'
-  return { dbPath, dir }
+  const close = async (prisma?: { $disconnect: () => Promise<void> }): Promise<void> => {
+    await prisma?.$disconnect().catch(() => undefined)
+    rmSync(dir, { recursive: true, force: true })
+  }
+  return { dbPath, dir, close }
 }
 
 // ── seed builders ─────────────────────────────────────────────────────────────

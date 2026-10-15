@@ -8,6 +8,8 @@ import {
   RULE_CORPUS,
   DIMENSIONS,
   FIELDS,
+  RANDOM_FIELDS,
+  RANDOM_BLOCKS,
   OVERRIDE_LISTS,
   ABSOLUTE_STOPS_OFFERED_AS_OVERRIDES,
   attendedBaseline,
@@ -16,9 +18,11 @@ import {
   baselineFacts,
   followUpBaseline,
   caseId,
+  generateCorpus,
   generateSlices,
   toGovernorInput,
   toResendInput,
+  type DimensionTable,
   type RuleCase,
   type RuleFacts,
 } from './helpers/rules-corpus'
@@ -45,20 +49,35 @@ import {
  * only DELIBERATELY — `REGENERATE_RULES_GOLDEN=1 pnpm exec vitest run tests/rules-golden.test.ts`
  * — and READ THE DIFF of the fixture before committing it: every changed line is a verdict that
  * moved, and the diff is the review. Ids are sparse hashes (only the fields that differ from
- * the baseline), so adding a dimension adds lines to the fixture and changes none.
+ * the baseline) AND the random slice draws from a frozen field list (`RANDOM_FIELDS`), so adding
+ * a dimension adds lines to the fixture and changes none — the probe test below generates the
+ * corpus over today's dimensions plus one more and asserts every id survives (measured by
+ * appending a two-valued dimension to `DIMENSIONS` itself: 92 new cases, 0 moved). The first version
+ * of this sentence rested on the sparse ids alone and was false for the random slice: that slice
+ * iterated the live key list, so a new dimension redrew in every existing random case and about
+ * a fifth of them re-keyed (measured in the corpus helper's docblock).
  *
- * What would fail it, concretely — each of these was applied to a scratch copy of the
- * evaluator and run against the fixture before being written here:
+ * What would fail it, concretely — EACH of these was applied to the production code by hand,
+ * run against the fixture, seen red and restored before being written here:
  *   - moving `TARGET_NOT_VERIFIED` below `SENDER_NOT_ACTIVE` in the governor (every case with
  *     both set reports a different reason);
  *   - changing one character of the `MATERIAL_EXHAUSTED` sentence;
- *   - adding `PAIR_DAILY_CAP` to `OVERRIDABLE_BLOCKS` (the attended cases that pass
- *     `pair-daily-cap` as an override, alone or beside `target-replied`, flip from the cap to a
- *     later stop or to ok);
- *   - dropping override support (the attended baseline flips from ok to `target-replied`);
- *   - turning `NOT_WAITING` into a deny-list of the five statuses the old corpus tried (the
- *     `REPLIED` and `BOGUS` cases flip from `not-waiting` to a later stop);
+ *   - dropping override support (114 verdicts move: the attended baseline and every attended
+ *     case that crossed the reply halt flip from ok, or a later stop, to `target-replied`);
+ *   - turning `NOT_WAITING` into a deny-list of the five statuses the old corpus tried (233
+ *     verdicts move: the `REPLIED` and `BOGUS` cases flip from `not-waiting` to a later stop);
  *   - a new evaluator that answers `unreadable` parks differently from the pure functions today.
+ *
+ * What would NOT fail it, stated so nobody relies on it: WIDENING `OVERRIDABLE_BLOCKS`. The
+ * first version of this list claimed that adding `PAIR_DAILY_CAP` would flip the attended cases
+ * that pass `pair-daily-cap`; applied by hand it stays green, because the evaluator consults the
+ * acknowledged set at exactly ONE stop (gate.ts, the reply halt — `allowed.has(TARGET_REPLIED)`)
+ * and nowhere else. A name added to the whitelist is therefore inert inside `evaluateResend`
+ * whatever the corpus passes, and only `tests/stopInventory.test.ts` — which pins the constant
+ * itself to `[TARGET_REPLIED]` and drives the override being inert on an absolute stop — catches
+ * it. What THIS corpus does prove about absolute stops is behavioural: every one offered as an
+ * override in the `overrides` dimension is still reported, by name, to a present person who
+ * passed exactly that name (the "each one does nothing" test below).
  *
  * The regeneration path writes the file AND still asserts, so a regeneration run can never
  * pass vacuously: it compares what it just wrote against what it just computed.
@@ -110,7 +129,8 @@ const RANDOM_MIN_DISTINCT_REASONS = 12
 describe('the rule corpus', () => {
   it('is a few thousand cases, with a unique id per case', () => {
     /* Wide enough for every pair of deviations plus the three extra slices, small enough that
-       a fixture diff is still something a person reads. Measured at 3,889 on 2026-10-15. */
+       a fixture diff is still something a person reads. Measured at 4,746 on 2026-10-15, once
+       the attended slices and the REPLIED/BOGUS statuses were added. */
     expect(RULE_CORPUS.length).toBeGreaterThanOrEqual(3000)
     expect(RULE_CORPUS.length).toBeLessThanOrEqual(5000)
     expect(new Set(RULE_CORPUS.map((c) => c.id)).size).toBe(RULE_CORPUS.length)
@@ -122,18 +142,60 @@ describe('the rule corpus', () => {
     expect(again.map((c) => c.id)).toEqual(RULE_CORPUS.map((c) => c.id))
   })
 
-  it('hashes only the deviations, so the baseline is {} and a new dimension cannot re-key old cases', () => {
-    /* The sparse form is what makes "the diff is the review" survive a new dimension: the
-       first version hashed every field and a new one re-keyed the whole fixture. */
+  it('hashes only the deviations, so the baseline is {} and every case is reachable from its own facts', () => {
+    /* The sparse form is half of what makes "the diff is the review" survive a new dimension:
+       the first version hashed every field and a new one re-keyed the whole fixture. */
     const base = baselineFacts()
     expect(caseId(base)).toBe(caseId({ ...base }))
     const oneAway = { ...base, optedOut: true as const }
     expect(caseId(oneAway)).not.toBe(caseId(base))
-    /* Every corpus case is reachable by id from its own facts alone. */
     for (const c of RULE_CORPUS) {
       const { id, ...facts } = c
       expect(caseId(facts as RuleFacts)).toBe(id)
     }
+  })
+
+  /**
+   * THE OTHER HALF, PROVEN BY DOING IT: the corpus generated over today's dimensions PLUS a probe
+   * dimension still contains every id of today's corpus, whether the probe is appended or
+   * prepended, and the probe sits at its baseline in every random case. The random slice must
+   * draw from `RANDOM_FIELDS` for this to hold — iterating `fieldsOf(dims)` in `randomSlice`
+   * instead re-keys about a fifth of the random slice and turns this red (applied by hand once,
+   * 2026-10-15; the failure message names the count). The pairs slice over the probe is what
+   * makes the probed corpus LARGER, so a generator that quietly ignored unknown dimensions would
+   * fail the size assertion rather than pass this vacuously.
+   */
+  it('a dimension appended or prepended later re-keys no existing case', () => {
+    const todayIds = new Set(RULE_CORPUS.map((c) => c.id))
+    const PROBE = ['probe-baseline', 'probe-deviant'] as const
+    const check = <D extends DimensionTable>(key: string, probe: D) => {
+      const probed = generateCorpus(probe)
+      const probedIds = new Set(probed.map((c) => c.id))
+      const lost = [...todayIds].filter((id) => !probedIds.has(id))
+      expect(lost, `${key}: ${lost.length} of ${todayIds.size} ids re-keyed by a probe dimension`).toEqual([])
+      expect(probed.length).toBeGreaterThan(RULE_CORPUS.length)
+      expect(probed.some((c) => (c as Record<string, unknown>)[key] === 'probe-deviant')).toBe(true)
+      const random = generateSlices(probe).random as Record<string, unknown>[]
+      expect(random.every((c) => c[key] === 'probe-baseline'), `${key} drawn in a random case`).toBe(true)
+    }
+    check('zzProbe', { ...DIMENSIONS, zzProbe: PROBE })
+    check('aaProbe', { aaProbe: PROBE, ...DIMENSIONS })
+  })
+
+  /**
+   * `RANDOM_FIELDS` is the frozen list; a dimension added later must be given a block of its own
+   * rather than silently go without random coverage — and must NEVER be added to the existing
+   * list, which redraws every random case. What fails this: appending a dimension to `DIMENSIONS`
+   * with no block (applied by hand once, 2026-10-15 — this test red, the fixture test reporting 92
+   * new cases and 0 moved, the probe test still green), or a block whose first field list is not
+   * the frozen literal.
+   */
+  it('names every dimension in a random block, by a list that is a literal and not the key list', () => {
+    const covered = new Set(RANDOM_BLOCKS.flatMap((b) => [...b.fields]))
+    expect(FIELDS.filter((f) => !covered.has(f))).toEqual([])
+    for (const f of RANDOM_FIELDS) expect(FIELDS).toContain(f)
+    expect(new Set(RANDOM_FIELDS).size).toBe(RANDOM_FIELDS.length)
+    expect(RANDOM_BLOCKS[0]?.fields).toBe(RANDOM_FIELDS)
   })
 
   it('tries every attempt status there is, and one that is not', () => {
@@ -144,11 +206,13 @@ describe('the rule corpus', () => {
     expect((DIMENSIONS.attemptStatus as readonly string[]).includes('BOGUS')).toBe(true)
   })
 
-  it('draws the random slice across every value of every dimension', () => {
-    /* The old LCG's low bits gave every two-valued field ONE value in all 500 cases. */
+  it('draws the random slice across every value of every dimension it draws from', () => {
+    /* The old LCG's low bits gave every two-valued field ONE value in all 500 cases. Over
+       `RANDOM_FIELDS`, not `FIELDS`: a dimension outside every block is at baseline in every
+       random case by design, and the block-coverage test above is what forces that decision. */
     const { random } = generateSlices()
     const short: string[] = []
-    for (const f of FIELDS) {
+    for (const f of RANDOM_FIELDS) {
       for (const v of DIMENSIONS[f]) {
         const n = random.filter((c) => c[f] === v).length
         if (n < RANDOM_MIN_PER_VALUE) short.push(`${f}=${String(v)} appears ${n} time(s)`)

@@ -3,16 +3,34 @@
  *
  * ── WHAT THIS IS ───────────────────────────────────────────────────────────
  *
- * A frozen transcription of how `runOutreach` (src/outreach/plan.ts, lines ~200–700 at 26e230d)
+ * A frozen transcription of how `runOutreach` (src/outreach/plan.ts, lines ~183–760 at 26e230d)
  * assembles the per-pair `GovernorInput`, and how `recheckBeforeSend` (src/outreach/gate.ts,
- * lines ~814–939) assembles the `ResendInput`. The queries are copied verbatim — same `where`,
- * same `select`, same ordering — and the shared helpers are CALLED, not re-implemented:
- * `freshCampaignsFor`, `campaignsNamingHandle`, `replyHaltWhere`, `splitParks`,
- * `crossSpacingVerdict`, `materialAllowance`, `templateForSettings`, `followUpForSettings`,
- * `followUpSubject`, `isFollowUp`, `isIntroductionToSomeoneWhoKnowsUs`, `citesOnlyADate`,
- * `isStandardMessageBody`, `sessionUsable`, `mayArmAccount`.
+ * lines ~814–939) assembles the `ResendInput`.
  *
- * Stage 3 replaces those per-pair reads with one bulk loader. The proof that the loader is
+ * EVERY DATABASE READ IS INLINED HERE — the planner's and the gate's own `Promise.all` queries
+ * AND the reads the production helpers they call make underneath: `usedCampaignIds`,
+ * `claimedCampaignIds`, `campaignsNamingHandleRows` (the findMany and its JS filter),
+ * `freshCampaignsFor`, `campaignsNamingHandle`, `replyHaltWhere`'s output shape,
+ * `readCategoryMemberships`, `readSenderAvailability`, `eligibleFleetSenders`,
+ * `readWatchChannels`, `readPersonHandles`, `readCohortStates`, `cohortSoakDays` and
+ * `mayArmAccount`. Each copy carries the `file:line` it was taken from. The status sets they
+ * filter on are frozen literals too, not the live constants.
+ *
+ * The first version imported those helpers and CALLED them, which made the oracle a photograph
+ * of nothing: a Stage 3 bulk loader replaces exactly those reads, so an edit to any of them would
+ * have moved the oracle along with production and the equivalence proof would have passed
+ * trivially (the review's finding, 2026-10-15). What this file still calls are the PURE
+ * assemblers — `splitParks`, `crossSpacingVerdict`, `materialAllowance`,
+ * `mentionsHandleExactly`, `brandStringsNameProspect`, `categoriesFor`, `templateForSettings`,
+ * `followUpForSettings`, `followUpSubject`, `isFollowUp`, `isIntroductionToSomeoneWhoKnowsUs`,
+ * `citesOnlyADate`, `isStandardMessageBody`, `sessionUsable`, `mayArmCohort`, `renderFollowUp`,
+ * `followUpPostReference` — which take facts and return verdicts, and are what Stage 2 pins
+ * through `tests/rules-golden.test.ts`. Three things are deliberately live and are not reads a
+ * loader replaces: `getSettings` (the configuration, parsed once per gate call as production
+ * does), `profileStatus` (this machine's disk, mocked by the test), and the clock/floor
+ * helpers (`istDayStart`, `newMaterialFloor`, `profileGoneFloor`).
+ *
+ * Stage 3 replaces the per-pair reads with one bulk loader. The proof that the loader is
  * equivalent is that, for every pair in a scenario, its facts deep-equal what THIS file
  * assembles — and this file must therefore never be "improved" along with the production
  * code. It is a photograph of the old shape. When the production code moves, this stays.
@@ -30,8 +48,10 @@
  *                                                     builds a context itself when none is given
  *   legacySendFacts(attempt, opts, witness)           the gate's Promise.all + assembly
  *
- * `tests/planner-golden.test.ts` runs both on its scenario so the oracle cannot rot silently:
- * a renamed column or a changed helper signature fails there, not in Stage 3.
+ * The planner re-reads each pair AFTER the pairs before it have written, so a caller replaying a
+ * run must put each written draft back before evaluating the next pair — see the oracle test in
+ * `tests/planner-golden.test.ts`, which runs both functions on its scenario so the oracle cannot
+ * rot silently: a renamed column or a changed helper signature fails there, not in Stage 3.
  */
 
 import type { PrismaClient } from '@/generated/prisma/client'
@@ -44,14 +64,10 @@ import { getSettings } from '@/lib/settings'
 import { istDayStart } from '@/lib/time'
 import { newMaterialFloor } from '@/lib/cutoff'
 import { readStringArray } from '@/lib/json'
-import { DELIVERED_STATUSES, IN_FLIGHT_STATUSES } from '@/lib/constants'
 import { profileGoneFloor, splitParks } from '@/outreach/parkedRows'
-import { replyHaltWhere } from '@/outreach/replyHalt'
 import { crossSpacingVerdict } from '@/outreach/crossSpacing'
-import { materialAllowance, campaignsNamingHandle } from '@/outreach/materialAllowance'
-import { eligibleFleetSenders } from '@/outreach/availability'
-import { readCategoryMemberships, categoriesFor } from '@/outreach/categories'
-import { freshCampaignsFor, readPersonHandles, readWatchChannels } from '@/outreach/compose'
+import { materialAllowance, mentionsHandleExactly, brandStringsNameProspect } from '@/outreach/materialAllowance'
+import { categoriesFor } from '@/outreach/senderCategories'
 import { isStandardMessageBody, templateForSettings, type FleetTemplate } from '@/outreach/fleetTemplate'
 import {
   citesOnlyADate,
@@ -63,10 +79,252 @@ import {
   renderFollowUp,
   type FollowUpTemplate,
 } from '@/outreach/followUpTemplate'
-import { mayArmAccount } from '@/outreach/cohorts'
+import { mayArmCohort, DEFAULT_COHORT_SOAK_DAYS, type CohortMember, type CohortState, type LadderVerdict } from '@/outreach/cohorts'
 import { profileStatus } from '@/outreach/browser/profile'
 import { sessionUsable } from '@/outreach/sessionHealth'
 import type { CategoryMemberships } from '@/outreach/senderCategories'
+
+// ── frozen constants ──────────────────────────────────────────────────────────
+
+/** src/lib/constants.ts:61 at 26e230d — `DELIVERED_STATUSES`. */
+const DELIVERED_STATUSES = ['SENT', 'REPLIED'] as const
+/** src/lib/constants.ts:73 at 26e230d — `IN_FLIGHT_STATUSES`. */
+const IN_FLIGHT_STATUSES = ['SENT', 'REPLIED', 'SENDING', 'READY', 'QUEUED'] as const
+
+// ── frozen reads: the helpers production calls, copied verbatim ─────────────
+
+/** src/outreach/compose.ts:94–100 at 26e230d — `usedCampaignIds`. */
+async function legacyUsedCampaignIds(prisma: PrismaClient, pairId: string): Promise<string[]> {
+  const rows = await prisma.outreachAttempt.findMany({
+    where: { pairId, campaignId: { not: null }, status: { in: [...IN_FLIGHT_STATUSES] } },
+    select: { campaignId: true },
+  })
+  return rows.map((r) => r.campaignId).filter((id): id is string => id !== null)
+}
+
+/** src/outreach/compose.ts:142–148 at 26e230d — `claimedCampaignIds`. */
+async function legacyClaimedCampaignIds(prisma: PrismaClient, targetId: string): Promise<string[]> {
+  const rows = await prisma.outreachAttempt.findMany({
+    where: { targetId, campaignId: { not: null }, status: { in: [...IN_FLIGHT_STATUSES] } },
+    select: { campaignId: true },
+  })
+  return rows.map((r) => r.campaignId).filter((id): id is string => id !== null)
+}
+
+/**
+ * src/outreach/materialAllowance.ts:264–298 at 26e230d — `campaignsNamingHandleRows`: the
+ * findMany with its three-armed OR, and the JS filter over the two PURE predicates.
+ */
+async function legacyCampaignsNamingHandleRows(
+  prisma: PrismaClient,
+  prospect: { handle: string; displayName?: string | null },
+  windowFloor: Date,
+): Promise<{ id: string; postedAt: Date }[]> {
+  const handle = prospect.handle
+  const candidates = await prisma.detectedCampaign.findMany({
+    where: {
+      verdict: 'CAMPAIGN',
+      postedAt: { gte: windowFloor },
+      OR: [
+        { taggedAccounts: { contains: `"${handle}"` } },
+        { caption: { contains: `@${handle}` } },
+        { brands: { not: '[]' } },
+      ],
+    },
+    select: { id: true, postedAt: true, caption: true, taggedAccounts: true, brands: true },
+  })
+  return candidates
+    .filter((c) => mentionsHandleExactly(c, handle) || brandStringsNameProspect(c.brands, prospect))
+    .map((c) => ({ id: c.id ?? '', postedAt: c.postedAt ?? new Date(0) }))
+}
+
+/** src/outreach/materialAllowance.ts:300–306 at 26e230d — `campaignsNamingHandle`. */
+async function legacyCampaignsNamingHandle(
+  prisma: PrismaClient,
+  prospect: { handle: string; displayName?: string | null },
+  windowFloor: Date,
+): Promise<number> {
+  return (await legacyCampaignsNamingHandleRows(prisma, prospect, windowFloor)).length
+}
+
+/** src/outreach/compose.ts:177–191 at 26e230d — `freshCampaignsFor`. */
+async function legacyFreshCampaignsFor(
+  prisma: PrismaClient,
+  args: { target: { handle: string; displayName?: string | null }; targetId: string; pairId: string; now: Date },
+): Promise<{ id: string; postedAt: Date }[]> {
+  const [naming, usedByThisPair, claimedForRecipient] = await Promise.all([
+    legacyCampaignsNamingHandleRows(prisma, args.target, newMaterialFloor(args.now)),
+    legacyUsedCampaignIds(prisma, args.pairId),
+    legacyClaimedCampaignIds(prisma, args.targetId),
+  ])
+  const spokenFor = new Set([...usedByThisPair, ...claimedForRecipient])
+  return naming.filter((c) => !spokenFor.has(c.id))
+}
+
+/**
+ * src/outreach/replyHalt.ts:45–47 (`replyHaltFloor`), 117–122 (`replyHaltPairFilter`) and
+ * 129–141 (`replyHaltWhere`) at 26e230d — the whole `where` an enforcer asks, as one object.
+ */
+function legacyReplyHaltWhere(args: {
+  scope: 'pair' | 'target'
+  senderId: string
+  targetId: string
+  resumeHours: number
+  now?: Date
+}): {
+  pair: { targetId: string; senderId?: string }
+  replyPostedAt: { gte: Date }
+  replyHandledAt: null
+} {
+  const now = args.now ?? new Date()
+  return {
+    pair: args.scope === 'pair' ? { senderId: args.senderId, targetId: args.targetId } : { targetId: args.targetId },
+    replyPostedAt: { gte: new Date(now.getTime() - args.resumeHours * 60 * 60 * 1000) },
+    replyHandledAt: null,
+  }
+}
+
+/** src/outreach/categories.ts:636–662 at 26e230d — `readCategoryMemberships`, minus its `cache()` wrapper. */
+async function legacyReadCategoryMemberships(prisma: PrismaClient): Promise<CategoryMemberships> {
+  const [senderRows, targetRows] = await Promise.all([
+    prisma.categorySender.findMany({
+      where: { enabled: true },
+      select: { category: { select: { slug: true } }, sender: { select: { handle: true } } },
+    }),
+    prisma.categoryTarget.findMany({
+      where: { enabled: true },
+      select: { category: { select: { slug: true } }, target: { select: { handle: true } } },
+    }),
+  ])
+  const bySenderHandle = new Map<string, string[]>()
+  for (const r of senderRows) {
+    const k = r.sender.handle.toLowerCase()
+    const list = bySenderHandle.get(k)
+    if (list) list.push(r.category.slug)
+    else bySenderHandle.set(k, [r.category.slug])
+  }
+  const byTargetHandle = new Map<string, string[]>()
+  for (const r of targetRows) {
+    const k = r.target.handle.toLowerCase()
+    const list = byTargetHandle.get(k)
+    if (list) list.push(r.category.slug)
+    else byTargetHandle.set(k, [r.category.slug])
+  }
+  return { bySenderHandle, byTargetHandle }
+}
+
+/**
+ * src/outreach/availability.ts:29–45 at 26e230d — `readSenderAvailability`, with
+ * `sessionRecorded` (src/outreach/sessionHealth.ts:148–150) inlined as its one-line predicate.
+ */
+async function legacyReadSenderAvailability(prisma: PrismaClient): Promise<Map<string, string>> {
+  const unavailable = new Map<string, string>()
+  for (const s of await prisma.senderAccount.findMany({
+    select: { id: true, handle: true, status: true, sessionPath: true, sessionInvalidAt: true },
+  })) {
+    if (s.status === 'CHALLENGED') unavailable.set(s.id, 'flagged by Instagram')
+    else if (s.status !== 'ACTIVE') unavailable.set(s.id, s.status.toLowerCase())
+    else if (s.sessionInvalidAt !== null) unavailable.set(s.id, 'logged out — needs signing in again')
+    else if (!(s.sessionPath !== null && s.sessionInvalidAt === null)) unavailable.set(s.id, 'never signed in')
+  }
+  return unavailable
+}
+
+/** src/outreach/availability.ts:62–68 at 26e230d — `eligibleFleetSenders`. */
+async function legacyEligibleFleetSenders(prisma: PrismaClient): Promise<{ id: string; handle: string }[]> {
+  const [fleet, unavailable] = await Promise.all([
+    prisma.senderAccount.findMany({ where: { fleetMember: true, status: 'ACTIVE' }, select: { id: true, handle: true } }),
+    legacyReadSenderAvailability(prisma),
+  ])
+  return fleet.filter((s) => !unavailable.has(s.id))
+}
+
+/** src/outreach/compose.ts:288–293 at 26e230d — `readWatchChannels`. */
+async function legacyReadWatchChannels(prisma: PrismaClient): Promise<{ handle: string; displayName: string | null }[]> {
+  return prisma.targetAccount.findMany({
+    where: { role: 'WATCH' },
+    select: { handle: true, displayName: true },
+  })
+}
+
+/** src/outreach/compose.ts:306–314 at 26e230d — `readPersonHandles`. */
+async function legacyReadPersonHandles(prisma: PrismaClient, handles: readonly string[]): Promise<Set<string>> {
+  const wanted = [...new Set(handles.filter((h) => h.length > 0))]
+  if (wanted.length === 0) return new Set()
+  const rows = await prisma.brandLookup.findMany({
+    where: { handle: { in: wanted }, kind: 'PERSON' },
+    select: { handle: true },
+  })
+  return new Set(rows.map((r) => r.handle))
+}
+
+/** src/outreach/cohorts.ts:241–297 at 26e230d — `readCohortStates`. */
+async function legacyReadCohortStates(prisma: PrismaClient, now: Date): Promise<CohortState[]> {
+  const senders = await prisma.senderAccount.findMany({
+    select: { handle: true, cohort: true, status: true, challengedAt: true, sessionPath: true, sessionInvalidAt: true },
+    orderBy: [{ cohort: 'asc' }, { handle: 'asc' }],
+  })
+  const firstSends = await prisma.outreachAttempt.groupBy({
+    by: ['senderId'],
+    where: { status: { in: [...DELIVERED_STATUSES] }, sentAt: { not: null } },
+    _min: { sentAt: true },
+  })
+  const senderIds = await prisma.senderAccount.findMany({ select: { id: true, handle: true } })
+  const handleById = new Map(senderIds.map((s) => [s.id, s.handle]))
+  const firstByHandle = new Map<string, Date>()
+  for (const row of firstSends) {
+    const handle = handleById.get(row.senderId)
+    if (handle && row._min.sentAt) firstByHandle.set(handle, row._min.sentAt)
+  }
+
+  const byCohort = new Map<number, CohortMember[]>()
+  for (const s of senders) {
+    const member: CohortMember = {
+      handle: s.handle,
+      cohort: s.cohort,
+      status: s.status,
+      challengedAt: s.challengedAt,
+      hasSession: s.sessionPath !== null && s.sessionInvalidAt === null,
+      firstDeliveredAt: firstByHandle.get(s.handle) ?? null,
+    }
+    byCohort.set(s.cohort, [...(byCohort.get(s.cohort) ?? []), member])
+  }
+
+  return [...byCohort.entries()]
+    .sort(([a], [b]) => a - b)
+    .map(([cohort, members]) => {
+      const delivered = members.map((m) => m.firstDeliveredAt).filter((d): d is Date => d !== null)
+      const soakStartedAt = delivered.length > 0 ? new Date(Math.min(...delivered.map((d) => d.getTime()))) : null
+      return {
+        cohort,
+        members,
+        live: members.filter((m) => m.hasSession && m.status === 'ACTIVE').length,
+        everChallenged: members.filter((m) => m.challengedAt !== null || m.status === 'CHALLENGED').length,
+        soakStartedAt,
+        soakDays: soakStartedAt === null ? 0 : (now.getTime() - soakStartedAt.getTime()) / 86_400_000,
+      }
+    })
+}
+
+/** src/outreach/cohorts.ts:319–323 at 26e230d — `cohortSoakDays`. */
+async function legacyCohortSoakDays(prisma: PrismaClient): Promise<number> {
+  const row = await prisma.setting.findUnique({ where: { key: 'cohortSoakDays' } })
+  const n = Number(row?.value)
+  return Number.isFinite(n) && n >= 0 ? n : DEFAULT_COHORT_SOAK_DAYS
+}
+
+/** src/outreach/cohorts.ts:308–316 at 26e230d — `mayArmAccount`, calling the PURE `mayArmCohort`. */
+async function legacyMayArmAccount(prisma: PrismaClient, handle: string, now: Date): Promise<LadderVerdict> {
+  const [sender, states, soakDays] = await Promise.all([
+    prisma.senderAccount.findUnique({ where: { handle }, select: { cohort: true } }),
+    legacyReadCohortStates(prisma, now),
+    legacyCohortSoakDays(prisma),
+  ])
+  if (!sender) return { ok: false, reason: 'previous-cohort-not-live', detail: `no sender @${handle}` }
+  return mayArmCohort({ cohort: sender.cohort, states, soakDays, now })
+}
+
+// ── the planner ───────────────────────────────────────────────────────────────
 
 /** The pair shape the planner iterates: `outreachPair.findMany({ include: { sender, target } })`. */
 export interface LegacyPair {
@@ -88,7 +346,7 @@ export interface LegacyRunContext {
   personHandles: Set<string>
 }
 
-/** plan.ts lines ~200–466: everything read ONCE per run before the per-pair loop. */
+/** plan.ts lines ~183–466 at 26e230d: everything read ONCE per run before the per-pair loop. */
 export async function legacyRunContext(
   prisma: PrismaClient,
   _settings: RuntimeSettings,
@@ -99,8 +357,11 @@ export async function legacyRunContext(
     where: { status: { in: [...IN_FLIGHT_STATUSES] } },
   })
 
-  const watchChannels = await readWatchChannels()
-  const personHandles = await readPersonHandles(pairs.map((p) => p.target.handle))
+  const watchChannels = await legacyReadWatchChannels(prisma)
+  const personHandles = await legacyReadPersonHandles(
+    prisma,
+    pairs.map((p) => p.target.handle),
+  )
 
   const everRepliedTargetIds = new Set(
     (
@@ -112,8 +373,8 @@ export async function legacyRunContext(
     ).map((r) => r.targetId),
   )
 
-  const memberships = await readCategoryMemberships()
-  const eligibleFleet = await eligibleFleetSenders()
+  const memberships = await legacyReadCategoryMemberships(prisma)
+  const eligibleFleet = await legacyEligibleFleetSenders(prisma)
 
   const deliveredBodiesByPair = new Map<string, string[]>()
   for (const row of await prisma.outreachAttempt.findMany({
@@ -146,7 +407,7 @@ export async function legacyRunContext(
   }
 }
 
-/** plan.ts lines ~484–700: the per-pair Promise.all and the GovernorInput it assembles. */
+/** plan.ts lines ~484–700 at 26e230d: the per-pair Promise.all and the GovernorInput it assembles. */
 export async function legacyPairFacts(
   prisma: PrismaClient,
   pair: LegacyPair,
@@ -178,7 +439,7 @@ export async function legacyPairFacts(
         where: { pairId: pair.id, status: { in: [...DELIVERED_STATUSES] } },
       }),
       prisma.outreachAttempt.findFirst({
-        where: replyHaltWhere({
+        where: legacyReplyHaltWhere({
           scope: settings.replyHaltScope,
           senderId: pair.senderId,
           targetId: pair.targetId,
@@ -214,8 +475,8 @@ export async function legacyPairFacts(
         },
         select: { failureCode: true, queuedAt: true, pair: { select: { senderId: true } } },
       }),
-      freshCampaignsFor({ target: pair.target, targetId: pair.targetId, pairId: pair.id, now }),
-      campaignsNamingHandle(prisma, { handle: pair.target.handle, displayName: pair.target.displayName }, windowFloor),
+      legacyFreshCampaignsFor(prisma, { target: pair.target, targetId: pair.targetId, pairId: pair.id, now }),
+      legacyCampaignsNamingHandle(prisma, { handle: pair.target.handle, displayName: pair.target.displayName }, windowFloor),
       prisma.outreachAttempt.count({
         where: {
           pair: { targetId: pair.targetId },
@@ -298,7 +559,9 @@ export async function legacyPairFacts(
   }
 }
 
-/** gate.ts lines ~814–939: `recheckBeforeSend`'s Promise.all and the ResendInput it assembles. */
+// ── the gate ──────────────────────────────────────────────────────────────────
+
+/** gate.ts lines ~814–939 at 26e230d: `recheckBeforeSend`'s Promise.all and the ResendInput it assembles. */
 export async function legacySendFacts(
   attempt: ResendAttempt,
   opts: { unattended: boolean; overrides?: readonly string[] },
@@ -313,7 +576,7 @@ export async function legacySendFacts(
   const [replied, pairToday, ringDeliveries, eligibleFleet, ladder, senderRow, parked, targetCampaigns, targetDelivered, memberships, thisDraft, deliveredRows, everRepliedCount] =
     await Promise.all([
       prisma.outreachAttempt.findFirst({
-        where: replyHaltWhere({
+        where: legacyReplyHaltWhere({
           scope: settings.replyHaltScope,
           senderId,
           targetId,
@@ -334,8 +597,10 @@ export async function legacySendFacts(
         orderBy: { sentAt: 'asc' },
         select: { sentAt: true, pair: { select: { senderId: true, sender: { select: { handle: true } } } } },
       }),
-      eligibleFleetSenders(),
-      opts.unattended ? mayArmAccount(sender.handle) : Promise.resolve({ ok: true as const, reason: 'baseline' as const }),
+      legacyEligibleFleetSenders(prisma),
+      opts.unattended
+        ? legacyMayArmAccount(prisma, sender.handle, new Date())
+        : Promise.resolve({ ok: true as const, reason: 'baseline' as const }),
       prisma.senderAccount.findUnique({
         where: { id: senderId },
         select: { sessionInvalidAt: true },
@@ -350,7 +615,7 @@ export async function legacySendFacts(
         },
         select: { failureCode: true, queuedAt: true, pair: { select: { senderId: true } } },
       }),
-      campaignsNamingHandle(prisma, { handle: target.handle, displayName: target.displayName }, materialWindowFloor),
+      legacyCampaignsNamingHandle(prisma, { handle: target.handle, displayName: target.displayName }, materialWindowFloor),
       prisma.outreachAttempt.count({
         where: {
           pair: { targetId },
@@ -359,7 +624,7 @@ export async function legacySendFacts(
           id: { not: attempt.id },
         },
       }),
-      readCategoryMemberships(),
+      legacyReadCategoryMemberships(prisma),
       prisma.outreachAttempt.findUnique({ where: { id: attempt.id }, select: { renderedBody: true, touchNumber: true } }),
       prisma.outreachAttempt.findMany({
         where: { senderId, targetId, status: { in: [...DELIVERED_STATUSES] }, id: { not: attempt.id } },

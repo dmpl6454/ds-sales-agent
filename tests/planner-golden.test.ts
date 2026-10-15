@@ -52,18 +52,53 @@ import {
  *   src/outreach/replyHalt.ts       the pair-scoped seven-day halt, dated / expired / undated
  *
  * THIS FILE GOES RED THE MOMENT ANY PAIR'S OUTCOME CHANGES — eligibility, reason, detail
- * sentence, status or touch number. Regenerate only DELIBERATELY —
+ * sentence, status, touch number, the claimed post, or THE BYTES WRITTEN. Every draft's
+ * `body`, `hookLine` and `bodyKind` are in the fixture, because the composer's two largest
+ * decisions — introduction or follow-up, and which fleet's copy — are invisible to a status and a
+ * touch number: society→maybelline is `{READY, touch 1, c_MB2}` whether it carries the follow-up
+ * (a recipient who has replied is never sent the introduction, H5) or the standard message, and
+ * only the body tells them apart. Regenerate only DELIBERATELY —
  * `REGENERATE_PLANNER_GOLDEN=1 pnpm exec vitest run tests/planner-golden.test.ts` — and read
  * the fixture diff before committing it. The `queryCount` in the fixture is RECORDED and never
  * asserted: it is the baseline Stage 3 measures its loader against, and a number that must not
  * rise, not a number that must not change.
  *
- * What would fail it, concretely: `splitParks` starting to pass `unreadable` to the governor
- * (two pairs flip from rotation reasons to `parked-failure-unsettled`); `crossSpacingVerdict`
- * counting a page outside the recipient's fleet (hdfcbank stops resting); the H5 sweep being
- * dropped (society→maybelline reports `pending-attempt-exists`); `freshCampaignsFor` forgetting
- * the SKIPPED exclusion (zee5's chronicle pair loses a fresh post); the brand cap counting this
- * run's drafts differently (the later first touches flip between written and capped).
+ * What would fail it, concretely — EACH of these was applied to the production code by hand,
+ * run against the fixture, seen red and restored before being written here. (The first version
+ * of this list carried two that did not fail it: "`splitParks` passing `unreadable`" — the parks
+ * query already excludes it, so the pure function never sees one — and "`freshCampaignsFor`
+ * forgetting the SKIPPED exclusion" — zee5 was resting on the ring rule, which masked the ledger.)
+ *   - the parks query in plan.ts dropping its `notIn: ['unreadable']` filter AND `splitParks`
+ *     passing `unreadable` (chronicle→parked_unreadable flips from a rotation reason to
+ *     `parked-failure-unsettled`; either half alone changes nothing, because each filters it);
+ *   - `crossSpacingVerdict` counting a page outside the recipient's fleet (hdfcbank stops
+ *     resting and reads `no-follow-up-message-written`);
+ *   - the H5 sweep being dropped (society→maybelline reports `pending-attempt-exists`);
+ *   - `claimedCampaignIds` counting SKIPPED as a claim (society→zee5 claims c_Z4, not the
+ *     released c_Z3), or the recipient-wide ledger dropped (it claims c_Z1, chronicle's own);
+ *   - a loader that stops seeing drafts written EARLIER IN THE SAME PASS — simulated by dropping
+ *     READY/QUEUED from `claimedCampaignIds`' status set (society→dabur and society→boroplus flip
+ *     from `no-new-material-to-reference` to `not-this-senders-turn`);
+ *   - the brand cap not counting this run's own drafts (`brandFirstTouchesThisRun` dropped: the
+ *     four `zz_cap_*` fillers are written instead of refused);
+ *   - `composeForPair` no longer told `targetHasEverReplied` (society→maybelline's `bodyKind`
+ *     flips from `follow-up` to `standard` — an introduction to a company already talking to us);
+ *   - `parkBlocksRoute` resting an `unreadable` route forever again (allunreadable_old flips from
+ *     a written first touch to `all-unavailable`);
+ *   - the brand-string arm of `campaignsNamingHandleRows` removed (5 outcomes move:
+ *     society→brandfunded flips from a written first touch to `material-exhausted`,
+ *     chronicle→primevideoin from a written follow-up to `no-new-material-to-reference`,
+ *     chronicle→brandfunded from `no-post-we-can-describe` to `material-exhausted`, myntra's
+ *     first touch claims nothing instead of c_MY1, and the first cap filler is written in the
+ *     freed slot); its exact-name test loosened to a prefix (4 move: society→brandnearmiss is
+ *     written claiming c_BN2, chronicle→brandnearmiss passes to `not-this-senders-turn`, myntra
+ *     claims the newer c_MY2, and titan is pushed over the cap by the extra first touch); or —
+ *     the Stage 3 shape — the ALLOWANCE count alone dropping the arm while the claim keeps it
+ *     (3 move: both brandfunded pairs read `material-exhausted` and a filler is written; myntra
+ *     and primevideoin do NOT move, which is why neither could catch this). myntra alone catches
+ *     only the first two, and only through the claim: with no delivery its allowance is
+ *     `max(1, …)` = 1 whatever the arm counts, and a first touch is exempt from the new-material
+ *     stops, so no funding there ever depended on a brand-only post.
  *
  * ── NOTHING REACHES THE NETWORK ────────────────────────────────────────────
  *
@@ -134,7 +169,7 @@ process.env.AUTOPILOT_ENABLED = 'false'
 process.env.SEND_ENABLED = 'true'
 process.env.DETECTION_CUTOFF = ''
 
-await openOutreachDb('planner-golden')
+const db = await openOutreachDb('planner-golden')
 
 /** 12:00 IST on 15 October 2026. Every seeded date is relative to this, and the clock is frozen on it. */
 const ANCHOR = new Date('2026-10-15T06:30:00.000Z')
@@ -145,14 +180,17 @@ const { runOutreach, ensureFleetPairs } = await import('@/outreach/plan')
 const { evaluatePair, SKIP_REASONS } = await import('@/outreach/governor')
 const { recheckBeforeSend, evaluateResend } = await import('@/outreach/gate')
 const { getSettings } = await import('@/lib/settings')
-const { SINGLE_TEMPLATE_MIDDLE } = await import('@/outreach/fleetTemplate')
+const { SINGLE_TEMPLATE_MIDDLE, isStandardMessageBody } = await import('@/outreach/fleetTemplate')
 const { renderFollowUp, followUpPostReference } = await import('@/outreach/followUpTemplate')
 const { BRAND_BLOCKS } = await import('@/outreach/brandGuards')
 const { FAILURE_CODES } = await import('@/lib/constants')
 const { legacyRunContext, legacyPairFacts, legacySendFacts } = await import('./helpers/legacy-facts')
 
-afterAll(() => {
+afterAll(async () => {
   vi.useRealTimers()
+  /* The client holds the SQLite file open; disconnect, then remove the directory. Six leaked
+     `/tmp/ds-planner-golden-*` directories were the review's finding against the first version. */
+  await db.close(prisma)
 })
 
 const h = (hours: number) => new Date(ANCHOR.getTime() - hours * 3_600_000)
@@ -160,6 +198,21 @@ const d = (days: number) => h(days * 24)
 
 const FOLLOW_UP_BODY = `Hi,Following up on {{post}} — we can put the same campaign in front of a much larger audience. Let's talk tomorrow.`
 const MARKETING_TEMPLATE = `Hi,We’re the Mad About Marketing network, reaching 300M+ marketers and buyers every day across our pages. Let’s connect - +916000189766 - Kapil`
+
+/**
+ * THE NEW-BRAND QUEUE CAP, sized so it meets ONLY the four `zz_cap_*` fillers (which sort last
+ * in the handle order the planner walks). It is the BRAND first touches already waiting plus the
+ * ones the required cases write, plus one: `pending_draft`'s seeded READY draft (1) and the 31
+ * first touches below (channelprospect is a CHANNEL and counts for neither side). The first
+ * filler then finds `waitingFirstTouches` at the cap and is refused, and so are the three after
+ * it — which is what pins `brandFirstTouchesThisRun` counting this run's own drafts. A required
+ * case carrying the cap is asserted AGAINST below: the first version set the cap at 20, in the
+ * middle of the order, and it swallowed eight real cases, two of them the ones meant to pin
+ * "they know us never expires" and the undated reply. Measured, not derived: a cap of 29 refused
+ * sugarcosmetics and titan, which is how the count of 30 was confirmed; society→brandfunded then
+ * made it 31, and the filler test below is what re-confirms the arithmetic on every run.
+ */
+const MAX_WAITING_NEW_BRAND_DRAFTS = 32
 
 const CHRONICLE = senderId('bollywoodchronicle')
 const SOCIETY = senderId('bollywoodsocietyy')
@@ -196,10 +249,7 @@ async function seed(): Promise<void> {
   // ── settings ─────────────────────────────────────────────────────────────
   await setSetting(prisma, 'followUpBody', FOLLOW_UP_BODY)
   await setSetting(prisma, 'templateBody:marketing', MARKETING_TEMPLATE)
-  /* Small enough that this run's own first touches reach it near the END of the handle order:
-     most eligible pairs are written (their touch numbers and claims are pinned), and the last
-     few meet the cap, which pins `brandFirstTouchesThisRun` counting this run's own drafts. */
-  await setSetting(prisma, 'maxWaitingNewBrandDrafts', '20')
+  await setSetting(prisma, 'maxWaitingNewBrandDrafts', String(MAX_WAITING_NEW_BRAND_DRAFTS))
 
   // ── bollywood recipients (no membership = the default fleet) ─────────────
   await seedTarget(prisma, { handle: 'crocsindia', displayName: 'Crocs India' })
@@ -232,6 +282,72 @@ async function seed(): Promise<void> {
   await seedPost(prisma, { shortcode: 'B2', channelId: WATCH, postedAt: d(2), caption: 'again with @boat.nirvana', brands: JSON.stringify(['boAt Airdopes']) })
   await seedPair(prisma, CHRONICLE, targetId('boat.nirvana'))
   await seedDelivery(prisma, { pairId: pairId(CHRONICLE, targetId('boat.nirvana')), sentAt: d(10), touchNumber: 1, body: SINGLE_TEMPLATE_MIDDLE, campaignId: 'c_B1' })
+
+  /* BOTH pages wrote outside the window, society last, and a fresh describable post names them:
+     the ring wraps to chronicle, which writes its SECOND message — the one touch-2 follow-up in
+     this scenario (`pickFollowUpHook`, `renderFollowUp` with a subject, the claim it names).
+     society's pair is evaluated after that draft exists and finds the post claimed. */
+  await seedTarget(prisma, { handle: 'boroplus', displayName: 'BoroPlus' })
+  await seedPost(prisma, { shortcode: 'BP1', channelId: WATCH, postedAt: h(12), caption: 'with @boroplus', brands: JSON.stringify(['BoroPlus Cream']) })
+  await seedPair(prisma, CHRONICLE, targetId('boroplus'))
+  await seedPair(prisma, SOCIETY, targetId('boroplus'))
+  await seedDelivery(prisma, { pairId: pairId(CHRONICLE, targetId('boroplus')), sentAt: d(20), touchNumber: 1, body: SINGLE_TEMPLATE_MIDDLE })
+  await seedDelivery(prisma, { pairId: pairId(SOCIETY, targetId('boroplus')), sentAt: d(10), touchNumber: 1, body: SINGLE_TEMPLATE_MIDDLE })
+
+  /* THE IN-RUN DEPENDENCY. society wrote outside the window, so chronicle is next and writes a
+     FIRST touch claiming the only post; society's pair is evaluated AFTER that draft exists and
+     reads `no-new-material-to-reference`. A loader that preloaded every pair's fresh posts once,
+     at the top of the pass, would let society reach rotation and read `not-this-senders-turn`.
+     The oracle test below replays the run's drafts in pair order for the same reason. */
+  await seedTarget(prisma, { handle: 'dabur', displayName: 'Dabur' })
+  await seedPost(prisma, { shortcode: 'D1', channelId: WATCH, postedAt: h(10), caption: 'with @dabur', brands: JSON.stringify(['Dabur Red']) })
+  await seedPair(prisma, SOCIETY, targetId('dabur'))
+  await seedDelivery(prisma, { pairId: pairId(SOCIETY, targetId('dabur')), sentAt: d(9), touchNumber: 1, body: SINGLE_TEMPLATE_MIDDLE })
+
+  /* Named ONLY by a brand string — no tag, no @mention — so the first touch's claim comes from
+     the brand-string arm of `campaignsNamingHandleRows`. MY2 is the near-miss, and the NEWER
+     post: a brand string that merely begins with their name is not their name, and the claim
+     must land on MY1. */
+  await seedTarget(prisma, { handle: 'myntra', displayName: 'Myntra' })
+  await seedPost(prisma, { shortcode: 'MY1', channelId: WATCH, postedAt: h(9), caption: 'fashion week round-up', brands: JSON.stringify(['Myntra']) })
+  await seedPost(prisma, { shortcode: 'MY2', channelId: WATCH, postedAt: h(8), caption: 'street style edit', brands: JSON.stringify(['Myntra Fashion Week Special']) })
+
+  /* FUNDED BY A BRAND STRING — what myntra cannot show. chronicle delivered INSIDE the window
+     claiming the tagged post, so the recipient's allowance is spent unless a second post names
+     them, and the only other post names them by brand string alone (exact equality with their
+     own name — the first of the arm's two matches). With the arm the allowance is 2 against 1
+     delivered and the next page, society, writes a first touch that claims the brand-only post;
+     without it the allowance is 1 and society reads `material-exhausted`. chronicle's own pair
+     passes the allowance too and stops one rule later — a follow-up cannot SPEAK a recipient's
+     own name as its subject (`followUpSubject`'s partition), so it reads
+     `no-post-we-can-describe` rather than `material-exhausted`. */
+  await seedTarget(prisma, { handle: 'brandfunded', displayName: 'Brand Funded' })
+  await seedPost(prisma, { shortcode: 'BF1', channelId: WATCH, postedAt: d(3.5), caption: 'with @brandfunded' })
+  await seedPost(prisma, { shortcode: 'BF2', channelId: WATCH, postedAt: h(9), caption: 'festive edit', brands: JSON.stringify(['Brand Funded']) })
+  await seedPair(prisma, CHRONICLE, targetId('brandfunded'))
+  await seedDelivery(prisma, { pairId: pairId(CHRONICLE, targetId('brandfunded')), sentAt: d(3), touchNumber: 1, body: SINGLE_TEMPLATE_MIDDLE, campaignId: 'c_BF1' })
+
+  /* THE NEAR-MISS TWIN: identical, except the brand string merely BEGINS with their name. The
+     exact-name test refuses it, the allowance stays 1 against 1 delivered, and BOTH pages read
+     `material-exhausted` — a prefix test would fund society's message here. */
+  await seedTarget(prisma, { handle: 'brandnearmiss', displayName: 'Brand Near Miss' })
+  await seedPost(prisma, { shortcode: 'BN1', channelId: WATCH, postedAt: d(3.5), caption: 'with @brandnearmiss' })
+  await seedPost(prisma, { shortcode: 'BN2', channelId: WATCH, postedAt: h(9), caption: 'festive edit', brands: JSON.stringify(['Brand Near Miss Fashion Week Special']) })
+  await seedPair(prisma, CHRONICLE, targetId('brandnearmiss'))
+  await seedDelivery(prisma, { pairId: pairId(CHRONICLE, targetId('brandnearmiss')), sentAt: d(3), touchNumber: 1, body: SINGLE_TEMPLATE_MIDDLE, campaignId: 'c_BN1' })
+
+  /* A FOLLOW-UP whose only fresh post is brand-only. Both pages wrote OUTSIDE the window, society
+     last, so the ring wraps to chronicle; the one post naming them carries "Prime Video" — the
+     prospect's name less its regional suffix, which the arm's SECOND match credits (the
+     @primevideoin measurement of 2026-08-23) and `followUpSubject`'s stem arm can speak. chronicle
+     writes its second message naming it; society then finds the post claimed. Without the arm
+     `freshCampaignsFor` is empty for both and chronicle reads `no-new-material-to-reference`. */
+  await seedTarget(prisma, { handle: 'primevideoin', displayName: 'Prime Video India' })
+  await seedPost(prisma, { shortcode: 'PV1', channelId: WATCH, postedAt: h(9), caption: 'streaming this weekend', brands: JSON.stringify(['Prime Video']) })
+  await seedPair(prisma, CHRONICLE, targetId('primevideoin'))
+  await seedPair(prisma, SOCIETY, targetId('primevideoin'))
+  await seedDelivery(prisma, { pairId: pairId(CHRONICLE, targetId('primevideoin')), sentAt: d(20), touchNumber: 1, body: SINGLE_TEMPLATE_MIDDLE })
+  await seedDelivery(prisma, { pairId: pairId(SOCIETY, targetId('primevideoin')), sentAt: d(10), touchNumber: 1, body: SINGLE_TEMPLATE_MIDDLE })
 
   /* A DATED reply inside the halt on chronicle's pair; society holds a waiting INTRODUCTION
      the H5 sweep must discard before it is counted as pending. */
@@ -271,8 +387,12 @@ async function seed(): Promise<void> {
     await seedPark(prisma, { pairId: pairId(CHRONICLE, targetId(handle)), failureCode: code, queuedAt: at })
   }
 
-  /* The claim ledger: Z1 claimed by this pair, Z2 by the other page, Z3 by a DISCARDED draft
-     (released), Z4 unclaimed — and both pages delivered inside the window: ring-complete. */
+  /* THE CLAIM LEDGER, pinned by a WRITE: Z1 claimed by chronicle's delivery, Z2 by society's own
+     (eight days old, so society's route is open and it is next after chronicle), Z3 by a
+     DISCARDED draft — released, because SKIPPED is not in flight — and Z4 unclaimed but older.
+     society's follow-up must claim Z3: Z4 if a SKIPPED draft still held its claim, Z1 if the
+     ledger shrank back to this pair's own claims. (The first version delivered both pages inside
+     the week, so the ring rule fired first and no outcome depended on the ledger at all.) */
   await seedTarget(prisma, { handle: 'zee5', displayName: 'ZEE5' })
   for (const [code, hours] of [['Z1', 10], ['Z2', 20], ['Z3', 30], ['Z4', 40]] as const) {
     await seedPost(prisma, { shortcode: code, channelId: WATCH, postedAt: h(hours), caption: `streaming on @zee5`, brands: JSON.stringify(['ZEE5 Originals']) })
@@ -280,8 +400,20 @@ async function seed(): Promise<void> {
   await seedPair(prisma, CHRONICLE, targetId('zee5'))
   await seedPair(prisma, SOCIETY, targetId('zee5'))
   await seedDelivery(prisma, { pairId: pairId(CHRONICLE, targetId('zee5')), sentAt: d(1), touchNumber: 1, body: SINGLE_TEMPLATE_MIDDLE, campaignId: 'c_Z1' })
-  await seedDelivery(prisma, { pairId: pairId(SOCIETY, targetId('zee5')), sentAt: d(1.5), touchNumber: 1, body: SINGLE_TEMPLATE_MIDDLE, campaignId: 'c_Z2' })
+  await seedDelivery(prisma, { pairId: pairId(SOCIETY, targetId('zee5')), sentAt: d(8), touchNumber: 1, body: SINGLE_TEMPLATE_MIDDLE, campaignId: 'c_Z2' })
   await seedDraft(prisma, { pairId: pairId(CHRONICLE, targetId('zee5')), status: 'SKIPPED', touchNumber: 2, body: 'a discarded follow-up', campaignId: 'c_Z3', queuedAt: h(20) })
+
+  /* Both bollywood pages delivered INSIDE the week, one claim each, and a third post unclaimed and
+     describable: every stop before the ring rule passes, so what both pairs record is the
+     seven-day rest and the day it lifts. */
+  await seedTarget(prisma, { handle: 'ringcomplete', displayName: 'Ring Complete' })
+  await seedPost(prisma, { shortcode: 'R1', channelId: WATCH, postedAt: d(3.5), caption: 'with @ringcomplete' })
+  await seedPost(prisma, { shortcode: 'R2', channelId: WATCH, postedAt: d(2.5), caption: 'again @ringcomplete' })
+  await seedPost(prisma, { shortcode: 'R3', channelId: WATCH, postedAt: h(10), caption: 'and @ringcomplete', brands: JSON.stringify(['Ring Complete Deluxe']) })
+  await seedPair(prisma, CHRONICLE, targetId('ringcomplete'))
+  await seedPair(prisma, SOCIETY, targetId('ringcomplete'))
+  await seedDelivery(prisma, { pairId: pairId(CHRONICLE, targetId('ringcomplete')), sentAt: d(3), touchNumber: 1, body: SINGLE_TEMPLATE_MIDDLE, campaignId: 'c_R1' })
+  await seedDelivery(prisma, { pairId: pairId(SOCIETY, targetId('ringcomplete')), sentAt: d(2), touchNumber: 1, body: SINGLE_TEMPLATE_MIDDLE, campaignId: 'c_R2' })
 
   await seedTarget(prisma, { handle: 'unverified_null', displayName: 'Never Looked', isVerified: null })
   await seedTarget(prisma, { handle: 'fanpage_unverified', displayName: 'Fan Page', isVerified: false })
@@ -345,6 +477,16 @@ async function seed(): Promise<void> {
   await seedPark(prisma, { pairId: pairId(CHRONICLE, targetId('allunreadable')), failureCode: 'unreadable', queuedAt: d(1) })
   await seedPark(prisma, { pairId: pairId(SOCIETY, targetId('allunreadable')), failureCode: 'unreadable', queuedAt: d(2) })
 
+  /* The same two parks, both OLDER than a week: `parkBlocksRoute` rests an unreadable route for
+     `UNREADABLE_RECHECK_DAYS` only, so a page is elected here and writes. The inside-the-week
+     twin above reads `all-unavailable`; the two must DIFFER, or the window is not pinned and the
+     permanent block (the regression parkedRows.ts records) would pass. */
+  await seedTarget(prisma, { handle: 'allunreadable_old', displayName: 'All Unreadable Old' })
+  await seedPair(prisma, CHRONICLE, targetId('allunreadable_old'))
+  await seedPair(prisma, SOCIETY, targetId('allunreadable_old'))
+  await seedPark(prisma, { pairId: pairId(CHRONICLE, targetId('allunreadable_old')), failureCode: 'unreadable', queuedAt: d(8) })
+  await seedPark(prisma, { pairId: pairId(SOCIETY, targetId('allunreadable_old')), failureCode: 'unreadable', queuedAt: d(9) })
+
   /* A CHANNEL-kind prospect: neither brand guard applies to it. */
   await seedTarget(prisma, { handle: 'channelprospect', displayName: 'Channel Prospect', kind: 'CHANNEL' })
   await seedPost(prisma, { shortcode: 'CP', channelId: WATCH, postedAt: h(9), caption: 'collab', taggedAccounts: tagged('channelprospect') })
@@ -374,6 +516,14 @@ async function seed(): Promise<void> {
     targets: [targetId('amazonindia'), targetId('hdfcbank'), targetId('zomato'), targetId('tatacliq')],
   })
   await seedCategory(prisma, 'lifestyle', { senders: [MADABOUT], targets: [targetId('ikeaindia'), targetId('tatacliq')] })
+
+  // ── the new-brand queue cap: fillers that sort LAST, so the cap meets only them ──
+  /* No posts: the `max(1, …)` allowance floor lets each first touch through to rotation, the
+     elected page meets the cap, and the other reads `not-this-senders-turn`. See
+     `MAX_WAITING_NEW_BRAND_DRAFTS` for the arithmetic. */
+  for (const n of [1, 2, 3, 4]) {
+    await seedTarget(prisma, { handle: `zz_cap_0${n}`, displayName: `Cap Filler ${n}` })
+  }
 }
 
 const GOLDEN_PATH = join(__dirname, 'fixtures', 'planner-golden.json')
@@ -386,6 +536,15 @@ interface PairOutcome {
   status?: string
   touchNumber?: number
   claimedCampaign?: string | null
+  /** The bytes written, verbatim. Twenty-odd drafts of one line each; the diff is the review. */
+  body?: string
+  hookLine?: string | null
+  /**
+   * `standard` when the body is one of the fleet's standard messages by the gate's own predicate
+   * (`isStandardMessageBody`), else `follow-up`. A label beside the bytes so a fixture diff reads
+   * at a glance which decision moved; the body is what is compared.
+   */
+  bodyKind?: 'standard' | 'follow-up'
   error?: string
 }
 interface PlannerGolden {
@@ -407,6 +566,7 @@ const POST_GOVERNOR_REASONS = new Set<string>(['not-this-senders-turn', 'empty-r
 
 await seed()
 const { result: summary, queries } = await countQueries(() => runOutreach())
+const settingsAfterRun = await getSettings()
 
 const outcomes: Record<string, PairOutcome> = {}
 for (const o of summary.outcomes) {
@@ -417,11 +577,14 @@ for (const o of summary.outcomes) {
   if (o.attemptId !== undefined) {
     const a = await prisma.outreachAttempt.findUniqueOrThrow({
       where: { id: o.attemptId },
-      select: { status: true, touchNumber: true, campaignId: true },
+      select: { status: true, touchNumber: true, campaignId: true, renderedBody: true, hookLine: true },
     })
     entry.status = a.status
     entry.touchNumber = a.touchNumber
     entry.claimedCampaign = a.campaignId
+    entry.body = a.renderedBody
+    entry.hookLine = a.hookLine
+    entry.bodyKind = isStandardMessageBody(a.renderedBody, settingsAfterRun) ? 'standard' : 'follow-up'
   }
   outcomes[o.pairKey] = entry
 }
@@ -447,12 +610,102 @@ describe('the scenario reaches what it was built to reach', () => {
     expect(reasons.has(BRAND_BLOCKS.RECIPIENT_IS_A_PERSON)).toBe(true)
     expect(reasons.has(BRAND_BLOCKS.NEW_BRAND_DAILY_CAP)).toBe(true)
     expect(Object.values(outcomes).some((o) => o.eligible && o.status === 'READY')).toBe(true)
+    /* A SECOND message on an existing conversation is written somewhere — the composer's
+       follow-up path is exercised as a write, not only predicted by the governor. */
+    expect(Object.values(outcomes).some((o) => o.status === 'READY' && (o.touchNumber ?? 0) >= 2)).toBe(true)
     expect(Object.values(outcomes).some((o) => o.error !== undefined)).toBe(false)
   })
 
   it('never lists the burner, and the swept introduction left society free to write', () => {
     expect(Object.keys(outcomes).some((k) => k.startsWith('tabishmukaddam1→'))).toBe(false)
     expect(outcomes['bollywoodsocietyy→maybelline']?.skipReason).not.toBe(SKIP_REASONS.PENDING_ATTEMPT)
+  })
+})
+
+/**
+ * THE CASES THE REVIEW ASKED FOR, each pinned BY NAME beside the fixture. The fixture pins every
+ * outcome byte for byte; these say in prose which outcome carries which rule, so a regeneration
+ * that moved one of them is caught by a sentence and not only by a diff line.
+ */
+describe('the cases the review asked for, pinned by name', () => {
+  const readyTo = (handle: string) =>
+    Object.entries(outcomes).filter(([k, o]) => k.endsWith(`→${handle}`) && o.status === 'READY')
+
+  it('writes the follow-up to a recipient who already replied, and each fleet its own standard message', () => {
+    /* society has never written to maybelline (touch 1), but maybelline answered chronicle —
+       `isFollowUp` with `targetHasEverReplied`, so the bytes are the follow-up naming MB2. */
+    const maybelline = outcomes['bollywoodsocietyy→maybelline']!
+    expect(maybelline).toMatchObject({ status: 'READY', touchNumber: 1, claimedCampaign: 'c_MB2', bodyKind: 'follow-up', hookLine: null })
+    expect(maybelline.body).toBe(renderFollowUp(FOLLOW_UP_BODY, followUpPostReference({ postedAt: h(8), subject: 'Maybelline Fit Me' })))
+    expect(outcomes['madaboutmarketingg→amazonindia']).toMatchObject({ status: 'READY', bodyKind: 'standard', body: MARKETING_TEMPLATE.trim() })
+    expect(outcomes['bollywoodchronicle→nykaa']).toMatchObject({ status: 'READY', bodyKind: 'standard', body: SINGLE_TEMPLATE_MIDDLE.trim() })
+  })
+
+  it('writes a second message on an existing conversation (boroplus), and the other page then finds the post claimed', () => {
+    const chronicle = outcomes['bollywoodchronicle→boroplus']!
+    expect(chronicle).toMatchObject({ status: 'READY', touchNumber: 2, claimedCampaign: 'c_BP1', bodyKind: 'follow-up' })
+    expect(chronicle.body).toBe(renderFollowUp(FOLLOW_UP_BODY, followUpPostReference({ postedAt: h(12), subject: 'BoroPlus Cream' })))
+    expect(outcomes['bollywoodsocietyy→boroplus']?.skipReason).toBe(SKIP_REASONS.NO_NEW_MATERIAL)
+  })
+
+  it('a draft written earlier in the same pass is a claim the next pair sees (dabur)', () => {
+    expect(outcomes['bollywoodchronicle→dabur']).toMatchObject({ status: 'READY', touchNumber: 1, claimedCampaign: 'c_D1', bodyKind: 'standard' })
+    expect(outcomes['bollywoodsocietyy→dabur']?.skipReason).toBe(SKIP_REASONS.NO_NEW_MATERIAL)
+  })
+
+  it('the claim ledger: a SKIPPED draft releases its post and another page’s delivery holds its own (zee5)', () => {
+    expect(outcomes['bollywoodchronicle→zee5']?.skipReason).toBe('not-this-senders-turn')
+    expect(outcomes['bollywoodsocietyy→zee5']).toMatchObject({ status: 'READY', touchNumber: 2, claimedCampaign: 'c_Z3', bodyKind: 'follow-up' })
+  })
+
+  it('two pages that both wrote inside the week rest the recipient (ringcomplete)', () => {
+    for (const page of ['bollywoodchronicle', 'bollywoodsocietyy']) {
+      expect(outcomes[`${page}→ringcomplete`]?.skipReason).toBe(SKIP_REASONS.TARGET_RECENTLY_CONTACTED)
+    }
+  })
+
+  it('the queue cap meets only the fillers that sort last, never a required case', () => {
+    for (const [key, o] of Object.entries(outcomes)) {
+      if (!key.includes('→zz_cap_')) expect(o.skipReason, key).not.toBe(BRAND_BLOCKS.NEW_BRAND_DAILY_CAP)
+    }
+    for (const n of [1, 2, 3, 4]) {
+      const capped = Object.entries(outcomes).filter(([k, o]) => k.endsWith(`→zz_cap_0${n}`) && o.skipReason === BRAND_BLOCKS.NEW_BRAND_DAILY_CAP)
+      expect(capped.length, `zz_cap_0${n}`).toBe(1)
+    }
+  })
+
+  it('an unreadable park rests a route for a week, not forever', () => {
+    for (const page of ['bollywoodchronicle', 'bollywoodsocietyy']) {
+      expect(outcomes[`${page}→allunreadable`]?.skipReason).toBe('all-unavailable')
+    }
+    expect(readyTo('allunreadable_old').length).toBe(1)
+  })
+
+  it('a post naming a recipient only by brand string FUNDS the next message and is what it claims; a near-miss funds nothing (brandfunded, brandnearmiss)', () => {
+    /* FUNDING: chronicle wrote inside the window against the tagged post, so only the brand-only
+       post can raise the allowance to 2 — society's first touch exists because of it, and claims
+       it. Its sibling pair stops at the describable-subject rule, one rule PAST the allowance. */
+    expect(outcomes['bollywoodsocietyy→brandfunded']).toMatchObject({ status: 'READY', touchNumber: 1, claimedCampaign: 'c_BF2', bodyKind: 'standard' })
+    expect(outcomes['bollywoodchronicle→brandfunded']?.skipReason).toBe(SKIP_REASONS.NO_DESCRIBABLE_POST)
+    /* The twin whose brand string merely begins with their name: allowance 1, delivered 1. */
+    for (const page of ['bollywoodchronicle', 'bollywoodsocietyy']) {
+      expect(outcomes[`${page}→brandnearmiss`]?.skipReason).toBe(SKIP_REASONS.MATERIAL_EXHAUSTED)
+    }
+  })
+
+  it('a follow-up whose only fresh post is brand-only is written and names it (primevideoin)', () => {
+    const chronicle = outcomes['bollywoodchronicle→primevideoin']!
+    expect(chronicle).toMatchObject({ status: 'READY', touchNumber: 2, claimedCampaign: 'c_PV1', bodyKind: 'follow-up' })
+    expect(chronicle.body).toBe(renderFollowUp(FOLLOW_UP_BODY, followUpPostReference({ postedAt: h(9), subject: 'Prime Video' })))
+    expect(outcomes['bollywoodsocietyy→primevideoin']?.skipReason).toBe(SKIP_REASONS.NO_NEW_MATERIAL)
+  })
+
+  it('the CLAIM alone depends on the brand-string arm where nothing was delivered (myntra)', () => {
+    /* myntra has no delivery, so its allowance is `max(1, …)` = 1 whatever the arm counts, and a
+       first touch is exempt from the new-material stops: the only thing the arm decides here is
+       WHICH post is claimed — MY1, named by their exact name, over the newer near-miss MY2. */
+    const [written] = readyTo('myntra')
+    expect(written?.[1]).toMatchObject({ touchNumber: 1, claimedCampaign: 'c_MY1' })
   })
 })
 
@@ -511,12 +764,26 @@ describe('the frozen oracle (tests/helpers/legacy-facts.ts) still runs on this s
     }
   })
 
-  it('legacyPairFacts reproduces the governor verdict the planner recorded, for every fleet pair', async () => {
-    /* Put the rows back to what the governor saw: the planner's own drafts are the only thing it
-       added (the H5 sweep's SKIPPED row is exactly the state the governor read after it). */
-    await prisma.outreachAttempt.deleteMany({
-      where: { id: { in: summary.outcomes.map((o) => o.attemptId).filter((id): id is string => id !== undefined) } },
-    })
+  /**
+   * The planner re-reads each pair's facts AFTER the pairs before it have written — a draft
+   * written for chronicle→dabur is a claim society→dabur then sees. So the oracle is NOT run
+   * against one snapshot: the run's drafts are taken out, and each one is put back the moment its
+   * own pair has been evaluated, in the planner's own pair order. The comparison is the whole
+   * decision — eligibility, reason, DETAIL and, for a written draft, the touch number — because a
+   * fact that moved only a date in a sentence (`replyPostedAt` read instead of `repliedAt`, say)
+   * passed the first version, which compared the reason alone.
+   */
+  it('legacyPairFacts reproduces the verdict, detail and touch number the planner recorded, replaying its drafts in order', async () => {
+    const writtenIds = summary.outcomes.map((o) => o.attemptId).filter((id): id is string => id !== undefined)
+    const writtenRows = await prisma.outreachAttempt.findMany({ where: { id: { in: writtenIds } } })
+    const writtenByPairKey = new Map<string, (typeof writtenRows)[number]>()
+    for (const o of summary.outcomes) {
+      const row = o.attemptId === undefined ? undefined : writtenRows.find((w) => w.id === o.attemptId)
+      if (row) writtenByPairKey.set(o.pairKey, row)
+    }
+    /* Back to what the governor saw at the top of the pass: the planner's own drafts are the only
+       thing it added (the H5 sweep's SKIPPED row is exactly the state the governor read after it). */
+    await prisma.outreachAttempt.deleteMany({ where: { id: { in: writtenIds } } })
     await ensureFleetPairs()
     const settings = await getSettings()
     const pairs = await prisma.outreachPair.findMany({
@@ -527,15 +794,30 @@ describe('the frozen oracle (tests/helpers/legacy-facts.ts) still runs on this s
     expect(pairs.length).toBe(Object.keys(outcomes).length)
     const ctx = await legacyRunContext(prisma, settings, ANCHOR, pairs)
     const disagreements: string[] = []
+    let replayed = 0
     for (const pair of pairs) {
-      const facts = await legacyPairFacts(prisma, pair, settings, ANCHOR, ctx)
+      const key = `${pair.sender.handle}→${pair.target.handle}`
+      /* `totalSentEver` is the one run-level number the planner advances inside its loop. */
+      const facts = await legacyPairFacts(prisma, pair, settings, ANCHOR, { ...ctx, totalSentEver: ctx.totalSentEver + replayed })
       const decision = evaluatePair(facts)
-      const recorded = outcomes[`${pair.sender.handle}→${pair.target.handle}`]!
+      const recorded = outcomes[key]!
       const recordedGovernorOk = recorded.eligible || POST_GOVERNOR_REASONS.has(recorded.skipReason ?? '')
-      if (decision.eligible !== recordedGovernorOk || (!decision.eligible && decision.reason !== recorded.skipReason)) {
-        disagreements.push(`${pair.sender.handle}→${pair.target.handle}: oracle ${JSON.stringify(decision)} vs planner ${JSON.stringify(recorded)}`)
+      let differs: string | null = null
+      if (decision.eligible !== recordedGovernorOk) differs = 'eligibility'
+      else if (!decision.eligible && decision.reason !== recorded.skipReason) differs = 'reason'
+      else if (!decision.eligible && decision.detail !== recorded.skipDetail) differs = 'detail'
+      else if (decision.eligible && recorded.status === 'READY' && decision.touchNumber !== recorded.touchNumber) differs = 'touch number'
+      if (differs !== null) {
+        disagreements.push(`${key} (${differs}): oracle ${JSON.stringify(decision)} vs planner ${JSON.stringify(recorded)}`)
+      }
+      const row = writtenByPairKey.get(key)
+      if (row) {
+        await prisma.outreachAttempt.create({ data: row })
+        if (row.status === 'READY' || row.status === 'QUEUED') replayed += 1
       }
     }
     expect(disagreements).toEqual([])
+    /* Every draft the planner wrote went back, so the replay was the planner's own sequence. */
+    expect(replayed).toBe(summary.queued)
   })
 })

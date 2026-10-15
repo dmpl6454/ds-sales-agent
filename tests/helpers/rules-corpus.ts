@@ -75,17 +75,29 @@ import { followUpForSettings, isFollowUp, type FollowUpTemplate } from '@/outrea
  * HIGH-precision unit interval decides both whether the field deviates and to which value.
  * `tests/rules-golden.test.ts` asserts the coverage so this cannot come back silently.
  *
- * ── IDS ARE SPARSE, SO ADDING A DIMENSION CHANGES NO EXISTING ID ────────────
+ * ── IDS ARE SPARSE AND THE RANDOM FIELD LIST IS FROZEN, SO ADDING A DIMENSION CHANGES
+ *    NO EXISTING ID ────────────────────────────────────────────────────────────
  *
  * Each case carries a stable id: a hash of the fields whose value DIFFERS from the baseline,
  * keys sorted. A new dimension appended with its baseline value first therefore leaves every
- * existing id untouched, and the fixture diff after adding one shows only the NEW cases.
- * (The first version hashed every field, so a new dimension re-keyed all 2,309 cases and the
- * diff was a whole-file replacement — defeating "the diff is the review".)
+ * existing SINGLES, PAIRS, FOLLOW-UP and ATTENDED case untouched, and the fixture diff after
+ * adding one shows only the NEW cases. (The first version hashed every field, so a new
+ * dimension re-keyed all 2,309 cases and the diff was a whole-file replacement — defeating
+ * "the diff is the review".)
+ *
+ * THE RANDOM SLICE NEEDED A SECOND HALF, and the first version of this paragraph was FALSE
+ * about it (the review's finding, 2026-10-15): `randomSlice` looped over `FIELDS`, the LIVE key
+ * list, so a new dimension drew its own deviation in every existing random case and changed its
+ * facts, hence its id. MEASURED by appending a two-valued probe dimension: 155 of the
+ * 781 distinct random cases re-keyed (20%); prepending one, 174. The fields
+ * the random slice draws from are therefore a frozen literal, `RANDOM_FIELDS` (see its docblock),
+ * the generator takes its dimensions table as a parameter, and `tests/rules-golden.test.ts`
+ * generates the corpus over today's table plus a probe dimension and asserts every id survives.
  *
  * What DOES change ids, and must be done knowingly: changing a dimension's BASELINE value
  * (every case's sparse form moves), changing a dimension's LENGTH, `RANDOM_SEED`,
- * `RANDOM_CASES` or `RANDOM_DEVIATION_RATE` (the random slice redraws), and re-spelling a
+ * `RANDOM_CASES` or `RANDOM_DEVIATION_RATE` (the random slice redraws), ADDING A NAME TO
+ * `RANDOM_FIELDS` (every random case draws for it — the ~20% above), and re-spelling a
  * value. Reordering the NON-baseline values of a dimension changes which random case gets
  * which value, and nothing else.
  */
@@ -151,7 +163,15 @@ export const DIMENSIONS = {
 } as const
 
 type Dimensions = typeof DIMENSIONS
-export type RuleFacts = { [K in keyof Dimensions]: Dimensions[K][number] }
+/**
+ * A dimensions table the generator can run over: today's, or today's with dimensions APPENDED
+ * (or prepended — key order never reaches an id) — the shape a future field has, and the shape
+ * the golden test's probe takes to prove that adding one re-keys nothing. A table that drops or
+ * re-values one of today's dimensions is not a superset and the type refuses it.
+ */
+export type DimensionTable = Dimensions & Readonly<Record<string, readonly unknown[]>>
+export type FactsOf<D extends DimensionTable> = { [K in keyof D]: D[K][number] }
+export type RuleFacts = FactsOf<Dimensions>
 export type RuleCase = RuleFacts & { id: string }
 
 /**
@@ -193,22 +213,89 @@ export const RANDOM_CASES = 800
 export const RANDOM_DEVIATION_RATE = 0.22
 export const RANDOM_SEED = 'rules-corpus/2026-10-15'
 
+/**
+ * ── THE FIELDS THE RANDOM SLICE DRAWS FROM — FROZEN ───────────────────────────
+ *
+ * A LITERAL of the thirty names the slice was first generated over, NEVER `Object.keys(DIMENSIONS)`.
+ * The slice used to iterate the live key list, so a dimension added later drew its own deviation
+ * (p = `RANDOM_DEVIATION_RATE`) in every existing random case and re-keyed about a fifth of them —
+ * measured in the module docblock — while the sparse-id promise said it could not. A name added to
+ * DIMENSIONS stays at its BASELINE in every existing random case now (it is still covered by the
+ * singles and pairs slices, which only ADD cases); if it needs random coverage too, that is a NEW
+ * entry in `RANDOM_BLOCKS` with its own seed, APPENDED — never an edit to this list, which re-keys
+ * the slice exactly as the old loop did. `tests/rules-golden.test.ts` appends a probe dimension
+ * and asserts every id survives; iterating `fieldsOf(dims)` here instead of a block's frozen list
+ * is what turns that test red (applied by hand once, 2026-10-15, and restored).
+ */
+export const RANDOM_FIELDS = [
+  'senderStatus',
+  'optedOut',
+  'isVerified',
+  'touchesSoFar',
+  'targetHasEverReplied',
+  'targetRepliedAt',
+  'unusedCampaignCount',
+  'describableCampaignCount',
+  'pairSentTodayCount',
+  'maxPerPairPerDay',
+  'crossSpacing',
+  'material',
+  'hasPendingAttempt',
+  'parkedFailureCode',
+  'targetProfileGoneAt',
+  'lifetime',
+  'fleetTemplate',
+  'followUpTemplate',
+  'repeatsADeliveredBody',
+  'attemptStatus',
+  'unattended',
+  'overrides',
+  'senderCohortCleared',
+  'senderHasSession',
+  'targetIsWatchOnly',
+  'senderCategories',
+  'targetCategories',
+  'isFollowUp',
+  'introducesUsToSomeoneWhoKnowsUs',
+  'followUpCitesOnlyADate',
+] as const satisfies readonly (keyof Dimensions)[]
+
+/**
+ * The random slice is the concatenation of these blocks, each a frozen (seed, field list, case
+ * count). Today there is one. A dimension that wants random coverage gets a block of its own
+ * appended here — a different seed, so its cases are NEW ids and no existing one moves. The
+ * golden test asserts every dimension in `DIMENSIONS` is in SOME block, so a new dimension
+ * forces that decision rather than silently going without deep-interaction coverage.
+ */
+export const RANDOM_BLOCKS: readonly { seed: string; fields: readonly (keyof Dimensions)[]; cases: number }[] = [
+  { seed: RANDOM_SEED, fields: RANDOM_FIELDS, cases: RANDOM_CASES },
+]
+
 export const FIELDS = Object.keys(DIMENSIONS) as (keyof Dimensions)[]
 
-export function baselineFacts(): RuleFacts {
-  const out: Record<string, unknown> = {}
-  for (const f of FIELDS) out[f] = DIMENSIONS[f][0]
-  return out as RuleFacts
+/** The keys of any dimensions table, in declaration order. */
+export function fieldsOf(dims: DimensionTable): string[] {
+  return Object.keys(dims)
+}
+
+/** A case's facts with no type narrowing — the shape the generator works in internally. */
+type Facts = Record<string, unknown>
+
+export function baselineFacts<D extends DimensionTable = Dimensions>(dims?: D): FactsOf<D> {
+  const table: DimensionTable = dims ?? DIMENSIONS
+  const out: Facts = {}
+  for (const f of fieldsOf(table)) out[f] = table[f]![0]
+  return out as FactsOf<D>
 }
 
 /**
  * SPARSE canonical JSON: only the fields that differ from the baseline, keys sorted. The
  * baseline itself is `{}`. See the module docblock for what this makes stable.
  */
-export function canonicalJson(facts: RuleFacts): string {
-  const sparse: Record<string, unknown> = {}
-  for (const key of [...FIELDS].sort()) {
-    if (facts[key] !== DIMENSIONS[key][0]) sparse[key] = facts[key]
+export function canonicalJson(facts: Facts, dims: DimensionTable = DIMENSIONS): string {
+  const sparse: Facts = {}
+  for (const key of fieldsOf(dims).sort()) {
+    if (facts[key] !== dims[key]![0]) sparse[key] = facts[key]
   }
   return JSON.stringify(sparse)
 }
@@ -224,23 +311,23 @@ function fnv1a(s: string, offset: number): number {
 }
 
 /** FNV-1a over the canonical JSON, twice with different offsets — 16 hex chars. */
-export function caseId(facts: RuleFacts): string {
-  const s = canonicalJson(facts)
+export function caseId(facts: Facts, dims: DimensionTable = DIMENSIONS): string {
+  const s = canonicalJson(facts, dims)
   return fnv1a(s, 0x811c9dc5).toString(16).padStart(8, '0') + fnv1a(s, 0x050c5d1f).toString(16).padStart(8, '0')
 }
 
-function withId(facts: RuleFacts): RuleCase {
-  return { id: caseId(facts), ...facts }
+function withId(facts: Facts, dims: DimensionTable): Facts & { id: string } {
+  return { id: caseId(facts, dims), ...facts }
 }
 
 /**
- * A unit-interval draw for (case index, field) that depends on nothing else: FNV-1a over the
- * three names, then murmur3's `fmix32` so the LOW bits are as well mixed as the high ones —
+ * A unit-interval draw for (seed, case index, field) that depends on nothing else: FNV-1a over
+ * the three names, then murmur3's `fmix32` so the LOW bits are as well mixed as the high ones —
  * the property the old LCG lacked. Dividing by 2^32 uses every bit of the hash, so a field
  * with k values is reduced by MULTIPLYING, never by `% k`.
  */
-function unitDraw(caseIndex: number, field: string): number {
-  let h = fnv1a(`${RANDOM_SEED}:${caseIndex}:${field}`, 0x811c9dc5)
+function unitDraw(seed: string, caseIndex: number, field: string): number {
+  let h = fnv1a(`${seed}:${caseIndex}:${field}`, 0x811c9dc5)
   h ^= h >>> 16
   h = Math.imul(h, 0x85ebca6b) >>> 0
   h ^= h >>> 13
@@ -267,23 +354,23 @@ const FOLLOW_UP_FIELDS = [
 ] as const satisfies readonly (keyof Dimensions)[]
 
 /** The starting points. Exported so the golden test can pin each one by name. */
-export function followUpBaseline(): RuleFacts {
-  return { ...baselineFacts(), touchesSoFar: 1 }
+export function followUpBaseline<D extends DimensionTable = Dimensions>(dims?: D): FactsOf<D> {
+  return { ...baselineFacts(dims), touchesSoFar: 1 }
 }
 
 /** A present person and nothing else — the on-demand dialog's plain Send. */
-export function attendedBaseline(): RuleFacts {
-  return { ...baselineFacts(), unattended: false }
+export function attendedBaseline<D extends DimensionTable = Dimensions>(dims?: D): FactsOf<D> {
+  return { ...baselineFacts(dims), unattended: false }
 }
 
 /** A present person, a recent reply, and the reply halt acknowledged — the dialog's crossed Send. */
-export function attendedReplyBaseline(): RuleFacts {
-  return { ...attendedBaseline(), overrides: 'target-replied', targetRepliedAt: 'recent' }
+export function attendedReplyBaseline<D extends DimensionTable = Dimensions>(dims?: D): FactsOf<D> {
+  return { ...attendedBaseline(dims), overrides: 'target-replied', targetRepliedAt: 'recent' }
 }
 
 /** A present person sending a SECOND message — the follow-up stops, attended. */
-export function attendedFollowUpBaseline(): RuleFacts {
-  return { ...attendedBaseline(), touchesSoFar: 1 }
+export function attendedFollowUpBaseline<D extends DimensionTable = Dimensions>(dims?: D): FactsOf<D> {
+  return { ...attendedBaseline(dims), touchesSoFar: 1 }
 }
 
 /** The corpus, generated once per process. */
@@ -449,20 +536,20 @@ export function toResendInput(c: RuleFacts): ResendInput {
   }
 }
 
-export interface RuleSlices {
-  baselines: RuleFacts[]
-  singles: RuleFacts[]
-  pairs: RuleFacts[]
-  random: RuleFacts[]
-  followUp: RuleFacts[]
-  attended: RuleFacts[]
+export interface RuleSlices<D extends DimensionTable = Dimensions> {
+  baselines: FactsOf<D>[]
+  singles: FactsOf<D>[]
+  pairs: FactsOf<D>[]
+  random: FactsOf<D>[]
+  followUp: FactsOf<D>[]
+  attended: FactsOf<D>[]
 }
 
 /** Every single-field deviation from `base`, over `fields`. */
-function singlesFrom(base: RuleFacts, fields: readonly (keyof Dimensions)[]): RuleFacts[] {
-  const out: RuleFacts[] = []
+function singlesFrom(base: Facts, fields: readonly string[], dims: DimensionTable): Facts[] {
+  const out: Facts[] = []
   for (const f of fields) {
-    for (const v of DIMENSIONS[f]) {
+    for (const v of dims[f]!) {
       if (v === base[f]) continue
       out.push({ ...base, [f]: v })
     }
@@ -475,21 +562,17 @@ function singlesFrom(base: RuleFacts, fields: readonly (keyof Dimensions)[]): Ru
  * first from `left` and the second from `right`. When the two lists are the SAME list each
  * unordered pair is produced once.
  */
-function pairsFrom(
-  base: RuleFacts,
-  left: readonly (keyof Dimensions)[],
-  right: readonly (keyof Dimensions)[],
-): RuleFacts[] {
-  const out: RuleFacts[] = []
+function pairsFrom(base: Facts, left: readonly string[], right: readonly string[], dims: DimensionTable): Facts[] {
+  const out: Facts[] = []
   const same = left === right
   for (let i = 0; i < left.length; i++) {
     for (let j = same ? i + 1 : 0; j < right.length; j++) {
       const fi = left[i]!
       const fj = right[j]!
       if (fi === fj) continue
-      for (const vi of DIMENSIONS[fi]) {
+      for (const vi of dims[fi]!) {
         if (vi === base[fi]) continue
-        for (const vj of DIMENSIONS[fj]) {
+        for (const vj of dims[fj]!) {
           if (vj === base[fj]) continue
           out.push({ ...base, [fi]: vi, [fj]: vj })
         }
@@ -499,63 +582,79 @@ function pairsFrom(
   return out
 }
 
-/** Slice (c): sparse random deviations from the clean baseline. See the module docblock. */
-export function randomSlice(): RuleFacts[] {
-  const base = baselineFacts()
-  const out: RuleFacts[] = []
-  for (let n = 0; n < RANDOM_CASES; n++) {
-    const facts: Record<string, unknown> = { ...base }
-    for (const f of FIELDS) {
-      const u = unitDraw(n, f)
-      if (u >= RANDOM_DEVIATION_RATE) continue
-      const values = DIMENSIONS[f]
-      /* Rescale the sub-threshold draw to [0, 1) and pick a NON-baseline value uniformly. */
-      const pick = 1 + Math.floor((u / RANDOM_DEVIATION_RATE) * (values.length - 1))
-      facts[f] = values[Math.min(pick, values.length - 1)]
+/**
+ * Slice (c): sparse random deviations from the clean baseline, block by block. See the module
+ * docblock, and `RANDOM_FIELDS` for why a block's field list is frozen rather than `fieldsOf(dims)`.
+ */
+export function randomSlice<D extends DimensionTable = Dimensions>(dims?: D): FactsOf<D>[] {
+  const table: DimensionTable = dims ?? DIMENSIONS
+  const base: Facts = baselineFacts(table)
+  const out: Facts[] = []
+  for (const block of RANDOM_BLOCKS) {
+    for (let n = 0; n < block.cases; n++) {
+      const facts: Facts = { ...base }
+      for (const f of block.fields) {
+        const u = unitDraw(block.seed, n, f)
+        if (u >= RANDOM_DEVIATION_RATE) continue
+        const values = table[f]!
+        /* Rescale the sub-threshold draw to [0, 1) and pick a NON-baseline value uniformly. */
+        const pick = 1 + Math.floor((u / RANDOM_DEVIATION_RATE) * (values.length - 1))
+        facts[f] = values[Math.min(pick, values.length - 1)]
+      }
+      out.push(facts)
     }
-    out.push(facts as RuleFacts)
   }
-  return out
+  return out as FactsOf<D>[]
 }
 
-/** The five slices, BEFORE deduplication — so a test can measure each one on its own. */
-export function generateSlices(): RuleSlices {
-  const base = baselineFacts()
-  const followUpBase = followUpBaseline()
-  const attendedBase = attendedBaseline()
-  const attendedReplyBase = attendedReplyBaseline()
-  const attendedFollowUpBase = attendedFollowUpBaseline()
-  return {
+/**
+ * The slices, BEFORE deduplication — so a test can measure each one on its own. Over today's
+ * dimensions by default; over a superset of them when a test hands one in.
+ */
+export function generateSlices<D extends DimensionTable = Dimensions>(dims?: D): RuleSlices<D> {
+  const table: DimensionTable = dims ?? DIMENSIONS
+  const fields = fieldsOf(table)
+  const base: Facts = baselineFacts(table)
+  const followUpBase: Facts = followUpBaseline(table)
+  const attendedBase: Facts = attendedBaseline(table)
+  const attendedReplyBase: Facts = attendedReplyBaseline(table)
+  const attendedFollowUpBase: Facts = attendedFollowUpBaseline(table)
+  const slices = {
     baselines: [base, followUpBase, attendedBase, attendedReplyBase, attendedFollowUpBase],
-    singles: singlesFrom(base, FIELDS),
-    pairs: pairsFrom(base, FIELDS, FIELDS),
-    random: randomSlice(),
-    followUp: [...singlesFrom(followUpBase, FOLLOW_UP_FIELDS), ...pairsFrom(followUpBase, FOLLOW_UP_FIELDS, FOLLOW_UP_FIELDS)],
+    singles: singlesFrom(base, fields, table),
+    pairs: pairsFrom(base, fields, fields, table),
+    random: randomSlice(table),
+    followUp: [
+      ...singlesFrom(followUpBase, FOLLOW_UP_FIELDS, table),
+      ...pairsFrom(followUpBase, FOLLOW_UP_FIELDS, FOLLOW_UP_FIELDS, table),
+    ],
     attended: [
-      ...singlesFrom(attendedReplyBase, FIELDS),
-      ...pairsFrom(attendedReplyBase, ['overrides'], FIELDS),
-      ...pairsFrom(attendedBase, ['overrides'], FIELDS),
-      ...singlesFrom(attendedFollowUpBase, FOLLOW_UP_FIELDS),
-      ...pairsFrom(attendedFollowUpBase, ['overrides'], FOLLOW_UP_FIELDS),
+      ...singlesFrom(attendedReplyBase, fields, table),
+      ...pairsFrom(attendedReplyBase, ['overrides'], fields, table),
+      ...pairsFrom(attendedBase, ['overrides'], fields, table),
+      ...singlesFrom(attendedFollowUpBase, FOLLOW_UP_FIELDS, table),
+      ...pairsFrom(attendedFollowUpBase, ['overrides'], FOLLOW_UP_FIELDS, table),
     ],
   }
+  return slices as RuleSlices<D>
 }
 
-export function generateCorpus(): RuleCase[] {
+export function generateCorpus<D extends DimensionTable = Dimensions>(dims?: D): (FactsOf<D> & { id: string })[] {
+  const table: DimensionTable = dims ?? DIMENSIONS
   const seen = new Set<string>()
-  const out: RuleCase[] = []
-  const push = (facts: RuleFacts) => {
-    const c = withId(facts)
+  const out: (Facts & { id: string })[] = []
+  const push = (facts: Facts) => {
+    const c = withId(facts, table)
     if (seen.has(c.id)) return
     seen.add(c.id)
     out.push(c)
   }
-  const slices = generateSlices()
+  const slices: RuleSlices<DimensionTable> = generateSlices(table)
   for (const facts of slices.baselines) push(facts)
   for (const facts of slices.singles) push(facts)
   for (const facts of slices.pairs) push(facts)
   for (const facts of slices.random) push(facts)
   for (const facts of slices.followUp) push(facts)
   for (const facts of slices.attended) push(facts)
-  return out
+  return out as (FactsOf<D> & { id: string })[]
 }
