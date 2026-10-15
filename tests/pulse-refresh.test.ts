@@ -138,7 +138,8 @@ describe('the excluded Setting keys name what their owners actually write', () =
    * literal is checked against the OWNER'S SOURCE, matching the exact `= '<value>'` shape.
    */
   const owners: Array<[string, string, string]> = [
-    ['schedulerHeartbeat', 'src/worker/scheduler.ts', 'HEARTBEAT_KEY'],
+    // The key moved onto a leaf on 2026-10-15 so the slot lock can read the beat; scheduler.ts re-exports it.
+    ['schedulerHeartbeat', 'src/worker/heartbeat.ts', 'HEARTBEAT_KEY'],
     ['devicePresence', 'src/outreach/devicePresence.ts', 'DEVICE_PRESENCE_KEY'],
     ['dispatchState', 'src/outreach/dispatcher.ts', 'DISPATCH_STATE_KEY'],
     ['sendLock', 'src/outreach/dispatcher.ts', 'SEND_LOCK_KEY'],

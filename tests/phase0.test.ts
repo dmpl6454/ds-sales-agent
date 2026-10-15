@@ -21,7 +21,9 @@ describe('decideSlotLock — a hung slot is not a dead slot  [defect e]', () => 
    * Every case here is a LOCAL holder — a row this machine wrote — which is what the
    * decision was about until 2026-10-15, when the row learned which machine wrote it.
    * `holderIsLocal: true` keeps these the same questions with the same answers; the foreign
-   * branch and the no-device rule live in `tests/slot-lock-machine.test.ts`.
+   * branch and the no-device rule live in `tests/slot-lock-machine.test.ts`. `holderProcessFresh`
+   * (the scheduler-heartbeat vouch, 2026-10-15) is read for a foreign holder only, so every
+   * local case passes `false` and the local verdicts are unchanged by it.
    */
 
   /**
@@ -31,38 +33,38 @@ describe('decideSlotLock — a hung slot is not a dead slot  [defect e]', () => 
    * 24674 s — every one of those was hung but ALIVE.
    */
   it('declines while the holder is alive, however old the lock is', () => {
-    expect(decideSlotLock({ held: HELD, holderAlive: true, holderIsLocal: true, ourPid: OURS, ageMs: 1_000 })).toEqual({
+    expect(decideSlotLock({ held: HELD, holderAlive: true, holderIsLocal: true, holderProcessFresh: false, ourPid: OURS, ageMs: 1_000 })).toEqual({
       action: 'decline',
       stalled: false,
     })
-    expect(decideSlotLock({ held: HELD, holderAlive: true, holderIsLocal: true, ourPid: OURS, ageMs: 10 * 60 * 60_000 })).toEqual({
+    expect(decideSlotLock({ held: HELD, holderAlive: true, holderIsLocal: true, holderProcessFresh: false, ourPid: OURS, ageMs: 10 * 60 * 60_000 })).toEqual({
       action: 'decline',
       stalled: true,
     })
   })
 
   it('flags a live-but-stalled holder so it is an alarm rather than a silence', () => {
-    const fresh = decideSlotLock({ held: HELD, holderAlive: true, holderIsLocal: true, ourPid: OURS, ageMs: 29 * 60_000 })
-    const stalled = decideSlotLock({ held: HELD, holderAlive: true, holderIsLocal: true, ourPid: OURS, ageMs: 31 * 60_000 })
+    const fresh = decideSlotLock({ held: HELD, holderAlive: true, holderIsLocal: true, holderProcessFresh: false, ourPid: OURS, ageMs: 29 * 60_000 })
+    const stalled = decideSlotLock({ held: HELD, holderAlive: true, holderIsLocal: true, holderProcessFresh: false, ourPid: OURS, ageMs: 31 * 60_000 })
     expect(fresh).toEqual({ action: 'decline', stalled: false })
     expect(stalled).toEqual({ action: 'decline', stalled: true })
   })
 
   /** The other direction: the lock must still be reclaimable, or a crash deadlocks it forever. */
   it('takes over when the holder process is gone', () => {
-    expect(decideSlotLock({ held: HELD, holderAlive: false, holderIsLocal: true, ourPid: OURS, ageMs: 1_000 })).toEqual({
+    expect(decideSlotLock({ held: HELD, holderAlive: false, holderIsLocal: true, holderProcessFresh: false, ourPid: OURS, ageMs: 1_000 })).toEqual({
       action: 'take-over',
     })
   })
 
   it('takes over our own row', () => {
-    expect(decideSlotLock({ held: { ...HELD, pid: OURS }, holderAlive: true, holderIsLocal: true, ourPid: OURS, ageMs: 1_000 })).toEqual({
+    expect(decideSlotLock({ held: { ...HELD, pid: OURS }, holderAlive: true, holderIsLocal: true, holderProcessFresh: false, ourPid: OURS, ageMs: 1_000 })).toEqual({
       action: 'take-over',
     })
   })
 
   it('takes over an unparseable row rather than deadlocking forever', () => {
-    expect(decideSlotLock({ held: null, holderAlive: false, holderIsLocal: false, ourPid: OURS, ageMs: Infinity })).toEqual({
+    expect(decideSlotLock({ held: null, holderAlive: false, holderIsLocal: false, holderProcessFresh: false, ourPid: OURS, ageMs: Infinity })).toEqual({
       action: 'take-over',
     })
   })

@@ -23,10 +23,16 @@ import { join } from 'node:path'
  */
 
 const SCHEDULER = readFileSync(join(process.cwd(), 'src/worker/scheduler.ts'), 'utf8')
+/**
+ * The row's SHAPE moved to a leaf on 2026-10-15 (`runSlot.ts` reads the beat as a witness for a
+ * foreign slot-lock holder and cannot import the scheduler); the scheduler still WRITES the beat
+ * and still makes the same-machine decision, so those assertions stay against its source.
+ */
+const HEARTBEAT = readFileSync(join(process.cwd(), 'src/worker/heartbeat.ts'), 'utf8')
 
 describe('heartbeat liveness across machines', () => {
   it('records which machine wrote the beat', () => {
-    expect(SCHEDULER).toMatch(/machine\??:\s*string/)
+    expect(HEARTBEAT).toMatch(/machine\??:\s*string/)
     // Written on every beat, not just read — a field nothing populates is worse than none.
     expect(SCHEDULER).toMatch(/machine:\s*machineId\(\)/)
   })
@@ -71,7 +77,7 @@ describe('heartbeat liveness across machines', () => {
   it('keeps a beat written before the field existed readable', () => {
     // `machine` is optional. An old row must not crash the reader — and an absent machine
     // must read as "not this one", which refuses rather than assuming the other is dead.
-    expect(SCHEDULER).toMatch(/machine\?:/)
+    expect(HEARTBEAT).toMatch(/machine\?:/)
     expect(SCHEDULER).toMatch(/existing\.beat\.machine \?\? null/)
   })
 })

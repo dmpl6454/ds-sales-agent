@@ -41,7 +41,7 @@ describe('every reader of DS_DEVICE_NAME treats a blank as no name', () => {
   /**
    * A SOURCE GREP, because the failure is a reader somebody writes later: `DS_DEVICE_NAME ??`
    * makes `''` a name every Mac that hits it shares. It must find the readers it checks — a grep
-   * that matches nothing passes — so it also asserts the three it knows about are there.
+   * that matches nothing passes — so it also asserts the readers it knows about are there.
    */
   it('no file reads it with `??`, and the known readers all use the trimmed form', async () => {
     const { readdirSync, readFileSync, statSync } = await import('node:fs')
@@ -57,10 +57,11 @@ describe('every reader of DS_DEVICE_NAME treats a blank as no name', () => {
     }
     walk(join(process.cwd(), 'src'))
     const readers = files.filter((f) => /process\.env\.DS_DEVICE_NAME/.test(readFileSync(f, 'utf8')))
+    // `scheduler.ts` read it until 2026-10-15; its `machineId()` now DELEGATES to `deviceId()`
+    // (`src/worker/heartbeat.ts`), so the slot lock's heartbeat vouch compares one source with itself.
     expect(readers.map((f) => f.slice(f.indexOf('src/'))).sort()).toEqual([
       'src/detection/anonGate.ts',
       'src/outreach/devicePresence.ts',
-      'src/worker/scheduler.ts',
     ])
     for (const f of readers) {
       const src = readFileSync(f, 'utf8')

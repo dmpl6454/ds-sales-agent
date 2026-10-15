@@ -1,11 +1,11 @@
 import { DETECT_FEED_OK_KEY, DETECT_THROTTLED_KEY } from '@/detection/anonGate'
 import cron, { type ScheduledTask } from 'node-cron'
-import { hostname as osHostname } from 'node:os'
 import { prisma } from '@/lib/db'
 import { env } from '@/lib/env'
 import { log } from '@/lib/logger'
 import { istDateKey, istStamp, istDayStart, slotToCron, TIMEZONE } from '@/lib/time'
 import { runSlot, withSlotLock } from './runSlot'
+import { HEARTBEAT_KEY, HEARTBEAT_STALE_MS, machineId, parseSchedulerHeartbeat, readSchedulerHeartbeat, type SchedulerHeartbeat } from './heartbeat'
 import { dispatchTick } from '@/outreach/dispatcher'
 import { DISPATCH_INTERVAL_MINUTES, ACTIVE_FROM_HOUR, ACTIVE_TO_HOUR } from '@/outreach/pacing'
 import { runDetection } from '@/detection/pipeline'
@@ -35,38 +35,15 @@ const tasks: ScheduledTask[] = []
 let started = false
 let heartbeatTimer: ReturnType<typeof setInterval> | null = null
 
-/** Key in the Setting table. Also read by the dashboard to prove the watch is alive. */
-export const HEARTBEAT_KEY = 'schedulerHeartbeat'
+/**
+ * The heartbeat's key, staleness bound, row shape, machine name and reader live in
+ * `./heartbeat` since 2026-10-15 — a leaf, because `runSlot.ts` reads the beat as a witness
+ * for a foreign slot-lock holder and cannot import this module (it imports `runSlot`).
+ * Re-exported here so every existing importer keeps compiling; this file still WRITES the beat.
+ */
+export { HEARTBEAT_KEY, HEARTBEAT_STALE_MS, machineId, parseSchedulerHeartbeat, readSchedulerHeartbeat, type SchedulerHeartbeat }
+
 const HEARTBEAT_INTERVAL_MS = 60_000
-/** A heartbeat older than this means the scheduler is not running. */
-export const HEARTBEAT_STALE_MS = 3 * 60_000
-
-export interface SchedulerHeartbeat {
-  pid: number
-  host: 'worker' | 'dashboard'
-  at: string
-  /**
-   * WHICH MACHINE wrote this beat. Added 2026-08-08, when the database stopped being a
-   * SQLite file on one laptop and became a Postgres several hosts share.
-   *
-   * A pid is meaningless across machines. The liveness check below asks the operating
-   * system `process.kill(pid, 0)` — which answers only about THIS machine — so once the
-   * Linode and a laptop share a database, the laptop reads the Linode's beat, finds no
-   * such local pid, concludes "it died without clearing its heartbeat", and starts a
-   * SECOND scheduler. Two schedulers is the exact failure the guard exists to prevent,
-   * produced by the guard itself.
-   *
-   * Optional, because a beat written before this field existed must still be readable —
-   * an absent machine is treated as "not this one", which is the conservative direction:
-   * it refuses to start rather than assuming the other process is dead.
-   */
-  machine?: string
-}
-
-/** This host's name, as recorded on a heartbeat. `DS_DEVICE_NAME` lets a deploy label itself. */
-export function machineId(): string {
-  return process.env.DS_DEVICE_NAME?.trim() || osHostname() // blank is no name — same rule as deviceId()
-}
 
 async function writeHeartbeat(host: SchedulerHeartbeat['host']): Promise<void> {
   const value = JSON.stringify({ pid: process.pid, host, at: new Date().toISOString(), machine: machineId() })
@@ -163,16 +140,20 @@ export async function readPassHealth(now: Date = new Date()): Promise<PassHealth
   }
 }
 
-/** What the dashboard reads. `null` when no scheduler has ever run. */
+/**
+ * What the dashboard reads. `null` when no scheduler has ever run.
+ *
+ * A DATABASE ERROR PROPAGATES, exactly as it did before the reader moved to `./heartbeat` —
+ * `startScheduler` below reads this to refuse a SECOND scheduler, and "could not ask" must fail
+ * the start (the worker exits 1 and pm2 retries; the dashboard logs the alarm and starts
+ * nothing), never skip the guard. The first leaf returned null on an error and did exactly that
+ * (reviewer majors 1 and 2, 2026-10-15); see `readSchedulerHeartbeat`.
+ */
 export async function readHeartbeat(): Promise<{ beat: SchedulerHeartbeat; fresh: boolean } | null> {
-  const row = await prisma.setting.findUnique({ where: { key: HEARTBEAT_KEY } })
-  if (!row) return null
-  try {
-    const beat = JSON.parse(row.value) as SchedulerHeartbeat
-    return { beat, fresh: Date.now() - new Date(beat.at).getTime() < HEARTBEAT_STALE_MS }
-  } catch {
-    return null
-  }
+  // One parser (`./heartbeat`), two callers — this one adds the freshness the dashboard renders.
+  const beat = await readSchedulerHeartbeat()
+  if (!beat) return null
+  return { beat, fresh: Date.now() - new Date(beat.at).getTime() < HEARTBEAT_STALE_MS }
 }
 
 /**
