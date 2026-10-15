@@ -301,6 +301,159 @@ offered to reset this data once already, on drift unrelated to the change being 
 
 ---
 
+## Detection reads nothing
+
+When the landing page says no paid posts are being found, the first question is **this address,
+this identity, or everyone?** On 4 Sept it took a day to learn it was the identity, because nobody
+asked Instagram under a second one. `pnpm ig:probe` asks: it prints what the detection passes last
+recorded, then makes **one request per identity** (the app identity in use, an unverified newer app
+version, and the retired web identity as a control), 6 s apart, and says what came back.
+
+Run it on **both** hosts and read the two outputs side by side:
+
+```bash
+pnpm ig:probe                                         # on the Mac, in the repo directory
+ssh -n linode "cd /opt/ds-sales-agent && pnpm ig:probe"   # on the box — -n, or ssh eats the rest of a script
+```
+
+`--offline` prints only the stored evidence and asks nothing. `--handle <username>` reads another
+account (default @viralbhayani). `--ua "Instagram … Android (…)"` adds one candidate: the app
+identity with that User-Agent. `--graph` adds one request through the official API when the box is
+configured for it (next section). Exit 0 means the identity in use was served; 1 means it was not.
+
+**It records nothing.** It closes no gate and writes no evidence row, so the detection pass carries
+on exactly as it was — even when the probe is refused. If this host's gate is already closed it says
+so and asks anyway: one request per identity (three by default, four with `--ua`), once, against an
+address Instagram has told to wait. A redirect, if Instagram answers with one, is followed the way the
+detection pass follows it. That is the price of the answer, and the reason it never runs on a loop.
+
+**A blip is not a verdict.** If the identity in use got no answer, or Instagram's own 5xx, the probe
+does not say "the identity is the fix" even when another candidate was served — probe again.
+
+| What the probe shows | What it means |
+|---|---|
+| the identity in use **served**, yet the page says nothing is read | the pass is not running, or not running this build — check `pm2 describe ds-sales-worker` and its log (by name — never a global pm2 command) |
+| **401 / 429 / the login wall** on the identity in use | this IP or this identity is refused. Served on the other host: this address, and it lifts by itself. Refused there too: see the last row |
+| **400** whose body says **update** or **SecFetch** | how the request presents itself, not a rate limit — waiting will not fix it. Try `--ua` with a current Instagram for Android User-Agent |
+| **200 with items on one candidate and not another** | the identity is the fix: one edit, `FEED_HEADERS` in `src/detection/feed.ts`. Probe both hosts again before deploying it |
+| a web page, JSON in another shape, or no posts | the endpoint or its answer changed — not a rate limit |
+| no answer on any candidate | this host cannot reach Instagram (network, DNS, firewall) |
+| **every identity refused, on both hosts** | a platform wall on anonymous reads. The official read fallback below is the remaining path, and turning it on is Tabish's decision |
+
+The "newer version" candidate is a **guess** at a current app version, not read off a device. It
+exists so that served-against-refused can tell a version gate from a wall; a real User-Agent from a
+current Instagram for Android, passed with `--ua`, is better evidence than it.
+
+---
+
+## Official read fallback (dormant)
+
+**What it is.** When Instagram refuses the anonymous feed, the server can read a watched channel
+through Meta's Instagram Graph API **Business Discovery** instead (`src/detection/graphFeed.ts`,
+chosen per channel by `src/detection/feedSource.ts`). It is an authenticated API with a token a
+person mints through the business's own Meta app ("Post Automation 2", which already has the
+three permissions it needs at advanced access). It is **not** an Instagram web session and sends
+no cookie — decision 4 is about the anonymous feed, and still holds for it.
+
+**It is off.** With `META_GRAPH_TOKEN` and `META_IG_USER_ID` unset (the state of every host
+today) nothing about detection changes, and a test proves it request for request. Turning it
+on is **Tabish's decision**, because of what it loses:
+
+- **no tags, no collaborators, no sponsor tags, no paid-partnership flag** on the posts it reads
+  — prospects are minted from tags, so a channel read this way finds paid posts but mints no
+  prospects from their tags (stored tags are never erased: the evidence-wipe guard in
+  `evidence.ts` and `pipeline.ts`);
+- **captions without their @mentions** — Meta's documentation says the `@` is removed from a
+  caption read this way (not yet seen in a real answer; nothing has been called). Brand
+  discovery and the mention rules key on `@`, so these posts mint nothing from the caption either;
+- **what comes back, and what does not.** When the anonymous feed returns, each such post it reads
+  is judged again from the complete read — caption with its mentions, tags, brands and verdict
+  rewritten — unless a person labelled it, in which case only its caption and tags are filled in
+  and the person's answer stands. The feed reaches back for them only as far as that pass already
+  looks (6 hours on the 15-minute pass, 36 on a slot's catch-up). **A post the official API stored
+  earlier than that keeps its incomplete evidence for good**, because chasing a post past the feed's
+  reach would cost extra pages on every pass;
+- **Business and Creator accounts only** — a personal account on the watch list cannot be read
+  this way, and age-gated accounts are not returned;
+- **an hourly budget** of roughly 200 calls (Meta's documented per-user figure); the server caps
+  itself at 60 calls a pass and pauses for 30 minutes on a rate-limit answer.
+
+**MEASURED ON THE BOX, 15 OCT 2026, by a person with curl** (the code itself has not run against
+it yet). The anonymous app identity answered `401 {"message":"Please wait a few minutes before you
+try again.","require_login":true}` on the FIRST request from both the box and DMPLs Mac Studio, so
+the refusal is the identity, not one address. The official path answered from the box: a
+system-user token (Business Settings → System users, which does not expire) sees three Pages with
+Instagram professional accounts — @bollywoodchronicle, @bollywoodsocietyy and @madaboutmarketingg —
+and with @madaboutmarketingg's IG user id, Business Discovery returned media for **13 of the 14
+watched pages**. The 14th, @marketingmentalist (personal, silent since 2020), answered `110 / 2207013
+"Invalid user id"`. Those three error shapes are rows in `tests/graph-feed.test.ts`; every other
+response shape the code handles is still from Meta's documentation. **The token and id were put in
+the box's `.env` that day by the operator during the outage** — the decision above, taken under it,
+which Tabish may reverse by removing the two lines.
+
+**The person's steps, on the box only:**
+
+1. Generate a token for an Instagram professional account the business owns, through the existing
+   app, with `instagram_basic`, `instagram_manage_insights` and `pages_read_engagement` (plus
+   `pages_show_list` and `business_management` to list the Pages). **Prefer a system-user token**
+   (Business Settings → System users → generate, with the Page and its Instagram account assigned to
+   that system user): it does not expire, and it is what the box uses. A long-lived Facebook User
+   token from the Graph API Explorer works too but **expires** (about 60 days, per Meta's
+   documentation) — put a date in the calendar; an expired token shows on the landing page (below).
+2. Find that Instagram professional account's **IG user id** (the numeric id, e.g. from the Graph
+   API Explorer: the Page's `instagram_business_account` field).
+3. Put both in **`/opt/ds-sales-agent/.env` on the box** — never in the repo, never on a Mac, and
+   never pasted into chat:
+   ```
+   META_GRAPH_TOKEN="…"
+   META_IG_USER_ID="1784…"
+   ```
+   Both or neither: the process refuses to start with only one, and refuses a non-numeric id —
+   so check the worker came back. **The dashboard reads the same `.env`**, so a half-set pair also
+   stops it at its next reload: check `pm2 describe ds-sales-agent` too (by name). And the dashboard
+   then HOLDS the token in memory as well — its "Check now" button runs a detection pass in that
+   process, which may use the official API with its own per-pass budget and pause.
+4. Restart the worker **by name**: `pm2 restart ds-sales-worker` (never a global pm2 command).
+5. On the box: `pnpm ig:probe --graph`. It reads one page of one channel through the official API
+   and says in a sentence what came back (it calls `probeOfficialRead`, which records nothing). It
+   **also** makes its usual anonymous requests first — one per identity, three by default, possibly
+   into a gate the box has already closed; there is no flag that asks only the official API. The
+   probe command ships with the detection-outage work — if the box's build predates it, deploy
+   first.
+
+**Turning it off** is the reverse: remove both lines and restart the worker **and the dashboard** by
+name (`pm2 restart ds-sales-worker`, then `pm2 reload ds-sales-agent`), or the dashboard keeps the
+token in memory until its next reload. A token that
+expires shows on the landing page as *"The official read token is invalid or expired — reading
+has stopped until it is replaced"*; the remedy is step 1 again.
+
+---
+
+## Deploying the worker from the box itself (no Mac)
+
+`scripts/deploy.sh` needs a Mac holding the management SSH key, and builds the web tier there. When
+no such Mac exists (15 Oct 2026: the Mac that held it was gone), the detection worker can still be
+updated from a root console on the box, because it runs from source and needs no build:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/dmpl6454/ds-sales-agent/<sha>/scripts/deploy-worker-on-box.sh -o /tmp/dwob.sh && bash /tmp/dwob.sh <sha>
+```
+
+`<sha>` is the full 40-character commit the suite passed on — never a branch name. The script
+downloads that commit (the repo is public), refuses unless `.env` says `SEND_ENABLED=false`, refuses
+if the lockfile or the Prisma schema differs from what is installed (either needs a full deploy),
+backs up the current source to `/opt/ds-backups/`, copies the files, sweeps stale ones the way
+`deploy.sh` does, restarts **only** `ds-sales-worker` by name, and prints the rollback line. The
+dashboard keeps serving its previous build — its screens catch up at the next full deploy.
+
+**What this does not replace.** A full deploy (web tier) and every DMG build still need a Mac: one
+with a git checkout, the management key in the box's `authorized_keys`, and — for a notarised DMG —
+the Developer ID signing identity and the `ds-notary` keychain profile, both of which lived on the
+Mac that is gone. Setting up a replacement is a person's job (a new Developer ID certificate from
+that Mac's own certificate request; Apple allows five per team).
+
+---
+
 ## The database
 
 ```

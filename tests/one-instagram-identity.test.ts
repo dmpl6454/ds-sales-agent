@@ -36,12 +36,56 @@ describe('one anonymous Instagram identity', () => {
       // from inside a signed-in Chrome). That is the web identity legitimately, and it is not
       // an anonymous read — this test is about sessionless reads only.
       if (file.includes('/outreach/browser/')) continue
+      // feed.ts is checked below, with its one sanctioned exception cut out first.
+      if (file.endsWith('/detection/feed.ts')) continue
       const src = readFileSync(file, 'utf8')
-      const isFeed = file.endsWith('/detection/feed.ts')
-      if (/936619743392459/.test(src) && !isFeed) offenders.push(`${file}: retired web app id`)
+      if (/936619743392459/.test(src)) offenders.push(`${file}: retired web app id`)
       if (/www\.instagram\.com\/api\/v1\//.test(src)) offenders.push(`${file}: web API host`)
-      if (/'User-Agent':\s*\n?\s*'(Mozilla|Instagram)/.test(src) && !isFeed) offenders.push(`${file}: its own User-Agent`)
+      if (/'User-Agent':\s*\n?\s*'(Mozilla|Instagram)/.test(src)) offenders.push(`${file}: its own User-Agent`)
     }
     expect(offenders).toEqual([])
+  })
+
+  /**
+   * THE ONE OTHER PLACE AN IDENTITY MAY LIVE (15 Oct 2026): FEED_IDENTITY_PROBES, the candidates
+   * `pnpm ig:probe` asks with — a newer app version and the retired web identity as a control. They
+   * are declared in feed.ts so this file stays the single home of every identity; and OUTSIDE that
+   * array feed.ts must still declare exactly one (FEED_HEADERS) and, in code, neither the web app id
+   * nor the web host. So a probe candidate can never become the production identity by accident.
+   * MUTATION (applied by hand, saw red, restored): moving the web control's
+   * `'x-ig-app-id': '936619743392459'` into FEED_HEADERS fails "outside the probes, feed.ts …".
+   */
+  describe('feed.ts — FEED_IDENTITY_PROBES is the only other place', () => {
+    const src = readFileSync(join(root, 'detection', 'feed.ts'), 'utf8')
+    // `Accept: '*/*'` is a header value, and its `/*` would read as a comment opening and swallow
+    // code up to the next docblock's end — so that literal is neutralised before comments go.
+    const code = src
+      .replace(/(['"])\*\/\*\1/g, '$1any$1')
+      .replace(/\/\*[\s\S]*?\*\//g, '')
+      .replace(/^\s*\/\/.*$/gm, '')
+    /** The array literal, by bracket matching from its `= [`. A scan that cannot close fails, never skips. */
+    const block = (() => {
+      const start = code.indexOf('export const FEED_IDENTITY_PROBES')
+      const open = code.indexOf('[', code.indexOf('=', start))
+      let depth = 0
+      for (let i = open; i < code.length; i++) {
+        if (code[i] === '[') depth++
+        else if (code[i] === ']' && --depth === 0) return code.slice(start, i + 1)
+      }
+      return null
+    })()
+
+    it('the probes block is found, and it is where the web control lives', () => {
+      expect(block).not.toBeNull()
+      expect(block).toMatch(/www\.instagram\.com\/api\/v1\//)
+      expect(block).toMatch(/936619743392459/)
+    })
+
+    it('outside the probes, feed.ts declares exactly one User-Agent and no web identity in code', () => {
+      const outside = code.replace(block ?? '', '')
+      expect(outside).not.toMatch(/936619743392459/)
+      expect(outside).not.toMatch(/www\.instagram\.com\/api\/v1\//)
+      expect(outside.match(/'User-Agent':\s*\n?\s*'(Mozilla|Instagram)/g) ?? []).toHaveLength(1)
+    })
   })
 })

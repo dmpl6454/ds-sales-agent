@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { decideRefresh } from '../src/app/refresh-decision'
-import { composeStamp, PULSE_IGNORED_SETTING_KEYS, type PulseParts } from '../src/app/api/pulse/stamp'
+import { composeStamp, PULSE_IGNORED_SETTING_KEYS, PULSE_IGNORED_SETTING_PREFIXES, type PulseParts } from '../src/app/api/pulse/stamp'
 
 /**
  * THE DASHBOARD RE-RENDERS ON CHANGE, NOT ON A CLOCK.
@@ -157,6 +157,27 @@ describe('the excluded Setting keys name what their owners actually write', () =
     expect(declared, `${constant} not found in ${file}`).toBeDefined()
     expect(declared).toBe(literal)
   })
+
+  /**
+   * PER-HOST KEY FAMILIES (2026-10-15). `detectFeedAnswer:<host>` is written by every host that
+   * reads a feed, on every change of answer, so no literal can name it and it is excluded by
+   * PREFIX. Pinned against its owner the same way — a renamed prefix would quietly start moving
+   * the stamp during exactly the outage the row describes. Fails if the entry is removed from
+   * `PULSE_IGNORED_SETTING_PREFIXES` (the list stops matching `prefixOwners`) or the owner renames it.
+   */
+  const prefixOwners: Array<[string, string, string]> = [
+    ['detectFeedAnswer:', 'src/detection/feedEvidence.ts', 'FEED_ANSWER_KEY_PREFIX'],
+  ]
+
+  it('covers every excluded key family exactly once', () => {
+    expect([...PULSE_IGNORED_SETTING_PREFIXES].sort()).toEqual(prefixOwners.map((o) => o[0]).sort())
+  })
+
+  it.each(prefixOwners)('%s is what %s exports as %s', (literal, file, constant) => {
+    const declared = read(file).match(new RegExp(`const ${constant} = '([^']+)'`))?.[1]
+    expect(declared, `${constant} not found in ${file}`).toBeDefined()
+    expect(declared).toBe(literal)
+  })
 })
 
 describe('a tab reloads itself after a deploy (2026-09-10)', () => {
@@ -265,6 +286,10 @@ describe('the pulse route — the reader, by source', () => {
 
   it('excludes the hot Setting keys from the aggregate', () => {
     expect(src).toMatch(/notIn: \[\.\.\.PULSE_IGNORED_SETTING_KEYS\]/)
+  })
+
+  it('excludes the per-host key families by prefix', () => {
+    expect(src).toMatch(/NOT: PULSE_IGNORED_SETTING_PREFIXES\.map\(\(prefix\) => \(\{ key: \{ startsWith: prefix \} \}\)\)/)
   })
 
   it('composes through the pure function rather than inline', () => {

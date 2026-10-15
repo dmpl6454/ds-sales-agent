@@ -2132,7 +2132,9 @@ export async function addTarget(
   let watchNote = ''
   if (role === 'WATCH') {
     try {
-      const feed = await fetchFeed(handle, { maxPosts: 12, maxPages: 1 })
+      // `record: false`: one handle a person typed is not the detection pass's answer, and must not
+      // become the "server's" row the landing page explains an outage from (feed.ts).
+      const feed = await fetchFeed(handle, { maxPosts: 12, maxPages: 1, record: false })
       const recent = feed.posts.filter((p) => new Date(p.postedAt).getTime() > Date.now() - 30 * 86_400_000).length
       if (feed.posts.length === 0) {
         return {

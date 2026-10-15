@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server'
 import { prisma } from '@/lib/db'
 import { currentUser } from '@/lib/session'
-import { composeStamp, PULSE_IGNORED_SETTING_KEYS } from './stamp'
+import { composeStamp, PULSE_IGNORED_SETTING_KEYS, PULSE_IGNORED_SETTING_PREFIXES } from './stamp'
 import { buildVersion } from '@/lib/buildVersion'
 
 /**
@@ -52,7 +52,10 @@ export async function GET() {
     prisma.outreachAttempt.count({ where: { status: { in: [...PENDING_STATUSES] } } }),
     prisma.detectedCampaign.aggregate({ _max: { detectedAt: true }, _count: { _all: true } }),
     prisma.setting.aggregate({
-      where: { key: { notIn: [...PULSE_IGNORED_SETTING_KEYS] } },
+      where: {
+        key: { notIn: [...PULSE_IGNORED_SETTING_KEYS] },
+        NOT: PULSE_IGNORED_SETTING_PREFIXES.map((prefix) => ({ key: { startsWith: prefix } })),
+      },
       _max: { updatedAt: true },
       _count: { _all: true },
     }),

@@ -2,13 +2,15 @@ import { prisma } from '@/lib/db'
 import { getSettings } from '@/lib/settings'
 import { log } from '@/lib/logger'
 import { writeStringArray } from '@/lib/json'
-import { fetchFeed, FeedFetchError, type FeedPost } from './feed'
+import { FeedFetchError, type FeedPost } from './feed'
+import { fetchChannelFeed, officialReadAvailability, type FeedSourceName } from './feedSource'
+import { graphConfigured, GraphFeedError, type GraphBudget } from './graphFeed'
 import { anonGateCheck, hydrateAnonGate, DETECT_FEED_OK_KEY, DETECT_THROTTLED_KEY } from './anonGate'
 import { getDetector } from './detectors'
 import { setChannelVocabulary } from './detectors/semantic'
 import { buildVocabulary } from './detectors/novelty'
 import { saveFrame } from './media'
-import { buildRawPayload, evidenceRefresh } from './evidence'
+import { buildRawPayload, evidenceRefresh, EVIDENCE_INCOMPLETE_MARKER } from './evidence'
 import { tagsForPost } from './tagEvidence'
 import { publisherForPrompt } from './publisherContext'
 import type { ModelInputs } from './types'
@@ -97,8 +99,14 @@ export interface ChannelOutcome {
   pagesFetched: number
   error?: string
   parseFailure?: boolean
-  /** Not read at all this pass: Instagram had told this host to stop (see anonGate.ts). */
-  skipped?: 'throttled'
+  /**
+   * Not read at all this pass. `throttled`: Instagram had told this host to stop (anonGate.ts).
+   * `official-rate-limited`: the anonymous feed failed and the official API had just asked this
+   * host to slow down (graphFeed.ts) — a different cooldown, never counted as the anonymous one.
+   */
+  skipped?: 'throttled' | 'official-rate-limited'
+  /** Which door served this channel, when one did (feedSource.ts). */
+  servedBy?: FeedSourceName
 }
 
 export interface DetectionSummary {
@@ -123,7 +131,27 @@ export interface DetectionSummary {
    * and have found nothing since".
    */
   brandsResolved: AutoResolveSummary
+  /**
+   * Channels served by each door this pass (feedSource.ts). `graph` is 0 wherever the official
+   * read is not configured — which is everywhere, until a person decides otherwise.
+   */
+  servedBy: Record<FeedSourceName, number>
 }
+
+/**
+ * THE OFFICIAL READ'S CALL CAP, PER PASS (15 Oct 2026). One call is one page of one channel, so
+ * the steady state is one call a channel (~19 a pass); 60 leaves room for a gap that needs a
+ * second page on most channels. STATED, NOT HIDDEN: at four passes an hour a full 60 every pass
+ * would be 240 calls an hour against Meta's documented ~200 a user — the cap bounds a pass, and
+ * a rate-limit answer (graphFeed.ts) is what bounds the hour. A channel the cap costs is counted
+ * and logged, never silently dropped.
+ */
+export const GRAPH_MAX_CALLS_PER_PASS = 60
+// AND IT IS PER `runDetection` CALL, NOT PER HOST (review, 15 Oct 2026): each call builds its own
+// budget, and the 30-minute pause after a rate-limit answer lives in one PROCESS's memory. Passes
+// that overlap — the 15-minute cron and an IST slot's catch-up collide four times a day, and the
+// dashboard's "Check now" is a third caller in another process — each get their own 60. The
+// rate-limit pause, not this number, is what bounds the hour when they do.
 
 /**
  * How far back to look. The DEFAULT is the fast-cadence window; a catch-up pass after a
@@ -173,6 +201,32 @@ export async function runDetection(
     const at = row._max.postedAt
     if (at) newestStored.set(row.targetId, Math.floor(at.getTime() / 1000))
   }
+  const floorUnix = Math.floor(hoursAgo(lookbackHours).getTime() / 1000)
+  /**
+   * ── AND POSTS THE OFFICIAL API STORED ARE REACHED BACK FOR (review, 15 Oct 2026) ─────────
+   *
+   * `newestStored` counts every row, including the ones the official read fallback stored — so
+   * after a long stretch of the fallback the anonymous feed, back at last, would read one page and
+   * stop at the newest of THEM, leaving every older one with no tags, no collaborators and an
+   * @-less caption for good (a 22-hour stretch is ~57 @viralbhayani posts; one page is 12). So a
+   * channel holding such rows inside THIS PASS's own lookback pages back to the oldest of them.
+   *
+   * Bounded by the window the pass already pages to for a channel with a real gap (the lookback,
+   * plus fetchFeed's own 48-post / 6-page caps), and only while such rows exist: once the read
+   * completes them they no longer match, and a dormant fallback has none, so the query finds
+   * nothing and the pass is today's. One extra grouped query per pass. A row older than the
+   * lookback stays incomplete — stated in docs/DEPLOY.md rather than chased forever, because a
+   * post past the feed's reach would otherwise cost extra pages on every pass.
+   */
+  const oldestIncomplete = new Map<string, number>()
+  for (const row of await prisma.detectedCampaign.groupBy({
+    by: ['targetId'],
+    where: { postedAt: { gte: new Date(floorUnix * 1000) }, rawPayload: { contains: EVIDENCE_INCOMPLETE_MARKER } },
+    _min: { postedAt: true },
+  })) {
+    const at = row._min?.postedAt
+    if (at) oldestIncomplete.set(row.targetId, Math.floor(at.getTime() / 1000))
+  }
   const spacingMs = opts.channelSpacingMs ?? DETECT_CHANNEL_SPACING_MS
   let requestsMade = 0
   let throttledUntil: Date | null = null
@@ -192,7 +246,17 @@ export async function runDetection(
   }
 
   const channels: ChannelOutcome[] = []
-  const floorUnix = Math.floor(hoursAgo(lookbackHours).getTime() / 1000)
+
+  /**
+   * THE OFFICIAL READ, PRIMARY ONLY (15 Oct 2026). The token lives on the server; a Mac's failover
+   * pass must read exactly as it always has, so it never even asks whether the fallback exists.
+   * `officialOn` is false on every host until a person configures it, and then every new branch
+   * below is skipped — the pass is today's pass.
+   */
+  const allowGraph = role === 'primary'
+  const officialOn = allowGraph && graphConfigured()
+  const graphBudget: GraphBudget = { remaining: GRAPH_MAX_CALLS_PER_PASS, used: 0, dropped: 0 }
+  const servedBy: Record<FeedSourceName, number> = { anonymous: 0, graph: 0 }
 
   let feedAliveStamped = false
   for (const target of ordered) {
@@ -212,12 +276,23 @@ export async function runDetection(
 
     const gate = anonGateCheck()
     if (!gate.ok) {
-      // No request is made. Every remaining channel lands here until the cooldown ends.
-      outcome.skipped = 'throttled'
-      outcome.error = `throttled until ${gate.until.toISOString()}`
       throttledUntil = gate.until
-      channels.push(outcome)
-      continue
+      /**
+       * A closed anonymous gate is no longer the end of the channel when the official read can
+       * serve it: `fetchChannelFeed` goes straight there without spending an anonymous request.
+       * When it cannot (not configured, paused, cap spent — the cap counted in feedSource.ts),
+       * this is exactly the skip it always was. `throttledUntil` keeps meaning the ANONYMOUS
+       * cooldown either way; the official API's own pause never touches it.
+       */
+      const official = officialOn ? officialReadAvailability({ allowGraph, graphBudget }) : 'off'
+      if (official !== 'available') {
+        if (official === 'cap-reached') graphBudget.dropped += 1
+        // No request is made. Every remaining channel lands here until the cooldown ends.
+        outcome.skipped = 'throttled'
+        outcome.error = `throttled until ${gate.until.toISOString()}`
+        channels.push(outcome)
+        continue
+      }
     }
     if (requestsMade > 0 && spacingMs > 0) {
       // Space channels out instead of a 19-request burst — bursts are what a throttle counts.
@@ -225,16 +300,46 @@ export async function runDetection(
     }
     try {
       const sinceUnix = Math.max(floorUnix, (newestStored.get(target.id) ?? 0) - 60)
+      const incomplete = oldestIncomplete.get(target.id)
+      const completeSinceUnix = incomplete !== undefined && incomplete - 60 < sinceUnix ? incomplete - 60 : undefined
       requestsMade += 1
-      const { posts, pagesFetched } = await fetchFeed(target.handle, { maxPosts: 48, sinceUnix })
+      /**
+       * WHICH DOOR (feedSource.ts). With the official read not configured — or on a Mac's
+       * failover, `allowGraph: false` — this is `fetchFeed` exactly: same request, same answer,
+       * same error. The budget is the pass's, shared across channels.
+       */
+      const served = await fetchChannelFeed(target.handle, {
+        maxPosts: 48,
+        sinceUnix,
+        ...(completeSinceUnix !== undefined ? { completeSinceUnix } : {}),
+        allowGraph,
+        graphBudget,
+      })
+      const { posts, pagesFetched } = served
       outcome.fetched = posts.length
       outcome.pagesFetched = pagesFetched
+      outcome.servedBy = served.source
+      servedBy[served.source] += 1
+      if (served.source === 'graph') {
+        // Kept loud: a channel read through the official API carries no tag evidence, and the
+        // reason the anonymous feed did not serve it is the outage worth reading in the log.
+        log.warn('read through the official API instead of the anonymous feed', {
+          handle: target.handle,
+          because: served.fallbackReason ?? 'unknown',
+          posts: posts.length,
+        })
+      }
       // THE PASS SAYS IT IS ALIVE ON ITS FIRST PAGE, NOT ONLY AT ITS END (8 Sept 2026). `detectFeedOkAt`
       // was stamped by recordDetectionOutput when the pass FINISHED, so a slow pass — 30 minutes on 8
       // Sept while OCR crawled on a squeezed box — looked to the Mac's failover exactly like a blind
       // server (its threshold is 20 minutes), and the Mac re-read and re-judged the same channels.
       // One cheap write per pass, primary only: a failover pass must not speak for the server.
-      if (role === 'primary' && pagesFetched > 0 && !feedAliveStamped) {
+      //
+      // A page with NO posts does not stamp it (review, 15 Oct 2026): "HTTP 200 with no posts in it"
+      // is an outage shape, and a pass whose every channel answered empty used to keep this stamp
+      // fresh — detection read as healthy while it read nothing, and the empty-feed sentence on the
+      // landing page could never appear. A real watched channel always has posts.
+      if (role === 'primary' && pagesFetched > 0 && posts.length > 0 && !feedAliveStamped) {
         feedAliveStamped = true
         const value = new Date().toISOString()
         void prisma.setting
@@ -259,13 +364,44 @@ export async function runDetection(
          * whether anything actually moved. Two extra columns on a query that already runs
          * every pass; no extra round trip.
          */
-        select: { shortcode: true, taggedAccounts: true, rawPayload: true },
+        select: { shortcode: true, taggedAccounts: true, rawPayload: true, verdictSource: true, humanLabel: true },
       })
       const knownSet = new Set(known.map((k) => k.shortcode))
       const storedByShortcode = new Map(known.map((k) => [k.shortcode, k]))
       outcome.alreadyKnown = knownSet.size
 
-      const fresh = posts.filter((p) => !knownSet.has(p.shortcode))
+      /**
+       * ── A POST THE OFFICIAL API STORED IS JUDGED AGAIN WHEN THE FEED SHOWS IT WHOLE ──────────
+       * (review, 15 Oct 2026)
+       *
+       * The official API serves a post with no tags, no collaborators, no sponsors, no paid flag —
+       * and, per Meta's documentation (not yet seen in a real answer), a caption with every @
+       * removed. Its verdict and brands were formed from that, and refreshing only the tag column
+       * would leave the caption mention-less and the verdict and brands as they were, for good: the
+       * caption is written only on create. So when the ANONYMOUS feed returns such a post, it goes
+       * through the fresh path below — the same judging, the same `persist` — and `persist`'s update
+       * branch rewrites caption, brands, tags, payload and verdict from the complete read.
+       *
+       * Never a post a person has labelled: a human answer outranks any model, so that row only has
+       * its evidence completed (the known-post loop below). Bounded by what the pass fetched — each
+       * such post costs the classifier calls it would have cost had the anonymous feed served it.
+       */
+      const rejudge = new Set(
+        posts
+          .filter((p) => {
+            const stored = storedByShortcode.get(p.shortcode)
+            return (
+              !p.evidenceIncomplete &&
+              stored !== undefined &&
+              (stored.rawPayload ?? '').includes(EVIDENCE_INCOMPLETE_MARKER) &&
+              stored.humanLabel === null &&
+              stored.verdictSource !== 'human'
+            )
+          })
+          .map((p) => p.shortcode),
+      )
+
+      const fresh = posts.filter((p) => !knownSet.has(p.shortcode) || rejudge.has(p.shortcode))
       const detector = getDetector(target.detectorKey)
 
       /**
@@ -291,14 +427,24 @@ export async function runDetection(
        */
       for (const post of posts) {
         const stored = storedByShortcode.get(post.shortcode)
-        if (!stored) continue
+        // A post being re-judged is written whole by `persist` in the fresh loop, frame included.
+        if (!stored || rejudge.has(post.shortcode)) continue
         await saveFrame(post.shortcode, post.thumbnailUrl)
 
+        // A post the OFFICIAL API served reports no tags at all, and comparing that would erase
+        // the real ones — `evidenceRefresh` returns null for it by its own first line (the one
+        // comparison, so the one guard; tests/official-read-pipeline.test.ts drives it here).
         const refreshed = evidenceRefresh(stored, post, new Date())
         if (!refreshed) continue
         await prisma.detectedCampaign.update({
           where: { shortcode: post.shortcode },
-          data: { taggedAccounts: refreshed.taggedAccounts, rawPayload: refreshed.rawPayload },
+          data: {
+            taggedAccounts: refreshed.taggedAccounts,
+            rawPayload: refreshed.rawPayload,
+            // A labelled post the official API stored: its caption came without its @mentions, and the
+            // complete one is evidence the person's answer does not depend on — so it is written too.
+            ...(refreshed.changed.includes('completed') ? { caption: post.caption } : {}),
+          },
         })
         outcome.evidenceRefreshed += 1
         log.step('a stored post changed its own evidence', {
@@ -443,7 +589,17 @@ export async function runDetection(
           ...(judged.secondLook?.brands ?? []),
         ])
 
-        if (verdict === 'CAMPAIGN') outcome.campaigns += 1
+        // A re-judged official-API post is not a NEW post: it was counted when it was stored, and
+        // counting it again would inflate `newPosts`/`detected`. It is an evidence refresh.
+        const completing = rejudge.has(post.shortcode)
+        if (completing) {
+          outcome.evidenceRefreshed += 1
+          log.step('a post the official API stored was read whole by the feed — judged again', {
+            shortcode: post.shortcode,
+            handle: target.handle,
+            verdict,
+          })
+        } else if (verdict === 'CAMPAIGN') outcome.campaigns += 1
         else if (verdict === 'UNCLASSIFIED') outcome.unclassified += 1
         else outcome.organic += 1
 
@@ -464,7 +620,7 @@ export async function runDetection(
            */
           frameText: judged.frameText ?? null,
         })
-        outcome.stored += 1
+        if (!completing) outcome.stored += 1
       }
 
       log.info('channel done', {
@@ -474,11 +630,28 @@ export async function runDetection(
         new: outcome.stored,
         campaigns: outcome.campaigns,
         officiallyPaid: outcome.officiallyPaid,
+        ...(served.source === 'graph' ? { source: 'official API' } : {}),
       })
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err)
       outcome.error = message
-      if (err instanceof FeedFetchError && err.isParseFailure) {
+      if (err instanceof GraphFeedError) {
+        /**
+         * THE OFFICIAL READ FAILED TOO — first, because a GraphFeedError IS a FeedFetchError and
+         * the branches below would misfile it: its `isThrottle` is the official API's pause, and
+         * reading it as the anonymous one would write that pause into `detectThrottledUntil`.
+         */
+        const anonymous = err.anonymousError?.message ?? null
+        outcome.error = anonymous ? `${anonymous}; then ${message}` : message
+        if (err.isParseFailure) {
+          outcome.parseFailure = true
+          log.alarm('the official API answered in a shape the reader does not expect', { handle: target.handle, message, anonymous })
+        } else if (err.isThrottle) {
+          outcome.skipped = 'official-rate-limited'
+        } else {
+          log.error('channel failed', { handle: target.handle, error: message, anonymous })
+        }
+      } else if (err instanceof FeedFetchError && err.isParseFailure) {
         outcome.parseFailure = true
         log.alarm('feed shape changed — detection is blind until fixed', { handle: target.handle, message })
       } else if (err instanceof FeedFetchError && err.isThrottle) {
@@ -493,7 +666,28 @@ export async function runDetection(
       setChannelVocabulary(null)
     }
 
+    /**
+     * With the official read on, an anonymous refusal no longer ENDS a channel in the throttle
+     * branch above (the channel went to the official API instead), so the anonymous cooldown is
+     * read off the gate itself — the same value that branch would have recorded.
+     */
+    if (officialOn) {
+      const after = anonGateCheck()
+      if (!after.ok) throttledUntil = after.until
+    }
+
     channels.push(outcome)
+  }
+
+  if (officialOn && (servedBy.graph > 0 || graphBudget.dropped > 0)) {
+    log.info('detection pass sources', { servedBy, officialCalls: graphBudget.used, officialCallCap: GRAPH_MAX_CALLS_PER_PASS })
+  }
+  if (graphBudget.dropped > 0) {
+    // NO SILENT CAPS: the channels the cap cost, by count, every pass it happens.
+    log.warn('the official read call cap was reached this pass — some channels were not read through it', {
+      cap: GRAPH_MAX_CALLS_PER_PASS,
+      channelsNotRead: graphBudget.dropped,
+    })
   }
 
   /**
@@ -511,6 +705,8 @@ export async function runDetection(
    * next pass retries.
    */
   const pagesFetched = channels.reduce((n, c) => n + c.pagesFetched, 0)
+  // Only pages that carried posts prove a read — see the first-page stamp above.
+  const pagesWithPosts = channels.filter((c) => c.fetched > 0).reduce((n, c) => n + c.pagesFetched, 0)
   const channelsUnread = channels.filter((c) => c.skipped === 'throttled').length
   if (channelsUnread > 0) {
     log.alarm('detection halted early — Instagram is refusing anonymous reads from this host', {
@@ -519,7 +715,7 @@ export async function runDetection(
       resumesAt: throttledUntil?.toISOString() ?? 'unknown',
     })
   }
-  await recordDetectionOutput({ pagesFetched, throttledUntil, role })
+  await recordDetectionOutput({ pagesWithPosts, throttledUntil, role })
   /**
    * A FAILOVER pass (an operator's Mac reading because the server cannot) stops here: brand
    * discovery and the frame re-judge run on that machine's own timers already, and the
@@ -538,6 +734,7 @@ export async function runDetection(
       hadParseFailure: channels.some((c) => c.parseFailure === true),
       hadError: channels.some((c) => c.error !== undefined),
       brandsResolved: { looked: 0, decided: 0, skippedUnsure: 0, haltedEarly: false, unreached: 0, backingOff: 0, awaitingRetry: 0 },
+      servedBy,
     }
   }
   const brandsResolved = await autoResolveBrands().catch((err): AutoResolveSummary => {
@@ -638,6 +835,7 @@ export async function runDetection(
     hadParseFailure: channels.some((c) => c.parseFailure === true),
     hadError: channels.some((c) => c.error !== undefined),
     brandsResolved,
+    servedBy,
   }
 }
 
@@ -667,12 +865,13 @@ export const GATE_REOPEN_WAIT_MAX_MS = 2 * 60_000
  * Best-effort like every other stamp: recording output must never fail the pass.
  */
 async function recordDetectionOutput(input: {
-  pagesFetched: number
+  /** Pages that carried at least one post. An all-empty pass is not a read (see the first-page stamp). */
+  pagesWithPosts: number
   throttledUntil: Date | null
   role: DetectionRole
 }): Promise<void> {
   const writes: Promise<unknown>[] = []
-  if (input.pagesFetched > 0) {
+  if (input.pagesWithPosts > 0) {
     const value = new Date().toISOString()
     writes.push(
       prisma.setting.upsert({ where: { key: DETECT_FEED_OK_KEY }, update: { value }, create: { key: DETECT_FEED_OK_KEY, value } }),
@@ -786,18 +985,43 @@ async function persist(
      * `taggedAccounts` is in here now. It was the one captured field the reconciler left
      * behind, so a post that landed on this branch kept whichever tags the losing pass had
      * — a silent, invisible divergence between the column and the payload beside it.
+     *
+     * The judgement's PROVENANCE (`verdictSource`, model, reason) and the caption are written with
+     * the verdict now (review, 15 Oct 2026): writing a verdict without its source left rows reading
+     * `verdictSource: 'rules'` beside a model's answer, and the caption is what a re-judge of a post
+     * the official API stored exists to replace (see the fresh-path note in `runDetection`).
+     *
+     * ── AND NOTHING BUT THE COUNTS FROM A POST THE OFFICIAL API SERVED (15 Oct 2026) ───────
+     *
+     * Its tags, collaborators and sponsors are EMPTY because the API does not report them, its
+     * caption has no @mentions, its paid flag is a placeholder, and a carousel has no frame — so
+     * its verdict, brands, signals and frame text were all formed from LESS evidence than the row
+     * may already hold. This branch is reached routinely, not only in the slot/cron collision: while
+     * the server reads through the API it still records the anonymous cooldown, which starts the
+     * Mac's failover, so the two read the same channels in the same quarter-hour and either can
+     * persist second. An incomplete read landing second must never downgrade a complete row (a
+     * Mac's paid CAMPAIGN to a caption-only verdict, its frame text to null), so it updates the
+     * like and comment counts and nothing else. MUTATION (applied by hand, saw red, restored):
+     * writing the full update for an incomplete post fails tests/official-read-pipeline.test.ts
+     * "the reconciler keeps the evidence a concurrent anonymous pass captured".
      */
-    update: {
-      likeCount: data.likeCount,
-      commentCount: data.commentCount,
-      confidence: data.confidence,
-      verdict: data.verdict,
-      signals: data.signals,
-      brands: data.brands,
-      taggedAccounts: data.taggedAccounts,
-      rawPayload: data.rawPayload,
-      frameText: data.frameText,
-    },
+    update: post.evidenceIncomplete
+      ? { likeCount: data.likeCount, commentCount: data.commentCount }
+      : {
+          likeCount: data.likeCount,
+          commentCount: data.commentCount,
+          caption: data.caption,
+          confidence: data.confidence,
+          verdict: data.verdict,
+          verdictSource: data.verdictSource,
+          classifierModel: data.classifierModel,
+          classifierReason: data.classifierReason,
+          signals: data.signals,
+          brands: data.brands,
+          taggedAccounts: data.taggedAccounts,
+          rawPayload: data.rawPayload,
+          frameText: data.frameText,
+        },
     create: { ...data, shortcode: post.shortcode },
   })
 }

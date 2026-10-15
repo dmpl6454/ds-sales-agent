@@ -1,5 +1,6 @@
 import { igGet, type IgResponse } from './igHttp'
-import { anonGateCheck, anonGateRecordSuccess, anonGateRecordThrottle, isThrottleResponse } from './anonGate'
+import { anonGateCheck, anonGateHost, anonGateRecordSuccess, anonGateRecordThrottle } from './anonGate'
+import { classifyFeedAnswer, evidenceHead, isRefusalKind, recordFeedAnswer, type FeedAnswer } from './feedEvidence'
 import { z } from 'zod'
 import { log } from '@/lib/logger'
 import type { EnrichedPost } from './types'
@@ -73,6 +74,86 @@ export const FEED_HEADERS: Record<string, string> = {
 /** Local alias, so the existing call sites in this file read unchanged. */
 const HEADERS = FEED_HEADERS
 
+/**
+ * One page of one channel's feed, exactly as `fetchFeed` asks for it. Exported so the identity
+ * probe (src/detection/feedProbe.ts) sends the in-use candidate to the SAME URL the pass does —
+ * a probe that builds its own copy would be testing a request production never makes.
+ */
+export function feedPageUrl(handle: string, maxId: string | null = null): string {
+  return `${ENDPOINT}/${encodeURIComponent(handle)}/username/?count=12${maxId ? `&max_id=${encodeURIComponent(maxId)}` : ''}`
+}
+
+/**
+ * ── THE IDENTITY CANDIDATES `pnpm ig:probe` ASKS WITH (15 Oct 2026) ────────────────────────
+ *
+ * The 4 Sept outage was settled by ONE control probe — the same sessionless request under a
+ * different client identity — after a day spent blaming the address. CLAUDE.md's lesson is
+ * "vary the CLIENT before blaming the ADDRESS", and on 15 Oct both hosts had read nothing for
+ * ~22.5 hours while the identity in use (FEED_HEADERS) was the same two-year-old app build. So a
+ * person can now ask Instagram, from the Mac and from the box, with each of these, one request
+ * each, and compare what comes back (src/detection/feedProbe.ts does the asking).
+ *
+ * They live HERE, beside FEED_HEADERS, because tests/one-instagram-identity.test.ts keeps every
+ * Instagram identity in this one file: a second file declaring a User-Agent is a second place for
+ * the next identity change to be half-applied. Outside this array, feed.ts declares exactly one.
+ *
+ * DECISION 4 HOLDS FOR EVERY ENTRY: no Cookie, no Authorization, no session or CSRF header of any
+ * kind — asserted over every entry, not just the one in use. Only the costume varies.
+ *
+ * What is known about each, stated:
+ *  - the in-use entry is FEED_HEADERS and `feedPageUrl` by reference, so it cannot drift;
+ *  - the newer version is a GUESS. Both its version string and its build number were not read off
+ *    a device. It changes exactly one thing (the app version) so that "served" against "refused"
+ *    tells a version gate from a wall; a person with a current Instagram for Android can pass the
+ *    real string with `--ua`;
+ *  - the web control carries the retired web identity's HEADERS byte for byte as this file sent
+ *    them until 8 Sept (recovered from git history, commit b9e5a44). Only the headers: the
+ *    TRANSPORT differs. Until 8 Sept they went out through Node's global fetch (undici), which
+ *    adds its own Sec-Fetch-* and connection headers (igHttp.ts); the probe sends them through
+ *    `igGet` (node:https), which sends exactly what it is given. It is EXPECTED to be refused, and
+ *    if it is served while the app identity is not, that says Instagram is answering the web
+ *    identity over node:https again — worth knowing, and not by itself proof that the 8 Sept
+ *    switch has reversed.
+ */
+export interface FeedIdentityProbe {
+  name: string
+  url: (handle: string) => string
+  headers: Readonly<Record<string, string>>
+  note: string
+}
+
+export const FEED_IDENTITY_PROBES: readonly FeedIdentityProbe[] = [
+  {
+    name: 'android-app (in use)',
+    url: (handle) => feedPageUrl(handle),
+    headers: FEED_HEADERS,
+    note: 'exactly what every detection pass sends',
+  },
+  {
+    name: 'android-app, newer version',
+    url: (handle) => feedPageUrl(handle),
+    headers: {
+      ...FEED_HEADERS,
+      'User-Agent':
+        'Instagram 410.0.0.53.71 Android (33/13; 420dpi; 1080x2340; samsung; SM-S911B; dm1q; qcom; en_IN; 846519343)',
+    },
+    note: 'UNVERIFIED — a guess at a current version, offered only to tell a version gate from a wall',
+  },
+  {
+    name: 'web (walled since 4 Sept — control)',
+    url: (handle) => `https://www.instagram.com/api/v1/feed/user/${encodeURIComponent(handle)}/username/?count=12`,
+    headers: {
+      'x-ig-app-id': '936619743392459',
+      'User-Agent':
+        'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36',
+      Accept: '*/*',
+      'Accept-Language': 'en-US,en;q=0.9',
+      Referer: 'https://www.instagram.com/',
+    },
+    note: 'the retired web identity (its headers, sent over node:https), expected to be refused — served here while the app is refused is worth knowing, not proof the 8 Sept switch reversed',
+  },
+]
+
 export class FeedFetchError extends Error {
   constructor(
     public readonly handle: string,
@@ -80,12 +161,20 @@ export class FeedFetchError extends Error {
     /** True when the shape changed rather than the request failing — an alarm. */
     public readonly isParseFailure = false,
     /**
-     * True when Instagram told THIS HOST to stop (401/429 — see anonGate.ts). The pipeline
+     * True when Instagram told THIS HOST to stop (401/429, or any status whose body is the
+     * login wall — see anonGate.ts and feedEvidence.ts `isLoginWallBody`). The pipeline
      * halts the whole pass on it rather than trying the next channel: every further request
      * only extends the cooldown. `until` is when the gate reopens.
      */
     public readonly isThrottle = false,
     public readonly until: Date | null = null,
+    /**
+     * True when no ANSWER arrived at all — DNS, TLS, a reset, a timeout, after every retry.
+     * Carried (15 Oct 2026) so the source selector (feedSource.ts) can tell "this host cannot
+     * reach the network" from "Instagram answered something else": the first is no reason to
+     * try a second endpoint over the same broken network, the second is exactly the reason.
+     */
+    public readonly isTransport = false,
   ) {
     super(`[@${handle}] ${message}`)
     this.name = 'FeedFetchError'
@@ -163,6 +252,16 @@ const FeedResponseSchema = z.object({
   next_max_id: z.string().nullable().optional(),
 })
 
+/**
+ * PURE. How many items `fetchFeed` would ACCEPT from this parsed body — `null` when its schema
+ * would refuse the shape. The identity probe asks this rather than counting `items` itself, so
+ * "served" in the probe's output means what it means to the pass, not merely "had an array".
+ */
+export function acceptedFeedItems(json: unknown): number | null {
+  const r = FeedResponseSchema.safeParse(json)
+  return r.success ? r.data.items.length : null
+}
+
 export interface FeedPost extends EnrichedPost {
   /** Instagram's own paid-partnership flag. False for both Phase 1 targets — they
    *  do not use the native tool — but true elsewhere, so it costs nothing to carry
@@ -182,12 +281,23 @@ export interface FeedPost extends EnrichedPost {
   thumbnailUrl: string | null
   videoUrl: string | null
   videoDurationSeconds: number | null
+  /**
+   * SET ONLY BY THE OFFICIAL READ PATH (src/detection/graphFeed.ts, 15 Oct 2026). The Graph
+   * API returns no tags, no collaborators, no sponsor tags and no paid-partnership flag, so a
+   * post it serves carries EMPTY evidence that is not a fact about the post — and treating
+   * "the API did not say" as "the publisher removed every tag" would ERASE real stored tags on
+   * every pass (evidence.ts and pipeline.ts both refuse to write tag evidence from such a post).
+   * Absent means the anonymous feed served it and the evidence is complete.
+   */
+  evidenceIncomplete?: true
 }
 
 export interface FetchFeedResult {
   posts: FeedPost[]
   pagesFetched: number
   moreAvailable: boolean
+  /** True when the posts came from a source that does not report tag evidence — see FeedPost. */
+  evidenceIncomplete?: boolean
 }
 
 /**
@@ -279,13 +389,28 @@ async function fetchPageWithRetry(url: string, handle: string): Promise<IgRespon
           `network error after ${PAGE_RETRIES + 1} attempts: ${
             err instanceof Error ? err.message : String(err)
           }`,
+          false,
+          false,
+          null,
+          true,
         )
       }
     }
   }
 
   // Unreachable: every path above either returns or throws on the final attempt.
-  throw new FeedFetchError(handle, 'exhausted retries')
+  throw new FeedFetchError(handle, 'exhausted retries', false, false, null, true)
+}
+
+/** How much of a redacted body head rides on a thrown `HTTP <status>` message — a log line, not a record. */
+const ERROR_HEAD_MAX = 120
+
+/**
+ * Put one answer on record for this host (src/detection/feedEvidence.ts). `void`, on purpose:
+ * recording is best-effort and must never make a feed read wait on the database, nor fail it.
+ */
+function recordAnswer(handle: string, a: Pick<FeedAnswer, 'kind' | 'status' | 'contentType' | 'head' | 'items'> & { until?: string | null }): void {
+  void recordFeedAnswer({ at: new Date().toISOString(), host: anonGateHost(), source: 'anonymous-app', handle, ...a })
 }
 
 /**
@@ -297,8 +422,24 @@ async function fetchPageWithRetry(url: string, handle: string): Promise<IgRespon
  */
 export async function fetchFeed(
   handle: string,
-  opts: { maxPosts?: number; sinceUnix?: number; maxPages?: number; delayMs?: number } = {},
+  opts: {
+    maxPosts?: number
+    sinceUnix?: number
+    maxPages?: number
+    delayMs?: number
+    /**
+     * `false` when the read is NOT a detection pass (review, 15 Oct 2026) — the dashboard's
+     * add-a-channel check, which vets ONE handle a person just typed. Its answer is about that
+     * handle, and recorded it would become the server's `detectFeedAnswer` row: a mistyped handle's
+     * empty feed would put "Instagram stopped answering the server's feed reads" on the landing
+     * page. The gate is unaffected (a refusal still closes it, as it always has). Default `true`.
+     */
+    record?: boolean
+  } = {},
 ): Promise<FetchFeedResult> {
+  const noteAnswer = (h: string, a: Parameters<typeof recordAnswer>[1]): void => {
+    if (opts.record !== false) recordAnswer(h, a)
+  }
   const maxPosts = opts.maxPosts ?? 48
   const maxPages = opts.maxPages ?? 6
   const delayMs = opts.delayMs ?? 2500 // between pages of one channel — bursts are what earn a throttle
@@ -319,36 +460,78 @@ export async function fetchFeed(
   }
 
   while (pages < maxPages && posts.length < maxPosts) {
-    const url = `${ENDPOINT}/${encodeURIComponent(handle)}/username/?count=12${
-      maxId ? `&max_id=${encodeURIComponent(maxId)}` : ''
-    }`
+    const url = feedPageUrl(handle, maxId)
 
-    const res = await fetchPageWithRetry(url, handle)
-    if (!res.ok) {
-      const body = await res.text().catch(() => '')
-      if (isThrottleResponse(res.status, body)) {
-        const until = anonGateRecordThrottle('feed', res.status)
-        throw new FeedFetchError(
-          handle,
-          `Instagram refused anonymous reads (HTTP ${res.status}) — every lookup on this host halts until ${until.toISOString()}`,
-          false,
-          true,
-          until,
-        )
+    let res: IgResponse
+    try {
+      res = await fetchPageWithRetry(url, handle)
+    } catch (err) {
+      // A transport failure after every retry. No status, but the error's words are evidence.
+      if (err instanceof FeedFetchError) {
+        noteAnswer(handle, { kind: 'transport', status: null, contentType: null, head: evidenceHead(err.message), items: null })
       }
-      throw new FeedFetchError(handle, `HTTP ${res.status}`)
+      throw err
+    }
+
+    /**
+     * THE BODY IS READ ONCE, AS TEXT, AND PARSED HERE (15 Oct 2026) — so whatever happens next,
+     * the evidence has the body. `res.json()` used to consume it on the success path and the
+     * failure path read it only for the throttle test, then threw it away: a 22-hour outage
+     * left nothing on record but `channel failed` lines.
+     */
+    const body = await res.text().catch(() => '')
+    const contentType = res.contentType ?? null
+    let json: unknown
+    let jsonOk = false
+    try {
+      json = JSON.parse(body) as unknown
+      jsonOk = true
+    } catch {
+      jsonOk = false
+    }
+    const schema = jsonOk ? FeedResponseSchema.safeParse(json) : null
+    const answer = classifyFeedAnswer({
+      status: res.status,
+      contentType,
+      body,
+      parsedItems: !res.ok ? undefined : schema?.success ? schema.data.items.length : null,
+    })
+
+    /**
+     * A REFUSAL, WHATEVER THE STATUS. A 401/429 always was one; a 200 (or any status) whose body
+     * is the login wall now is too, because filing it as a shape change let the pass spend a
+     * request on every remaining channel against a host Instagram had just told to wait.
+     */
+    if (isRefusalKind(answer.kind)) {
+      const until = anonGateRecordThrottle('feed', res.status)
+      noteAnswer(handle, { kind: answer.kind, status: res.status, contentType, head: answer.head, items: null, until: until.toISOString() })
+      throw new FeedFetchError(
+        handle,
+        `Instagram refused anonymous reads (HTTP ${res.status}) — every lookup on this host halts until ${until.toISOString()}`,
+        false,
+        true,
+        until,
+      )
+    }
+    if (!res.ok) {
+      noteAnswer(handle, { kind: answer.kind, status: res.status, contentType, head: answer.head, items: null })
+      throw new FeedFetchError(handle, `HTTP ${res.status}${answer.head ? ` — ${answer.head.slice(0, ERROR_HEAD_MAX)}` : ''}`)
     }
     anonGateRecordSuccess('feed')
 
-    let parsed
-    try {
-      parsed = FeedResponseSchema.parse(await res.json())
-    } catch (err) {
-      throw new FeedFetchError(
-        handle,
-        `feed response shape changed: ${err instanceof Error ? err.message.slice(0, 200) : String(err)}`,
-        true,
-      )
+    if (!schema?.success) {
+      noteAnswer(handle, { kind: answer.kind, status: res.status, contentType, head: answer.head, items: null })
+      const why = !jsonOk
+        ? `the body is not JSON${contentType ? ` (${contentType})` : ''}`
+        : schema!.error.message.slice(0, 200)
+      throw new FeedFetchError(handle, `feed response shape changed: ${why}`, true)
+    }
+    const parsed = schema.data
+
+    // The FIRST page of a call says what Instagram answered this channel; later pages add nothing
+    // the screen needs, and a write per page would be nineteen-fold noise.
+    if (pages === 0) {
+      noteAnswer(handle, { kind: answer.kind, status: res.status, contentType, head: answer.head, items: parsed.items.length })
     }
 
     for (const item of parsed.items) {

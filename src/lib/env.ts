@@ -130,6 +130,37 @@ const schema = z.object({
   DEVICE_SSH_HOST: z.string().optional(),
   DEVICE_SSH_USER: z.string().optional().transform((v) => v ?? 'root'),
 
+  /**
+   * ── THE OFFICIAL READ FALLBACK (15 Oct 2026) — DORMANT UNTIL BOTH KEYS ARE SET ────────────
+   *
+   * When Instagram refuses the anonymous feed, the server may read a watched channel through
+   * Meta's Instagram Graph API Business Discovery instead (src/detection/graphFeed.ts). It is
+   * an authenticated API with a token minted by a person through the business's own Meta app;
+   * it is NOT an Instagram web session and attaches no cookie, so decision 4 (detection never
+   * logs in to Instagram) is about the anonymous feed and stays true for it.
+   *
+   * Turning this on is Tabish's decision (it trades the anonymous read for an authenticated one
+   * and loses tag, collaborator and paid-partnership evidence on the posts it serves), so it
+   * ships OFF: both keys unset means nothing changes anywhere. SERVER ONLY — these never go in
+   * the DMG installer's `.env` writer, and a Mac's failover pass never uses them.
+   *
+   * The TOKEN is a secret. It is read where it is used (graphFeed.ts) and never logged, never
+   * put in an error message and never recorded as evidence. Validated for presence only.
+   */
+  META_GRAPH_TOKEN: z.string().optional().transform((v) => (v && v.trim() !== '' ? v.trim() : null)),
+  /** The Instagram professional account's numeric id that Business Discovery is asked AS. */
+  META_IG_USER_ID: z
+    .string()
+    .optional()
+    .transform((v) => (v && v.trim() !== '' ? v.trim() : null))
+    .pipe(z.string().regex(/^\d+$/, 'META_IG_USER_ID must be the numeric Instagram user id').nullable()),
+  /** Graph API version. Documented default only — never measured from here. */
+  META_GRAPH_VERSION: z
+    .string()
+    .optional()
+    .transform((v) => (v && v.trim() !== '' ? v.trim() : 'v25.0'))
+    .pipe(z.string().regex(/^v\d+\.\d+$/, 'META_GRAPH_VERSION must look like v25.0')),
+
   OPERATOR_NAME: z.string().optional().transform((v) => v ?? 'operator'),
 
   /**
@@ -174,6 +205,15 @@ export const env = parsed.data
 
 if (env.SEND_JITTER_MIN_SECONDS > env.SEND_JITTER_MAX_SECONDS) {
   throw new Error('SEND_JITTER_MIN_SECONDS must be <= SEND_JITTER_MAX_SECONDS')
+}
+
+/**
+ * Half a fallback is a fallback that silently never runs: a token with no account id (or the
+ * reverse) would leave `graphConfigured()` false and the box reading nothing through it while
+ * the person who just edited `.env` believes it is on. Loud, like the jitter check above.
+ */
+if ((env.META_GRAPH_TOKEN === null) !== (env.META_IG_USER_ID === null)) {
+  throw new Error('META_GRAPH_TOKEN and META_IG_USER_ID must be set together (or both left unset)')
 }
 
 /** True when we are allowed to actually deliver messages. Checked at every send site. */

@@ -43,6 +43,9 @@ import { mentionsHandleExactly, brandStringsNameProspect } from '@/outreach/mate
 import { stripOwnMarksFromBrands } from '@/detection/ownMarks'
 import { readHeartbeat, readPassHealth, machineId, type PassHealth } from '@/worker/scheduler'
 import { DETECTION_FAILOVER_AFTER_MS } from '@/detection/failover'
+import { describeDetectionOutage, describeOfficialRead, lastCheckCause } from './view-model/detection-outage'
+/** Re-exported: the sentence lives in a leaf so its table test imports no database. */
+export { describeDetectionOutage, describeOfficialRead, lastCheckCause }
 
 /**
  * No host has read a feed page recently. The threshold is the failover's own (20 minutes),
@@ -704,6 +707,8 @@ async function computeCeoView(): Promise<CeoView> {
 
   let health: Health = 'healthy'
   let headline = 'Watching normally. Nothing to send right now.'
+  // From the rows `readPassHealth` already carries — no query of its own.
+  const officialRead = describeOfficialRead(passes)
 
   if (challenged.length > 0) {
     health = 'broken'
@@ -734,11 +739,14 @@ async function computeCeoView(): Promise<CeoView> {
      * ATTENTION rung further down — paid posts ARE being found then.
      */
     health = 'broken'
-    const lastOk = passes.feedOkAt
-    const minutes = lastOk ? Math.round((Date.now() - lastOk.getTime()) / 60_000) : null
-    headline =
-      `Instagram is refusing anonymous reads — no paid posts are being found` +
-      `${minutes !== null ? ` since ${minutes} min ago` : ''}`
+    /**
+     * THE CAUSE ON RECORD, NOT A GUESS (15 Oct 2026). This sentence said "Instagram is refusing
+     * anonymous reads" whenever the stamp went stale — including on a day when nothing on record
+     * said Instagram had refused anything, so the operator was told to wait out a rate limit that
+     * may not exist. `describeDetectionOutage` reads what each host was actually answered
+     * (`passes.feedAnswers`) and says "refusing" only when a refusal was recorded.
+     */
+    headline = describeDetectionOutage(passes)
   } else if (passes.detectStale || passes.planStale) {
     /**
      * Below the dead-process rung (that one is unrecoverable loss; this one is work
@@ -769,6 +777,17 @@ async function computeCeoView(): Promise<CeoView> {
     headline =
       `${settings.activeDevice} is online, but its sending loop keeps failing` +
       `${minutes !== null ? ` — last completed ${minutes} min ago` : ''}`
+  } else if (officialRead !== null) {
+    /**
+     * THE OFFICIAL API IS SERVING (15 Oct 2026). Not blind — its pages stamp `detectFeedOkAt` —
+     * and not the paired-Mac rung below, whose sentence would be false: it is the SERVER reading,
+     * through the Graph API, and what it reads carries no tag data. Above the Mac rung because
+     * both can be true and this one changes what the corpus contains. Reached with or without an
+     * anonymous cooldown: a 400 sends a channel to the official API too, and a page that went
+     * quiet about it would hide the switch from the person who must decide whether to keep it.
+     */
+    health = 'attention'
+    headline = officialRead
   } else if (passes.throttledUntil) {
     // The server is refused but a paired Mac is reading the feeds in its place (feedOkAt is
     // fresh, or `detectionBlind` above would have fired). Worth knowing, not broken.
@@ -1060,7 +1079,7 @@ async function computeCeoView(): Promise<CeoView> {
    * broke), so the one number that must never appear falsely was appearing four
    * times a day. Observed 2026-08-03: the same row read 0 at 11:01 and 168 at 11:03.
    */
-  const lastCheckLabel = lastCheckLabelFor(lastRun)
+  const lastCheckLabel = lastCheckLabelFor(lastRun, lastCheckCause(passes, lastRun))
 
   const detection = await buildDetectionHealth(targets, degradedRuns)
 
@@ -2351,12 +2370,19 @@ async function buildDetectionHealth(
  *
  * Extracted in step C so Today and Channels cannot phrase this differently.
  */
-function lastCheckLabelFor(run: { finishedAt: Date | null; postsSeen: number; newPosts: number } | null): string {
+function lastCheckLabelFor(
+  run: { finishedAt: Date | null; postsSeen: number; newPosts: number } | null,
+  /**
+   * Why a finished check read NOTHING, in a few words, from `lastCheckCause` — "0 posts" with no
+   * reason beside it is the line that read identically on a quiet morning and a 22-hour outage.
+   */
+  cause: string | null = null,
+): string {
   return !run
     ? 'No check has run yet'
     : run.finishedAt === null
       ? 'Checking the channels now…'
-      : `Last check read ${run.postsSeen} posts · ${run.newPosts} new`
+      : `Last check read ${run.postsSeen} posts · ${run.newPosts} new${cause ? ` — ${cause}` : ''}`
 }
 
 // ── formatting ───────────────────────────────────────────────────────────────

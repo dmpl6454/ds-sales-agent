@@ -42,30 +42,52 @@ import type { FeedPost } from './feed'
 
 /** The `rawPayload` shape. Every producer of it goes through here. */
 export interface RawPayloadShape {
-  isPaidPartnership: boolean
+  /** `null` only on a post the official read path served — it does not report the flag. */
+  isPaidPartnership: boolean | null
   sponsorHandles: string[]
   collabHandles: string[]
   thumbnailUrl: string | null
   videoUrl: string | null
   videoDurationSeconds: number | null
   capturedAt: string
+  /**
+   * Present (and true) only when the post was stored from a source that reports no tag
+   * evidence at all — the official Graph API fallback (src/detection/graphFeed.ts). The
+   * empty lists beside it mean "not reported", not "none", and the first anonymous read of
+   * the post replaces the whole payload (see `evidenceRefresh`).
+   */
+  evidenceIncomplete?: true
 }
+
+/**
+ * The exact bytes `buildRawPayload` writes for a post the official read path stored. The pipeline
+ * finds such rows with a string `contains` on `rawPayload` (one query, both providers), so the
+ * marker must be byte-identical to what `JSON.stringify` emits — `tests/official-read-pipeline.test.ts`
+ * asserts it against a real payload rather than trusting this comment.
+ */
+export const EVIDENCE_INCOMPLETE_MARKER = '"evidenceIncomplete":true'
 
 /**
  * `taggedAccounts` is NOT in here, and that is deliberate rather than an oversight
  * repeated. It has its own column, it is the one field of this set a query might ever
  * want, and duplicating it into the JSON would create two sources of truth for one fact —
  * which is the thing this module exists to prevent.
+ *
+ * A post from the official read path is stored with the paid-partnership flag as `null` and
+ * `evidenceIncomplete: true`: writing its `false` would assert a fact the API never stated,
+ * and "absence is not false" is the mistake this codebase has made five times. A complete
+ * post's payload is byte-for-byte what it always was — the marker key is only added when set.
  */
 export function buildRawPayload(post: FeedPost, capturedAt: Date): string {
   const payload: RawPayloadShape = {
-    isPaidPartnership: post.isPaidPartnership,
+    isPaidPartnership: post.evidenceIncomplete ? null : post.isPaidPartnership,
     sponsorHandles: post.sponsorHandles,
     collabHandles: post.collabHandles,
     thumbnailUrl: post.thumbnailUrl,
     videoUrl: post.videoUrl,
     videoDurationSeconds: post.videoDurationSeconds,
     capturedAt: capturedAt.toISOString(),
+    ...(post.evidenceIncomplete ? { evidenceIncomplete: true as const } : {}),
   }
   return JSON.stringify(payload)
 }
@@ -79,8 +101,12 @@ export interface StoredEvidence {
 export interface EvidenceUpdate {
   taggedAccounts: string
   rawPayload: string
-  /** What actually moved, for the log. An unexplained write is a write nobody can audit. */
-  changed: ('tags' | 'collaborators' | 'sponsors' | 'paid-partnership-flag')[]
+  /**
+   * What actually moved, for the log. An unexplained write is a write nobody can audit.
+   * `completed` is the first anonymous read of a post the official API stored: its evidence
+   * was never reported, so the whole payload is replaced even if every list is still empty.
+   */
+  changed: ('tags' | 'collaborators' | 'sponsors' | 'paid-partnership-flag' | 'completed')[]
 }
 
 /**
@@ -104,8 +130,40 @@ export interface EvidenceUpdate {
  * once a row is being updated anyway.
  */
 export function evidenceRefresh(stored: StoredEvidence, post: FeedPost, now: Date): EvidenceUpdate | null {
+  /**
+   * ── A POST WHOSE SOURCE REPORTS NO EVIDENCE NEVER REFRESHES IT (15 Oct 2026) ──────────
+   *
+   * The official Graph API fallback (src/detection/graphFeed.ts) serves a post with EMPTY tags,
+   * collaborators and sponsors because the API does not return them — not because the publisher
+   * removed them. Compared like an anonymous read, every re-observation of a tagged post would
+   * report "tags changed" and write `[]` over the real stored tags, on every 15-minute pass, for
+   * as long as the fallback serves. Tags are what discovery mints prospects from; erasing them is
+   * not a cosmetic loss. So such a post says nothing about evidence, ever, here: `null`, no write.
+   *
+   * (The media URLs could in principle refresh from it, but nothing refreshes URLs on their own —
+   * the bytes on disk are the evidence, and `saveFrame` still banks them in the pipeline.)
+   *
+   * MUTATION (applied by hand, saw red, restored): deleting this line fails
+   * tests/official-read-pipeline.test.ts "a Graph-served re-observation leaves stored tags untouched".
+   */
+  if (post.evidenceIncomplete) return null
+
   const previous = parseRawPayload(stored.rawPayload)
   const changed: EvidenceUpdate['changed'] = []
+
+  /**
+   * And the other direction: a row the official API STORED carries a payload marked incomplete.
+   * The first anonymous read replaces it whole — even when its lists are empty too, because
+   * "the API did not say" and "the feed says none" are different facts, and only the second may
+   * stay on record. One write per such post, then ordinary comparison.
+   *
+   * The PIPELINE does more than this for such a row (review, 15 Oct 2026): unless a person has
+   * labelled it, it re-judges the post from the complete read — caption with its @mentions, tags,
+   * collaborators, sponsors — and rewrites caption, brands and verdict through `persist`, so this
+   * function is reached for an incomplete row only when a human answer must be left standing. Then
+   * the pipeline writes the full caption beside what this returns, and the verdict stays the person's.
+   */
+  if (previous.incomplete) changed.push('completed')
 
   if (!sameHandles(readStringArray(stored.taggedAccounts), post.taggedAccounts)) changed.push('tags')
   if (!sameHandles(previous.collabHandles, post.collabHandles)) changed.push('collaborators')
@@ -151,13 +209,14 @@ function parseRawPayload(raw: string | null): {
   collabHandles: string[]
   sponsorHandles: string[]
   isPaidPartnership: boolean | null
+  /** Stored by the official read path, so its lists are "not reported" rather than "none". */
+  incomplete: boolean
 } {
-  if (!raw) return { collabHandles: [], sponsorHandles: [], isPaidPartnership: null }
+  const none = { collabHandles: [], sponsorHandles: [], isPaidPartnership: null, incomplete: false }
+  if (!raw) return none
   try {
     const parsed: unknown = JSON.parse(raw)
-    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
-      return { collabHandles: [], sponsorHandles: [], isPaidPartnership: null }
-    }
+    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return none
     const rec = parsed as Record<string, unknown>
     return {
       collabHandles: Array.isArray(rec.collabHandles)
@@ -167,8 +226,9 @@ function parseRawPayload(raw: string | null): {
         ? rec.sponsorHandles.filter((v): v is string => typeof v === 'string')
         : [],
       isPaidPartnership: typeof rec.isPaidPartnership === 'boolean' ? rec.isPaidPartnership : null,
+      incomplete: rec.evidenceIncomplete === true,
     }
   } catch {
-    return { collabHandles: [], sponsorHandles: [], isPaidPartnership: null }
+    return none
   }
 }

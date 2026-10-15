@@ -27,6 +27,12 @@ import https from 'node:https'
 export interface IgResponse {
   status: number
   ok: boolean
+  /**
+   * The response's `content-type`, when the transport knows it. Optional so a test transport
+   * may leave it out; `feedEvidence.ts` records it beside a failed answer, because "a web page
+   * where JSON was expected" is half of what a 200 refusal looks like.
+   */
+  contentType?: string | null
   text(): Promise<string>
   json(): Promise<unknown>
 }
@@ -49,9 +55,11 @@ function request(url: string, headers: Record<string, string>, timeoutMs: number
       res.on('data', (c: Buffer) => chunks.push(c))
       res.on('end', () => {
         const body = Buffer.concat(chunks).toString('utf8')
+        const ct = res.headers['content-type']
         resolve({
           status,
           ok: status >= 200 && status < 300,
+          contentType: typeof ct === 'string' ? ct : null,
           text: async () => body,
           json: async () => JSON.parse(body) as unknown,
         })

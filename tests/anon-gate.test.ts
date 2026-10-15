@@ -167,17 +167,36 @@ describe('every anonymous Instagram caller consults the gate (source grep)', () 
       const full = join(dir, name)
       return statSync(full).isDirectory() ? walk(full) : full.endsWith('.ts') ? [full] : []
     })
-  /** Not Instagram's API: CDN thumbnails, and the two DeepSeek callers. */
-  const NOT_INSTAGRAM_API = new Set(['media.ts', 'decideBrand.ts', 'semantic.ts'])
+  /**
+   * Not Instagram's ANONYMOUS API: CDN thumbnails, the two DeepSeek callers — and, since
+   * 15 Oct 2026, graphFeed.ts, which calls Meta's authenticated Graph API with a token. The
+   * anonymous gate is about this host's IP being refused by the anonymous endpoints; the
+   * official path has its own pause (graphFeed.ts `graphCooldown`) and must NEVER close or
+   * open the anonymous gate — asserted separately below, so the exemption cannot hide a call.
+   */
+  const NOT_INSTAGRAM_API = new Set(['media.ts', 'decideBrand.ts', 'semantic.ts', 'graphFeed.ts'])
+  /**
+   * Files allowed a bare `fetch()` — NOT the same set (review, 15 Oct 2026): graphFeed.ts is exempt
+   * from the anonymous gate, never from igGet. A `fetch()` there would send undici's own headers to
+   * graph.facebook.com and bypass the one transport tests can replace, so it stays under the scan.
+   */
+  const BARE_FETCH_ALLOWED = new Set(['media.ts', 'decideBrand.ts', 'semantic.ts'])
+  /**
+   * A PERSON'S PROBE (15 Oct 2026, `pnpm ig:probe`). It IS an anonymous Instagram read, and it is
+   * exempt from "every caller records" for the opposite reason to the rule: its whole contract is
+   * that it records NOTHING — a person's one-off 401 must not close this host's gate on the
+   * detection pass. The reverse is asserted below, so the exemption cannot hide a write.
+   */
+  const PERSON_PROBES = new Set(['feedProbe.ts'])
 
   it('a file that calls fetch() against Instagram must check the gate before and classify the answer after', () => {
     // Every Instagram read goes through igGet (igHttp.ts); a bare fetch() against Instagram is itself a defect.
     const callers = walk(root).filter((f) => /igGet\(/.test(readFileSync(f, 'utf8')) && !f.endsWith('igHttp.ts'))
-    const relevant = callers.filter((f) => !NOT_INSTAGRAM_API.has(f.split('/').pop()!))
+    const relevant = callers.filter((f) => !NOT_INSTAGRAM_API.has(f.split('/').pop()!) && !PERSON_PROBES.has(f.split('/').pop()!))
     // Comments stripped first: a docblock that MENTIONS `await fetch()` is not a call (that grep
     // trap is recorded in CLAUDE.md for every-send-path-asks-the-gate).
     const code = (f: string) => readFileSync(f, 'utf8').replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')
-    const bareFetchers = walk(root).filter((f) => /await fetch\(/.test(code(f)) && !NOT_INSTAGRAM_API.has(f.split('/').pop()!))
+    const bareFetchers = walk(root).filter((f) => /await fetch\(/.test(code(f)) && !BARE_FETCH_ALLOWED.has(f.split('/').pop()!))
     expect(bareFetchers, 'an Instagram read using Node fetch gets 400 SecFetch Policy violation — use igGet').toEqual([])
     expect(relevant.map((f) => f.split('/').pop()).sort()).toEqual(
       ['enrichHandle.ts', 'exists.ts', 'feed.ts', 'resolveBrand.ts'].sort(),
@@ -196,10 +215,39 @@ describe('every anonymous Instagram caller consults the gate (source grep)', () 
     // a cooldown ending just after the cron fires must be WAITED for, not skipped for 15 minutes
     expect(body).toMatch(/waitMs <= GATE_REOPEN_WAIT_MAX_MS/)
     const check = body.indexOf('anonGateCheck(')
-    const fetch = body.indexOf('await fetchFeed(')
+    // The pipeline reads through ONE selector since 15 Oct 2026 (feedSource.ts), which calls
+    // fetchFeed — and fetchFeed asks the gate itself before every request.
+    const fetch = body.indexOf('await fetchChannelFeed(')
     expect(check).toBeGreaterThan(-1)
     expect(check).toBeLessThan(fetch)
     expect(body).toMatch(/await hydrateAnonGate\(\)/)
     expect(body).toMatch(/skipped = 'throttled'/)
+  })
+
+  it('a person\'s probe reads the gate\'s row only to SAY it is closed — it never records a throttle, a success or an answer', () => {
+    const code = (f: string) => readFileSync(f, 'utf8').replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')
+    for (const name of PERSON_PROBES) {
+      const probe = code(join(root, name))
+      // It IS an Instagram read, through the one transport — so the exemption is about recording, not about igGet.
+      expect(probe).toMatch(/igGet\(/)
+      expect(probe).not.toMatch(/anonGate(Check|RecordThrottle|RecordSuccess)\(/)
+      expect(probe).not.toMatch(/recordFeedAnswer\(/)
+      expect(probe).not.toMatch(/prisma\.setting\.(upsert|create|createMany|update|updateMany|delete|deleteMany)\(/)
+    }
+  })
+
+  it('the official read path never touches the anonymous gate, and never sends the anonymous identity', () => {
+    const code = (f: string) => readFileSync(f, 'utf8').replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')
+    const graph = code(join(root, 'graphFeed.ts'))
+    expect(graph).not.toMatch(/anonGate(Check|RecordThrottle|RecordSuccess)\(/)
+    expect(graph).not.toMatch(/FEED_HEADERS/)
+    // Exempt from the GATE, not from the transport: every official request goes through igGet.
+    expect(graph).toMatch(/igGet\(/)
+    expect(graph).not.toMatch(/\bfetch\(/)
+    // The selector consults the gate BEFORE any anonymous request, so a closed gate is never spent.
+    const source = code(join(root, 'feedSource.ts'))
+    const fn = source.slice(source.indexOf('export async function fetchChannelFeed('))
+    expect(fn.indexOf('anonGateCheck(')).toBeGreaterThan(-1)
+    expect(fn.indexOf('anonGateCheck(')).toBeLessThan(fn.indexOf('anon = await fetchFeed('))
   })
 })

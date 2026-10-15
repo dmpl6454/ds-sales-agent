@@ -1,4 +1,5 @@
 import { DETECT_FEED_OK_KEY, DETECT_THROTTLED_KEY } from '@/detection/anonGate'
+import { FEED_ANSWER_KEY_PREFIX, parseFeedAnswerRows, type FeedAnswerRow } from '@/detection/feedEvidence'
 import cron, { type ScheduledTask } from 'node-cron'
 import { prisma } from '@/lib/db'
 import { env } from '@/lib/env'
@@ -113,6 +114,18 @@ export interface PassHealth {
   dispatchStamp: DispatchStamp | null
   /** When the sending-Mac selection was last written, so a stamp from an earlier selection is ignored. */
   activeDeviceSince: Date | null
+  /**
+   * WHAT INSTAGRAM ANSWERED, per host, newest first (src/detection/feedEvidence.ts). The cause the
+   * landing page names when detection is blind — never inferred from `feedStale` alone. Empty on
+   * a deployment whose hosts have not run this build yet, and empty is "no evidence", not a cause.
+   */
+  feedAnswers: FeedAnswerRow[]
+  /**
+   * The machine the scheduler heartbeat names — the host that runs the PRIMARY detection pass,
+   * which the page calls "the server". Null when no beat is readable; the page then names hosts
+   * by their own name rather than guessing which one is the server.
+   */
+  detectionHost: string | null
 }
 
 /** A detection pass every 15 minutes with nothing fetched for this long is blind, not quiet. */
@@ -120,8 +133,18 @@ export const FEED_STALE_MS = 60 * 60 * 1000
 
 /** What the dashboard reads beside the heartbeat. Null timestamps never read as stale. */
 export async function readPassHealth(now: Date = new Date()): Promise<PassHealth> {
+  // ONE query: the exact keys, plus every host's feed-answer row by prefix — not a read per host.
   const rows = await prisma.setting.findMany({
-    where: { key: { in: [PASS_OK_KEYS.detect, PASS_OK_KEYS.plan, DETECT_FEED_OK_KEY, DETECT_THROTTLED_KEY, DISPATCH_OK_KEY, SETTING_KEYS.activeDevice] } },
+    where: {
+      OR: [
+        {
+          key: {
+            in: [PASS_OK_KEYS.detect, PASS_OK_KEYS.plan, DETECT_FEED_OK_KEY, DETECT_THROTTLED_KEY, DISPATCH_OK_KEY, SETTING_KEYS.activeDevice, HEARTBEAT_KEY],
+          },
+        },
+        { key: { startsWith: FEED_ANSWER_KEY_PREFIX } },
+      ],
+    },
   })
   const at = (key: string): Date | null => {
     const row = rows.find((r) => r.key === key)
@@ -144,7 +167,16 @@ export async function readPassHealth(now: Date = new Date()): Promise<PassHealth
     throttledUntil: throttledRaw !== null && throttledRaw.getTime() > now.getTime() ? throttledRaw : null,
     dispatchStamp: parseDispatchStamp(rows.find((r) => r.key === DISPATCH_OK_KEY)?.value),
     activeDeviceSince: rows.find((r) => r.key === SETTING_KEYS.activeDevice)?.updatedAt ?? null,
+    feedAnswers: parseFeedAnswerRows(rows),
+    detectionHost: detectionHostFrom(rows.find((r) => r.key === HEARTBEAT_KEY)?.value),
   }
+}
+
+/** The beat's `machine`, or null — an unreadable beat or one written before the field is no name. */
+function detectionHostFrom(value: string | undefined): string | null {
+  if (!value) return null
+  const machine = parseSchedulerHeartbeat(value)?.machine
+  return typeof machine === 'string' && machine.trim() ? machine.trim() : null
 }
 
 /**
@@ -237,7 +269,9 @@ export async function detectThenDraft(
     // Quiet on the ordinary case — 96 passes a day must not fill the log. `0 parsed`
     // is an alarm inside runDetection itself, which is where it belongs.
     if (d.newPosts > 0 || d.detected > 0) {
-      log.info('detection pass', { newPosts: d.newPosts, paid: d.detected })
+      // `servedBy` names the door each channel came through ({ anonymous, graph }) — the graph
+      // count is 0 wherever the official read fallback is not configured (feedSource.ts).
+      log.info('detection pass', { newPosts: d.newPosts, paid: d.detected, ...(d.servedBy ? { servedBy: d.servedBy } : {}) })
     }
 
     /**

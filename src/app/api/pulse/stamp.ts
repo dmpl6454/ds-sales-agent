@@ -39,7 +39,7 @@
  *                     count(*)         a row created or deleted
  *   SenderAccount     max(updatedAt)   a sign-in, a challenge, a retirement — `@updatedAt`, ~7 rows
  *
- * SETTING IS A HOT TABLE, AND SIX OF ITS KEYS ARE EXCLUDED ON PURPOSE. The scheduler
+ * SETTING IS A HOT TABLE, AND SIX OF ITS KEYS (plus one per-host family, below) ARE EXCLUDED ON PURPOSE. The scheduler
  * heartbeat is rewritten every 60 s, device presence every 30 s, `dispatchState` on every
  * dispatch tick, the send lock on every browser drive, the pace clock on every send, and the
  * sending Mac's success stamp (`dispatchLastOkAt`) once a minute. Folded
@@ -64,6 +64,23 @@ export const PULSE_IGNORED_SETTING_KEYS = [
   'sendLock', // dispatcher.ts SEND_LOCK_KEY — every browser drive
   'fleetLastSendStartedAt', // paceClock.ts LAST_SEND_STARTED_KEY — every send; the send itself moves max(sentAt)
   'dispatchLastOkAt', // dispatchHealth.ts DISPATCH_OK_KEY — the sending Mac's completed ticks, once a minute
+] as const
+
+/**
+ * KEY FAMILIES excluded by prefix — one row per host, so no fixed literal can name them.
+ *
+ * `detectFeedAnswer:<host>` (2026-10-15, rule 47) is what Instagram last answered each host's
+ * feed read. It is written on every change of answer and at least every ten minutes while one
+ * repeats, by every host that reads — so folded in it would move the stamp on most polls during
+ * exactly the outage it describes. Nothing is lost by leaving it out: the sentence it feeds only
+ * changes when the feed stamp goes stale, and the detect pass's own success stamp
+ * (`detectLastOkAt`, not excluded) still refreshes an open page every quarter hour.
+ *
+ * (`anonThrottle:<host>` is deliberately NOT here: it is written on a throttle and on recovery,
+ * a transition, not on a loop.)
+ */
+export const PULSE_IGNORED_SETTING_PREFIXES = [
+  'detectFeedAnswer:', // feedEvidence.ts FEED_ANSWER_KEY_PREFIX — per host, on every answer change
 ] as const
 
 export type PulseParts = {

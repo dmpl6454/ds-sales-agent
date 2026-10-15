@@ -5,6 +5,42 @@ changing anything that touches sending.
 
 ---
 
+## 15 OCTOBER — INSTAGRAM WALLED THE APP IDENTITY TOO; DETECTION NOW HAS AN OFFICIAL FALLBACK AND SAYS WHY IT FAILED
+
+**Asked: *"fix this first make it working first"*,** over a dashboard reading *"Instagram is refusing
+anonymous reads — no paid posts are being found since 1348 min ago"*. **MEASURED by a person with curl,
+the same hour:** the Android app identity (`feed.ts`) answered `401 {"message":"Please wait a few
+minutes before you try again.","require_login":true}` on the FIRST request from the box AND from DMPLs
+Mac Studio — the 4 Sept wall, now on the identity that fixed it. Not an IP: two networks, first request.
+The failover log showed the Mac asking once an hour and being refused each time — the gate working.
+
+| | now |
+|---|---|
+| why a read failed | `detectFeedAnswer:<host>` (status, content type, redacted head of Instagram's answer) at every exit of `fetchFeed`; a 200 carrying `require_login` is a refusal, not a "shape change" (it used to spend a request on every remaining channel) |
+| the banner | `describeDetectionOutage` names the cause from that evidence — refusal, changed answer, 5xx, network, or *nothing on record* — and never says "refusing" without a recorded refusal |
+| `pnpm ig:probe` | one request per client identity (in use, a newer-version guess, the walled web control), prints what Instagram said; never closes the production gate, writes nothing; `--graph` adds one official read |
+| the official fallback | `graphFeed.ts` + `feedSource.ts`: Instagram Graph API **Business Discovery** through the business's own live Meta app ("Post Automation 2", instagram_basic / instagram_manage_insights / pages_read_engagement at advanced access). Per channel, only when the anonymous read is refused or its gate closed; a closed gate is never spent. **Dormant unless `META_GRAPH_TOKEN` + `META_IG_USER_ID` are in the box's `.env`** |
+| what it loses | tags, collaborators, the paid-partnership flag, and the `@` in captions (Meta strips it); a post stored this way never has stored tags wiped, and is re-judged whole when the anonymous feed reads it again inside the pass's lookback |
+| measured coverage | from the box, a system-user token ("dspl") on @madaboutmarketingg's IG id read **13 of 14** watched pages; @marketingmentalist answered `110/2207013` (personal account) |
+| deploying with no Mac | the Mac holding the management key is gone. `scripts/deploy-worker-on-box.sh <sha>` updates the WORKER from a root console on the box (pinned commit from the public repo; refuses off-server, on a lockfile or schema change; backs up; restarts `ds-sales-worker` by name). The web tier and the DMG still need a Mac — and the DMG's signing identity went with it |
+
+**The decision this reverses, stated:** August's "No other data source helps" rejected Business
+Discovery for losing fields and needing App Review. App Review is now satisfied by the existing app;
+the field loss is real. The operator put the token on the box during the outage; **switching detection
+to an authenticated API is Tabish's to confirm or reverse** (remove the two lines, restart the worker).
+**Also seen:** the repo `dmpl6454/ds-sales-agent` is PUBLIC, and this file names the box, the hosted
+URL and people's emails — a person's call whether it should be. Suite **3,377 / 3,379** (the two offline
+`route-rule` timeouts), typecheck and `next build` clean. **Not deployed when written.**
+
+### RULES, ADDED TO THE STANDING LIST
+
+55. **Record what the remote SAID, not only that it refused.** A refusal with no body on record makes
+    every outage look like the last one.
+56. **A deploy path that lives on one laptop is a single point of failure.** Keep a way to update the
+    server that needs only the server.
+
+---
+
 ## 9–14 OCTOBER — "KEEP GOING": THE FOUR CRITICAL AND THE REMAINING HIGH FINDINGS OF THE AUDIT, FIXED, THEN REVIEWED ACROSS LANES
 
 **Asked: *"keep going"*** after the robustness pass below. Read as: the four critical findings of
