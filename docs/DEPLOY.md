@@ -235,12 +235,22 @@ enforces it in code rather than by intention. A deploy silently raising it is th
 worst outcome available here, and it fails SILENTLY — the dashboard still serves 200.
 
 The database error was the only loud symptom, and it is what led to finding the other three.
-**Check all four after any deploy**, before trusting that a green page means a good deploy:
+**Check all four after any deploy — and `DRY_RUN`, a fifth that is not on the table above because
+it fails in the QUIET direction** — before trusting that a green page means a good deploy:
 
 ```bash
-ssh linode "grep -E '^(SEND_ENABLED|AUTOPILOT_ENABLED|DS_DEVICE_NAME|DATABASE_URL)' \
+ssh linode "grep -E '^(SEND_ENABLED|AUTOPILOT_ENABLED|DS_DEVICE_NAME|DATABASE_URL|DRY_RUN)' \
   /opt/ds-sales-agent/.env | sed 's/:[^:@]*@/:***@/'"
 ```
+
+**`DRY_RUN` must read false (`0`) on the box.** `DRY_RUN` DEFAULTS TRUE and a laptop's `.env` carries
+`DRY_RUN=1` (this repo's own does), so a shipped `.env` — or a box that never set it — has the
+planner mark every draft it writes `SKIPPED` with `error: 'DRY_RUN'` instead of leaving it `READY`
+(`plan.ts`, "would have queued"). Nothing errors, `planLastOkAt` stays fresh, detection is healthy,
+and the selected Mac's queue simply stops refilling: the drafts the server is for never exist. It
+does not make the box send — `SEND_ENABLED=false` still forbids that, and since Stage 1.4 a host
+with it false schedules no dispatcher and a DRY_RUN host that is not the selected Mac writes no
+`dispatchState` — it makes the box useless in a way no screen reports.
 
 **RESTARTING FASTER THAN THE STALENESS WINDOW GUARANTEES NO SCHEDULER.** Also measured that
 day, and it cost four restarts to understand. `startScheduler` runs ONCE at boot and refuses

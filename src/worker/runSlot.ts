@@ -944,24 +944,39 @@ async function runSlotLocked(slot: string, started: number): Promise<SlotResult>
    * arrangement able to take hours.
    */
   if (await progress('dispatch')) {
-    try {
-      const d = await dispatchTick(`slot:${slot}`)
-      sent += d.delivered?.sent ?? 0
-      detail.dispatch = {
-        action: d.verdict.action,
-        reason: d.verdict.action === 'hold' ? d.verdict.reason : 'sending',
-        detail: d.verdict.action === 'hold' ? d.verdict.detail : undefined,
-        outcomes: d.delivered?.outcomes ?? [],
+    if (!env.SEND_ENABLED) {
+      /**
+       * A HOST THAT CANNOT SEND DOES NOT ASK TO DISPATCH (Stage 1.4). On the Linode this stage ran
+       * `dispatchTick` four times a day only to be told `send-disabled`/standby — two reads and a
+       * misleading "holding everything" line, about a host that is never a Mac. RECORDED, status
+       * UNTOUCHED: the refusal is the host's permanent condition, so marking the run PARTIAL would
+       * degrade every one of its four daily slots forever (the reply-check stage above makes the
+       * same choice for the same reason). Nothing reads `detail.dispatch` — `scripts/queued.ts`
+       * reads `detail.outreach` only, `scripts/audit.ts` reads `detail.channels` — so the shape
+       * `{ skipped }` is free, and it matches `detail.replyCheck`'s. The floor inside `withSendLock`
+       * is unmoved: this is a courtesy in front of it, never a replacement.
+       */
+      detail.dispatch = { skipped: 'send-disabled' }
+    } else {
+      try {
+        const d = await dispatchTick(`slot:${slot}`)
+        sent += d.delivered?.sent ?? 0
+        detail.dispatch = {
+          action: d.verdict.action,
+          reason: d.verdict.action === 'hold' ? d.verdict.reason : 'sending',
+          detail: d.verdict.action === 'hold' ? d.verdict.detail : undefined,
+          outcomes: d.delivered?.outcomes ?? [],
+        }
+        if ((d.delivered?.failed ?? 0) > 0) {
+          status = status === 'OK' ? 'PARTIAL' : status
+          errors.push(`${d.delivered!.failed} delivery failure(s)`)
+        }
+      } catch (err) {
+        status = 'PARTIAL'
+        const message = err instanceof Error ? err.message : String(err)
+        errors.push(`delivery: ${message}`)
+        log.alarm('delivery stage threw — waiting messages remain waiting', { error: message })
       }
-      if ((d.delivered?.failed ?? 0) > 0) {
-        status = status === 'OK' ? 'PARTIAL' : status
-        errors.push(`${d.delivered!.failed} delivery failure(s)`)
-      }
-    } catch (err) {
-      status = 'PARTIAL'
-      const message = err instanceof Error ? err.message : String(err)
-      errors.push(`delivery: ${message}`)
-      log.alarm('delivery stage threw — waiting messages remain waiting', { error: message })
     }
   }
 

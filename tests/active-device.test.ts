@@ -69,6 +69,47 @@ describe('the rule is asked at both ends and by every pass', () => {
     expect(lock).toBeGreaterThan(standbyReturn)
     // Between asking and returning, nothing writes the fleet's "what the last tick did" row.
     expect(body.slice(role, standbyReturn)).not.toContain('recordDispatchState')
+    /**
+     * Stage 1.4 (audit L6): NOTHING writes it between the function's HEAD and the standby return
+     * either. The slice above starts at the role ask, so a DRY_RUN write sitting ABOVE the ask —
+     * which is exactly where it lived, and let a DRY_RUN standby overwrite the sending Mac's row
+     * every tick — was outside it and the old check stayed green.
+     */
+    expect(body.slice(0, standbyReturn)).not.toContain('recordDispatchState')
+  })
+
+  it('the DRY_RUN hold is written only AFTER the standby return, so only the selected Mac can write it (Stage 1.4)', () => {
+    const at = dispatcher.indexOf('export async function dispatchTick')
+    const body = dispatcher.slice(at)
+    const standbyReturn = body.indexOf("reason: 'not-the-selected-mac'")
+    const dryRunBranch = body.indexOf('if (env.DRY_RUN)')
+    const dryRunReason = body.indexOf("reason: 'dry-run'")
+    expect(standbyReturn).toBeGreaterThan(-1)
+    expect(dryRunBranch, 'the DRY_RUN branch must still exist').toBeGreaterThan(-1)
+    expect(dryRunBranch, 'DRY_RUN is asked before the role — a DRY_RUN standby writes dispatchState').toBeGreaterThan(standbyReturn)
+    expect(dryRunReason).toBeGreaterThan(dryRunBranch)
+    // And its write is inside that branch, i.e. after the standby return, not merely near it.
+    const write = body.indexOf('recordDispatchState', standbyReturn)
+    expect(write).toBeGreaterThan(dryRunBranch)
+    expect(write).toBeLessThan(body.indexOf('assessFleetBreaker(at)'))
+  })
+
+  it('the SEND_ENABLED courtesy comes first: before the role ask, with no write and no settings read (Stage 1.4)', () => {
+    const at = dispatcher.indexOf('export async function dispatchTick')
+    const body = dispatcher.slice(at)
+    const floor = body.indexOf('if (!env.SEND_ENABLED)')
+    const floorReturn = body.indexOf("reason: 'send-disabled'")
+    const role = body.indexOf('thisMacRole()')
+    expect(floor).toBeGreaterThan(-1)
+    expect(floorReturn).toBeGreaterThan(floor)
+    expect(role, 'the role is asked before the floor — a host that cannot send pays for a read').toBeGreaterThan(floorReturn)
+    expect(body.slice(0, role)).not.toContain('getSettings')
+    expect(body.slice(0, role)).not.toContain('recordDispatchState')
+    // The HARD floor is unmoved: withSendLock still refuses on it, before the role and the lock.
+    const lockFn = dispatcher.indexOf('export async function withSendLock')
+    const lockBody = dispatcher.slice(lockFn, lockFn + 1600)
+    expect(lockBody.indexOf('env.SEND_ENABLED')).toBeGreaterThan(-1)
+    expect(lockBody.indexOf('thisMacRole()')).toBeGreaterThan(lockBody.indexOf('env.SEND_ENABLED'))
   })
 
   it.each(['tick', 'replyPass', 'brandPass', 'detectionFailoverPass'])('%s asks before doing fleet work', (fn) => {

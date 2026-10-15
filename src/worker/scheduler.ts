@@ -31,6 +31,13 @@ import { getSettings, SETTING_KEYS } from '@/lib/settings'
  * system looks healthy and does nothing.
  */
 
+/**
+ * The one startup line a host with `SEND_ENABLED=false` prints in place of a dispatcher schedule.
+ * Exported so the test asserts the sentence the operator reads rather than a paraphrase of it.
+ */
+export const DISPATCHER_NOT_SCHEDULED_LINE =
+  'dispatcher not scheduled — SEND_ENABLED=false on this host; drafts are delivered by the selected Mac'
+
 const tasks: ScheduledTask[] = []
 let started = false
 let heartbeatTimer: ReturnType<typeof setInterval> | null = null
@@ -474,28 +481,50 @@ export async function startScheduler(host: SchedulerHeartbeat['host']): Promise<
    * `noOverlap` because a tick drives a browser for ~40 s and a 15-minute interval must
    * never queue two. The fleet-wide send lock covers cross-process overlap; this covers
    * this task overlapping itself.
+   *
+   * ── A HOST THAT CANNOT SEND DOES NOT SCHEDULE ONE (Stage 1.4, 2026-10-15) ──────────
+   *
+   * The Linode runs this scheduler with `SEND_ENABLED=false` by design, and until now the
+   * cron above was registered there anyway. Every 15 minutes, forever, a tick on that host
+   * read the settings twice, asked which Mac was selected, was told "not you" and logged
+   * *"this Mac is not the selected sending Mac — holding everything"* — about a datacenter
+   * that is not a Mac and can never be one. Wasted queries, and a log line that read like a
+   * standby waiting its turn on the one host whose answer is never. The floor inside
+   * `withSendLock` is what makes hosting safe and it STAYS where it is; this is an earlier,
+   * cheaper courtesy in front of it, so a refusal is decided once at startup instead of
+   * re-derived 96 times a day.
+   *
+   * Only the dispatch cron is conditional. The slots, detection and detect-then-draft are
+   * exactly what the server is FOR and are scheduled either way; drafts it writes are
+   * delivered by the selected Mac's own device agent, which polls on its own clock and never
+   * needed this task. `env` is parsed once per process, so "not scheduled" cannot go stale
+   * under a running scheduler.
    */
-  const dispatchExpression = `*/${DISPATCH_INTERVAL_MINUTES} * * * *`
-  const dispatchTask = cron.schedule(
-    dispatchExpression,
-    async () => {
-      try {
-        await dispatchTick('cron')
-      } catch (err) {
-        log.alarm('dispatcher tick threw at top level', {
-          error: err instanceof Error ? err.message : String(err),
-        })
-      }
-    },
-    { timezone: TIMEZONE, name: 'dispatch', noOverlap: true },
-  )
-  tasks.push(dispatchTask)
-  log.step('scheduled', {
-    dispatcher: `every ${DISPATCH_INTERVAL_MINUTES} minutes`,
-    cron: dispatchExpression,
-    activeHours: `${ACTIVE_FROM_HOUR}:00-${ACTIVE_TO_HOUR}:00 IST`,
-    next: dispatchTask.getNextRun()?.toISOString() ?? 'unknown',
-  })
+  if (env.SEND_ENABLED) {
+    const dispatchExpression = `*/${DISPATCH_INTERVAL_MINUTES} * * * *`
+    const dispatchTask = cron.schedule(
+      dispatchExpression,
+      async () => {
+        try {
+          await dispatchTick('cron')
+        } catch (err) {
+          log.alarm('dispatcher tick threw at top level', {
+            error: err instanceof Error ? err.message : String(err),
+          })
+        }
+      },
+      { timezone: TIMEZONE, name: 'dispatch', noOverlap: true },
+    )
+    tasks.push(dispatchTask)
+    log.step('scheduled', {
+      dispatcher: `every ${DISPATCH_INTERVAL_MINUTES} minutes`,
+      cron: dispatchExpression,
+      activeHours: `${ACTIVE_FROM_HOUR}:00-${ACTIVE_TO_HOUR}:00 IST`,
+      next: dispatchTask.getNextRun()?.toISOString() ?? 'unknown',
+    })
+  } else {
+    log.info(DISPATCHER_NOT_SCHEDULED_LINE)
+  }
 
   /**
    * ── DETECTION HAS ITS OWN CLOCK ────────────────────────────────────────────
@@ -538,7 +567,11 @@ export async function startScheduler(host: SchedulerHeartbeat['host']): Promise<
 
   log.info(
     `watching ${env.SLOTS.length} slots daily, detecting every ${DETECT_INTERVAL_MINUTES} minutes, ` +
-      `delivering every ${DISPATCH_INTERVAL_MINUTES} minutes`,
+      // Says what is true of THIS host: a line promising delivery every 15 minutes on a host that
+      // scheduled no dispatcher is the claim-with-nothing-behind-it this file keeps recording.
+      (env.SEND_ENABLED
+        ? `delivering every ${DISPATCH_INTERVAL_MINUTES} minutes`
+        : 'not delivering from this host (SEND_ENABLED=false — the selected Mac delivers)'),
   )
   return true
 }

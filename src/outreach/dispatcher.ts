@@ -95,6 +95,11 @@ export const LEGACY_LOCK_RETRY_MS = 1_000
 let busyStreak = 0
 /** When this Mac last became a standby, for logging economy only — the Setting is the guard. */
 let standbySince: string | null = null
+/**
+ * When a tick on this host first found `SEND_ENABLED=false`, for logging economy only — the env
+ * floor is the guard. Never cleared: `env` is parsed once per process, so there is no streak end.
+ */
+let sendDisabledSince: string | null = null
 const BUSY_LOG_EVERY = 30
 
 async function readSendLockHolder(): Promise<SendLockHolder | null> {
@@ -832,20 +837,52 @@ export interface DispatchTickResult {
  */
 export async function dispatchTick(reason: string): Promise<DispatchTickResult> {
   const at = new Date()
-  const settings = await getSettings()
 
-  if (env.DRY_RUN) {
+  /**
+   * ── THE ORDER OF THE FIRST THREE QUESTIONS IS THE FIX (Stage 1.4, 2026-10-15) ─────────────
+   *
+   * Floor, then role, then DRY_RUN — and THEN anything that reads or writes. DRY_RUN used to be
+   * asked first, and its branch WROTE `dispatchState` (audit L6). A DRY_RUN host that is not the
+   * sender — the `DS_WATCH_MODE=scheduler` install on a Mac, or a dev checkout whose `.env` has
+   * `DRY_RUN=1` (this repo's own does) — therefore overwrote the SENDING Mac's "what the last tick
+   * did" row on every tick with *"DRY_RUN is on"*, hiding the one Mac that was actually sending
+   * behind a host that was not. The 10 Sept rule that a standby never writes that row held for
+   * every host EXCEPT a DRY_RUN one, because the write sat above the role check.
+   *
+   * Only a host that is BOTH allowed to send AND selected may write the row; a DRY_RUN hold is
+   * that selected Mac saying "I would have sent", which is still a fact about the fleet and still
+   * written, exactly as before.
+   *
+   * `getSettings()` moved below the three for the same reason it is cheap to: a host that cannot
+   * send, or is not selected, answers from the floor or from `thisMacRole`'s own single read and
+   * costs the fleet no further queries. The settings this tick needs for the breaker, the gap and
+   * the delivery loop are read once, after it knows it will use them.
+   */
+
+  /**
+   * 1. THE FLOOR (courtesy, not the floor). `SEND_ENABLED=false` is the hosted server: it detects,
+   * drafts and shows, and a person's own Mac sends. The HARD floor lives inside `withSendLock` and
+   * is untouched — every browser drive still passes it. This check is earlier and cheaper and only
+   * says so by name: the Linode's cron used to arrive here, read the settings twice, ask which Mac
+   * was selected and log *"holding everything"* about a host that is never a Mac. NOT written to
+   * `dispatchState`, for the standby reason above; logged ONCE, because `env` is parsed once per
+   * process and a host that cannot send now cannot send at the next tick either.
+   */
+  if (!env.SEND_ENABLED) {
+    if (sendDisabledSince === null) {
+      sendDisabledSince = at.toISOString()
+      log.step('this host is not allowed to send (SEND_ENABLED=false) — dispatch ticks here hold and write nothing', { tick: reason })
+    }
     const verdict: DispatchVerdict = {
       action: 'hold',
-      reason: 'dry-run',
-      detail: 'DRY_RUN is on — the pipeline runs fully and sends nothing',
+      reason: 'send-disabled',
+      detail: 'SEND_ENABLED=false on this host — it prepares drafts and cannot deliver them; the selected Mac delivers',
     }
-    await recordDispatchState({ at, verdict, sent: 0 })
     return { verdict, at: at.toISOString() }
   }
 
   /**
-   * A STANDBY MAC EVALUATES NOTHING (2026-09-10). Asked before the breaker, the queue count and
+   * 2. A STANDBY MAC EVALUATES NOTHING (2026-09-10). Asked before the breaker, the queue count and
    * the lock, so a Mac that is not selected costs the fleet no queries and never holds the
    * lock. Its verdict is NOT written to `dispatchState`: that row is "what the last tick did"
    * for the whole fleet, and a standby overwriting it every 30 s would hide the selected Mac's
@@ -864,6 +901,22 @@ export async function dispatchTick(reason: string): Promise<DispatchTickResult> 
     log.info('this Mac is the selected sending Mac again', { standbySince })
     standbySince = null
   }
+
+  /**
+   * 3. DRY_RUN — the selected Mac's own "I would have sent". Written to `dispatchState` as it
+   * always was, now that only the sender can reach it.
+   */
+  if (env.DRY_RUN) {
+    const verdict: DispatchVerdict = {
+      action: 'hold',
+      reason: 'dry-run',
+      detail: 'DRY_RUN is on — the pipeline runs fully and sends nothing',
+    }
+    await recordDispatchState({ at, verdict, sent: 0 })
+    return { verdict, at: at.toISOString() }
+  }
+
+  const settings = await getSettings()
 
   const [breaker, waitingCount, lastStart] = await Promise.all([
     assessFleetBreaker(at),
