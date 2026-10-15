@@ -6,7 +6,9 @@ import { istStamp } from '@/lib/time'
 import { runDetection } from '@/detection/pipeline'
 import { DETECT_CATCHUP_LOOKBACK_HOURS } from '@/detection/cadence'
 import { runOutreach } from '@/outreach/plan'
-import { dispatchTick } from '@/outreach/dispatcher'
+import { dispatchTick, holderIsSameMachine } from '@/outreach/dispatcher'
+import { deviceId } from '@/outreach/devicePresence'
+import { hostId } from '@/lib/hostId'
 import { checkForReplies, isReplyCheckSlot } from '@/outreach/replyCheck'
 
 /**
@@ -40,7 +42,11 @@ export interface SlotResult {
   sent: number
 }
 
-/** Setting key holding `{"pid":123,"slot":"11:00","at":"..."}` while a slot runs. */
+/**
+ * Setting key holding `{"pid":123,"slot":"11:00","at":"...","device":"linode-detect","host":"…"}`
+ * while a slot or a planning run holds the lock. `device` and `host` since 2026-10-15 — see
+ * `SlotLockHolder`; a row written by an older build carries neither.
+ */
 const SLOT_LOCK_KEY = 'slotRunning'
 /**
  * How long a slot may make NO PROGRESS before it is worth shouting about.
@@ -62,16 +68,30 @@ export interface SlotLockHolder {
   pid: number
   slot: string
   at: string
+  /**
+   * WHICH MACHINE'S NAME wrote the row (`deviceId()`, 2026-10-15). Absent on rows written by
+   * a build older than this field, which `acquireSlotLock` treats as ANOTHER machine — see
+   * `decideSlotLock` for why that is the opposite of the send lock's reading of its own
+   * host-less legacy row.
+   */
+  device?: string
+  /**
+   * WHICH MACHINE wrote it (`hostId()`). A device NAME is typed by a person and two Macs can
+   * share one (rule 51: a name is not an identity); the host is what tells them apart. Absent
+   * on rows from older builds and when the id could not be read — then the name alone decides.
+   */
+  host?: string
 }
 
 export type LockVerdict =
   /** Somebody else is running it. Do not start. */
   | { action: 'decline'; stalled: boolean }
-  /** The holder's process is gone, or it is us. Safe to claim. */
+  /** The holder's process is gone, or it is us, or a foreign holder has gone silent. Safe to claim. */
   | { action: 'take-over' }
 
 /**
- * PURE. Given what the lock row says and whether that process still exists, may we run?
+ * PURE. Given what the lock row says, where it was written and whether that process still
+ * exists, may we run?
  *
  * Extracted so both directions are testable without a database or a second process —
  * the same reason `decideRoute`, `evaluatePair` and `recheckBeforeSend` are pure. The
@@ -80,25 +100,83 @@ export type LockVerdict =
  *
  * `ageMs` is time since the holder last reported PROGRESS, not since it started, because
  * `touchSlotLock` refreshes the timestamp at every stage boundary.
+ *
+ * ── A PID IS A FACT ABOUT ONE MACHINE, AND THIS LOCK IS SHARED BETWEEN MACHINES (2026-10-15) ──
+ *
+ * The row lives in the one Postgres every host shares. The Linode worker holds it for the
+ * four slots and the 15-minute planner; the Mac's `:3100` dashboard's "Sync now" runs
+ * `runSlot('manual')` in the MAC's own process. Until this date that process asked ITS OWN
+ * kernel about the Linode's pid, was told "no such process" (ESRCH), and read a crash — so it
+ * took the lock over a live planner and planned beside it. Two planners both read
+ * `hasPendingAttempt: false` for one pair and both write a draft: two DMs to one prospect,
+ * the worst spam signal available. The send lock fixed the identical mistake on 2026-09-10
+ * (`decideSendLock`); this is the same fix for the same reason, one lock along.
+ *
+ * So `holderAlive` is EVIDENCE ONLY WHEN THE HOLDER IS LOCAL, and a foreign holder is judged
+ * by its own progress stamp alone: `touchSlotLock` rewrites `at` at every stage boundary, and
+ * a planning run under `withSlotLock` writes it once, at acquisition. No presence read is
+ * needed — the refresh IS the liveness signal, and the Linode worker, which holds this lock
+ * most, writes no `devicePresence` at all. The bound is the existing `SLOT_LOCK_STALE_MS`:
+ * healthy slots take 24-81 s whole, a planning pass minutes. What it cannot tell apart is a
+ * dead foreign holder from a SLOW one — nothing refreshes inside a stage, and one detection
+ * stage took 36 minutes (8 Sept, judging a four-day backlog after an outage) — so a stale
+ * foreign take-over may land beside a slot that is alive and about to plan.
+ *
+ * THE TRADE, STATED. The send lock never steps over a live holder, because a hung sender
+ * still owns the OS clipboard and taking its lock puts message A into thread B. The slot
+ * lock holds no clipboard: what a stale foreign take-over risks is a duplicate PLANNER, if
+ * the other machine's stage ever returns — bounded to the one foreign planning run that
+ * overlaps it, at most one surplus draft per pair (`hasPendingAttempt` is a read-then-write
+ * and cannot close the race itself), and the gate still re-asks every rule before either
+ * delivers: a byte-identical second draft is refused by `IDENTICAL_TO_A_SENT_MESSAGE`, a
+ * second follow-up on the same day by `FOLLOW_UP_SAME_DAY`. What NOT stepping over risks is
+ * the fleet's drafting deadlocked forever on a row nobody can refresh and nobody is allowed
+ * to delete. A bounded, gated duplicate after thirty minutes of silence against a permanent
+ * silence is the right side of that trade — and before this date EVERY foreign read stepped
+ * over, fresh or not.
+ *
+ * A ROW WITH NO `device` IS FOREIGN — the OPPOSITE of the send lock's reading of its own
+ * legacy row (`holderIsSameMachine` treats a row under our name with no HOST as ours, so the
+ * first restart onto that build recovers its predecessor's row at once). Here the only reader
+ * that trips over a device-less row today is a Mac reading the Linode worker's row — the
+ * exact case this fix exists for — and the cost of the other reading is small and bounded: a
+ * Linode worker killed mid-slot and restarted onto this build waits at most `staleMs` for its
+ * predecessor's old-format row to go stale, then takes it over. One ≤30-minute wait, never a
+ * second planner. (The worker's own first restart onto this build may therefore wait up to
+ * 30 minutes for a stale pre-upgrade row; the log says so when it does.)
  */
 export function decideSlotLock(args: {
   held: SlotLockHolder | null
+  /** The local OS's answer to `process.kill(pid, 0)` — EVIDENCE ONLY WHEN THE HOLDER IS LOCAL. */
   holderAlive: boolean
+  /** The row names THIS machine (name AND, when both carry one, host). A row naming no machine is NOT local. */
+  holderIsLocal: boolean
   ourPid: number
   ageMs: number
   staleMs?: number
 }): LockVerdict {
-  const { held, holderAlive, ourPid, ageMs, staleMs = SLOT_LOCK_STALE_MS } = args
+  const { held, holderAlive, holderIsLocal, ourPid, ageMs, staleMs = SLOT_LOCK_STALE_MS } = args
 
   // No parseable holder: an unparseable row must not deadlock the scheduler forever.
   if (held === null) return { action: 'take-over' }
+  const stalled = ageMs >= staleMs
+
+  if (!holderIsLocal) {
+    /**
+     * FOREIGN. Its pid means nothing here, so the only evidence is the progress stamp. Fresh:
+     * honour it, whatever our OS says about a pid it has never seen. Stale: the trade above.
+     */
+    if (stalled) return { action: 'take-over' }
+    return { action: 'decline', stalled: false }
+  }
+
   // Our own row, from an earlier stage or a crashed sibling in this process.
   if (held.pid === ourPid) return { action: 'take-over' }
   // The holder's process is gone — a crash or a kill -9 left the row behind.
   if (!holderAlive) return { action: 'take-over' }
 
   /**
-   * ALIVE. Never take over, however old the lock is.
+   * ALIVE, LOCAL. Never take over, however old the lock is.
    *
    * This used to be `alive && ageMs < staleMs`, so age overruled liveness and a second
    * slot started alongside a hung-but-running first one. Two live runs share the OS
@@ -108,9 +186,10 @@ export function decideSlotLock(args: {
    *
    * Stated plainly: a wedged slot now blocks later slots instead of being stepped over.
    * Nothing sends, rather than something sends twice — and `stalled` makes it an alarm
-   * rather than a silence.
+   * rather than a silence. (A local holder shares our clipboard; a foreign one does not,
+   * which is why the foreign branch above may step over a stale row and this one may not.)
    */
-  return { action: 'decline', stalled: ageMs >= staleMs }
+  return { action: 'decline', stalled }
 }
 
 /**
@@ -126,18 +205,37 @@ export function decideSlotLock(args: {
 let slotLockValue: string | null = null
 
 /**
+ * THE ONE BUILDER of the row's bytes, for every writer: the acquire, the take-over and the
+ * refresh. `touchSlotLock` rewrites the WHOLE row at every stage boundary, so a refresh that
+ * dropped `device`/`host` would hand this holder's own later reads a device-less row — which
+ * `acquireSlotLock` treats as foreign — and a planning run would then decline its own slot's
+ * lock as another machine's. One builder, so the three writers cannot disagree on the shape.
+ *
+ * `host` is dropped by `JSON.stringify` when `hostId()` is undefined, so a machine without an
+ * id writes the same row it would have before the field, plus `device`.
+ */
+function slotLockRowFor(slot: string): string {
+  return JSON.stringify({ pid: process.pid, slot, at: new Date().toISOString(), device: deviceId(), host: hostId() })
+}
+
+/**
  * Refresh the lock's timestamp — "still going".
  *
  * Conditional on the row still being the one WE wrote, so a slot that lost the lock cannot
  * stamp over whoever holds it now. Silent on failure: this is a liveness signal, and failing
  * to write one must never take down the slot it is reporting on.
  *
+ * Since 2026-10-15 this stamp is also what a FOREIGN machine reads as this holder's liveness
+ * (`decideSlotLock`): a holder that stops refreshing for `SLOT_LOCK_STALE_MS` is stepped over
+ * from another host. That is the intended meaning of "no progress", not a new hazard — the
+ * same stall already raised the "no progress for a long time" alarm locally.
+ *
  * Exported for tests only; the slot calls it at each stage boundary.
  */
 export async function touchSlotLock(slot: string): Promise<void> {
   const ours = slotLockValue
   if (ours === null) return
-  const next = JSON.stringify({ pid: process.pid, slot, at: new Date().toISOString() })
+  const next = slotLockRowFor(slot)
   const r = await prisma.setting
     .updateMany({ where: { key: SLOT_LOCK_KEY, value: ours }, data: { value: next } })
     .catch(() => null)
@@ -155,10 +253,14 @@ export async function touchSlotLock(slot: string): Promise<void> {
  *
  * Freshness alone is not liveness: a `kill -9` leaves the record behind, which is exactly
  * the bug that once stopped the scheduler starting at all. So ask the OS, the same way
- * `startScheduler` does.
+ * `startScheduler` does — but ONLY about a row this machine wrote (2026-10-15). The OS can
+ * answer for its own pids alone; asked about the Linode's pid, the Mac's kernel said "no such
+ * process" and this function took the lock over a live planner. See `decideSlotLock`.
  */
 async function acquireSlotLock(slot: string): Promise<string | null> {
-  const value = JSON.stringify({ pid: process.pid, slot, at: new Date().toISOString() })
+  const ourDevice = deviceId()
+  const ourHost = hostId()
+  const value = slotLockRowFor(slot)
 
   /**
    * `create` on the primary key is the atomic test-and-set: it succeeds only if no row
@@ -187,15 +289,29 @@ async function acquireSlotLock(slot: string): Promise<string | null> {
     }
   }
 
-  let held: { pid: number; slot: string; at: string } | null = null
+  let held: SlotLockHolder | null = null
   try {
-    held = JSON.parse(row.value) as { pid: number; slot: string; at: string }
+    held = JSON.parse(row.value) as SlotLockHolder
   } catch {
     held = null // unparseable: treat as dead rather than deadlocking forever
   }
 
+  /**
+   * Is the row THIS machine's? Same name AND (when both sides carry one) same host — the send
+   * lock's own predicate, reused rather than copied so the two locks cannot drift on what "mine"
+   * means. It reads only `device` and `host`; the `what` is the structural tax of handing it a
+   * slot row without touching the dispatcher.
+   *
+   * `held.device !== undefined` is stated even though the predicate already fails a device-less
+   * row: the rule "a row naming no machine is foreign" is this lock's own (see `decideSlotLock`)
+   * and must survive the predicate ever learning to forgive a missing device the way it forgives
+   * a missing host.
+   */
+  const holderIsLocal =
+    held !== null && held.device !== undefined && holderIsSameMachine({ ...held, what: held.slot }, ourDevice, ourHost)
+  // Asked of a LOCAL holder only — this OS cannot answer for a pid on another machine.
   const alive =
-    held !== null &&
+    holderIsLocal &&
     (() => {
       try {
         process.kill(held!.pid, 0)
@@ -204,16 +320,26 @@ async function acquireSlotLock(slot: string): Promise<string | null> {
         return false
       }
     })()
-  const ageMs = held ? Date.now() - new Date(held.at).getTime() : Infinity
+  // An unreadable `at` is NO progress, not fresh progress: `NaN >= staleMs` is false, and a
+  // foreign row whose stamp cannot be read would otherwise be declined forever.
+  const rawAge = held ? Date.now() - new Date(held.at).getTime() : Infinity
+  const ageMs = Number.isFinite(rawAge) ? rawAge : Infinity
 
-  const verdict = decideSlotLock({ held, holderAlive: alive, ourPid: process.pid, ageMs })
+  const verdict = decideSlotLock({ held, holderAlive: alive, holderIsLocal, ourPid: process.pid, ageMs })
   if (verdict.action === 'decline') {
     const detail = {
       otherPid: held?.pid,
       otherSlot: held?.slot,
       secondsSinceProgress: Math.round(ageMs / 1000),
     }
-    if (verdict.stalled) {
+    if (!holderIsLocal) {
+      // The ordinary case for the Mac's "Sync now" while the Linode worker plans: not a fault.
+      log.warn('another machine is running a slot — declining', {
+        ...detail,
+        otherDevice: held?.device ?? 'unknown (a build older than the device field)',
+        otherHost: held?.host,
+      })
+    } else if (verdict.stalled) {
       log.alarm('a slot is running but has made no progress for a long time — nothing else can start', detail)
     } else {
       log.warn('another slot is already running — declining to start a second', detail)
@@ -222,9 +348,9 @@ async function acquireSlotLock(slot: string): Promise<string | null> {
   }
 
   /**
-   * The holder is dead, stale, or us. Take over — but conditionally on the row still
-   * holding exactly the value we just read, so two processes both finding the same
-   * corpse cannot both claim it.
+   * The holder is dead, us, or a foreign machine gone silent. Take over — but conditionally
+   * on the row still holding exactly the value we just read, so two processes both finding
+   * the same corpse cannot both claim it.
    */
   const claimed = await prisma.setting.updateMany({
     where: { key: SLOT_LOCK_KEY, value: row.value },
@@ -235,15 +361,27 @@ async function acquireSlotLock(slot: string): Promise<string | null> {
     return null
   }
   /**
-   * Three reasons we reach here, and they printed as one.
+   * Four reasons we reach here (three until 2026-10-15), and they printed as one.
    *
    * `if (held)` covers the case where the row is our OWN pid, so this reported a live
    * process — the one running this very line — as "a process that is gone". Found while
    * verifying Phase 5 against the identical line in the send lock: `deadPid=<us>`, sending
-   * anyone debugging a wedged slot after a crash that never happened.
+   * anyone debugging a wedged slot after a crash that never happened. The foreign case is
+   * tested FIRST: its pid is a fact about another machine, and "a process that is gone" would
+   * send the reader looking for a crash on the wrong host.
    */
   if (held === null) {
     log.step('the slot lock held an unreadable value — replacing it')
+  } else if (!holderIsLocal) {
+    // Loud on purpose: another machine held the lock and stopped refreshing it for half an hour —
+    // a crash, a hang, a lost tunnel — and a person should know the fleet's drafting waited on it.
+    log.alarm('taking over a slot lock held by another machine that has made no progress for a long time', {
+      device: held.device ?? 'unknown (a build older than the device field)',
+      host: held.host,
+      pid: held.pid,
+      previousSlot: held.slot,
+      secondsSinceProgress: Math.round(ageMs / 1000),
+    })
   } else if (held.pid === process.pid) {
     log.step('reclaiming a slot lock this process left behind', { previousSlot: held.slot })
   } else {
