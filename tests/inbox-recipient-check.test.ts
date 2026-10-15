@@ -161,10 +161,13 @@ describe("'recipient-unconfirmed' is written only by the door's own handlers", (
       }
     }
     walk(join(root, 'src'))
+    // The park used to be written twice (`deliver.ts` and `actions.ts`, one per delivery path).
+    // It is one function since Stage 1.3 — `deliverOne.ts` — and the two callers map the
+    // result by its `recipient-parked` ladder, so neither names the code any more: the closed
+    // set got smaller, which is the direction this test wants.
     expect(files.sort()).toEqual([
-      'src/app/actions.ts',
       'src/lib/constants.ts',
-      'src/outreach/deliver.ts',
+      'src/outreach/deliverOne.ts',
       'src/outreach/reservations.ts',
       'src/outreach/senders/browser.ts',
     ])

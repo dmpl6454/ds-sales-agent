@@ -78,16 +78,37 @@ describe('the rule is asked at both ends and by every pass', () => {
     expect(body, `${fn} never asks thisMacRole`).toContain('thisMacRole()')
   })
 
-  it('the delivery loop re-asks immediately before the READY→SENDING claim — a long evaluation is a window', () => {
-    const deliver = strip(readFileSync('src/outreach/deliver.ts', 'utf8'))
-    const loop = deliver.indexOf('for (const attempt of waiting)')
-    const claim = deliver.indexOf("data: { status: 'SENDING' }", loop)
+  /**
+   * Re-pointed at `deliverOne.ts` (Stage 1.3): the claim moved out of the loop into the one
+   * delivery function both callers use, so this is now true of the Send button's claim too —
+   * which used to be made BEFORE the lock and before any of these asks.
+   */
+  it('the delivery function re-asks immediately before the READY→SENDING claim — a long evaluation is a window', () => {
+    const deliver = strip(readFileSync('src/outreach/deliverOne.ts', 'utf8'))
+    const head = deliver.indexOf('async function deliverOne(')
+    const claim = deliver.indexOf("data: { status: 'SENDING' }", head)
     const ask = deliver.lastIndexOf('thisMacRole()', claim)
-    expect(loop).toBeGreaterThan(-1)
-    expect(claim).toBeGreaterThan(loop)
-    expect(ask, 'no thisMacRole() between the loop head and the claim').toBeGreaterThan(loop)
+    expect(head).toBeGreaterThan(-1)
+    expect(claim).toBeGreaterThan(head)
+    expect(ask, 'no thisMacRole() between the function head and the claim').toBeGreaterThan(head)
     // Nothing that drives a browser sits between the ask and the claim.
     expect(deliver.slice(ask, claim)).not.toMatch(/browserSender\.send|probeHandle\(/)
+  })
+
+  it('and asks all three — switch, shutdown, sending Mac — BEFORE the thread read, which is itself a drive (Stage 1.3)', () => {
+    const deliver = strip(readFileSync('src/outreach/deliverOne.ts', 'utf8'))
+    const head = deliver.indexOf('async function deliverOne(')
+    const read = deliver.indexOf('await ensureConversationChecked(', head)
+    expect(read).toBeGreaterThan(head)
+    const before = deliver.slice(head, read)
+    expect(before, 'the switch is not re-asked before the read').toMatch(/\(await getSettings\(\)\)\.autopilotEnabled/)
+    expect(before, 'shutdown is not asked before the read').toMatch(/browserShutdownRequested\(\)/)
+    expect(before, 'the sending Mac is not asked before the read').toMatch(/thisMacRole\(\)/)
+    // And the three are asked AGAIN after it — the first ask is additional, never a replacement.
+    const after = deliver.slice(read, deliver.indexOf("data: { status: 'SENDING' }", read))
+    expect(after).toMatch(/\(await getSettings\(\)\)\.autopilotEnabled/)
+    expect(after).toMatch(/browserShutdownRequested\(\)/)
+    expect(after).toMatch(/thisMacRole\(\)/)
   })
 
   it('the reply sweep asks on entry and re-asks before every inbox scan and every thread read', () => {

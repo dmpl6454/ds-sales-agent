@@ -66,25 +66,70 @@ describe('revertUndrivenClaim', () => {
 })
 
 /**
- * The dashboard's Send button has no behavioural harness (it needs a session, the gate, the
- * sender and the browser all faked), so its two guarded windows are pinned by source shape:
- * the claim block, and the lock acquisition — where only a throw BEFORE the drive started may
- * put the draft back, because after it the recipient may already hold the message.
+ * ── THE WINDOW IS GUARDED ONCE, IN THE FUNCTION BOTH CALLERS RUN (Stage 1.3) ───────────────
+ *
+ * This used to pin `sendNow`'s two guarded windows by source shape — the claim block, and the
+ * lock acquisition — because the Send button had no behavioural harness and claimed BEFORE it
+ * asked for the lock. Both callers claim INSIDE the lock now, through `deliverOne`, so there is
+ * ONE window (claim → drive), guarded by one `revertUndrivenClaim`, and the Send button's
+ * second window (a throw while TAKING the lock) has nothing to give back: nothing is claimed
+ * until the lock is held. What is pinned here is therefore the shape of that one window and
+ * the absence of the other.
+ *
+ * Behaviour is driven in tests/deliver-challenged.test.ts ('a database error after the claim
+ * puts the draft back, and drives nothing') for the dispatcher and in
+ * tests/send-now-claims-under-lock.test.ts for the button.
  */
-describe('sendNow guards both undriven windows', () => {
-  const src = readFileSync('src/app/actions.ts', 'utf8')
-  const body = src.slice(src.indexOf('export async function sendNow('), src.indexOf('export async function', src.indexOf('export async function sendNow(') + 10))
+describe('the undriven window is guarded once, inside deliverOne', () => {
+  const src = readFileSync('src/outreach/deliverOne.ts', 'utf8')
+  const code = src.replace(/\/\*[\s\S]*?\*\//g, ' ').replace(/(^|[^:])\/\/[^\n]*/g, '$1 ')
 
-  it('reverts a claim whose drive never began, from both windows', () => {
-    expect(body.split('revertUndrivenClaim(').length - 1).toBe(2)
+  it('reverts a claim whose drive never began — exactly once, in the catch around claim → drive', () => {
+    expect(code.split('revertUndrivenClaim(').length - 1).toBe(1)
+    const claim = code.indexOf("data: { status: 'SENDING' }")
+    const tryAt = code.indexOf('try {', claim)
+    const catchAt = code.indexOf('} catch (err) {', tryAt)
+    const revert = code.indexOf('revertUndrivenClaim(', catchAt)
+    expect(claim).toBeGreaterThan(-1)
+    expect(tryAt, 'the guarded window must open right after the claim').toBeGreaterThan(claim)
+    expect(catchAt).toBeGreaterThan(tryAt)
+    expect(revert, 'the revert belongs to that catch').toBeGreaterThan(catchAt)
+    // Between a SUCCESSFUL claim and the try, nothing can throw out unguarded: the only await in
+    // that stretch is the lost-claim branch's status re-read (for a sentence), and a lost claim
+    // has nothing to give back.
+    const lost = code.indexOf('claimed.count === 0', claim)
+    expect(lost, 'the lost-claim branch moved').toBeGreaterThan(claim)
+    expect(code.slice(code.indexOf('let claimHeld', lost), tryAt)).not.toMatch(/await /)
   })
 
-  it('reverts on a lock-acquisition throw only when the drive had not started', () => {
+  it('and the drive sits AFTER the window — a throw out of the send is never reverted', () => {
+    const catchAt = code.indexOf('} catch (err) {')
+    const drive = code.indexOf('browserSender.send(')
+    expect(drive, 'the send must come after the guarded window closes').toBeGreaterThan(catchAt)
+    expect(code.slice(code.indexOf('try {'), catchAt)).not.toMatch(/browserSender\.send\(/)
+  })
+})
+
+describe('sendNow claims nothing of its own, so a refused lock leaves the draft as it was', () => {
+  const src = readFileSync('src/app/actions.ts', 'utf8')
+  const start = src.indexOf('export async function sendNow(')
+  const body = src
+    .slice(start, src.indexOf('export async function', start + 10))
+    .replace(/\/\*[\s\S]*?\*\//g, ' ')
+    .replace(/(^|[^:])\/\/[^\n]*/g, '$1 ')
+
+  it('holds no claim, no reservation and no revert — they are deliverOne\'s, under the lock', () => {
+    expect(body).not.toMatch(/SENDING/)
+    expect(body).not.toMatch(/updateMany|claimForAttempt|settleClaims|revertUndrivenClaim/)
+  })
+
+  it('reverts nothing when taking the lock throws, and lets a throw from deliverOne propagate', () => {
     const lock = body.indexOf('await withSendLock(')
     expect(lock).toBeGreaterThan(-1)
-    expect(body.indexOf('driveStarted = true', lock)).toBeGreaterThan(lock)
-    const guard = body.indexOf('if (driveStarted) throw err')
-    expect(guard).toBeGreaterThan(lock)
-    expect(body.indexOf('revertUndrivenClaim(', guard)).toBeGreaterThan(guard)
+    // `entered` is set only once deliverOne is about to run, so a throw from acquiring the lock
+    // answers with the database sentence, and one from inside deliverOne (after a drive may have
+    // started) rethrows exactly as the old `driveStarted` guard did.
+    expect(body.indexOf('entered = true', lock)).toBeGreaterThan(lock)
+    expect(body.indexOf('if (entered) throw err')).toBeGreaterThan(lock)
   })
 })

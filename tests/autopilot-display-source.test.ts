@@ -109,7 +109,9 @@ describe('no enforcer reads the un-floored switch', () => {
   /** And the enforcers still read the FLOORED value (audit H8 §D — unchanged and pinned). */
   it.each([
     ['src/outreach/deliver.ts', /settings\.autopilotEnabled/],
-    ['src/outreach/deliver.ts', /\(await getSettings\(\)\)\.autopilotEnabled/],
+    // The just-in-time re-reads moved into the one delivery function (Stage 1.3); the loop keeps
+    // the top-of-call check on the settings it was handed.
+    ['src/outreach/deliverOne.ts', /\(await getSettings\(\)\)\.autopilotEnabled/],
     ['src/outreach/dispatcher.ts', /autopilotEnabled: settings\.autopilotEnabled/],
     ['src/agent/index.ts', /\(await getSettings\(\)\)\.autopilotEnabled/],
     ['src/outreach/plan.ts', /autopilotEnabled: settings\.autopilotEnabled/],
@@ -141,8 +143,9 @@ describe('only the queue may ask the gate about another Mac’s disk', () => {
   }
 
   /**
-   * Every enforcement caller — the Send button (actions.ts), the dispatcher's loop (deliver.ts),
-   * `pnpm send` — passes TWO arguments, so the witness defaults to THIS disk. A trailing comma
+   * Every enforcement caller — the Send button's first refusal (actions.ts), the one delivery
+   * function both the Send button and the dispatcher's loop run (deliverOne.ts), `pnpm send` —
+   * passes TWO arguments, so the witness defaults to THIS disk. A trailing comma
    * would read as a third here; there is none today and adding one is not worth the ambiguity.
    */
   it('no caller outside gate.ts passes recheckBeforeSend a third argument', () => {
@@ -150,7 +153,7 @@ describe('only the queue may ask the gate about another Mac’s disk', () => {
       .filter((f) => f.path !== 'src/outreach/gate.ts')
       .flatMap((f) => calls(f.code, 'recheckBeforeSend').map((c) => ({ ...c, path: f.path })))
     const byFile = new Set(sites.map((s) => s.path))
-    for (const f of ['src/app/actions.ts', 'src/outreach/deliver.ts', 'src/scripts/send.ts']) {
+    for (const f of ['src/app/actions.ts', 'src/outreach/deliverOne.ts', 'src/scripts/send.ts']) {
       expect(byFile, `${f} no longer calls recheckBeforeSend — this guard has gone stale`).toContain(f)
     }
     expect(

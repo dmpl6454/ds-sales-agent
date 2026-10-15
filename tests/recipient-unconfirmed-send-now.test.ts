@@ -35,9 +35,26 @@ vi.mock('@/lib/db', () => ({
       updateMany: (...a: unknown[]) => attemptUpdateMany(...a),
       update: (...a: unknown[]) => attemptUpdate(...a),
     },
+    // `deliverOne` re-reads the sender's status immediately before it drives (Stage 1.3).
+    senderAccount: { findUnique: async () => ({ status: 'ACTIVE' }) },
     auditLog: { create: (...a: unknown[]) => auditCreate(...a) },
   },
 }))
+// The Send button now runs the SAME delivery function as the dispatcher (Stage 1.3), so it asks
+// the sending-Mac role and the anonymous page probe. These tests are about what happens to the
+// draft after the DRIVE, so both answer "go ahead" — the Mac is the selected one, and the probe
+// cannot tell — and each has its own coverage (activeDevice, tests/send-now-claims-under-lock.test.ts).
+//
+// The thread read is the dispatcher's alone: it is a real browser drive and the Send button must
+// not make one HEAD's button never made. The mock THROWS rather than answering `fresh`, so a press
+// that reads fails every test in this file instead of passing through a stand-in.
+vi.mock('@/outreach/activeDevice', () => ({ thisMacRole: async () => ({ active: true, selected: 'this-mac', thisDevice: 'this-mac' }) }))
+vi.mock('@/outreach/replyCheck', () => ({
+  ensureConversationChecked: async () => {
+    throw new Error('the Send button must not read the conversation — that is a browser drive the refactor may not add')
+  },
+}))
+vi.mock('@/detection/exists', () => ({ probeHandle: async () => ({ check: 'unknown', facts: null }) }))
 vi.mock('@/lib/logger', async (orig) => ({
   ...(await orig<typeof import('@/lib/logger')>()),
   log: { info: vi.fn(), step: vi.fn(), warn: vi.fn(), error: vi.fn(), alarm: vi.fn() },

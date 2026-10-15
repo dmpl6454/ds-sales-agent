@@ -251,10 +251,18 @@ describe('a follow-up reads its conversation before it is sent', () => {
     const out = await deliverWaiting()
     expect(send).not.toHaveBeenCalled()
     expect(out.failed).toBe(1)
-    const upd = attemptUpdate.mock.calls[0]![0] as { data: { status: string; attempts: unknown; queuedAt?: Date } }
-    expect(upd.data.status).toBe('READY') // back of the queue, not parked yet
-    expect(upd.data.attempts).toEqual({ increment: 1 })
-    expect(upd.data.queuedAt).toBeInstanceOf(Date)
+    /* The ladder write is an `updateMany` whose `where` carries the status (Stage 1.3 review: the
+       write is the guard — a draft discarded during the read must not be written back to READY).
+       It is the only `updateMany` here: nothing was claimed. */
+    expect(attemptUpdate, 'the read ladder went back to a plain update by id').not.toHaveBeenCalled()
+    const call = attemptUpdateMany.mock.calls[0]![0] as {
+      where: { id: string; status: string }
+      data: { status: string; attempts: unknown; queuedAt?: Date }
+    }
+    expect(call.where).toEqual({ id: 'att_1', status: 'READY' })
+    expect(call.data.status).toBe('READY') // back of the queue, not parked yet
+    expect(call.data.attempts).toEqual({ increment: 1 })
+    expect(call.data.queuedAt).toBeInstanceOf(Date)
   })
 
   it('parks an unreadable follow-up once it has failed the delivery-attempt cap', async () => {
@@ -268,9 +276,14 @@ describe('a follow-up reads its conversation before it is sent', () => {
     const out = await deliverWaiting()
     expect(send).not.toHaveBeenCalled()
     expect(out.failed).toBe(1)
-    const upd = attemptUpdate.mock.calls[0]![0] as { data: { status: string; queuedAt?: Date } }
-    expect(upd.data.status).toBe('FAILED')
-    expect(upd.data.queuedAt, 'a parked row keeps its position').toBeUndefined()
+    expect(attemptUpdate, 'the read ladder went back to a plain update by id').not.toHaveBeenCalled()
+    const call = attemptUpdateMany.mock.calls[0]![0] as {
+      where: { id: string; status: string }
+      data: { status: string; queuedAt?: Date }
+    }
+    expect(call.where).toEqual({ id: 'att_1', status: 'READY' })
+    expect(call.data.status).toBe('FAILED')
+    expect(call.data.queuedAt, 'a parked row keeps its position').toBeUndefined()
   })
 
   it('a no-session read holds for free — no browser was driven, so nothing is counted', async () => {
@@ -304,7 +317,10 @@ describe('a follow-up reads its conversation before it is sent', () => {
     ensureConversationChecked.mockResolvedValue({ ok: false, reason: 'unreadable', detail: 'nope' })
     await deliverWaiting()
     expect(claimForAttempt).not.toHaveBeenCalled()
-    expect(attemptUpdateMany).not.toHaveBeenCalled()
+    // No READY→SENDING claim. (The unreadable ladder IS an `updateMany` now — back to READY at the
+    // back of the queue — so "nothing was written at all" is no longer the property; "nothing was
+    // CLAIMED" is, and it is the one the heading above names.)
+    expect(attemptUpdateMany).not.toHaveBeenCalledWith(expect.objectContaining({ data: { status: 'SENDING' } }))
   })
 
   /**

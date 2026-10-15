@@ -8,7 +8,8 @@ import { join, relative } from 'node:path'
  * `pairId`, `senderId` and `targetId` are fixed when the planner writes a draft for a route.
  * Every safety argument downstream leans on that:
  *
- *   - the two READY→SENDING claims (`deliver.ts`, `sendNow`) condition on STATUS only. That is
+ *   - the READY→SENDING claim (`deliverOne.ts` — one function, run by the dispatcher's loop and by
+ *     `sendNow` alike since Stage 1.3) conditions on STATUS only. That is
  *     enough exactly because no row can be moved onto another pair between a tick reading the
  *     queue and claiming it — otherwise the old page's browser drives under the new page's row;
  *   - `recordDelivered` writes by id, unconditionally, and must stay that way (a delivery fact

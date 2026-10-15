@@ -42,7 +42,7 @@ describe('browserSender files a recipient refusal as a fact about the recipient'
     expect(out.sessionInvalid).toBeUndefined()
     // The recipient is named in the row's prose, which nothing regex-tests.
     expect(out.error).toContain('@tips')
-    // A mismatch is NOT retryable: no flag, so both delivery paths park it on first sight.
+    // A mismatch is NOT retryable: no flag, so the one delivery function (both callers) parks it on first sight.
     expect(out.recipientRetryable).toBeUndefined()
   })
 

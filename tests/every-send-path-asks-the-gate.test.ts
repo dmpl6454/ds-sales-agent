@@ -69,7 +69,7 @@ const GATE_CALL = /recheckBeforeSend\s*\(/
  */
 const EXEMPT: Record<string, string> = {
   'src/outreach/recordSend.ts': 'it IS the writer — the gate is asked by whoever calls it',
-  'src/outreach/senders/browser.ts': 'the driver beneath deliver.ts, which gates before calling it',
+  'src/outreach/senders/browser.ts': 'the driver beneath deliverOne.ts, which gates before calling it',
   'src/outreach/senders/manual.ts': 'prepares only; it delivers nothing',
 }
 
@@ -106,15 +106,41 @@ describe('every path that delivers a message asks the gate first', () => {
   })
 
   /**
-   * The three known callers, named. If one disappears the rule has not been weakened — but
+   * The known callers, named. If one disappears the rule has not been weakened — but
    * something has moved, and this says which, rather than the count quietly falling.
+   *
+   * STAGE 1.3 MOVED THE FIRST ONE. The dispatcher's loop and the Send button used to each carry
+   * their own delivery, and each called the gate; they now share `deliverOne`, which asks it
+   * under the lock for both. `actions.ts` still names it, deliberately: `sendNow` asks it once
+   * more BEFORE the lock, as the first refusal, so a draft the gate would refuse is answered
+   * with the gate's own sentence even when the lock is refused too (the hosted dashboard's lock
+   * always is). That call guards nothing the one in `deliverOne` does not — it is there for the
+   * words — and `actions.ts` also holds `markSent`'s `recordDelivered`, which is why it could
+   * not simply drop the call without becoming an exemption here.
    */
   it.each([
-    ['src/outreach/deliver.ts', 'the paced dispatcher'],
-    ['src/app/actions.ts', 'the dashboard Send button'],
-    ['src/scripts/send.ts', 'pnpm send, the manual fallback'],
+    ['src/outreach/deliverOne.ts', 'the one delivery function (dispatcher + Send button)'],
+    ['src/app/actions.ts', "the Send button's first refusal, before the lock"],
+    ['src/scripts/send.ts', 'pnpm send, the manual clipboard fallback'],
   ])('%s still asks it (%s)', (file) => {
     expect(read(file), 'it imports the gate but never calls it').toMatch(GATE_CALL)
+  })
+
+  /**
+   * And the loop is a CALLER of the one function, not a second delivery path: it holds no
+   * delivery writer of its own. This is the half of the Stage 1.3 refactor a grep can pin — the
+   * day somebody re-inlines a `browserSender.send(` or a `recordDelivered(` here, the two
+   * callers have drifted again, and the check above would not notice (the gate call would
+   * simply have moved with it).
+   */
+  it('deliver.ts is the loop: it calls deliverOne and writes no delivery of its own', () => {
+    const loop = read('src/outreach/deliver.ts')
+    expect(loop, 'the loop no longer calls the one delivery function').toMatch(/\bdeliverOne\s*\(/)
+    expect(loop, 'the loop has grown a delivery writer of its own').not.toMatch(DELIVERY_WRITERS)
+    expect(loop, 'the loop has grown a gate call of its own').not.toMatch(GATE_CALL)
+    // And the Send button reaches its drive through the same function.
+    expect(read('src/app/actions.ts'), 'sendNow no longer delivers through deliverOne').toMatch(/\bdeliverOne\s*\(/)
+    expect(read('src/app/actions.ts'), 'sendNow drives a browser itself again').not.toMatch(/browserSender\.send\(/)
   })
 
   /**

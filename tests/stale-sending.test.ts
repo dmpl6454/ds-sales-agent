@@ -22,8 +22,10 @@ import { join } from 'node:path'
  *     and a guard that fires without its precondition would park a live send
  *   - WITH the lock held by this pid, the orphan parks as FAILED / not-in-thread with
  *     an audit row, and ONLY the orphan — READY and SENT rows are untouched
- *   - a row that leaves SENDING during the dwell (the `sendNow` pre-lock claim being
- *     reverted) is NOT parked — the dwell exists exactly for that race
+ *   - a row that leaves SENDING during the dwell is NOT parked. The dwell was built for the
+ *     `sendNow` pre-lock claim being reverted; since Stage 1.3 both callers claim INSIDE the
+ *     lock, so what it still covers is a claimant that reverts late — a build that predates
+ *     the change (an older Mac's local dashboard still claims before it asks for the lock)
  */
 
 const dir = mkdtempSync(join(tmpdir(), 'ds-stale-sending-'))
@@ -257,10 +259,10 @@ describe('parkOrphanedSending', () => {
     expect(audits[0]!.detail).toContain('pageone→companyone')
   })
 
-  it('does NOT park a row that leaves SENDING during the dwell — the sendNow pre-lock race', async () => {
+  it('does NOT park a row that leaves SENDING during the dwell — a claimant that reverts late', async () => {
     await prisma.setting.create({ data: { key: SEND_LOCK_KEY, value: lockValue(process.pid) } })
     const sweep = parkOrphanedSending(400)
-    // a sendNow whose lock attempt returned busy reverts its claim — simulate that revert
+    // an older build's sendNow whose lock attempt returned busy reverts its claim — simulate that revert
     await new Promise((r) => setTimeout(r, 50))
     await prisma.outreachAttempt.update({ where: { id: 'att_sending' }, data: { status: 'READY' } })
     const parked = await sweep

@@ -25,14 +25,15 @@ import { remedyFor } from '@/app/messages/remedy'
  * writes later, and no behavioural test can fail for a component nobody has re-added — the same
  * reasoning as `tests/naming-linkage.test.ts` and `tests/pool-bounds.test.ts`.
  *
- * ── AND IT MAY NOT IMPORT `deliver.ts`, WHICH THE FIRST VERSION DID ────────
+ * ── AND IT MAY NOT IMPORT THE ENFORCER, WHICH THE FIRST VERSION DID ────────
  *
  * Importing the enforcer to read its number CONSTRUCTS a Prisma client at module load
- * (`deliver.ts` → `db.ts`), so a test about which number the screen shows opened a database
- * connection to ask — and failed outright on a machine whose client is baked for the server's
- * Postgres. That is `tests/pool-bounds.test.ts`'s lesson exactly: a value you want to READ must
- * cost nothing to read. Hence the constant lives in the leaf module and the agreement between
- * the two modules is asserted as a grep over `deliver.ts`'s source instead.
+ * (`deliverOne.ts` → `db.ts`; `deliver.ts` until Stage 1.3 moved the parking there), so a test
+ * about which number the screen shows opened a database connection to ask — and failed outright
+ * on a machine whose client is baked for the server's Postgres. That is
+ * `tests/pool-bounds.test.ts`'s lesson exactly: a value you want to READ must cost nothing to
+ * read. Hence the constant lives in the leaf module and the agreement between the two modules
+ * is asserted as a grep over `deliverOne.ts`'s source instead.
  */
 
 const repo = join(__dirname, '..')
@@ -59,11 +60,15 @@ describe('the failures list shows only what the retry cap gave up on', () => {
   it('is the same number the enforcer parks on, and the enforcer keeps no second copy', () => {
     expect(MAX_DELIVERY_ATTEMPTS).toBeGreaterThan(1)
 
-    const deliver = read('src/outreach/deliver.ts')
+    /* The enforcer is `deliverOne.ts` since Stage 1.3 — the loop in `deliver.ts` no longer
+       parks anything, it files what `deliverOne` reports. Both files are checked for a second
+       copy of the number; only the one that parks is checked for using it. */
+    const deliver = read('src/outreach/deliverOne.ts')
     // It takes the value from the leaf module...
     expect(deliver).toMatch(/import \{ MAX_DELIVERY_ATTEMPTS \} from '@\/lib\/constants'/)
     // ...and does not define one of its own, which is how two numbers start disagreeing.
     expect(deliver).not.toMatch(/const MAX_DELIVERY_ATTEMPTS\s*=/)
+    expect(read('src/outreach/deliver.ts')).not.toMatch(/const MAX_DELIVERY_ATTEMPTS\s*=/)
     // The park is still measured against it rather than against a literal.
     expect(deliver).toMatch(/totalAttempts >= MAX_DELIVERY_ATTEMPTS/)
   })

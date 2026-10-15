@@ -73,8 +73,13 @@ describe('profile-gone is a failure code that releases its reservation', () => {
   })
 })
 
-describe('the delivery path asks before it drives, and parks on first sight', () => {
-  const src = readFileSync('src/outreach/deliver.ts', 'utf8')
+/**
+ * Re-pointed at `deliverOne.ts` (Stage 1.3): the probe, the drive and the ladder are one
+ * function now, so "the delivery path asks before it drives" is true of the Send button too —
+ * which had no probe at all until it became a caller.
+ */
+describe('the delivery function asks before it drives, and parks on first sight', () => {
+  const src = readFileSync('src/outreach/deliverOne.ts', 'utf8')
   it('probeHandle runs BEFORE browserSender.send', () => {
     const probe = src.indexOf('await probeHandle(target.handle)')
     const drive = src.indexOf('await browserSender.send({')
@@ -82,12 +87,21 @@ describe('the delivery path asks before it drives, and parks on first sight', ()
     expect(drive).toBeGreaterThan(probe)
   })
   it("a 'profile-gone' outcome parks FAILED without a retry", () => {
-    const branch = src.indexOf("if (failureCode === 'profile-gone')")
+    // The drive-found branch is the unattended caller's (see deliverOne's header: the Send
+    // button never had it, and it is preserved as a mode difference, not unified).
+    const branch = src.indexOf("mode.unattended && failureCode === 'profile-gone'")
     const park = src.indexOf("status: 'FAILED'", branch)
     const next = src.indexOf("if (failureCode === 'not-in-thread')")
     expect(branch).toBeGreaterThan(0)
     expect(park).toBeGreaterThan(branch)
     expect(park).toBeLessThan(next)
+  })
+  it("and the probe's park is the one BOTH callers share: no mode condition guards it", () => {
+    const probe = src.indexOf("probe.check === 'missing'")
+    const park = src.indexOf("failureCode: 'profile-gone'", probe)
+    expect(probe).toBeGreaterThan(0)
+    expect(park).toBeGreaterThan(probe)
+    expect(src.slice(probe - 60, probe)).not.toMatch(/mode\.unattended/)
   })
 })
 
@@ -192,19 +206,24 @@ describe('a dead page never reaches the inbox route, on either path', () => {
 
 /**
  * Audit C1: the inbox route opened a conversation that names somebody ELSE. Parked on FIRST sight
- * by both delivery paths — the generic branch would put it back in READY, and the dispatcher
- * would drive the same search again within ~30 s.
+ * — the generic branch would put it back in READY, and the dispatcher would drive the same search
+ * again within ~30 s.
  *
  * Reviewed the same day: only a MISMATCH. An `unknown` or `ambiguous` refusal is what a transient
- * miss at the profile door looks like and arrives flagged `recipientRetryable`, which both paths
- * must read as an OPT-IN (`=== true`) so that a refusal without the flag still parks. The retry
- * behaviour itself is driven end to end in tests/recipient-unconfirmed-retry.test.ts and
+ * miss at the profile door looks like and arrives flagged `recipientRetryable`, which must be read
+ * as an OPT-IN (`=== true`) so that a refusal without the flag still parks. The retry behaviour
+ * itself is driven end to end in tests/recipient-unconfirmed-retry.test.ts and
  * tests/recipient-unconfirmed-send-now.test.ts.
+ *
+ * STAGE 1.3: this used to be asserted of TWO copies (`deliver.ts` and `actions.ts` `sendNow`),
+ * because there were two. There is one — `deliverOne.ts` — and both callers run it, so the
+ * structural claim is made once, and the second half below asserts the copy is GONE from the
+ * Send button rather than assuming it. (The behaviour of each caller's park is the driven tests'.)
  */
 const OPT_IN = /const recipientRetryable = outcome\.status === 'FAILED' && outcome\.recipientRetryable === true/
-describe('a recipient-unconfirmed MISMATCH parks on first sight, on both send paths', () => {
-  it('deliver.ts parks it FAILED at the cap, before the not-in-thread branch', () => {
-    const src = readFileSync('src/outreach/deliver.ts', 'utf8')
+describe('a recipient-unconfirmed MISMATCH parks on first sight, in the one function both callers run', () => {
+  it('deliverOne.ts parks it FAILED at the cap, before the not-in-thread branch', () => {
+    const src = readFileSync('src/outreach/deliverOne.ts', 'utf8')
     expect(src).toMatch(OPT_IN)
     const branch = src.indexOf("if (failureCode === 'recipient-unconfirmed' && !recipientRetryable)")
     const next = src.indexOf("if (failureCode === 'not-in-thread')")
@@ -213,22 +232,16 @@ describe('a recipient-unconfirmed MISMATCH parks on first sight, on both send pa
     const body = src.slice(branch, next)
     expect(body).toMatch(/status: 'FAILED'/)
     expect(body).toMatch(/attempts: MAX_DELIVERY_ATTEMPTS/)
-    expect(body).toMatch(/continue/)
+    expect(body).toMatch(/return failed\(/)
   })
 
-  it("actions.ts sendNow parks it before its generic return-to-READY branch", () => {
+  it('and the Send button keeps no copy of it: no ladder of its own in actions.ts sendNow', () => {
     const src = readFileSync('src/app/actions.ts', 'utf8')
     const fnStart = src.indexOf('export async function sendNow(')
     const fnEnd = src.indexOf('\nexport ', fnStart + 1)
     const fn = src.slice(fnStart, fnEnd)
-    expect(fn).toMatch(OPT_IN)
-    const branch = fn.indexOf("if (failureCode === 'recipient-unconfirmed' && !recipientRetryable)")
-    const generic = fn.indexOf('// Everything else: leave the draft intact')
-    expect(branch).toBeGreaterThan(0)
-    expect(generic).toBeGreaterThan(branch)
-    const body = fn.slice(branch, generic)
-    expect(body).toMatch(/status: 'FAILED'/)
-    expect(body).toMatch(/attempts: MAX_DELIVERY_ATTEMPTS/)
-    expect(body).toMatch(/return \{/)
+    expect(fn).not.toMatch(/recipientRetryable/)
+    expect(fn).not.toMatch(/failureCode/)
+    expect(fn).toMatch(/\bdeliverOne\(/)
   })
 })

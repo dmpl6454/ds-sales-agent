@@ -9,13 +9,14 @@ import { prisma } from '@/lib/db'
 import type { Prisma } from '@/generated/prisma/client'
 import { env } from '@/lib/env'
 import { runSlot } from '@/worker/runSlot'
-import { browserSender } from '@/outreach/senders/browser'
 // `mayArmAccount` is deliberately NOT imported here any more: the arming button is gone
 // (one switch, 2026-08-08) and the ladder is enforced by `gate.ts` at delivery instead.
 // The FUNCTION is very much alive — do not delete it on the strength of this file.
 import { nextCohort } from '@/outreach/cohorts'
 import { profileStatus } from '@/outreach/browser/profile'
-import { recheckBeforeSend, isOverridable } from '@/outreach/gate'
+import { recheckBeforeSend } from '@/outreach/gate'
+import { deliverOne, type DeliverOneResult } from '@/outreach/deliverOne'
+import { gateRefusalMessage, sendNowAnswer, SEND_NOW_BUSY, SEND_NOW_DB } from './send-now-message'
 import { prepareOnDemand, type OnDemandPreview } from '@/outreach/onDemand'
 import { getSettings, setSetting, SETTING_KEYS } from '@/lib/settings'
 import { startConnect, pollConnect, cancelConnect, type ConnectState } from '@/outreach/browser/connect'
@@ -37,9 +38,9 @@ import { DELIVERED_STATUSES } from '@/lib/constants'
 import { ourOwnPageHandles } from '@/detection/visibleChannels'
 import { assertSafeHandle } from '@/lib/urls'
 import { distinctiveSlice } from '@/outreach/matching'
-import { recordDelivered, revertUndrivenClaim } from '@/outreach/recordSend'
-import { claimForAttempt, settleClaims, releaseReservation, type Reservation } from '@/outreach/reservations'
-import { markChallenged, clearChallenged } from '@/outreach/challenge'
+import { recordDelivered } from '@/outreach/recordSend'
+import { releaseReservation } from '@/outreach/reservations'
+import { clearChallenged } from '@/outreach/challenge'
 import { markSessionInvalid, clearSessionInvalid } from '@/outreach/sessionHealth'
 import { withSendLock, DISPATCH_PAUSE_KEY, dispatchTick, acknowledgeBreaker } from '@/outreach/dispatcher'
 import { importProspects, type ImportOutcome } from '@/outreach/importProspects'
@@ -49,14 +50,12 @@ import { ensureCategory, addTargetToCategory } from '@/outreach/categories'
 import { discardAttempt } from '@/outreach/discard'
 import { handOffWaitingDrafts, releasableWhere } from '@/outreach/handOff'
 import { removeSenderResult, tallyHeld } from './remove-sender-message'
-import { log } from '@/lib/logger'
 import { validatePersona } from '@/outreach/render'
 import { checkFollowUpBody, checkTemplateBody } from '@/outreach/templateGuard'
 import { fleetTemplateKey } from '@/outreach/fleetTemplate'
 import { FOLLOW_UP_DEFAULT_KEY, followUpTemplateKey } from '@/outreach/followUpTemplate'
 import { DEFAULT_CATEGORY_SLUG } from '@/outreach/senderCategories'
 import { requireOperator } from '@/lib/session'
-import { MAX_DELIVERY_ATTEMPTS } from '@/lib/constants'
 import { MESSAGE_VARIANTS } from '../../prisma/variants'
 import { BRAND_MESSAGE_VARIANTS } from '../../prisma/brandVariants'
 
@@ -153,19 +152,32 @@ export interface SendNowResult {
  * Takes roughly 30-60 seconds and a Chrome window will be visible while it runs —
  * that visibility is deliberate, not a debug leftover.
  *
- * Guards, in the order they bite:
+ * ── THIS IS A CALLER OF `deliverOne`, NOT A SECOND DELIVERY PATH (Stage 1.3) ───────────────
  *
- *   1. `recheckBeforeSend` — the SAME gate autopilot runs: still waiting, account
- *      ACTIVE and connected, route on, channel not retired, THEY HAVE NOT REPLIED,
- *      and neither daily cap spent. The only difference from the unattended path is
- *      that a human being present substitutes for the auto-send switch.
- *   2. An atomic claim to SENDING, so two clicks cannot become two messages.
- *   3. The Chrome profile must be logged in as exactly this sender.
- *   4. The composer must contain our message before Enter is pressed.
- *   5. The message must appear in the thread before it is recorded as SENT.
+ * It used to carry its own copy of "claim, drive, file the outcome", and the copy had drifted
+ * from the dispatcher's (audit M4 / M2). What it does itself is now three things, in order:
  *
- * A checkpoint marks the sender CHALLENGED and halts it. That state is cleared by a
- * human who has looked at the account, never automatically.
+ *   1. The FIRST REFUSAL — `recheckBeforeSend`, the same gate autopilot runs, asked BEFORE the
+ *      lock so that a draft the gate refuses is answered with the gate's own sentence even when
+ *      the lock would have been refused too. That is why the call is kept here rather than left
+ *      to `deliverOne`: with the gate only inside the lock, every click on a machine that may
+ *      not send (the hosted dashboard is `SEND_ENABLED=false`) would read "another message is
+ *      being sent right now" over drafts the gate would have named a real reason for. The gate
+ *      is asked AGAIN inside `deliverOne`, under the lock, which is the ask that guards.
+ *   2. The fleet-wide SEND LOCK, below.
+ *   3. `deliverOne`, which owns everything from there: the live status re-read, the disk, the
+ *      gate, the asks before the claim, the atomic claim, the allowance claim, the anonymous
+ *      probe, the drive, and the failure ladder.
+ *
+ * What the Send button now does that it did not: it asks the anonymous page probe — one request
+ * with no session from this machine's own IP, which parks a draft aimed at a deleted page with
+ * NO browser drive. It can only HOLD a message; no send is added and NO BROWSER DRIVE IS ADDED.
+ *
+ * What it deliberately does NOT do: read the conversation first, as the dispatcher does for a
+ * stale follow-up. That read is a real Chrome drive and HEAD's button never made one, so the
+ * button still relies on `repliedAt` as of the last sweep, through the gate. A reply nobody has
+ * swept yet does not hold a press — HEAD's gap, stated rather than closed; whether the button
+ * should pay a read for it is a person's call (`deliverOne`'s step 6 is the one condition).
  *
  * `overrides` carries stops the operator acknowledged in the on-demand dialog. It is
  * intersected with OVERRIDABLE_BLOCKS inside the gate, never trusted as given — a
@@ -173,6 +185,9 @@ export interface SendNowResult {
  * has to hold at the gate rather than at the caller. An overridden send is recorded
  * with a different `sentBy` so the audit trail never conflates "the system decided
  * this was fine" with "a person overruled it".
+ *
+ * A checkpoint marks the sender CHALLENGED and halts it. That state is cleared by a
+ * human who has looked at the account, never automatically.
  */
 export async function sendNow(attemptId: string, overrides?: readonly string[]): Promise<SendNowResult> {
   const user = await requireOperator()
@@ -183,7 +198,7 @@ export async function sendNow(attemptId: string, overrides?: readonly string[]):
   const { sender, target } = attempt.pair
 
   /**
-   * Guard 1 — the SAME re-check autopilot runs.
+   * Guard 1 — the SAME re-check autopilot runs, as the FIRST REFUSAL.
    *
    * This used to be three inline guards, and it silently lacked five that
    * `deliverWaiting` enforced: the route being switched off, the channel retired,
@@ -193,96 +208,7 @@ export async function sendNow(attemptId: string, overrides?: readonly string[]):
    */
   const gate = await recheckBeforeSend(attempt, { unattended: false, overrides })
   if (!gate.ok) {
-    const fix =
-      gate.reason === 'no-session'
-        ? ` Press Connect on its row, and log in in the Chrome window that opens.`
-        : ''
-    return { ok: false, message: `@${sender.handle}: ${gate.detail ?? gate.reason}.${fix}` }
-  }
-
-  /**
-   * Guard 2 — claim it ATOMICALLY.
-   *
-   * This was a check-then-act: read the status, then write SENDING as a separate
-   * statement, under a comment asserting "a double click cannot double send". Two
-   * clicks, two operators, or a click racing a slot's `deliverWaiting` all passed the
-   * read before either wrote. `deliverWaiting` got this right with a conditional
-   * updateMany; the button did not. Condition and write in one statement.
-   */
-  const claimed = await prisma.outreachAttempt.updateMany({
-    where: { id: attemptId, status: { in: ['READY', 'QUEUED'] } },
-    data: { status: 'SENDING' },
-  })
-  if (claimed.count === 0) {
-    const now = await prisma.outreachAttempt.findUnique({
-      where: { id: attemptId },
-      select: { status: true },
-    })
-    return { ok: false, message: `already ${(now?.status ?? 'gone').toLowerCase()} — nothing sent` }
-  }
-
-  /**
-   * What was ACTUALLY crossed, not what the caller asked to cross. Computed from the
-   * whitelist so a stray or malicious value can neither reach the gate nor appear in
-   * the audit trail as though it had.
-   */
-  const crossed = (overrides ?? []).filter(isOverridable)
-
-  /**
-   * Claim the recipient's daily allowance atomically — the SAME call `deliverWaiting`
-   * makes, for the same reason.
-   *
-   * The gate above counts and compares, which two callers both pass. A daily cap is one
-   * of the stops a human may NOT cross (crossing cooldown sends one extra message to one
-   * person; crossing a daily cap has no bound at all), so the button claims exactly as
-   * the slot does and refuses on the same terms.
-   */
-  /* Everything from the claim to the drive is guarded — see `revertUndrivenClaim`. A database
-     error in here used to leave the row SENDING, which the orphan sweep later parks as possibly
-     delivered, holding the pair for good although nothing was sent. */
-  let sendHeld: readonly Reservation[] = []
-  try {
-    const sendSettings = await getSettings()
-    const claim = await claimForAttempt({
-      attemptId,
-      pairId: attempt.pairId,
-      maxPerPairPerDay: sendSettings.maxPerPairPerDay,
-      /**
-       * `attended: true` skips the fleet's HOURLY bucket and only that one.
-       *
-       * The hourly bucket is pacing — it exists so fourteen unattended drafts cannot leave
-       * inside one hour. A person pressing Send, once, is not a cluster, and refusing them
-       * because a scheduled tick used this hour's pace would make the button unreliable for
-       * exactly the case it was built for. The fleet's DAILY bucket still binds, because
-       * that is a volume ceiling and daily caps are not crossable here: crossing cooldown
-       * sends one extra message to one person, crossing a daily cap has no bound at all.
-       */
-      fleetMaxPerDay: sendSettings.fleetMaxPerDay,
-      attended: true,
-    })
-    if (!claim.ok) {
-      await prisma.outreachAttempt.updateMany({
-        where: { id: attemptId, status: 'SENDING' },
-        data: { status: 'READY' },
-      })
-      return { ok: false, message: `@${sender.handle}: ${claim.detail}.` }
-    }
-    sendHeld = claim.held
-
-
-    await audit(
-      user.email,
-      crossed.length > 0 ? 'attempt.send.start.override' : 'attempt.send.start',
-      `OutreachAttempt:${attemptId}`,
-      `@${sender.handle} → @${target.handle}${crossed.length > 0 ? ` — crossed: ${crossed.join(', ')}` : ''}`,
-    )
-
-  } catch (err) {
-    await revertUndrivenClaim(attemptId, sendHeld, err)
-    return {
-      ok: false,
-      message: 'Nothing was sent — the database did not answer before the send could start. The message is back in the queue; try again in a minute.',
-    }
+    return { ok: false, message: gateRefusalMessage(sender.handle, gate.reason, gate.detail) }
   }
 
   /**
@@ -290,200 +216,51 @@ export async function sendNow(attemptId: string, overrides?: readonly string[]):
    *
    * There is one OS clipboard and `sendDm` pastes the body from it. Two sends running at
    * once can interleave copy and paste and put **message A into thread B**. The atomic
-   * READY→SENDING claim above does not cover this: it stops the SAME message going twice
+   * READY→SENDING claim does not cover this: it stops the SAME message going twice
    * and says nothing about two DIFFERENT messages racing — which is precisely what a click
    * landing during a dispatcher tick is. `runSlot`'s lock comment already reasoned about
    * this hazard while only protecting slots from slots.
    *
    * Refused rather than queued. Waiting would hold a server action open for the 40 seconds
    * of somebody else's send, and the honest answer is that the message is still there.
+   *
+   * THE CLAIM IS INSIDE THE LOCK NOW (audit M4). It used to be made before this line and given
+   * back when the lock was refused, which made "Another message is being sent right now" a
+   * sentence about a draft this very call had just flipped to SENDING and back. Nothing is
+   * claimed until `deliverOne` holds the lock, so a refusal here leaves the draft exactly as it
+   * was and the sentence below is a statement about the lock, not about the row.
    */
-  /* Taking the lock reads and writes the shared database, so it can throw BEFORE any browser
-     opens — and that throw stranded the row SENDING exactly like the window guarded above.
-     `driveStarted` separates the two: before it, nothing was driven and the draft goes back;
-     after it, the browser may have delivered and the orphan sweep's "check the conversation"
-     stays the right answer, so the error is left to propagate as it always did. */
-  let driveStarted = false
-  let outcome: Awaited<ReturnType<typeof browserSender.send>> | null
+  /* Taking the lock reads and writes the shared database, so it can throw BEFORE anything is
+     claimed or driven — and then the honest answer is the database sentence, and there is
+     nothing to give back. `entered` separates that from a throw out of `deliverOne`, which can
+     come AFTER a browser opened: the recipient may hold the message, the row stays SENDING for
+     the orphan sweep's "check the conversation", and the error propagates as it always did.
+     (Everything between `deliverOne`'s claim and its drive is guarded inside it, by
+     `revertUndrivenClaim`.) */
+  let entered = false
+  let result: DeliverOneResult | null
   try {
-    outcome = await withSendLock(`operator:${sender.handle}`, () => {
-      driveStarted = true
-      return browserSender.send({
-        attemptId,
-        senderHandle: sender.handle,
-        sessionPath: profileStatus(sender.handle).dir,
-        targetHandle: target.handle,
-        body: attempt.renderedBody,
+    result = await withSendLock(`operator:${sender.handle}`, async () => {
+      // Read inside the lock and BEFORE `entered`, so a failing read is the database sentence.
+      const settings = await getSettings()
+      entered = true
+      return deliverOne({
+        attempt,
+        settings,
+        mode: { unattended: false, operator: user.email, overrides },
+        challengedThisRun: new Set<string>(),
       })
     })
   } catch (err) {
-    if (driveStarted) throw err
-    await revertUndrivenClaim(attemptId, sendHeld, err)
-    return {
-      ok: false,
-      message: 'Nothing was sent — the database did not answer before the send could start. The message is back in the queue; try again in a minute.',
-    }
+    if (entered) throw err
+    return { ok: false, message: SEND_NOW_DB }
   }
 
-  if (outcome === null) {
-    // Nothing was driven, so give back everything claimed and put the draft back.
-    await settleClaims(sendHeld, { delivered: false, attempted: false })
-    await prisma.outreachAttempt.updateMany({
-      where: { id: attemptId, status: 'SENDING' },
-      data: { status: 'READY' },
-    })
-    return {
-      ok: false,
-      message: 'Another message is being sent right now. Nothing was sent — try again in a minute.',
-    }
-  }
+  if (result === null) return { ok: false, message: SEND_NOW_BUSY }
 
-  await settleClaims(sendHeld, {
-    delivered: outcome.status === 'SENT',
-    failureCode: outcome.status === 'FAILED' ? outcome.failureCode : null,
-  })
-
-  if (outcome.status === 'SENT') {
-    // SENT commits alone; the variant bump follows best-effort. They shared a
-    // transaction, so a lock timeout on a rotation statistic could roll back the record
-    // of a DM the recipient already had. See `recordSend.ts`.
-    await recordDelivered({
-      attemptId,
-      variantId: attempt.variantId,
-      // An overridden send is a materially different event and must be legible as one
-      // months later, when the only record of why is this string.
-      sentBy: crossed.length > 0 ? `override(${crossed.join('+')}):${sender.handle}` : `operator:${sender.handle}`,
-      threadUrl: outcome.threadUrl,
-    })
-    await audit(
-      user.email,
-      crossed.length > 0 ? 'attempt.sent.override' : 'attempt.sent.auto',
-      `OutreachAttempt:${attemptId}`,
-      outcome.threadUrl ?? 'delivered',
-    )
-    // A delivered send is PROOF the session works — the one sanctioned clearing besides
-    // an identity-verified hand login. A no-op when nothing was marked.
-    await clearSessionInvalid(sender.id, `a send to @${target.handle} delivered`)
-    refreshPath('/')
-    return { ok: true, message: `Sent to @${target.handle} from @${sender.handle}.` }
-  }
-
-  const error = outcome.status === 'FAILED' ? outcome.error : 'sender returned no outcome'
-  const failureCode = outcome.status === 'FAILED' ? outcome.failureCode : 'unknown'
-
-  if (outcome.status === 'FAILED' && outcome.challenged) {
-    // Halt the account. Not a retry, not a backoff — a stop. `markChallenged` writes
-    // `challengedAt` too, which the fleet breaker reads; four paths set this status and one
-    // of them omitting the timestamp would make the breaker permit.
-    await markChallenged({ senderId: sender.id, handle: sender.handle, detail: error, actor: user.email })
-    await prisma.outreachAttempt.update({
-      where: { id: attemptId },
-      data: { status: 'READY', error, failureCode, attempts: { increment: 1 } },
-    })
-    refreshPath('/')
-    return {
-      ok: false,
-      challenged: true,
-      message: `Instagram showed a checkpoint for @${sender.handle}. Sending is halted for that account and nothing was retried. Open the account by hand before doing anything else.`,
-    }
-  }
-
-  if (outcome.status === 'FAILED' && outcome.sessionInvalid) {
-    /**
-     * The session is dead — a login form (or the wrong account) where a session was
-     * expected. Record the evidence through the one writer so the `no-session` stop
-     * holds this account everywhere until a hand login proves otherwise. The draft
-     * stays READY: nothing is wrong with the message, only with the account.
-     */
-    await markSessionInvalid({ senderId: sender.id, handle: sender.handle, detail: error, actor: user.email })
-    await prisma.outreachAttempt.update({
-      where: { id: attemptId },
-      data: { status: 'READY', error, failureCode, attempts: { increment: 1 } },
-    })
-    refreshPath('/')
-    return {
-      ok: false,
-      message:
-        `@${sender.handle} is logged out of Instagram — the message was not sent and is still waiting. ` +
-        `Sign the account in again (Connect on the accounts page), then send it.`,
-    }
-  }
-
-  if (failureCode === 'not-in-thread') {
-    /**
-     * NOT returned to READY. Phase 5, and the same policy the unattended path now uses.
-     *
-     * The composer cleared and the message never appeared, so the recipient may already
-     * have it AND the account may be restricted. Handing it back with a Send button beside
-     * it invites the one action that is wrong in both cases. It parks in FAILED, where
-     * nothing automatic reads it, and appears on `/messages` under "check the thread" with
-     * the two buttons that resolve it. The reservation is kept.
-     */
-    await prisma.outreachAttempt.update({
-      where: { id: attemptId },
-      data: { status: 'FAILED', error, failureCode, attempts: { increment: 1 } },
-    })
-    log.alarm('composer cleared but the message never appeared — NOT retried, a human must read the thread', {
-      attemptId,
-      sender: sender.handle,
-      target: target.handle,
-      check: `pnpm ig:thread ${sender.handle} ${target.handle}`,
-    })
-    await audit(user.email, 'attempt.send.uncertain', `OutreachAttempt:${attemptId}`, error)
-    refreshPath('/')
-    return {
-      ok: false,
-      message:
-        /* This used to end `the message is waiting under "check the thread"` and named a
-           section removed on 2026-08-24. A refusal that sends a person to a screen which
-           cannot answer it is worse than one that says plainly there is nothing to press. */
-        `The message was accepted by the composer but never appeared in the thread with @${target.handle}. ` +
-        `It has NOT been re-queued and will not be retried: @${target.handle} may already have it. ` +
-        `Open the conversation if you want to know which it was — nothing on the dashboard will ask you again, ` +
-        `and @${sender.handle} will not write to them again.`,
-    }
-  }
-
-  /**
-   * Only a MISMATCH parks here (review of audit C1), exactly as in the dispatcher. `unknown` and
-   * `ambiguous` arrive with `recipientRetryable`: a transient miss at the profile door, which the
-   * next drive starts from again. They take this button's ordinary retryable-failure branch
-   * below — READY, attempts + 1 — like a `no-composer` would, so the dispatcher re-drives them
-   * no sooner than any other failed press, and its own cap parks them under this code after
-   * MAX_DELIVERY_ATTEMPTS. Their reservation was released by `settleClaims` above.
-   */
-  const recipientRetryable = outcome.status === 'FAILED' && outcome.recipientRetryable === true
-  if (failureCode === 'recipient-unconfirmed' && !recipientRetryable) {
-    /**
-     * PARKED, not returned to READY (audit C1, 2026-10-09). The inbox route opened a
-     * conversation that names somebody other than @target, and nothing was typed. READY is
-     * what the dispatcher picks up, so with autopilot on the generic branch below would have
-     * the same search driven again within ~30 s — possibly opening that stranger's
-     * conversation again — before deliver.ts finally parked it. Same park as the dispatcher's,
-     * so it lands on the landing page's parked list with re-queue and discard.
-     */
-    await prisma.outreachAttempt.update({
-      where: { id: attemptId },
-      data: { status: 'FAILED', error, failureCode, attempts: MAX_DELIVERY_ATTEMPTS },
-    })
-    await audit(user.email, 'attempt.send.recipient-unconfirmed', `OutreachAttempt:${attemptId}`, error)
-    refreshPath('/')
-    return {
-      ok: false,
-      message:
-        `Nothing was typed: Instagram's search opened a conversation that names somebody other than @${target.handle}. ` +
-        `The message is parked — re-queue it once the thread can be checked by hand.`,
-    }
-  }
-
-  // Everything else: leave the draft intact so it can be retried or sent by hand.
-  await prisma.outreachAttempt.update({
-    where: { id: attemptId },
-    data: { status: 'READY', error, failureCode, attempts: { increment: 1 } },
-  })
-  await audit(user.email, 'attempt.send.failed', `OutreachAttempt:${attemptId}`, error)
-  refreshPath('/')
-  return { ok: false, message: error }
+  const answer = sendNowAnswer(result, { sender: sender.handle, target: target.handle })
+  if (answer.refresh) refreshPath('/')
+  return { ok: answer.ok, message: answer.message, ...(answer.challenged ? { challenged: true } : {}) }
 }
 
 /**
@@ -705,6 +482,20 @@ const MAX_BODY_CHARS = 4000
  * The stored body is the single source of truth downstream: the composer read-back
  * compares against exactly this text, so an edit is carried through the send guard
  * automatically rather than needing to be taught about.
+ *
+ * ── THE WRITE IS THE GUARD, NOT THE READ BEFORE IT (Stage 1.3, audit M11) ──────────────────
+ *
+ * This read the status, validated, and then wrote in a separate statement — the two-statement
+ * check-then-act this repo has produced four times (`sendNow`'s idempotency, the first slot
+ * lock, the per-target cap, the prune command). Between the read and the write the dispatcher
+ * could claim the draft and a browser start pasting the OLD body, while the new one was stored
+ * under a row now SENDING — an audit trail describing a message nobody received. The update now
+ * carries `status IN (READY, QUEUED)` in its own `where` and the COUNT is the answer.
+ *
+ * The status read at the top is kept, but only for the MESSAGE: it is what lets a person who
+ * opens the editor on a draft that is already SENDING or SENT hear that before they are told
+ * their body is too short, exactly as before. It decides nothing; a draft that moved after it
+ * is caught by the write, and the sentence for that comes from a fresh read of the status.
  */
 export async function editAttemptBody(attemptId: string, body: string): Promise<MutationResult> {
   const user = await requireOperator()
@@ -713,15 +504,14 @@ export async function editAttemptBody(attemptId: string, body: string): Promise<
     include: { pair: { include: { sender: true, target: true } } },
   })
 
-  if (attempt.status !== 'READY' && attempt.status !== 'QUEUED') {
-    return {
-      ok: false,
-      message:
-        attempt.status === 'SENDING'
-          ? 'That message is being sent right now — too late to edit.'
-          : `That message is already ${attempt.status.toLowerCase()} and cannot be changed.`,
-    }
-  }
+  const notEditable = (status: string): MutationResult => ({
+    ok: false,
+    message:
+      status === 'SENDING'
+        ? 'That message is being sent right now — too late to edit.'
+        : `That message is already ${status.toLowerCase()} and cannot be changed.`,
+  })
+  if (attempt.status !== 'READY' && attempt.status !== 'QUEUED') return notEditable(attempt.status)
 
   const next = body.replace(/\r\n/g, '\n').trim()
   if (next.length === 0) return { ok: false, message: 'A message cannot be empty. Discard it instead.' }
@@ -758,7 +548,16 @@ export async function editAttemptBody(attemptId: string, body: string): Promise<
 
   if (next === attempt.renderedBody.trim()) return { ok: true, message: 'No changes.' }
 
-  await prisma.outreachAttempt.update({ where: { id: attemptId }, data: { renderedBody: next } })
+  const wrote = await prisma.outreachAttempt.updateMany({
+    where: { id: attemptId, status: { in: ['READY', 'QUEUED'] } },
+    data: { renderedBody: next },
+  })
+  if (wrote.count === 0) {
+    // The draft left the queue between the read above and this write — a claim, a send, a discard.
+    // Re-read for the SENTENCE only; the write already refused.
+    const now = await prisma.outreachAttempt.findUnique({ where: { id: attemptId }, select: { status: true } })
+    return notEditable(now?.status ?? 'gone')
+  }
   await audit(user.email, 
 'attempt.edited',
     `OutreachAttempt:${attemptId}`,

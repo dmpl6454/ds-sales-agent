@@ -451,14 +451,20 @@ async function releaseSendLock(ours: string): Promise<void> {
  * occurrence of the class (22 Aug ×2, 23 Aug ×1, 26 Aug ×3); by this repo's own standard
  * three is where the mechanism gets built instead of a fifth hand-fix.
  *
- * THE ONE RACE, AND THE DWELL THAT CLOSES IT. `sendNow` claims READY→SENDING BEFORE it
- * asks for the lock (actions.ts) and reverts on every non-drive path — so a just-claimed
- * row can be visible here for the seconds until its lock attempt returns busy and its
- * revert flips it back to READY. Candidates are therefore re-read after a dwell WHILE THE
- * LOCK IS STILL HELD: a live `sendNow` cannot proceed (we hold the lock) and reverts inside
- * the dwell, so only a claimant that died before reverting is still SENDING afterwards.
- * The park itself is `updateMany` conditioned on `status: 'SENDING'`, so a slow revert
- * landing after the re-read costs a no-op, never a clobbered row.
+ * THE DWELL, AND WHAT IT NOW COVERS (Stage 1.3). Until `deliverOne` it closed one race:
+ * `sendNow` claimed READY→SENDING BEFORE it asked for the lock (actions.ts) and reverted on
+ * every non-drive path, so a just-claimed row could be visible here for the seconds until its
+ * lock attempt returned busy and its revert flipped it back to READY. BOTH callers claim
+ * INSIDE the lock now, so under this process's lock a SENDING row is the corpse of a claimant
+ * that died driving it — a live claimant would be holding the lock this process holds, so it
+ * is never a drive in progress and, from a current build, never a transient claim of a press.
+ * The dwell is KEPT, and shortened by nothing: it is now the margin for a SENDING row written
+ * by a build that predates the change — an older Mac's local dashboard still claims before it
+ * asks for the lock until it has been re-installed (`/senders` shows each Mac's build) — whose
+ * revert is still on its way. Candidates are re-read after the dwell
+ * WHILE THE LOCK IS STILL HELD, so only a claimant that never reverted is still SENDING
+ * afterwards. The park itself is `updateMany` conditioned on `status: 'SENDING'`, so a slow
+ * revert landing after the re-read costs a no-op, never a clobbered row.
  *
  * PARKED AS `not-in-thread`, the 23 Aug precedent, because it is the honest code: the
  * drive may have died before OR after Enter, so the recipient MAY have the message, and
@@ -909,8 +915,12 @@ export async function dispatchTick(reason: string): Promise<DispatchTickResult> 
        (see parkOrphanedSending). */
     await parkOrphanedSending()
     /* The pace clock is stamped by `browserSender.send` when a drive actually begins —
-       a tick that holds every draft must not reset it (see recordSendStarted). */
-    return deliverWaiting({ maxSends: settings.maxSendsPerTick })
+       a tick that holds every draft must not reset it (see recordSendStarted).
+       The settings this tick already read go down with it (one `getSettings` fewer); the
+       switch, the shutdown flag and the sending Mac are each re-asked FRESH inside
+       `deliverOne`, before the read and again before every claim — a snapshot is only the
+       top-of-call answer. */
+    return deliverWaiting({ maxSends: settings.maxSendsPerTick, settings })
   })
 
   if (result === null) {

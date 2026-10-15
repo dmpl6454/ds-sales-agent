@@ -25,13 +25,15 @@ describe('a busy fleet lock is polled, not waited out', () => {
 })
 
 describe('a draft with no profile on this Mac never reaches the gate', () => {
-  it('the disk check precedes recheckBeforeSend inside the delivery loop', () => {
-    const src = strip(readFileSync('src/outreach/deliver.ts', 'utf8'))
-    const loop = src.indexOf('for (const attempt of waiting)')
-    const disk = src.indexOf('profileStatus(sender.handle).hasSession', loop)
-    const gate = src.indexOf('recheckBeforeSend(attempt, { unattended: true })', loop)
-    expect(loop).toBeGreaterThan(-1)
-    expect(disk).toBeGreaterThan(loop)
+  // Re-pointed at the one delivery function (Stage 1.3): the per-attempt guards moved out of the
+  // loop, and the order they are asked in moved with them — the disk first, for free, then the gate.
+  it('the disk check precedes recheckBeforeSend inside the delivery function', () => {
+    const src = strip(readFileSync('src/outreach/deliverOne.ts', 'utf8'))
+    const head = src.indexOf('async function deliverOne(')
+    const disk = src.indexOf('profileStatus(sender.handle).hasSession', head)
+    const gate = src.indexOf('recheckBeforeSend(attempt, ', head)
+    expect(head).toBeGreaterThan(-1)
+    expect(disk).toBeGreaterThan(head)
     expect(gate).toBeGreaterThan(disk)
   })
 })
