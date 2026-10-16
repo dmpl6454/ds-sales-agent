@@ -46,7 +46,9 @@ describe('re-judging never writes what it did not read', () => {
    */
   it('computes the replacement signal only after the guard', () => {
     const guard = SRC.indexOf('if (!readTheFrame)')
-    const rewrite = SRC.indexOf("replace(/frame:(?:call|ocr)-failed/g")
+    // The rewrite is a PURE helper since 16 Oct 2026 (it parses the JSON array instead of
+    // substituting into the string); what must sit after the guard is its CALL on this row.
+    const rewrite = SRC.indexOf('rewriteFrameSignals(p.signals')
     expect(guard).toBeGreaterThan(-1)
     expect(rewrite).toBeGreaterThan(guard)
   })
@@ -60,6 +62,22 @@ describe('re-judging never writes what it did not read', () => {
     const body = SRC.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')
     expect(body).not.toMatch(/'frame:not-saved'/)
     expect(body).not.toMatch(/'frame:no-ocr-engine'/)
+
+    /**
+     * Since 16 Oct 2026 the pass READS the not-saved mark — it is how a post whose frame arrived
+     * later is found — and REMOVES it once the frame is read. Both are allowed; writing it is not.
+     * So every use of the constant must be one of exactly three shapes: the import, a `contains:`
+     * in a query, or the set of marks the rewrite strips. The behaviour is driven for real in
+     * tests/frame-recovery.test.ts ("a post with no frame here is skipped and nothing is written").
+     */
+    const uses = [...body.matchAll(/FRAME_NOT_SAVED_SIGNAL/g)].map((m) => body.slice(Math.max(0, m.index! - 100), m.index! + 25))
+    expect(uses.length).toBeGreaterThanOrEqual(3)
+    for (const u of uses) {
+      expect(
+        /import \{ FRAME_NOT_SAVED_SIGNAL \}/.test(u) || /contains: FRAME_NOT_SAVED_SIGNAL/.test(u) || /RETRYABLE_FRAME_MARKS = new Set\(\[[^\]]*FRAME_NOT_SAVED_SIGNAL/.test(u),
+        `an unexpected use of the not-saved mark: …${u}…`,
+      ).toBe(true)
+    }
   })
 
   /** A skip is COUNTED and reported, or "examined 10, changed 0" reads as "nothing to do". */
@@ -102,7 +120,8 @@ describe('the pass cannot run away or overwrite a person', () => {
    */
   it('excludes human-answered posts in the query as well as in the judge', () => {
     expect(SRC).toMatch(/humanLabel: null/)
-    expect(SRC).toMatch(/humanLabelled: false/)
+    // Computed from the row, not a constant `false` — a constant is no second guard at all.
+    expect(SRC).toMatch(/humanLabelled: p\.humanLabel !== null/)
   })
 
   /**

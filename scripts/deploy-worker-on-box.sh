@@ -29,6 +29,11 @@
 #   - backs up the current source first and prints the one-line rollback;
 #   - copies tracked files over the tree and removes stale ones in the same scoped directories as
 #     deploy.sh (never `src/generated`, never `.env`, never `node_modules`, never `.next-*`);
+#   - REFUSES while a detached maintenance run is in progress (`ig:backfill --run`, `ig:rejudge`,
+#     `ig:frames --capture` — docs/DEPLOY.md): those STOP the worker on purpose, for up to hours,
+#     and `pm2 restart` on a stopped process STARTS it — a second detection process beside the run
+#     on 961 MB (two OCR children, posts judged twice), with the run's source replaced under it
+#     (review, 16 Oct 2026);
 #   - restarts `ds-sales-worker` BY NAME — never a global pm2 command (rule 14);
 #   - leaves the dashboard (`ds-sales-agent`) serving its current build. Its screens catch up at
 #     the next full deploy; until then the worker is newer than the web tier, which every stage of
@@ -67,6 +72,12 @@ pause() { [[ "${DS_SKIP_WAIT:-0}" == "1" ]] || sleep "$1"; }
 grep -qE "^SEND_ENABLED=[\"']?(false|0)[\"']?[[:space:]]*$" "$DIR/.env" \
   || die "$DIR/.env does not say SEND_ENABLED=false. This script deploys the SERVER's worker only; a Mac updates through the installer"
 command -v pm2 >/dev/null || die "pm2 not found on PATH"
+# Before anything is fetched, so this refusal truthfully changed nothing. `-a` prints each match's
+# command line, which the refusal names. pgrep never matches itself, and this pattern cannot match a
+# parent shell that merely CARRIES it (`ssh box "pgrep … || …"`): its own text has `(` after `scripts/`
+# — MEASURED inside `sh -c`, nothing running: no match.
+BUSY="$(pgrep -af 'src/scripts/(backfill|rejudge|frames)\.ts' || true)"
+[[ -z "$BUSY" ]] || die "a maintenance run is in progress on this box: $(printf '%s' "$BUSY" | head -3 | tr '\n' ';'). The detached form of such a run stops the worker on purpose, and this deploy would start it again beside the run and replace the run's source under it. Wait for it to finish (tail -F /tmp/ig-backfill.log, /tmp/ig-rejudge.log or /tmp/ig-frames.log — whichever it wrote), check with: pgrep -af 'src/scripts/(backfill|rejudge|frames)\.ts' — then deploy"
 
 WORK="$(mktemp -d /tmp/ds-worker-deploy.XXXXXX)"
 trap 'rm -rf "$WORK"' EXIT

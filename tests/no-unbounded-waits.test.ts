@@ -59,6 +59,41 @@ describe('no unbounded waits', () => {
     expect(offenders).toEqual([])
   })
 
+  /**
+   * A CHILD PROCESS IS A REMOTE TOO (16 Oct 2026). `saveFrame` now shrinks an over-size frame by
+   * running a child (`scripts/frame-shrink.py` or `sips`), inside the 15-minute detection pass, and a
+   * decoder stuck on a hostile file would hold that pass the way a stalled fetch did. Every async
+   * `execFile(` in src must carry a `timeout:` in its options. (`runCapture` in ocr.ts bounds its
+   * `spawn` with its own timer; `execFileSync` calls are not this check's subject.)
+   *
+   * MUTATION (applied once, seen red, restored): deleting `timeout: SHRINK_TIMEOUT_MS` from
+   * media.ts's `runBounded` fails this test.
+   */
+  it('every server-side execFile( carries a timeout', () => {
+    const offenders: string[] = []
+    let seen = 0
+    for (const file of walk(join(root, 'src'))) {
+      const raw = readFileSync(file, 'utf8')
+      if (/^\s*['"]use client['"]/.test(raw)) continue
+      const src = code(raw)
+      for (const m of src.matchAll(/(?<![\w.$])execFile\(/g)) {
+        seen++
+        let depth = 1
+        let i = m.index! + m[0].length
+        for (; i < src.length && depth > 0; i++) {
+          if (src[i] === '(') depth++
+          else if (src[i] === ')') depth--
+        }
+        const args = src.slice(m.index! + m[0].length, i - 1)
+        const at = `${file.replace(root, '')}: execFile(${args.replace(/\s+/g, ' ').slice(0, 60)}`
+        if (depth !== 0) offenders.push(`${at} (could not read the call)`)
+        else if (!/\btimeout:\s*\w/.test(args)) offenders.push(at)
+      }
+    }
+    expect(seen, 'no execFile found at all — the scan is broken').toBeGreaterThanOrEqual(1)
+    expect(offenders).toEqual([])
+  })
+
   it('no agent pass is guarded by a bare boolean "running" flag', () => {
     const src = code(readFileSync(join(root, 'src/agent/index.ts'), 'utf8'))
     expect(src).not.toMatch(/let \w*[Rr]unning\s*=\s*(false|true)\b/)

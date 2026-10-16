@@ -209,12 +209,18 @@ function toGraphPost(handle: string, m: Record<string, unknown>, gridIndex: numb
     mediaType: graphMediaType(mediaType, str(m.media_product_type)),
     // A video's cover is `thumbnail_url`; an image is its own cover. A carousel's `media_url`
     // may be a VIDEO (its first child), so it is not taken as a frame — no cover beats a
-    // video file saved as one. STATED TRADE-OFFS (review, 15 Oct 2026), both inferred from the
-    // documentation, not measured: a CAROUSEL therefore gets no frame at all (asking for its
-    // `children{…}` would fix that and is not built), and an image's `media_url` is the FULL-SIZE
-    // file rather than the ~480 px thumbnail the anonymous path picks, so it can exceed
-    // `saveFrame`'s 512 KB cap and be refused. Either way such a post is judged on its caption
-    // alone — until the anonymous feed re-reads it and the pipeline judges it again.
+    // video file saved as one. A CAROUSEL therefore gets no frame at all (inferred from the
+    // documentation; asking for its `children{…}` would fix that and is not built), and is judged
+    // on its caption alone until the anonymous feed re-reads it.
+    //
+    // THE FULL-SIZE FRAME — MEASURED IN PRODUCTION, 16 Oct 2026, and handled. Both URLs here are
+    // FULL-SIZE files, not the ~480 px thumbnail the anonymous path picks, and the box's backfill
+    // log showed `saveFrame`'s 512 KB cap refusing most of them (`bytes=1052612 / 748357 / 591056 /
+    // 870691 / 571895`), so those posts were judged on their caption alone. `saveFrame` now
+    // shrinks an over-size IMAGE to fit 720 x 1280 and saves that (media.ts; `frameShrinkTool` in
+    // lib/platform.ts picks the tool), and `rejudgeUnusedEvidence` re-judges a post stored
+    // `frame:not-saved` once its frame is on disk. Not yet measured: the size a shrunk Graph frame
+    // comes to (the worker logs it) and OCR recall on one.
     thumbnailUrl: str(m.thumbnail_url) ?? (mediaType === 'IMAGE' ? mediaUrl : null),
     videoUrl: mediaType === 'VIDEO' ? mediaUrl : null,
     videoDurationSeconds: null,

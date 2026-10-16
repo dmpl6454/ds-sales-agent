@@ -489,6 +489,101 @@ verified prospect (materialAllowance's brand-string arm); its caption mentions a
 anyone, and brand discovery mints nobody from it. Worth measuring after the first run: how many
 backfilled CAMPAIGN rows link to a live prospect.
 
+### Frames the official read could not save (16 Oct 2026)
+
+**First, before deploying this and before either command below: is a backfill (or another of these
+runs) still going?** A detached `ig:backfill --run` stops the worker for up to hours, and the deploy's
+`pm2 restart` — or the `pm2 start` at the end of the frames line below — would START it beside the run:
+two detection processes on 961 MB, posts judged twice, and the run's source replaced under it. One line:
+
+```
+pgrep -af 'src/scripts/(backfill|rejudge|frames)\.ts' || echo 'nothing running'
+```
+
+Anything listed: wait for it (`tail -F /tmp/ig-backfill.log`, or `/tmp/ig-rejudge.log`,
+`/tmp/ig-frames.log`). `scripts/deploy-worker-on-box.sh` asks the same question and refuses.
+
+The official API's cover frame is a **full-size** file, and until this change `saveFrame` refused
+anything over 512 KB — the box's backfill log read `frame size out of bounds — not saved
+bytes=1052612 / 748357 / …` on most posts, so their footage was never read. Now an over-size image
+is shrunk to fit 720 x 1280 (`scripts/frame-shrink.py` under the RapidOCR venv's Python, which
+already has OpenCV) at JPEG 85 — 75, then 65, if that is still over the cap, never lower — and saved.
+The worker starts **at most 40 shrinks a pass** on its routine one-page reads; the rest are shrunk on
+later passes, which re-read each channel's newest page (a post that falls off that page first — a busy
+channel, or the anonymous feed serving its 12-post page — is recovered by `ig:backfill`; the first passes after deploying meet the whole
+backlog at once — ~425 posts by the review's count, so roughly 11 passes, under three hours; the time
+per shrink on the box is not measured). A read past its first page — the gap rule's catch-up after a
+blind stretch, or a routine read that needed a second page — and every read of `ig:backfill --run` get
+room for **every** frame they return, because no later pass reads past the first page again: a frame
+deferred there would never be shrunk. Bounded by those reads themselves (48, 150 or 600 posts a channel
+and the call cap), so such a pass costs what a catch-up always cost with frames (~7 s a post, measured
+8 Sept), longer than a pass that skips them,
+and a frame whose shrink failed is not retried by the worker for 6 hours. A post stored `frame:not-saved` is then re-judged with its footage by
+the detection pass once its frame is on disk — 10 a pass, newest first, and **only among the newest
+1,000 such posts**: the cutoff is a fixed date (1 Aug), and every carousel and expired-URL post keeps
+the mark for good, so that window can be full of posts that will never get a frame. Posts the official
+read re-observes get their frame back by themselves within a pass or two. Older ones need their frames
+fetched by a person, **on the box, after deploying**. `pnpm ig:frames --capture` **refuses while the
+worker runs on this host** (like `ig:rejudge` and `ig:backfill --run`): each over-size frame is a
+Python + OpenCV shrink child, like an OCR read, and beside the worker that is a second such child on
+961 MB. It prints the counts and then this detached line — stop the worker, capture, start it again —
+so run that, as one line:
+
+```
+cd /opt/ds-sales-agent && setsid sh -c 'pm2 stop ds-sales-worker && pnpm ig:frames --capture; pm2 start ds-sales-worker' > /tmp/ig-frames.log 2>&1 < /dev/null & tail -F /tmp/ig-frames.log
+```
+
+It prints how many it saved, how many of those it shrank, and each kind of failure by name, one shrink
+at a time. It has **no per-run bound** (unlike the pass) and starts with an empty failure memory, so it
+also retries frames the worker is cooling off. Its dry run (`pnpm ig:frames`, without `--capture`)
+**runs beside the worker** — it only counts and spends nothing — and prices the download by source:
+anonymous-feed frames at the measured 47.4 KB mean, official-read ones as a range (the box log's
+refused files were 571,895-1,052,612 bytes).
+**Run it soon:** the frame URLs are CDN links that expire — Instagram's carry an `oe=` parameter
+that is a hex Unix timestamp of the expiry; the actual lifetime has not been measured here. A `the CDN
+refused the stored URL` count is mostly URLs already expired — **but not lost**: the official API pages
+a channel's whole history, so `pnpm ig:backfill --hours N --run` (the detached form above, worker
+stopped) re-reads the posts of the last N hours (at most 168) with fresh URLs, and the pipeline saves
+and shrinks their frames as it goes — every post but a carousel, which the official read gives no frame.
+That costs official calls against the account's ~200 an hour and the worker's downtime the dry run
+estimates; run the dry run first.
+
+Then the posts whose frames that saved are re-judged — **by hand for older ones**, because the pass may
+never reach them. Each post is an OCR read plus one or two classifier calls, the same work the worker's
+pass does on the same newest posts, so `pnpm ig:rejudge` **refuses while the worker runs on this host**
+— the dry run too, which does the same reads and calls and only withholds the write — prints what is
+waiting (counted without judging) and the detached line. Run that line, for example:
+
+```
+cd /opt/ds-sales-agent && setsid sh -c 'pm2 stop ds-sales-worker && pnpm ig:rejudge --run --limit 200; pm2 start ds-sales-worker' > /tmp/ig-rejudge.log 2>&1 < /dev/null & tail -F /tmp/ig-rejudge.log
+```
+
+(`pnpm ig:rejudge --limit 20` in the same form is a dry run of 20, to see what the footage changes
+first.) How long it takes on the box is **not measured**; a backfilled post, which does more per post,
+measured ~7 s, so 200 is about 24 minutes or less with the worker stopped (the refusal prints the same estimate). Its last lines say how many
+posts still have a frame here and were not reached — **repeat until that line is gone**. Afterwards
+check the worker came back: `pm2 describe ds-sales-worker` (by name).
+
+To see it working, from the worker's own log (by name):
+
+```
+pm2 logs ds-sales-worker --lines 2000 --nostream | grep -E 'frame shrunk to fit the cap|frame not saved'
+```
+
+`frame shrunk to fit the cap and saved … bytesBefore=… bytesAfter=… quality=…` is one line per shrunk
+frame — the first real measurement of what a shrunk Graph frame comes to, and how often the quality had
+to step down. `frame not saved … why=…` names each refusal (`no shrink engine here` — including `the
+shrink script … is missing`, `not an image`, `shrink failed: …`, `still too large after shrinking`).
+`frames left for a later pass to shrink deferred=N coolingOff=M` appears once a pass while the
+40-shrink bound is spent on a routine read or failed shrinks are cooling off (`roomAddedForDeeperReads=`
+is the room a backfill or a deeper read added). `pnpm ig:detect` and `pnpm ig:backfill --run` print the
+same counts after their summary line (`A shrink was started for N cover frames …`). The pass's `re-judged evidence read earlier …
+frameArrivedLater=N framesWaiting=M` line counts the posts re-judged because their frame arrived, and
+those with a frame here the pass's bound left for the next one (within its newest-1,000 window only);
+`frameHereNoVerdict=` counts recovered posts whose reading or classifier call gave no verdict (retried
+next pass), and `personAnsweredMeanwhile=` posts a person labelled while they were being judged (their
+answer stands).
+
 ---
 
 ## Deploying the worker from the box itself (no Mac)
@@ -501,8 +596,11 @@ updated from a root console on the box, because it runs from source and needs no
 curl -fsSL https://raw.githubusercontent.com/dmpl6454/ds-sales-agent/<sha>/scripts/deploy-worker-on-box.sh -o /tmp/dwob.sh && bash /tmp/dwob.sh <sha>
 ```
 
-`<sha>` is the full 40-character commit the suite passed on — never a branch name. The script
-downloads that commit (the repo is public), refuses unless `.env` says `SEND_ENABLED=false`, refuses
+`<sha>` is the full 40-character commit the suite passed on — never a branch name. **Not while a
+backfill, rejudge or frames run is going** (`pgrep -af 'src/scripts/(backfill|rejudge|frames)\.ts'`
+lists one): its detached form stops the worker on purpose, and the restart below would start it beside
+the run. The script asks the same question first and refuses. It downloads that commit (the repo is
+public), refuses unless `.env` says `SEND_ENABLED=false`, refuses
 if the lockfile or the Prisma schema differs from what is installed (either needs a full deploy),
 backs up the current source to `/opt/ds-backups/`, copies the files, sweeps stale ones the way
 `deploy.sh` does, restarts **only** `ds-sales-worker` by name, and prints the rollback line. The

@@ -36,6 +36,14 @@ export type FrameEvidence =
   /** An engine ran and errored. */
   | { kind: 'failed' }
 
+/**
+ * The mark a post carries when it was judged with NO FRAME ON THIS HOST — a statement about the
+ * machine at that moment, not about the post. Named once here, where it is written, because since
+ * 16 Oct 2026 `rejudge.ts` also READS it: it is how the re-judge finds a post whose frame has since
+ * arrived (shrunk from an official-read file, or fetched by `pnpm ig:frames --capture`).
+ */
+export const FRAME_NOT_SAVED_SIGNAL = 'frame:not-saved'
+
 export interface FrameOutcome {
   verdict: Verdict
   /** Appended to the post's stored signals — the human-auditable "why". */
@@ -55,7 +63,7 @@ export function applyFrameSignal(
 ): FrameOutcome {
   switch (evidence.kind) {
     case 'no-frame':
-      return { verdict: captionOnly, signals: ['frame:not-saved'] }
+      return { verdict: captionOnly, signals: [FRAME_NOT_SAVED_SIGNAL] }
     case 'unavailable':
       return { verdict: captionOnly, signals: ['frame:no-ocr-engine'] }
     case 'failed':

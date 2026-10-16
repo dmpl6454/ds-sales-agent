@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, afterAll, vi } from 'vitest'
 import Database from 'better-sqlite3'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { existsSync, mkdtempSync, readdirSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -98,11 +98,17 @@ bootstrap.close()
 process.env.DATABASE_URL = `file:${dbPath}`
 const savedDevice = process.env.DS_DEVICE_NAME
 process.env.DS_DEVICE_NAME = 'linode-detect'
+// paths.ts reads homedir() when media.ts first loads, so the frame store of the shrink-bound cases below
+// lands in this temp directory and never in a real one.
+const savedHome = process.env.HOME
+process.env.HOME = dir
 
 type Recorded = { handle: string; opts: Record<string, unknown>; budgetAtCall: { remaining: number; used: number; dropped: number } }
 type FeedSource = typeof import('@/detection/feedSource')
 type Answer = (handle: string, opts: Parameters<FeedSource['fetchChannelFeed']>[1]) => Awaited<ReturnType<FeedSource['fetchChannelFeed']>>
 const rec = vi.hoisted(() => ({ calls: [] as Recorded[], answer: null as null | Answer }))
+/** The shrink-bound cases set this: the REAL `saveFrame`, against a stubbed CDN and a fake shrink. */
+const frames = vi.hoisted(() => ({ real: false }))
 
 vi.mock('@/detection/feedSource', async (importOriginal) => {
   const actual = await importOriginal<FeedSource>()
@@ -118,14 +124,27 @@ vi.mock('@/detection/feedSource', async (importOriginal) => {
 })
 vi.mock('@/detection/media', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/detection/media')>()
-  return { ...actual, saveFrame: async () => 'no-url' as const }
+  return {
+    ...actual,
+    saveFrame: async (...args: Parameters<typeof actual.saveFrame>) => (frames.real ? actual.saveFrame(...args) : ('no-url' as const)),
+  }
 })
 vi.mock('@/detection/autoResolve', () => ({
   autoResolveBrands: async () => ({ looked: 0, decided: 0, skippedUnsure: 0, haltedEarly: false, unreached: 0, backingOff: 0, awaitingRetry: 0 }),
 }))
-vi.mock('@/detection/rejudge', () => ({
-  rejudgeUnusedEvidence: async () => ({ examined: 0, changed: 0, remaining: 0, skippedNoEvidence: 0, skippedCallFailed: 0, proposals: [] }),
-}))
+/**
+ * The pass's own re-judge does nothing here — but the pipeline also imports `emptyRejudgeSummary` (its
+ * catch) and `rejudgeLogFields` (its log line), and a mock without them would throw inside runDetection
+ * the first time a stub rejected or examined anything (review, 16 Oct 2026). The real pure ones are kept.
+ */
+vi.mock('@/detection/rejudge', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/detection/rejudge')>()
+  return {
+    emptyRejudgeSummary: actual.emptyRejudgeSummary,
+    rejudgeLogFields: actual.rejudgeLogFields,
+    rejudgeUnusedEvidence: async () => actual.emptyRejudgeSummary(),
+  }
+})
 vi.mock('@/lib/settings', () => ({ getSettings: async () => ({ tagsAsEvidence: false, publisherAsContext: false }) }))
 vi.mock('@/detection/detectors', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/detection/detectors')>()
@@ -142,6 +161,10 @@ const bf = await import('@/detection/backfill')
 const g = await import('@/detection/graphFeed')
 const fe = await import('@/detection/feedEvidence')
 const { log } = await import('@/lib/logger')
+// The mocked media module spreads the real one, so these are the real budget, shrinker hook and memories.
+const media = await import('@/detection/media')
+const { FRAMES_DIR } = await import('@/lib/paths')
+const { frameShrinkLine } = await import('@/detection/detectionReport')
 type FeedPost = import('@/detection/feed').FeedPost
 
 afterAll(async () => {
@@ -150,6 +173,8 @@ afterAll(async () => {
   rmSync(dir, { recursive: true, force: true })
   if (savedDevice === undefined) delete process.env.DS_DEVICE_NAME
   else process.env.DS_DEVICE_NAME = savedDevice
+  if (savedHome === undefined) delete process.env.HOME
+  else process.env.HOME = savedHome
 })
 
 const NOW = Date.parse('2026-10-16T01:00:00Z')
@@ -594,5 +619,90 @@ describe('why the official read could not serve a channel is recorded', () => {
     const rest = s.channels.filter((c) => c.servedBy === undefined)
     expect(rest).toHaveLength(3)
     for (const c of rest) expect(c, c.handle).toMatchObject({ skipped: 'throttled', officialUnavailable: 'cap-reached' })
+  })
+})
+
+/**
+ * THE SHRINK BOUND AND THE READS IT WAS NOT MEANT FOR (review, 16 Oct 2026; media.ts, "A DEEPER READ ADDS
+ * ROOM"; pipeline.ts, "A BACKFILL, OR A READ PAST ITS FIRST PAGE, IS NEVER DEFERRED").
+ *
+ * A pass starts at most 40 shrinks, and a frame deferred past that is shrunk only when a later pass
+ * re-reads the post — which a routine pass does for a channel's newest page and nothing deeper. With one
+ * 40-shrink budget a backfill shrank 40 frames and judged the rest on their captions alone, for good.
+ * These drive the REAL `saveFrame` through a real `runDetection`, against a CDN stub serving a 600 KB
+ * JPEG (over the 512 KB cap) and a fake shrink, and count what the pass reports and what reached disk.
+ * MUTATIONS (applied once, seen red, restored), all in pipeline.ts's one widening line:
+ *   - dropping `backfillHours !== undefined` fails "a backfill shrinks every over-size frame it reads…";
+ *   - dropping `pagesFetched > 1` fails "a read past its first page…";
+ *   - widening every read (`if (true)`) fails "a one-page routine read keeps the 40-shrink bound".
+ */
+describe('the frame shrink bound: never deferred on a backfill or past the first page', () => {
+  const OVER = (() => {
+    const b = Buffer.alloc(600_000, 0x41)
+    Buffer.from([0xff, 0xd8, 0xff, 0xe0]).copy(b)
+    return b
+  })()
+  const SMALL = (() => {
+    const b = Buffer.alloc(90_000, 0x42)
+    Buffer.from([0xff, 0xd8, 0xff, 0xe0]).copy(b)
+    return b
+  })()
+  let shrinks = 0
+  beforeEach(() => {
+    frames.real = true
+    shrinks = 0
+    rmSync(FRAMES_DIR, { recursive: true, force: true })
+    media.resetFrameMemoriesForTests()
+    media.setFrameShrinkerForTests(async () => {
+      shrinks += 1
+      return { ok: true, bytes: SMALL, engine: 'python' }
+    })
+    vi.stubGlobal('fetch', async () => new Response(new Uint8Array(OVER), { status: 200 }))
+  })
+  afterEach(() => {
+    frames.real = false
+    media.setFrameShrinkerForTests(null)
+    vi.unstubAllGlobals()
+  })
+  const framed = (code: string, hoursAgo: number): FeedPost => ({ ...graphPost(code, hoursAgo), thumbnailUrl: `https://cdn.example/${code}.jpg` })
+  /** `n` posts for a channel, newest first, spaced `stepH` hours apart from `fromH`. */
+  const page = (handle: string, n: number, fromH: number, stepH: number) =>
+    Array.from({ length: n }, (_, i) => framed(`DcF${handle.replace('_', '')}${String(i).padStart(3, '0')}`, fromH + i * stepH))
+  const onDisk = () => (existsSync(FRAMES_DIR) ? readdirSync(FRAMES_DIR).filter((f) => f.endsWith('.jpg')).length : 0)
+
+  it('a backfill shrinks every over-size frame it reads — 60 on one-page reads, none deferred', async () => {
+    configure()
+    // Four channels, one page of 15 posts each, all inside the 48-hour window: 60 over-size frames.
+    rec.answer = (handle) => ({ posts: page(handle, 15, 0.2, 0.5), pagesFetched: 1, moreAvailable: false, source: 'graph', fallbackReason: 'test', anonymousError: null })
+    const s = await runDetection({ channelSpacingMs: 0, officialBackfillHours: 48 })
+    expect(s.frameShrinks).toEqual({ bound: media.SHRINKS_PER_PASS + 60, widened: 60, started: 60, deferred: 0, coolingOff: 0 })
+    expect(shrinks).toBe(60)
+    expect(onDisk()).toBe(60)
+    // And the report says so, rather than leaving it in the log.
+    expect(frameShrinkLine(s)).toMatch(/^A shrink was started for 60 cover frames over the size cap/)
+  })
+
+  it('a read past its first page — a gap catch-up of 60 posts on 3 pages — is never deferred, in a routine pass', async () => {
+    configure()
+    rec.answer = (handle) =>
+      handle === 'chan_gap'
+        ? { posts: page(handle, 60, 0.2, 0.3), pagesFetched: 3, moreAvailable: false, source: 'graph', fallbackReason: 'test', anonymousError: null }
+        : { posts: [], pagesFetched: 1, moreAvailable: false, source: 'graph', fallbackReason: 'test', anonymousError: null }
+    const s = await runDetection({ channelSpacingMs: 0 })
+    expect(s.frameShrinks).toEqual({ bound: media.SHRINKS_PER_PASS + 60, widened: 60, started: 60, deferred: 0, coolingOff: 0 })
+    expect(onDisk()).toBe(60)
+  })
+
+  it('a one-page routine read keeps the 40-shrink bound — the deploy-day backlog drains 40 a pass, the rest wait for the next', async () => {
+    configure()
+    // Two channels with one page of 25 each (not gaps): 50 over-size frames against 40.
+    rec.answer = (handle) =>
+      handle === 'chan_fresh' || handle === 'chan_empty'
+        ? { posts: page(handle, 25, 0.1, 0.1), pagesFetched: 1, moreAvailable: true, source: 'graph', fallbackReason: 'test', anonymousError: null }
+        : { posts: [], pagesFetched: 1, moreAvailable: false, source: 'graph', fallbackReason: 'test', anonymousError: null }
+    const s = await runDetection({ channelSpacingMs: 0 })
+    expect(s.frameShrinks).toEqual({ bound: media.SHRINKS_PER_PASS, widened: 0, started: media.SHRINKS_PER_PASS, deferred: 10, coolingOff: 0 })
+    expect(onDisk()).toBe(media.SHRINKS_PER_PASS)
+    expect(frameShrinkLine(s)).toMatch(/10 more were left unshrunk — this pass's 40 shrinks were spent, on a channel's newest page, which the next pass re-reads/)
   })
 })

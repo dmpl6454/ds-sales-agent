@@ -1,10 +1,12 @@
 import 'dotenv/config'
 import { prisma } from '@/lib/db'
-import { rejudgeUnusedEvidence, REJUDGE_PER_PASS } from '@/detection/rejudge'
+import { runRejudge } from '@/detection/rejudgeCommand'
 
 /**
  * `pnpm ig:rejudge` — drain the backlog of posts whose footage was read and never reached a
- * verdict. DRY RUN BY DEFAULT, because `--run` spends money.
+ * verdict, and (16 Oct 2026) of posts judged with no frame whose frame is on this machine now —
+ * the official read's shrunk frames, or ones `pnpm ig:frames --capture` fetched. DRY RUN BY
+ * DEFAULT, because `--run` spends money.
  *
  * ── WHY A DELIBERATE COMMAND AND NOT JUST A BIGGER BOUND ──────────────────
  *
@@ -19,8 +21,17 @@ import { rejudgeUnusedEvidence, REJUDGE_PER_PASS } from '@/detection/rejudge'
  * Frame stores are PER MACHINE and this writes to a database BOTH hosts share. A pass run
  * from a laptop cannot read frames that live on the server, and `rejudgeUnusedEvidence`
  * correctly leaves those rows alone rather than recording a fact about the wrong disk.
- * `skipped` in the report below tells you which is happening, and the two reasons are
- * separated because they have different remedies.
+ * `skipped` in the report below tells you which is happening, and the reasons are separated
+ * because they have different remedies — including (16 Oct 2026) a post whose frame IS here and
+ * whose reading gave no verdict, which is never told its frame is elsewhere, and a post a person
+ * labelled while it was being judged, whose answer stands (the write is conditional on it).
+ *
+ * ── AND NEVER BESIDE THE WORKER (16 Oct 2026) ─────────────────────────────
+ *
+ * On the box it refuses while the detection worker runs there — dry run included, because the
+ * dry run does the same OCR reads and classifier calls — and prints the detached line that stops
+ * the worker, runs it, and starts the worker again. The reasoning and the logic are in
+ * src/detection/rejudgeCommand.ts, so the tests drive the real thing.
  *
  * ── WHAT THE BACKLOG ACTUALLY WAS, MEASURED 2026-08-17 ────────────────────
  *
@@ -31,55 +42,8 @@ import { rejudgeUnusedEvidence, REJUDGE_PER_PASS } from '@/detection/rejudge'
  * all, which is what its own docblock always said it meant.
  */
 
-const args = process.argv.slice(2)
-const run = args.includes('--run')
-const limitArg = args.indexOf('--limit')
-const limit = limitArg >= 0 ? Number(args[limitArg + 1]) : 200
-
 async function main(): Promise<void> {
-  if (!Number.isFinite(limit) || limit <= 0) {
-    console.error('--limit must be a positive whole number')
-    process.exitCode = 1
-    return
-  }
-
-  const summary = await rejudgeUnusedEvidence({ limit, dryRun: !run })
-
-  console.log(`\nExamined ${summary.examined} post(s) carrying frame:call-failed (bound ${limit}; a detection pass uses ${REJUDGE_PER_PASS}).\n`)
-
-  if (summary.skippedNoEvidence > 0) {
-    console.log(`  ${summary.skippedNoEvidence} left alone — the frame is not on THIS machine. Run this where the frames are.`)
-  }
-  if (summary.skippedCallFailed > 0) {
-    console.log(`  ${summary.skippedCallFailed} left alone — the frame was read here and the classifier did not answer.`)
-  }
-
-  if (!run) {
-    const moved = summary.proposals.filter((p) => p.to !== p.from)
-    console.log(`\nWOULD CHANGE ${moved.length} of ${summary.proposals.length} judged:\n`)
-    for (const p of moved) {
-      console.log(`  ${p.shortcode}  ${p.from} → ${p.to}   [${p.signals.join(' ')}]`)
-      if (p.frameText) console.log(`      footage: ${JSON.stringify(p.frameText.slice(0, 120))}`)
-    }
-    if (moved.length === 0) console.log('  (none — the footage agreed with the caption everywhere)')
-
-    /**
-     * The UNCHANGED ones are printed too, and deliberately. A report listing only what it
-     * would alter cannot be checked: "the footage agreed" and "the footage was never read"
-     * look identical when only changes are shown, and that is the distinction this whole
-     * backlog turned out to be about.
-     */
-    const same = summary.proposals.filter((p) => p.to === p.from)
-    if (same.length > 0) {
-      console.log(`\n  ...and ${same.length} judged with no change. Signals seen: ${[...new Set(same.flatMap((s) => s.signals))].join(', ')}`)
-    }
-
-    console.log(`\nDRY RUN. Re-run with --run to write these. Roughly $${(summary.proposals.length * 0.00002).toFixed(4)} was spent deciding.`)
-    console.log(`Still carrying frame:call-failed: ${summary.remaining}.`)
-    return
-  }
-
-  console.log(`Changed ${summary.changed} verdict(s). Still carrying frame:call-failed: ${summary.remaining}.`)
+  process.exitCode = await runRejudge(process.argv.slice(2), { out: (line) => console.log(line) })
 }
 
 main()

@@ -98,7 +98,7 @@ process.env.DS_DEVICE_NAME = 'linode-detect'
 
 const { prisma } = await import('@/lib/db')
 const b = await import('@/detection/backfill')
-const { channelSummaryLine, passSummaryLine } = await import('@/detection/detectionReport')
+const { channelSummaryLine, frameShrinkLine, passSummaryLine } = await import('@/detection/detectionReport')
 const g = await import('@/detection/graphFeed')
 const { resetAnonGate } = await import('@/detection/anonGate')
 const { setIgTransportForTests } = await import('@/detection/igHttp')
@@ -628,5 +628,50 @@ describe("--run's report names every channel it did not backfill", () => {
     expect(code).toBe(0)
     expect(out).toContain('Backfilled: 1 of 1 channel.')
     expect(out.some((l) => /NOT backfilled/.test(l))).toBe(false)
+  })
+
+  /**
+   * THE RUN SAYS WHAT IT DID WITH THE FRAMES (review, 16 Oct 2026). `frameShrinks` was set on every pass
+   * and printed by nothing, so a backfill that left frames unshrunk said so only in a log the person
+   * running it does not read. MUTATION (applied once, seen red, restored): deleting `if (frames)
+   * out(frames)` in backfill.ts fails this; returning a line for an all-zero summary in
+   * detectionReport.ts fails the "nothing to say" half.
+   */
+  it('prints the pass’s frame shrinks after its summary line — and nothing when there were none', async () => {
+    configure()
+    const withFrames: DetectionSummary = {
+      ...s,
+      channels: [channels[0]!],
+      hadError: false,
+      hadParseFailure: false,
+      officialCalls: { used: 2, cap: 200, dropped: 0 },
+      frameShrinks: { bound: 65, widened: 25, started: 25, deferred: 0, coolingOff: 0 },
+    }
+    const out: string[] = []
+    await b.runBackfill(
+      { hours: 48, run: true },
+      { out: (l) => out.push(l), runPass: async () => withFrames, now: () => NOW, machine: () => 'linode-detect', readHeartbeat: async () => null, alive: () => false },
+    )
+    const line = frameShrinkLine(withFrames)
+    expect(line).toBe('A shrink was started for 25 cover frames over the size cap (one that failed is logged as "frame not saved", with why).')
+    expect(out.indexOf(line!)).toBe(out.indexOf(`${passSummaryLine(withFrames)} 2 official calls used of the run's cap of 200.`) + 1)
+
+    // Nothing to say: no line, on either command.
+    const quiet = { ...withFrames, frameShrinks: { bound: 40, widened: 0, started: 0, deferred: 0, coolingOff: 0 } }
+    expect(frameShrinkLine(quiet)).toBeNull()
+    expect(frameShrinkLine({ frameShrinks: undefined })).toBeNull()
+    const quietOut: string[] = []
+    await b.runBackfill(
+      { hours: 48, run: true },
+      { out: (l) => quietOut.push(l), runPass: async () => quiet, now: () => NOW, machine: () => 'linode-detect', readHeartbeat: async () => null, alive: () => false },
+    )
+    expect(quietOut.some((l) => /cover frame/.test(l))).toBe(false)
+
+    // Left over: deferred and cooling off are said, with the remedy.
+    expect(frameShrinkLine({ frameShrinks: { bound: 40, widened: 0, started: 40, deferred: 3, coolingOff: 2 } })).toMatch(
+      /3 more were left unshrunk — this pass's 40 shrinks were spent, on a channel's newest page, which the next pass re-reads and shrinks\. `pnpm ig:frames --capture`.* 2 skipped without a request: their shrink failed/,
+    )
+    // ig:detect prints it too.
+    expect(readFileSync(join(process.cwd(), 'src/scripts/detect.ts'), 'utf8')).toMatch(/^const frames = frameShrinkLine\(s\)$/m)
   })
 })

@@ -47,6 +47,45 @@ middle — `--run` refuses while the worker runs and prints a **detached** (`set
 week is >200 calls). Backfilled posts keep incomplete evidence for good: they fund messages only through
 brand strings.
 
+**16 Oct, the footage it lost (`scripts/frame-shrink.py`).** The official read's cover frame is a
+FULL-SIZE file (`thumbnail_url` / an image's `media_url`), and `saveFrame`'s 512 KB cap refused most of
+them — MEASURED in the box's backfill log, `frame size out of bounds — not saved bytes=1052612 / 748357 /
+591056 / 870691 / 571895` — so every official-read post was judged on its caption alone and the
+Thane-bus class went unread. Now an over-size IMAGE (by its magic bytes; an MP4 is refused without a
+child; the download stops at 8 MB; the decoder refuses over 12 MP from the header) is shrunk to fit 720 x
+1280 at JPEG 85, stepping down to 75 then 65 — never lower; OCR legibility below that is unmeasured —
+while it is over the cap (MEASURED, Pillow 12.3.0: the test's seeded noise frame is 565,435 bytes at 85,
+431,505 at 75) — `frameShrinkTool` in lib/platform.ts picks the RapidOCR venv's Python (OpenCV, Pillow fallback; `none` with a reason if
+`scripts/frame-shrink.py` is missing) or macOS `sips`; no new dependency, because the box's deploy refuses
+a lockfile change — and saved only if the result is a JPEG within the unchanged cap, written to a temp name
+and renamed (a half-written `.jpg` never exists); the worker logs `frame shrunk to fit the cap and saved`
+with both sizes and the quality. **A pass starts at most 40 shrinks on its routine one-page reads**
+(`SHRINKS_PER_PASS`; the rest log once as `frames left for a later pass to shrink` and are shrunk when the
+next pass re-reads that page), **while a backfill's reads and any read past its first page get room for
+every frame they return** (`widenFrameShrinkBudget` — no later pass reads that deep again, so a frame
+deferred there was never shrunk: the first build, by its code (never run on the box), would have shrunk
+40 of a backfill's frames and judged the rest on their captions; bounded by the reads' own
+48/150/600-post and call caps; `ig:detect` and `ig:backfill --run` now print the counts) and **a failed
+shrink is not retried for 6 h** (in-process, like lookupCooldown.ts); `ig:frames --capture` is unbounded. And
+`rejudgeUnusedEvidence` now also re-judges a post stored `frame:not-saved` whose frame is on THIS host
+now (`hasFrame`; never a human label — the write is conditional on `humanLabel: null` IN the statement,
+so a label given mid-judgement stands — never a retired channel, inside the same 10-a-pass bound; a
+recovered row that reads nothing is `frameHereNoVerdict`, never "not on this machine"), so the newest
+posts recover in a pass or two as the known-post loop re-banks their frames. **Unmeasured:** the
+size a shrunk Graph frame comes to, OCR recall on one, the shrink's time and memory on the box, whether the
+Graph CDN sends Content-Length (a deferral reads no body when it does); the OpenCV path and the real `sips`
+were not run where this was written (Pillow was, and a fake `sips`). **The pass reaches only the
+newest 1,000 `frame:not-saved` rows** (the cutoff is fixed and carousels / expired URLs keep the mark for
+good), so an older post's banked frame is judged only by `pnpm ig:rejudge --run`, which **refuses beside a
+worker running on the same host** (dry run too — same OCR and model work; `workerRunningHere` in
+worker/heartbeat.ts, now shared with `ig:backfill`), prints the detached stop-run-start line, and says how
+many it left — repeat until none. `deploy-worker-on-box.sh` refuses while a backfill / rejudge / frames run
+is in progress (its `pm2 restart` would start a deliberately stopped worker beside it). A CDN-refused frame
+is not lost: a backfill re-read brings a fresh URL (not for a carousel). **A person's step after
+deploying:** `pnpm ig:frames --capture` on the box, soon (it refuses beside the running worker and prints
+the detached stop-capture-start line, as `ig:rejudge` does) — CDN URLs expire (`oe=` is a hex expiry; the
+lifetime is unmeasured) — then the detached `ig:rejudge --run` (docs/DEPLOY.md).
+
 ### RULES, ADDED TO THE STANDING LIST
 
 55. **Record what the remote SAID, not only that it refused.** A refusal with no body on record makes

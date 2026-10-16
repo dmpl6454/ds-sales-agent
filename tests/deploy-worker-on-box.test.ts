@@ -13,6 +13,8 @@
  *   - replace `pm2 restart ds-sales-worker` with `pm2 restart all` → "restarts only the worker" goes red
  *   - make `die` always print "Nothing on the box was changed." (the first version did) → "a failure
  *     after the copy names the rollback" goes red (applied by hand, saw red, restored, review 15 Oct)
+ *   - delete the `pgrep -af 'src/scripts/(backfill|rejudge|frames)\.ts'` refusal → "while a detached
+ *     maintenance run is in progress" goes red (applied by hand, saw red, restored, review 16 Oct)
  */
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { execFileSync, spawnSync } from 'node:child_process'
@@ -125,6 +127,27 @@ describe('deploy-worker-on-box.sh refuses, and a refusal changes nothing', () =>
     expect(pm2Calls()).toEqual([])
     expect(existsSync(join(box, 'src', 'detection', 'graphFeed.ts'))).toBe(false)
     expect(existsSync(join(box, 'src', 'old', 'removed-from-repo.ts'))).toBe(true)
+  })
+
+  /**
+   * A detached `ig:backfill --run` (or `ig:rejudge`, `ig:frames --capture`) STOPS the worker for up to
+   * hours, and `pm2 restart` on a stopped process STARTS it — a second detection process beside the
+   * run on 961 MB, with the run's source replaced under it. The stub answers like pgrep -af would, and
+   * only when asked about those commands (the script's later `pgrep -f 'src/worker/index'` gets nothing).
+   */
+  it('while a detached maintenance run is in progress (it stopped the worker on purpose)', () => {
+    write(
+      join(bin, 'pgrep'),
+      '#!/bin/sh\ncase "$*" in *backfill*) echo "31337 node /opt/ds-sales-agent/node_modules/tsx/dist/cli.mjs src/scripts/backfill.ts --hours 48 --run";; esac\nexit 0\n',
+    )
+    chmodSync(join(bin, 'pgrep'), 0o755)
+    const r = run([SHA])
+    expect(r.status).not.toBe(0)
+    expect(r.stderr).toMatch(/maintenance run is in progress on this box: 31337 node .*src\/scripts\/backfill\.ts --hours 48 --run/)
+    expect(r.stderr).toMatch(/Nothing on the box was changed/) // true: the check runs before the download
+    expect(pm2Calls()).toEqual([])
+    expect(readFileSync(join(box, 'src', 'worker', 'index.ts'), 'utf8')).toContain('OLD_WORKER')
+    expect(existsSync(backups)).toBe(false) // no backup taken either
   })
 
   it('when the Prisma schema differs (the client would need regenerating)', () => {

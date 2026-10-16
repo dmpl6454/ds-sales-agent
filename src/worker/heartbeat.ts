@@ -106,3 +106,61 @@ export async function readSchedulerHeartbeat(): Promise<SchedulerHeartbeat | nul
   const row = await prisma.setting.findUnique({ where: { key: HEARTBEAT_KEY } })
   return row ? parseSchedulerHeartbeat(row.value) : null
 }
+
+/**
+ * Does this OS have a process with this pid? EPERM is YES: the process exists and belongs to
+ * another user — the reading `dispatcher.ts` `pidAlive` settled on (2026-10-09). Restated here
+ * rather than imported, because importing the dispatcher would load the whole send path into a
+ * command that reads feeds. (Moved here from backfill.ts on 16 Oct 2026, with `workerRunningHere`,
+ * so `ig:backfill` and `ig:rejudge` ask ONE check; backfill.ts re-exports it.)
+ */
+export function pidAliveHere(pid: number): boolean {
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch (err) {
+    return (err as NodeJS.ErrnoException)?.code === 'EPERM'
+  }
+}
+
+/** The detection worker this beat says is running on THIS host — or that it might be. */
+export interface WorkerOnThisHost {
+  /** `running`: the beat names this machine and this OS says its pid is alive. `unnamed`: see below. */
+  kind: 'running' | 'unnamed'
+  pid: number
+  /** How long ago it beat, as a person reads it: `30s ago`. */
+  ago: string
+}
+
+/**
+ * PURE. Is the detection worker running on this host? The question every maintenance command that
+ * does the worker's own heavy work — `ig:backfill --run`, `ig:rejudge` — must ask before starting,
+ * because on the 961 MB box two such processes are two OCR children and two heaps (CLAUDE.md rule
+ * 16: one OCR child at a time), and both would judge the same newest posts. ONE check with two
+ * callers, so the two commands cannot drift on what "running here" means.
+ *
+ * Yes on a FRESH beat (under HEARTBEAT_STALE_MS, the scheduler's own bound) that names THIS machine
+ * and whose pid this OS says is alive — and `unnamed` on a fresh beat naming NO machine at all (a
+ * build older than 2026-08-08) on freshness alone, exactly as `startScheduler` does: such a beat may
+ * be another host's, and a pid is a fact about one machine (CLAUDE.md rule 28), so asking this OS
+ * about it would prove nothing. A beat from ANOTHER machine (the Mac's), a stale one, or one whose
+ * pid is dead is no — `pm2 stop` leaves a fresh beat behind for up to three minutes, and its pid is
+ * what tells a stopped worker from a running one. The conservative direction: a wrong refusal costs a
+ * person three minutes, two detection processes on 961 MB cost the box.
+ */
+export function workerRunningHere(input: {
+  beat: SchedulerHeartbeat | null
+  nowMs: number
+  machine: string
+  alive: (pid: number) => boolean
+}): WorkerOnThisHost | null {
+  const { beat } = input
+  if (!beat) return null
+  const ageMs = input.nowMs - Date.parse(beat.at)
+  if (!(ageMs < HEARTBEAT_STALE_MS)) return null
+  const ago = `${Math.max(0, Math.round(ageMs / 1000))}s ago`
+  if (beat.machine === undefined) return { kind: 'unnamed', pid: beat.pid, ago }
+  if (beat.machine !== input.machine) return null
+  if (!input.alive(beat.pid)) return null
+  return { kind: 'running', pid: beat.pid, ago }
+}

@@ -9,7 +9,7 @@ import { anonGateCheck, hydrateAnonGate, DETECT_FEED_OK_KEY, DETECT_THROTTLED_KE
 import { getDetector } from './detectors'
 import { setChannelVocabulary } from './detectors/semantic'
 import { buildVocabulary } from './detectors/novelty'
-import { saveFrame } from './media'
+import { saveFrame, createFrameShrinkBudget, widenFrameShrinkBudget, type FrameShrinkBudget } from './media'
 import { buildRawPayload, evidenceRefresh, EVIDENCE_INCOMPLETE_MARKER } from './evidence'
 import { tagsForPost } from './tagEvidence'
 import { publisherForPrompt } from './publisherContext'
@@ -29,7 +29,7 @@ import {
   type OfficialShortfall,
 } from './officialReach'
 import { autoResolveBrands, type AutoResolveSummary } from './autoResolve'
-import { rejudgeUnusedEvidence, type RejudgeSummary } from './rejudge'
+import { rejudgeUnusedEvidence, emptyRejudgeSummary, rejudgeLogFields, type RejudgeSummary } from './rejudge'
 
 /**
  * Detection: read each watched channel's recent posts and classify them.
@@ -184,6 +184,17 @@ export interface DetectionSummary {
    * configured for this pass. `ig:backfill --run` prints it; the log line below says the same.
    */
   officialCalls?: { used: number; cap: number; dropped: number }
+  /**
+   * Over-size cover frames this pass: shrinks started against the pass's bound (`SHRINKS_PER_PASS`
+   * plus `widened`, the room a backfill's reads and reads past their first page added for their own
+   * frames), frames deferred to a later pass because the bound was spent — only ever on a routine
+   * one-page read, which the next pass re-reads —
+   * and frames skipped without a request because their shrink failed recently (media.ts,
+   * `SHRINK_RETRY_AFTER_MS`). Never silent: the pass logs `frames left for a later pass to shrink`
+   * whenever either skip count is non-zero, and `ig:detect` and `ig:backfill --run` print it
+   * (detectionReport.ts, `frameShrinkLine`).
+   */
+  frameShrinks?: Pick<FrameShrinkBudget, 'bound' | 'widened' | 'started' | 'deferred' | 'coolingOff'>
 }
 
 /**
@@ -357,6 +368,16 @@ export async function runDetection(
     if (why === 'paused' && !cd.open) outcome.officialPausedBy = cd.kind
   }
 
+  /**
+   * ONE SHRINK BUDGET FOR THE WHOLE PASS (review, 16 Oct 2026; media.ts, `SHRINKS_PER_PASS`). The first
+   * pass after the frame shrink deployed meets every recent frameless official-read post at once, and
+   * shrinking them all inside one detection pass would be many minutes of child processes on the
+   * 15-minute clock. Shared by both `saveFrame` calls below — the known-post loop and the fresh posts —
+   * so the bound is the pass's, not a channel's. A backfill's read, and any official read past its first
+   * page, widens it by its own posts before saving any of them (below, at the read): what is past the
+   * first page no later pass re-reads, so a frame deferred there would never be shrunk.
+   */
+  const frameBudget = createFrameShrinkBudget()
   let feedAliveStamped = false
   for (const target of ordered) {
     const outcome: ChannelOutcome = {
@@ -466,6 +487,25 @@ export async function runDetection(
           outcome.officialReach = { sinceUnix: reach.officialSinceUnix, ...result }
         }
       }
+      /**
+       * A BACKFILL, OR A READ PAST ITS FIRST PAGE, IS NEVER DEFERRED (review, 16 Oct 2026; media.ts,
+       * "A DEEPER READ ADDS ROOM"). A routine pass re-reads only each channel's newest page, so a frame
+       * the 40-shrink bound deferred on a later page — the gap rule's catch-up, or a routine read that
+       * needed a second page — would never be shrunk, and its post would stay judged on its caption alone
+       * (a stored post's fresh URL is not even kept: evidence.ts refreshes nothing from the official
+       * read). Either door: the anonymous one pages too, 12 posts a page, though its frames are small and
+       * rarely need a shrink. A backfill is not deferred even on one page: it is a person's run, made to
+       * store posts WITH their evidence while the worker is stopped, and its report says what it shrank.
+       * So: room for every post this read returned, before any of their frames is saved — bounded by the
+       * read's own bounds (48, 150 or 600 posts a channel, and the call cap). A one-page routine read —
+       * the steady state, and the deploy-day backlog — adds nothing: its posts are the newest page, which
+       * the next pass re-reads.
+       * MUTATIONS (applied once, seen red, restored): dropping `backfillHours !== undefined` fails
+       * tests/official-reach.test.ts "a backfill shrinks every over-size frame it reads…"; dropping
+       * `pagesFetched > 1` fails "a read past its first page…"; widening every read fails "a one-page
+       * routine read keeps the 40-shrink bound".
+       */
+      if (backfillHours !== undefined || pagesFetched > 1) widenFrameShrinkBudget(frameBudget, posts.length)
       /**
        * ── NO SILENT CAPS: A STRETCH THIS READ KNOWS IT LEFT UNREAD IS NAMED (review, 16 Oct 2026) ──
        *
@@ -619,7 +659,7 @@ export async function runDetection(
         const stored = storedByShortcode.get(post.shortcode)
         // A post being re-judged is written whole by `persist` in the fresh loop, frame included.
         if (!stored || rejudge.has(post.shortcode)) continue
-        await saveFrame(post.shortcode, post.thumbnailUrl)
+        await saveFrame(post.shortcode, post.thumbnailUrl, { budget: frameBudget })
 
         // A post the OFFICIAL API served reports no tags at all, and comparing that would erase
         // the real ones — `evidenceRefresh` returns null for it by its own first line (the one
@@ -675,9 +715,13 @@ export async function runDetection(
          * labelled set any measurement of frame reading has to be built from.
          *
          * `saveFrame` never throws: a frame that fails to save costs one piece of evidence,
-         * never a detection pass.
+         * never a detection pass. A frame the pass's shrink bound DEFERS — only ever on a routine one-page
+         * read, since a backfill or a deeper read widened the bound for its own posts above — is judged here without it
+         * (`frame:not-saved`) and re-judged once a later pass, re-reading the channel's newest posts,
+         * banks it (rejudge.ts). The order of channels rotates, so no channel's fresh posts always lose
+         * the bound to another's backlog.
          */
-        await saveFrame(post.shortcode, post.thumbnailUrl)
+        await saveFrame(post.shortcode, post.thumbnailUrl, { budget: frameBudget })
 
         /**
          * The per-post model inputs, built ONCE here and handed UNCHANGED to the detector's
@@ -892,6 +936,29 @@ export async function runDetection(
     })
   }
   const officialCalls = officialOn ? { officialCalls: { used: graphBudget.used, cap: callCap, dropped: graphBudget.dropped } } : {}
+  /**
+   * NO SILENT SKIPS: frames the shrink bound left for a later pass, and frames whose failed shrink is
+   * cooling off, once a pass — never a line per frame (a backlog of hundreds would bury the log). A
+   * deferral only happens on a routine one-page read, which the next pass re-reads (see the widening above).
+   */
+  if (frameBudget.deferred > 0 || frameBudget.coolingOff > 0) {
+    log.info('frames left for a later pass to shrink', {
+      deferred: frameBudget.deferred,
+      coolingOff: frameBudget.coolingOff,
+      shrinksThisPass: frameBudget.started,
+      bound: frameBudget.bound,
+      roomAddedForDeeperReads: frameBudget.widened,
+    })
+  }
+  const frameShrinks = {
+    frameShrinks: {
+      bound: frameBudget.bound,
+      widened: frameBudget.widened,
+      started: frameBudget.started,
+      deferred: frameBudget.deferred,
+      coolingOff: frameBudget.coolingOff,
+    },
+  }
 
   /**
    * RESOLVE THE BRANDS IN WHAT WE JUST CLASSIFIED — the step that makes brand discovery
@@ -939,6 +1006,7 @@ export async function runDetection(
       brandsResolved: { looked: 0, decided: 0, skippedUnsure: 0, haltedEarly: false, unreached: 0, backingOff: 0, awaitingRetry: 0 },
       servedBy,
       ...officialCalls,
+      ...frameShrinks,
     }
   }
   const brandsResolved = await autoResolveBrands().catch((err): AutoResolveSummary => {
@@ -965,6 +1033,10 @@ export async function runDetection(
    * because nothing tried again. Bounded per pass, never overriding a human answer, and
    * only ever through `judgeWithFrame` so the permission table still applies.
    *
+   * Since 16 Oct 2026 it also re-judges a post stored `frame:not-saved` whose frame is on this
+   * host's disk NOW — the official read's full-size frames, shrunk and re-banked by the known-post
+   * loop above on a later pass. See rejudge.ts.
+   *
    * Caught separately from the brand resolver and from detection itself: this is the least
    * urgent thing in the pass, and a post that scrolls out of the feed window can never be
    * re-scraped, so it must not be able to take the run down with it.
@@ -973,27 +1045,14 @@ export async function runDetection(
     log.warn('re-judging unused evidence failed — next pass retries', {
       error: err instanceof Error ? err.message : String(err),
     })
-    return { examined: 0, changed: 0, remaining: 0, skippedNoEvidence: 0, skippedCallFailed: 0, proposals: [] }
+    return emptyRejudgeSummary()
   })
   // `remaining` is in the condition too: a drained backlog must go quiet, and a STUCK one
   // must not — examined=0 with remaining>0 is the state worth a line.
   if (rejudged.examined > 0 || rejudged.remaining > 0) {
-    log.info('re-judged evidence read earlier', {
-      examined: rejudged.examined,
-      changed: rejudged.changed,
-      // Named, because "examined 10, changed 0" on a host with no frame store is a
-      // different fact from "examined 10, changed 0" on the host that has them.
-      //
-      // TWO NUMBERS, NOT ONE. This line used to print `noFrameHere` for BOTH skip reasons,
-      // and on 2026-08-17 it read `noFrameHere=10 remaining=83` on the very host holding
-      // all 83 frames — a counter asserting a cause that was false, which sent a diagnosis
-      // through the OCR engine, the frames directory and the API key before the real cause
-      // (the classifier was never asked) turned up. A number that names a reason must be
-      // true about that reason.
-      noFrameHere: rejudged.skippedNoEvidence,
-      callDidNotAnswer: rejudged.skippedCallFailed,
-      remaining: rejudged.remaining,
-    })
+    // The field names are rejudge.ts's (`rejudgeLogFields`), tested there: each skip reason is named,
+    // because a number that names a reason must be true about that reason.
+    log.info('re-judged evidence read earlier', rejudgeLogFields(rejudged))
   }
 
   /**
@@ -1041,6 +1100,7 @@ export async function runDetection(
     brandsResolved,
     servedBy,
     ...officialCalls,
+    ...frameShrinks,
   }
 }
 

@@ -11,7 +11,7 @@
  */
 import { runDetection } from '@/detection/pipeline'
 // The line format lives in detectionReport.ts, shared with `pnpm ig:backfill --run`.
-import { channelSummaryLine, passSummaryLine } from '@/detection/detectionReport'
+import { channelSummaryLine, frameShrinkLine, passSummaryLine } from '@/detection/detectionReport'
 
 const i = process.argv.indexOf('--lookback')
 const lookbackHours = i >= 0 ? Number(process.argv[i + 1]) : undefined
@@ -19,4 +19,6 @@ const lookbackHours = i >= 0 ? Number(process.argv[i + 1]) : undefined
 const s = await runDetection(lookbackHours ? { lookbackHours } : {})
 for (const c of s.channels) console.log(channelSummaryLine(c))
 console.log(`\n${passSummaryLine(s)}`)
+const frames = frameShrinkLine(s)
+if (frames) console.log(frames)
 process.exit(s.hadParseFailure || s.hadError ? 1 : 0)

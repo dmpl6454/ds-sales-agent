@@ -21,8 +21,17 @@
  *
  * Reading text off a frame decides nothing. `--reclassify` hands the text to the SAME
  * measured classifier that reads captions, and `applyFrameSignal` bounds what the result
- * may do: a post the caption called ordinary can be raised to REVIEW for a person to
- * settle, and nothing else. A frame may never mint a CAMPAIGN nor clear one.
+ * may do: a post the caption called ordinary can be raised to CAMPAIGN (to REVIEW until
+ * 17 Aug 2026, when that state was removed; the cross on /paid-posts is the corrective), and
+ * nothing else. A frame may never clear or overturn a CAMPAIGN.
+ *
+ * ── MOSTLY NOT NEEDED FOR RECOVERY ANY MORE (16 Oct 2026) ───────────────────
+ *
+ * A post judged with no frame and whose frame arrived later — the official read's shrunk frames,
+ * or ones `pnpm ig:frames --capture` fetched — is now re-judged by the detection pass itself
+ * (`rejudgeUnusedEvidence`, bounded; `pnpm ig:rejudge` drains it at once). `--reclassify` is the
+ * WIDER act: it re-judges every ordinary post whose frame carries text, including ones already
+ * judged WITH their frame — the tool for after an OCR or prompt change, not for a missing frame.
  */
 import { prisma } from '@/lib/db'
 import { getSettings } from '@/lib/settings'
@@ -249,7 +258,7 @@ for (const c of worthJudging) {
 }
 
 console.log(
-  `\nRe-judged ${judged} with their footage included: ${flagged} newly flagged for your review, ` +
+  `\nRe-judged ${judged} with their footage included: ${flagged} raised to paid by their footage, ` +
     `${agreed} unchanged, ${failedCalls} calls failed (left exactly as they were).`,
 )
 if (skipped > 0) {
@@ -257,5 +266,5 @@ if (skipped > 0) {
   // work reads as "everything was covered" when it was not.
   console.log(`${skipped} were deliberately not judged (retired channel, or a caption a frame cannot move).`)
 }
-if (flagged > 0) console.log(`Flagged posts are on /paid-posts as "borderline — worth a look", with the footage quoted.`)
+if (flagged > 0) console.log(`Raised posts are on /paid-posts as paid, with the footage quoted; the cross there undoes one.`)
 process.exit(0)

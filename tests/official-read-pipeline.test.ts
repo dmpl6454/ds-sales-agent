@@ -121,9 +121,19 @@ vi.mock('@/detection/media', async (importOriginal) => {
 vi.mock('@/detection/autoResolve', () => ({
   autoResolveBrands: async () => ({ looked: 0, decided: 0, skippedUnsure: 0, haltedEarly: false, unreached: 0, backingOff: 0, awaitingRetry: 0 }),
 }))
-vi.mock('@/detection/rejudge', () => ({
-  rejudgeUnusedEvidence: async () => ({ examined: 0, changed: 0, remaining: 0, skippedNoEvidence: 0, skippedCallFailed: 0, proposals: [] }),
-}))
+/**
+ * The pass's own re-judge does nothing here — but the pipeline also imports `emptyRejudgeSummary` (its
+ * catch) and `rejudgeLogFields` (its log line), and a mock without them would throw inside runDetection
+ * the first time a stub rejected or examined anything (review, 16 Oct 2026). The real pure ones are kept.
+ */
+vi.mock('@/detection/rejudge', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/detection/rejudge')>()
+  return {
+    emptyRejudgeSummary: actual.emptyRejudgeSummary,
+    rejudgeLogFields: actual.rejudgeLogFields,
+    rejudgeUnusedEvidence: async () => actual.emptyRejudgeSummary(),
+  }
+})
 vi.mock('@/lib/settings', () => ({ getSettings: async () => ({ tagsAsEvidence: false, publisherAsContext: false }) }))
 vi.mock('@/detection/detectors', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/detection/detectors')>()

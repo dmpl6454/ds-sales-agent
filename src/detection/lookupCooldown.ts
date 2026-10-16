@@ -100,13 +100,45 @@ export interface FailureMemory {
   reset(): void
   /** Order a pass's candidates. See `orderByFailureCooldown`. */
   order<T>(items: readonly T[], keyOf: (item: T) => string): CooldownOrder<T>
+  /** How many keys are remembered now — bounded by `maxEntries` when one was given. */
+  size(): number
+}
+
+export interface FailureMemoryOptions {
+  /**
+   * ── A CAP, FOR A POPULATION THAT GROWS FOR THE PROCESS'S LIFE (review, 16 Oct 2026) ──────────
+   *
+   * Without one the memory keeps one entry per distinct key that ever failed, for as long as the
+   * process runs — nothing is ever evicted, an expired entry included. For a population that is
+   * bounded by what a person watches (handles, pairs) that is the old behaviour and stays it: the
+   * default is UNBOUNDED, so every caller that passes nothing behaves exactly as before. media.ts's
+   * shrink negative cache is keyed by SHORTCODE — every post the worker ever met — so it passes one.
+   *
+   * At the cap the OLDEST failure is forgotten first (a re-noted key moves to the newest end). What
+   * forgetting costs is the caller's to state; for media.ts it is one more download and one shrink.
+   */
+  maxEntries?: number
 }
 
 /** One memory per calling module — they are separate queues over separate populations. */
-export function createFailureMemory(retryAfterMs: number = UNREACHABLE_RETRY_AFTER_MS): FailureMemory {
+export function createFailureMemory(retryAfterMs: number = UNREACHABLE_RETRY_AFTER_MS, opts: FailureMemoryOptions = {}): FailureMemory {
   const failedAt = new Map<string, number>()
+  const max = opts.maxEntries
+  // A cap that is not a positive whole number is no cap: a bad number must never empty the memory.
+  const cap = max !== undefined && Number.isInteger(max) && max > 0 ? max : Number.POSITIVE_INFINITY
   return {
-    note: (key) => void failedAt.set(key, Date.now()),
+    note: (key) => {
+      // Delete first, so insertion order is failure order and the oldest failure is what goes first.
+      failedAt.delete(key)
+      failedAt.set(key, Date.now())
+      // MUTATION (applied once, seen red, restored): deleting this loop fails tests/frame-shrink.test.ts
+      // "the shrink negative cache is bounded…" and "createFailureMemory: a cap keeps the newest…".
+      while (failedAt.size > cap) {
+        const oldest = failedAt.keys().next().value
+        if (oldest === undefined) break
+        failedAt.delete(oldest)
+      }
+    },
     isCoolingOff: (key) => {
       const at = failedAt.get(key)
       return at != null && Date.now() - at < retryAfterMs
@@ -114,5 +146,6 @@ export function createFailureMemory(retryAfterMs: number = UNREACHABLE_RETRY_AFT
     clear: (key) => void failedAt.delete(key),
     reset: () => failedAt.clear(),
     order: (items, keyOf) => orderByFailureCooldown(items, keyOf, failedAt, Date.now(), retryAfterMs),
+    size: () => failedAt.size,
   }
 }

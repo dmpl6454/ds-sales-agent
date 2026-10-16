@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process'
-import { accessSync, constants } from 'node:fs'
+import { accessSync, constants, existsSync } from 'node:fs'
 import { join as joinPath } from 'node:path'
 
 const { X_OK } = constants
@@ -155,6 +155,105 @@ export function ocrEngineCommand(
  * work must not have those versions forced on it.
  */
 export const RAPIDOCR_PYTHON = process.env.RAPIDOCR_PYTHON ?? '/opt/ds-ocr-venv/bin/python'
+
+/**
+ * ── HOW AN OVER-SIZE COVER FRAME IS MADE SMALL ENOUGH TO KEEP (16 Oct 2026) ─────────────────
+ *
+ * MEASURED IN PRODUCTION: with the anonymous feed walled, every post arrives through the official
+ * Graph API, whose cover frame is a FULL-SIZE file — the box's backfill log refused most of them
+ * (`frame size out of bounds — not saved bytes=1052612 / 748357 / 591056 / 870691 / 571895`), so
+ * their footage was never read. `saveFrame` now shrinks such a file before saving it, and this is
+ * the one place that decides WHAT shrinks it on this host — the same rule as the OCR engine above:
+ * one platform branch, in one file.
+ *
+ *   sips    macOS's built-in image tool. File in, file out — it cannot read stdin — so the caller
+ *           stages the bytes in a temp file, asks for the dimensions first (`sipsProbeArgs`), and
+ *           passes `-Z` only when the frame is larger than the box, so sips is never asked to
+ *           upscale. NOT EXERCISED in the container this was written in; its arguments are pure
+ *           and tested, the run is not.
+ *   python  `scripts/frame-shrink.py` under the RapidOCR interpreter: OpenCV is already in that
+ *           venv because RapidOCR imports it. Stdin to stdout. This is the server's path.
+ *   none    a REASON, never a silent skip — the frame is then refused exactly as before, and the
+ *           log says why, so "nothing could shrink it here" never reads as "the post had no frame".
+ *
+ * No new dependency on purpose: the box is updated by `scripts/deploy-worker-on-box.sh`, which
+ * refuses a lockfile change, and `sharp` is only in node_modules as Next's optional transitive.
+ */
+export type FrameShrinkTool =
+  | { engine: 'sips'; command: string }
+  | { engine: 'python'; command: string; script: string }
+  | { engine: 'none'; reason: string }
+
+/**
+ * PURE in its injected facts, like `ocrEngineCommand`: tests pass the platform and what exists.
+ *
+ * THE SCRIPT MUST EXIST TOO (review, 16 Oct 2026). The Python engine was chosen whenever the RapidOCR
+ * interpreter existed, so a deploy that shipped without `scripts/frame-shrink.py` would have run
+ * `python <missing file>` for every over-size frame and logged `exited 2: can't open file` — a reason
+ * that reads like a broken image rather than a missing file. Now that is `none`, naming the file.
+ * MUTATION (applied once, seen red, restored): dropping the `hasScript` check fails
+ * tests/frame-shrink.test.ts "a missing scripts/frame-shrink.py is a reason naming the file…".
+ */
+export function frameShrinkTool(
+  platform: Platform = process.platform,
+  hasSips: boolean = commandExists('sips'),
+  hasShrinkPython: boolean = commandExists(RAPIDOCR_PYTHON),
+  script: string = joinPath(process.cwd(), 'scripts', 'frame-shrink.py'),
+  hasScript: boolean = existsSync(script),
+): FrameShrinkTool {
+  if (platform === 'darwin' && hasSips) return { engine: 'sips', command: 'sips' }
+  if (hasShrinkPython && !hasScript) {
+    return {
+      engine: 'none',
+      reason: `the shrink script ${script} is missing on this host (the RapidOCR Python at ${RAPIDOCR_PYTHON} is here) — redeploy so scripts/frame-shrink.py is present`,
+    }
+  }
+  if (hasShrinkPython) return { engine: 'python', command: RAPIDOCR_PYTHON, script }
+  return {
+    engine: 'none',
+    reason:
+      platform === 'darwin'
+        ? `no image tool to shrink an over-size frame on "${platform}" — macOS ships sips at /usr/bin/sips; ` +
+          `restore it, or set RAPIDOCR_PYTHON to a Python with OpenCV or Pillow`
+        : `no image tool to shrink an over-size frame on "${platform}" — install the RapidOCR venv ` +
+          `(RAPIDOCR_PYTHON, default /opt/ds-ocr-venv/bin/python, which brings OpenCV) or point ` +
+          `RAPIDOCR_PYTHON at a Python with Pillow`,
+  }
+}
+
+/** `sips` arguments that print a file's pixel size. PURE. */
+export function sipsProbeArgs(path: string): string[] {
+  return ['-g', 'pixelWidth', '-g', 'pixelHeight', path]
+}
+
+/**
+ * PURE: sips's dimension report → `{ width, height }`, or null when it is not one. The output is
+ * the path on one line, then `  pixelWidth: 1080` and `  pixelHeight: 1920`.
+ */
+export function parseSipsDimensions(stdout: string): { width: number; height: number } | null {
+  const w = /pixelWidth:\s*(\d+)/.exec(stdout)
+  const h = /pixelHeight:\s*(\d+)/.exec(stdout)
+  const width = w ? Number(w[1]) : 0
+  const height = h ? Number(h[1]) : 0
+  return width > 0 && height > 0 ? { width, height } : null
+}
+
+/**
+ * `sips` arguments that write `out` as a JPEG at `quality`, resampled so neither side exceeds
+ * `longSide` (`-Z` keeps the aspect ratio). `longSide: null` re-encodes without resampling — the
+ * caller passes null whenever the frame already fits, so whether `-Z` would ENLARGE a smaller
+ * image (reports differ; not checked here) is never something this code depends on. Nothing here
+ * may upscale. PURE.
+ */
+export function sipsShrinkArgs(input: string, out: string, longSide: number | null, quality: number): string[] {
+  return [
+    ...(longSide !== null ? ['-Z', String(longSide)] : []),
+    '-s', 'format', 'jpeg',
+    '-s', 'formatOptions', String(quality),
+    input,
+    '--out', out,
+  ]
+}
 
 /** Is a command on PATH? Synchronous and cheap; used only to choose an engine. */
 function commandExists(command: string): boolean {

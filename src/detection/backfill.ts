@@ -63,8 +63,8 @@ import {
   officialShortfall,
   type OfficialReach,
 } from './officialReach'
-import { channelSummaryLine, passSummaryLine } from './detectionReport'
-import { HEARTBEAT_STALE_MS, machineId, readSchedulerHeartbeat, type SchedulerHeartbeat } from '@/worker/heartbeat'
+import { channelSummaryLine, frameShrinkLine, passSummaryLine } from './detectionReport'
+import { machineId, pidAliveHere, readSchedulerHeartbeat, workerRunningHere, type SchedulerHeartbeat } from '@/worker/heartbeat'
 import type { ChannelOutcome, DetectionSummary } from './pipeline'
 
 // ── The command line (PURE) ──────────────────────────────────────────────────────────────────
@@ -169,30 +169,14 @@ const DETACHED_NOTE = `It runs detached — closing this console does not stop i
 
 // ── The worker check (PURE) ──────────────────────────────────────────────────────────────────
 
-/**
- * Does this OS have a process with this pid? EPERM is YES: the process exists and belongs to
- * another user — the reading `dispatcher.ts` `pidAlive` settled on (2026-10-09). Restated here
- * rather than imported, because importing the dispatcher would load the whole send path into a
- * command that reads feeds.
- */
-export function pidAliveHere(pid: number): boolean {
-  try {
-    process.kill(pid, 0)
-    return true
-  } catch (err) {
-    return (err as NodeJS.ErrnoException)?.code === 'EPERM'
-  }
-}
+/** Moved to the heartbeat module with `workerRunningHere` (16 Oct 2026); re-exported for this file's callers. */
+export { pidAliveHere }
 
 /**
- * PURE. Why `--run` must not start, or null when it may.
- *
- * Blocks on a FRESH beat (under HEARTBEAT_STALE_MS, the scheduler's own bound) that names THIS
- * machine and whose pid this OS says is alive — and on a fresh beat naming NO machine at all (a
- * build older than 2026-08-08) on freshness alone, exactly as `startScheduler` does: such a beat
- * may be another host's, and a pid is a fact about one machine (CLAUDE.md rule 28), so asking this
- * OS about it would prove nothing. The conservative direction: a wrong refusal costs a person three
- * minutes, two detection processes on 961 MB cost the box.
+ * PURE. Why `--run` must not start, or null when it may. What "the worker is running on this host"
+ * means is `workerRunningHere` (worker/heartbeat.ts) — shared with `ig:rejudge`, so the two commands
+ * cannot disagree about it; its docblock carries the reasoning (a fresh beat naming this machine with
+ * a live pid; a fresh beat naming no machine, on freshness alone). This adds the backfill's sentence.
  */
 export function backfillRunBlocker(input: {
   beat: SchedulerHeartbeat | null
@@ -201,21 +185,16 @@ export function backfillRunBlocker(input: {
   alive: (pid: number) => boolean
   hours: number
 }): string | null {
-  const { beat } = input
-  if (!beat) return null
-  const ageMs = input.nowMs - Date.parse(beat.at)
-  if (!(ageMs < HEARTBEAT_STALE_MS)) return null
-  const ago = `${Math.max(0, Math.round(ageMs / 1000))}s ago`
-  if (beat.machine === undefined) {
+  const worker = workerRunningHere(input)
+  if (!worker) return null
+  if (worker.kind === 'unnamed') {
     return (
-      `A detection worker that names no machine beat ${ago} (pid ${beat.pid}) — it may be on this host, and its pid cannot be checked ` +
+      `A detection worker that names no machine beat ${worker.ago} (pid ${worker.pid}) — it may be on this host, and its pid cannot be checked ` +
       'from here. Refusing; the beat goes stale three minutes after it stops. Run this instead, as one line:'
     )
   }
-  if (beat.machine !== input.machine) return null
-  if (!input.alive(beat.pid)) return null
   return (
-    `The detection worker is running on this host (pid ${beat.pid}, last heartbeat ${ago}). ` +
+    `The detection worker is running on this host (pid ${worker.pid}, last heartbeat ${worker.ago}). ` +
     'A backfill beside it would be a second detection process on a 961 MB box — two OCR children, two heaps — overlapping its ' +
     '15-minute pass and judging the same posts twice. Refusing. Run this instead, as one line:'
   )
@@ -510,6 +489,9 @@ export async function runBackfill(plan: BackfillPlan, io: BackfillIo): Promise<n
   out('')
   const cap = s.officialCalls?.cap ?? GRAPH_BACKFILL_CALL_CAP
   out(`${passSummaryLine(s)}${s.officialCalls ? ` ${s.officialCalls.used} official call${s.officialCalls.used === 1 ? '' : 's'} used of the run's cap of ${cap}.` : ''}`)
+  // What the run did with the full-size frames it read — never left only in the log (detectionReport.ts).
+  const frames = frameShrinkLine(s)
+  if (frames) out(frames)
   if (s.officialCalls && s.officialCalls.used >= cap * 0.9) {
     // The pause a rate limit sets lives in THIS process (graphFeed.ts); the worker restarted after
     // this run re-learns a still-active limit by spending one call, then pauses itself.
