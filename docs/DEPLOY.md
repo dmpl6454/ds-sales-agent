@@ -427,6 +427,68 @@ token in memory until its next reload. A token that
 expires shows on the landing page as *"The official read token is invalid or expired — reading
 has stopped until it is replaced"*; the remedy is step 1 again.
 
+### Reading back a blind stretch: `pnpm ig:backfill` (16 Oct 2026)
+
+The routine pass reads back only to the newest post it already holds (or 6 hours, if it holds none
+that recent), so when **neither** door served for a while — the anonymous feed walled, the fallback not
+yet configured — the posts of that stretch are never read, however many passes follow. The official
+API pages back through a channel's whole history, so they can still be read. Two pieces:
+
+- **Automatic, for a gap at the edge.** A channel with nothing stored inside the lookback has its
+  official read reach back to its newest stored post (at most 36 hours) with a 150-post bound. Whatever
+  that leaves unread — a gap older than 36 hours, a read the call cap or the bound cut short, or a
+  gapped channel the anonymous feed served (it is never deepened) — is **logged by name** with the dry
+  run that reads it: `part of what this channel is missing was not read …`, `remedy: pnpm ig:backfill
+  --hours N --channel <handle> (as of <time>; add the hours since)`. Run it later and add the hours
+  that have passed, or the oldest end stays unread.
+- **By hand, for a gap already in the middle** (today's case: the newest stored post is fresh, so the
+  automatic rule cannot see it). `--hours` is required, a whole number from 1 to 168 (the 7-day
+  material window); `--channel <handle>` (repeatable) reads only those watched channels. **Run on the
+  box, one line at a time — the console mangles multi-line pastes.**
+
+  First, the dry run (reads, writes nothing):
+  ```
+  cd /opt/ds-sales-agent && pnpm ig:backfill --hours 48
+  ```
+  It prints, per channel, how many posts it found in the window and how many are not stored, the
+  official calls it spent, **how long `--run` would take** (~7 s a post — 8 Sept's measurement), and the
+  line to store them. The worker can stay up for it, but its calls come out of the **same Meta hourly
+  budget** (~200) the worker's official read is using right now: a large dry run can push the worker
+  into a rate limit, which pauses its official read for 30 minutes — posts delayed, not lost. Use the
+  smallest `--hours` that covers the gap.
+
+  Then store them. This stops the worker, runs the backfill and starts the worker again — **detached**,
+  so closing the console (or the session dropping) cannot kill the run and leave the worker stopped;
+  `Ctrl-C` stops only the `tail`:
+  ```
+  cd /opt/ds-sales-agent && setsid sh -c 'pm2 stop ds-sales-worker && pnpm ig:backfill --hours 48 --run; pm2 start ds-sales-worker' > /tmp/ig-backfill.log 2>&1 < /dev/null & tail -F /tmp/ig-backfill.log
+  ```
+  **While it runs the worker is stopped — no detection, no drafting, no slots** — for the time the dry
+  run estimated (48 hours of the busiest channels is ~1,500 posts, about three hours). A smaller
+  `--hours`, or `--channel`, shortens it. `--run` **refuses while the worker runs on this host** (961 MB:
+  two detection processes means two OCR children and two heaps, and a backfill overlapping the 15-minute
+  pass would judge posts twice) and prints that same line. Afterwards check the worker came back:
+  `pm2 describe ds-sales-worker` (by name). The log stays at `/tmp/ig-backfill.log`.
+
+What a run reports and costs: the same per-channel lines `ig:detect` prints, the official calls used
+against the run's cap of **200** (Meta documents roughly 200 an hour for this account — a week of every
+channel is ~260–280 calls, **more than one run**), and every channel it did **not** take back the full
+N hours, with why, in two lists: what a re-run can finish — with the exact line that re-reads **only
+those** channels (`--channel …`; a bare re-run would spend the same calls on the same channels in the
+same order) — and what re-running will not help (a personal account, a token to replace, the 600-post
+per-channel bound). A backfill reads **through the official API only**: the anonymous feed is not asked
+and not deepened, so it works whether or not the anonymous feed answers. It stores the window it was
+asked for (not the older posts on its last page). Re-running is safe: storage is idempotent on shortcode.
+
+**What a backfilled post is worth, stated.** It is stored like any official read — no tags, no
+collaborators, and (per Meta's documentation) a caption with its `@`s removed — and is completed only if
+the anonymous feed reads it again **inside a pass's 6-hour lookback**, which for a post from a blind
+stretch never happens. So until a person (or a future completion path) fills in its evidence, a
+backfilled paid post funds a message only where the classifier's **brand name** exactly names a
+verified prospect (materialAllowance's brand-string arm); its caption mentions and tags cannot credit
+anyone, and brand discovery mints nobody from it. Worth measuring after the first run: how many
+backfilled CAMPAIGN rows link to a live prospect.
+
 ---
 
 ## Deploying the worker from the box itself (no Mac)

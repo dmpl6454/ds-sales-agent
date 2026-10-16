@@ -32,6 +32,21 @@ to an authenticated API is Tabish's to confirm or reverse** (remove the two line
 URL and people's emails — a person's call whether it should be. Suite **3,377 / 3,379** (the two offline
 `route-rule` timeouts), typecheck and `next build` clean. **Not deployed when written.**
 
+**16 Oct, the gap it left (`src/detection/officialReach.ts`).** Deployed, the fallback's first pass
+stored 234 posts (39 paid, all incomplete) — and read only **6 hours**, because the routine floor is
+`max(now − 6h, newestStored − 60)` and every later pass stops at the newest stored post, so the rest
+of a blind stretch with neither door serving was never read (the 36 h slot catch-up stops there too).
+Business Discovery pages a channel's whole history, so those posts are recoverable. Now, **official
+door only** (the anonymous door is never deepened): a channel with nothing stored inside the lookback
+has its official read reach back to `max(newest − 60, now − 36h)` with a 150-post bound, and whatever
+any read leaves of a gap (the clamp, the cap, the bound, the anonymous window) is logged by name with
+the dry run that reads it; **`pnpm ig:backfill --hours N [--channel h]`** (dry run by default, writes
+nothing) reads every channel back N hours through the official API **only**, for a gap already in the
+middle — `--run` refuses while the worker runs and prints a **detached** (`setsid`) stop-run-start line
+(docs/DEPLOY.md), and names every channel it did not finish, with the `--channel` line that does (a
+week is >200 calls). Backfilled posts keep incomplete evidence for good: they fund messages only through
+brand strings.
+
 ### RULES, ADDED TO THE STANDING LIST
 
 55. **Record what the remote SAID, not only that it refused.** A refusal with no body on record makes

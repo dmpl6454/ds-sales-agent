@@ -342,7 +342,8 @@ export function classifyGraphError(status: number, json: unknown): GraphErrorVer
 }
 
 /** What failed, carried on the thrown error so the pipeline can tell it from an anonymous failure. */
-export type GraphFailure = GraphErrorKind | 'transport' | 'shape' | 'paused' | 'invalid-handle' | 'not-configured'
+// `cap-reached`: an official-only read (feedSource.ts, `pnpm ig:backfill`) whose pass had spent its call cap.
+export type GraphFailure = GraphErrorKind | 'transport' | 'shape' | 'paused' | 'invalid-handle' | 'not-configured' | 'cap-reached'
 
 /**
  * A failure of THE OFFICIAL PATH. A FeedFetchError (so every existing catch still holds), but a

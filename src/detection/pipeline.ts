@@ -3,8 +3,8 @@ import { getSettings } from '@/lib/settings'
 import { log } from '@/lib/logger'
 import { writeStringArray } from '@/lib/json'
 import { FeedFetchError, type FeedPost } from './feed'
-import { fetchChannelFeed, officialReadAvailability, type FeedSourceName } from './feedSource'
-import { graphConfigured, GraphFeedError, type GraphBudget } from './graphFeed'
+import { fetchChannelFeed, officialReadAvailability, type FeedSourceName, type OfficialReadAvailability } from './feedSource'
+import { graphConfigured, graphCooldown, GraphFeedError, type GraphBudget, type GraphErrorKind, type GraphFailure } from './graphFeed'
 import { anonGateCheck, hydrateAnonGate, DETECT_FEED_OK_KEY, DETECT_THROTTLED_KEY } from './anonGate'
 import { getDetector } from './detectors'
 import { setChannelVocabulary } from './detectors/semantic'
@@ -16,7 +16,18 @@ import { publisherForPrompt } from './publisherContext'
 import type { ModelInputs } from './types'
 import { judgeWithFrame } from './judge'
 import { hoursAgo } from '@/lib/time'
-import { DETECT_LOOKBACK_HOURS } from './cadence'
+import { DETECT_CATCHUP_LOOKBACK_HOURS, DETECT_LOOKBACK_HOURS } from './cadence'
+import {
+  GRAPH_BACKFILL_CALL_CAP,
+  WATCHED_CHANNEL_WHERE,
+  gapStartUnix,
+  hoursBackTo,
+  isValidBackfillHours,
+  officialReachFor,
+  officialShortfall,
+  unreadStretch,
+  type OfficialShortfall,
+} from './officialReach'
 import { autoResolveBrands, type AutoResolveSummary } from './autoResolve'
 import { rejudgeUnusedEvidence, type RejudgeSummary } from './rejudge'
 
@@ -107,7 +118,39 @@ export interface ChannelOutcome {
   skipped?: 'throttled' | 'official-rate-limited'
   /** Which door served this channel, when one did (feedSource.ts). */
   servedBy?: FeedSourceName
+  /**
+   * Set only when this channel's OFFICIAL read was asked to reach further back than the routine
+   * read — the gap rule or `pnpm ig:backfill` (officialReach.ts) — and the official API served it:
+   * the floor it was asked for, and whether it got there. `ig:backfill` reads it to name every
+   * channel the run did not finish; the pass logs a shortfall by name. Absent on every other read.
+   */
+  officialReach?: { sinceUnix: number } & OfficialShortfall
+  /**
+   * Why the official read could not serve a channel the closed anonymous gate skipped — set only
+   * where the fallback is configured for this pass, so `ig:backfill` can say "the call cap was spent"
+   * or "the official API is paused" instead of a bare "throttled".
+   */
+  officialUnavailable?: Exclude<OfficialReadAvailability, 'available'>
+  /**
+   * Which answer paused the official read, when `officialUnavailable` is `paused` — a rate limit
+   * clears itself within the hour, a token error never does until a person mints a new one, so
+   * `ig:backfill` must not tell a person to "re-run after an hour" about the second.
+   */
+  officialPausedBy?: GraphErrorKind
+  /** What the official read itself failed with, when it was asked and threw (graphFeed.ts `graphKind`). */
+  officialFailure?: GraphFailure
+  /**
+   * NO SILENT CAPS (review, 16 Oct 2026): a stretch of this channel the pass KNOWS it left unread —
+   * from `sinceUnix` (the start of a real gap, or a deepened read's floor) back past what the read
+   * reached (`reachedBackTo`, null when it read nothing). `because` says what stopped it: the call
+   * cap, the per-channel bound, the gap rule's 36-hour clamp, the hours a backfill was asked for, or
+   * the anonymous door's window. Logged by name with the `ig:backfill` line that reads it.
+   */
+  unreadStretch?: { sinceUnix: number; reachedBackTo: number | null; because: UnreadBecause }
 }
+
+/** What stopped a read short of a stretch the channel is missing — see `ChannelOutcome.unreadStretch`. */
+export type UnreadBecause = 'call-cap' | 'channel-bound' | 'catch-up-clamp' | 'backfill-hours' | 'anonymous-window'
 
 export interface DetectionSummary {
   channels: ChannelOutcome[]
@@ -136,6 +179,11 @@ export interface DetectionSummary {
    * read is not configured — which is everywhere, until a person decides otherwise.
    */
   servedBy: Record<FeedSourceName, number>
+  /**
+   * The official read's calls this pass against its cap — present only where the fallback is
+   * configured for this pass. `ig:backfill --run` prints it; the log line below says the same.
+   */
+  officialCalls?: { used: number; cap: number; dropped: number }
 }
 
 /**
@@ -159,10 +207,39 @@ export const GRAPH_MAX_CALLS_PER_PASS = 60
  * for why detection no longer runs on the sending schedule.
  */
 export async function runDetection(
-  opts: { lookbackHours?: number; channelSpacingMs?: number; role?: DetectionRole } = {},
+  opts: {
+    lookbackHours?: number
+    channelSpacingMs?: number
+    role?: DetectionRole
+    /**
+     * `pnpm ig:backfill --hours N --run` ONLY (16 Oct 2026, officialReach.ts). Every channel's
+     * OFFICIAL read reaches back N hours, ignoring the newest stored post, with the backfill's page
+     * bound and its call cap (`GRAPH_BACKFILL_CALL_CAP`) in place of the pass's. The pass reads
+     * through the official API ONLY (`officialOnly`, below): the anonymous door is neither deepened
+     * nor asked. Storage is this pass's own: a backfilled post is persisted, judged and marked
+     * incomplete exactly as any official read stores it — only the window asked for is stored.
+     */
+    officialBackfillHours?: number
+    /**
+     * `pnpm ig:backfill --channel <handle>` ONLY: read just these watched channels. A run the call
+     * cap cut short is finished by naming its unfinished channels, because a bare re-run reads in
+     * the same order and spends the same calls on the same head (officialReach.ts). A handle that
+     * is not a watched channel is simply not read — the command refuses one before it gets here.
+     */
+    onlyChannels?: readonly string[]
+  } = {},
 ): Promise<DetectionSummary> {
   const role: DetectionRole = opts.role ?? 'primary'
   const lookbackHours = opts.lookbackHours ?? DETECT_LOOKBACK_HOURS
+  const backfillHours = opts.officialBackfillHours
+  if (backfillHours !== undefined && !isValidBackfillHours(backfillHours)) {
+    // A programming error, not an operator's: the command refuses a bad --hours before it gets here.
+    throw new Error(`officialBackfillHours must be a whole number of hours from 1 to 168 (was ${String(backfillHours)})`)
+  }
+  if (backfillHours !== undefined && !(role === 'primary' && graphConfigured())) {
+    // A backfill IS the official read; without it this would be a routine pass wearing the name.
+    throw new Error('officialBackfillHours needs the official read: a primary pass with META_GRAPH_TOKEN and META_IG_USER_ID set')
+  }
   // A restart must not forget a cooldown (pm2 recycles the worker on its memory ceiling),
   // or the pass resumes the exact hammering the cooldown exists to stop.
   await hydrateAnonGate()
@@ -179,7 +256,8 @@ export async function runDetection(
    * imported prospects that arrive unwatched, and turning one on is one toggle.
    */
   const targets = await prisma.targetAccount.findMany({
-    where: { kind: 'CHANNEL', watchEnabled: true },
+    // officialReach.ts holds the one definition, so `ig:backfill`'s dry run reads the same channels.
+    where: opts.onlyChannels ? { ...WATCHED_CHANNEL_WHERE, handle: { in: [...opts.onlyChannels] } } : WATCHED_CHANNEL_WHERE,
     orderBy: { handle: 'asc' },
   })
 
@@ -201,7 +279,10 @@ export async function runDetection(
     const at = row._max.postedAt
     if (at) newestStored.set(row.targetId, Math.floor(at.getTime() / 1000))
   }
-  const floorUnix = Math.floor(hoursAgo(lookbackHours).getTime() / 1000)
+  // One clock reading for the pass, so the routine floor and the official reach agree on "now".
+  const nowMs = Date.now()
+  const nowUnix = Math.floor(nowMs / 1000)
+  const floorUnix = Math.floor(hoursAgo(lookbackHours, new Date(nowMs)).getTime() / 1000)
   /**
    * ── AND POSTS THE OFFICIAL API STORED ARE REACHED BACK FOR (review, 15 Oct 2026) ─────────
    *
@@ -236,8 +317,9 @@ export async function runDetection(
    * live pass — until=07:30:00.571Z against a cron at 07:30:00.000Z. If the gate reopens
    * within two minutes, wait for it; two minutes of patience against fifteen of blindness.
    */
+  // A backfill reads only through the official API, so the anonymous cooldown is not worth waiting for.
   const early = anonGateCheck()
-  if (!early.ok) {
+  if (!early.ok && backfillHours === undefined) {
     const waitMs = early.until.getTime() - Date.now()
     if (waitMs > 0 && waitMs <= GATE_REOPEN_WAIT_MAX_MS) {
       log.step('the anonymous-read cooldown ends shortly — waiting for it before reading', { waitSeconds: Math.ceil(waitMs / 1000) })
@@ -255,8 +337,25 @@ export async function runDetection(
    */
   const allowGraph = role === 'primary'
   const officialOn = allowGraph && graphConfigured()
-  const graphBudget: GraphBudget = { remaining: GRAPH_MAX_CALLS_PER_PASS, used: 0, dropped: 0 }
+  // A backfill run has its own cap — one hour of Meta's documented budget (officialReach.ts).
+  const callCap = backfillHours !== undefined ? GRAPH_BACKFILL_CALL_CAP : GRAPH_MAX_CALLS_PER_PASS
+  const graphBudget: GraphBudget = { remaining: callCap, used: 0, dropped: 0 }
   const servedBy: Record<FeedSourceName, number> = { anonymous: 0, graph: 0 }
+  /**
+   * A BACKFILL ASKS THE OFFICIAL API ONLY (review, 16 Oct 2026). Trying the anonymous feed first
+   * meant a backfill worked only while that feed was refused: the day it answers again, it would
+   * serve every channel its routine 48 posts, nothing would be backfilled, and the dry run (which
+   * reads through Business Discovery directly) would have predicted a run that never happens. The
+   * anonymous door is not deepened by this — it is not asked at all, so no anonymous request is
+   * spent; the worker's own passes read it as before. `officialOn` is true here by the check above.
+   */
+  const officialOnly = backfillHours !== undefined
+  /** Record why the official read cannot serve a channel, with WHICH pause when it is paused. */
+  const officialUnavailable = (outcome: ChannelOutcome, why: Exclude<OfficialReadAvailability, 'available'>): void => {
+    outcome.officialUnavailable = why
+    const cd = graphCooldown()
+    if (why === 'paused' && !cd.open) outcome.officialPausedBy = cd.kind
+  }
 
   let feedAliveStamped = false
   for (const target of ordered) {
@@ -275,7 +374,24 @@ export async function runDetection(
     }
 
     const gate = anonGateCheck()
-    if (!gate.ok) {
+    if (officialOnly) {
+      // The gate is the anonymous door's and this pass does not use it. What can stop a channel
+      // here is the official read itself — said as such, never as "Instagram is refusing anonymous
+      // reads", which would be the wrong door's story and the wrong remedy.
+      const official = officialReadAvailability({ allowGraph, graphBudget })
+      if (official !== 'available') {
+        if (official === 'cap-reached') graphBudget.dropped += 1
+        officialUnavailable(outcome, official)
+        outcome.error =
+          official === 'cap-reached'
+            ? `the official read's call cap (${callCap}) was spent before this channel — no request made`
+            : official === 'paused'
+              ? `the official read is paused on this host (${outcome.officialPausedBy ?? 'unknown'}) — no request made`
+              : 'the official read is not usable by this pass — no request made'
+        channels.push(outcome)
+        continue
+      }
+    } else if (!gate.ok) {
       throttledUntil = gate.until
       /**
        * A closed anonymous gate is no longer the end of the channel when the official read can
@@ -287,6 +403,7 @@ export async function runDetection(
       const official = officialOn ? officialReadAvailability({ allowGraph, graphBudget }) : 'off'
       if (official !== 'available') {
         if (official === 'cap-reached') graphBudget.dropped += 1
+        if (officialOn) officialUnavailable(outcome, official)
         // No request is made. Every remaining channel lands here until the cooldown ends.
         outcome.skipped = 'throttled'
         outcome.error = `throttled until ${gate.until.toISOString()}`
@@ -299,9 +416,22 @@ export async function runDetection(
       await new Promise((r) => setTimeout(r, spacingMs + Math.floor(Math.random() * spacingMs)))
     }
     try {
-      const sinceUnix = Math.max(floorUnix, (newestStored.get(target.id) ?? 0) - 60)
+      const newest = newestStored.get(target.id)
+      const sinceUnix = Math.max(floorUnix, (newest ?? 0) - 60)
       const incomplete = oldestIncomplete.get(target.id)
       const completeSinceUnix = incomplete !== undefined && incomplete - 60 < sinceUnix ? incomplete - 60 : undefined
+      /**
+       * ── AND A GAP IS READ BACK THROUGH THE OFFICIAL DOOR (16 Oct 2026, officialReach.ts) ─────
+       *
+       * `sinceUnix` stops at the newest stored post, and for a channel with nothing stored inside the
+       * lookback that is the lookback itself — so the first pass after a blind stretch read 6 hours
+       * of it, and every later pass stopped at what that one stored. The official read pages back
+       * through a channel's whole history, so for a REAL gap it reaches back to the newest stored
+       * post (at most the 36-hour catch-up) with a larger page bound; `ig:backfill` reaches back N
+       * hours on every channel. Official-only fields: the anonymous door's options below are the
+       * routine ones in every case, and with the fallback off nothing is added at all.
+       */
+      const reach = officialOn ? officialReachFor({ sinceUnix, floorUnix, newestStoredUnix: newest, nowUnix, backfillHours }) : null
       requestsMade += 1
       /**
        * WHICH DOOR (feedSource.ts). With the official read not configured — or on a Mac's
@@ -312,6 +442,8 @@ export async function runDetection(
         maxPosts: 48,
         sinceUnix,
         ...(completeSinceUnix !== undefined ? { completeSinceUnix } : {}),
+        ...(reach ?? {}),
+        ...(officialOnly ? { officialOnly: true } : {}),
         allowGraph,
         graphBudget,
       })
@@ -327,6 +459,53 @@ export async function runDetection(
           handle: target.handle,
           because: served.fallbackReason ?? 'unknown',
           posts: posts.length,
+          ...(reach ? { reachingBackTo: new Date(reach.officialSinceUnix * 1000).toISOString() } : {}),
+        })
+        if (reach) {
+          const result = officialShortfall(served, reach, graphBudget.remaining)
+          outcome.officialReach = { sinceUnix: reach.officialSinceUnix, ...result }
+        }
+      }
+      /**
+       * ── NO SILENT CAPS: A STRETCH THIS READ KNOWS IT LEFT UNREAD IS NAMED (review, 16 Oct 2026) ──
+       *
+       * What this channel is missing starts at the older of the deepened official floor and the start
+       * of a real gap. A read can stop before it in four ways — the call cap, the per-channel bound,
+       * the gap rule's own 36-hour clamp (a gap 50 hours old is read back 36), or the anonymous door's
+       * window when IT served a gapped channel (it is never deepened) — and every one leaves the OLDEST
+       * part, which no later pass can see once the newest posts are stored. `unreadStretch` is exact
+       * about it: a read that got past the gap's start, or read the whole feed, names nothing, so a
+       * dormant channel is not named every fifteen minutes. Only where the official read is configured
+       * (the remedy is `ig:backfill`, which needs it), and the remedy is the DRY RUN for this channel —
+       * it prints the line that stores, after a person has seen what it would read.
+       */
+      const gapStart = officialOn ? gapStartUnix(newest, floorUnix) : null
+      const wantedUnix =
+        served.source === 'graph' && reach ? Math.min(reach.officialSinceUnix, gapStart ?? Number.POSITIVE_INFINITY) : served.source === 'anonymous' ? gapStart : null
+      const stretch = wantedUnix !== null ? unreadStretch(served, wantedUnix) : null
+      if (wantedUnix !== null && stretch) {
+        const short = outcome.officialReach && !outcome.officialReach.reached ? outcome.officialReach.short : null
+        const because: UnreadBecause =
+          served.source === 'anonymous'
+            ? 'anonymous-window'
+            : short ?? (backfillHours !== undefined ? 'backfill-hours' : 'catch-up-clamp')
+        outcome.unreadStretch = { sinceUnix: wantedUnix, reachedBackTo: stretch.oldestUnix, because }
+        // How far back the official read was sent, in whole hours — the clamp it met, said as a number.
+        const readHours = reach ? Math.round((nowUnix - reach.officialSinceUnix) / 3600) : 0
+        const said: Record<UnreadBecause, string> = {
+          'call-cap': `the official read's call cap (${callCap}) was spent`,
+          'channel-bound': `the per-channel bound (${reach?.officialMaxPosts ?? 0} posts)`,
+          'catch-up-clamp': `the gap is older than the ${readHours} hours the automatic rule reads back (the ${DETECT_CATCHUP_LOOKBACK_HOURS}-hour catch-up, or the pass's own lookback)`,
+          'backfill-hours': `the gap is older than the ${readHours} hours this backfill read back`,
+          'anonymous-window': 'the anonymous feed served it, and its read is never deepened (a 48-post window)',
+        }
+        log.warn('part of what this channel is missing was not read — the oldest part of that stretch is unread', {
+          handle: target.handle,
+          missingSince: new Date(wantedUnix * 1000).toISOString(),
+          reachedBackTo: stretch.oldestUnix !== null ? new Date(stretch.oldestUnix * 1000).toISOString() : 'nothing',
+          because: said[because],
+          // As of the pass's clock: run later, add the hours since, or the oldest end stays unread.
+          remedy: `pnpm ig:backfill --hours ${hoursBackTo(wantedUnix, nowUnix)} --channel ${target.handle} (as of ${new Date(nowMs).toISOString()}; add the hours since)`,
         })
       }
       // THE PASS SAYS IT IS ALIVE ON ITS FIRST PAGE, NOT ONLY AT ITS END (8 Sept 2026). `detectFeedOkAt`
@@ -401,7 +580,18 @@ export async function runDetection(
           .map((p) => p.shortcode),
       )
 
-      const fresh = posts.filter((p) => !knownSet.has(p.shortcode) || rejudge.has(p.shortcode))
+      /**
+       * A BACKFILL STORES WHAT IT WAS ASKED FOR (review, 16 Oct 2026). Business Discovery returns its
+       * whole last page, so a read to `now - N h` also hands back up to a page of posts older than
+       * that — and each one stored is a frame read and two classifier calls on a 961 MB box. The dry
+       * run counts the window; the run stores the window, so the two agree. A routine read keeps every
+       * post it fetched, as always (older posts on its last page are mostly known anyway).
+       */
+      const backfillFloor = officialOnly && served.source === 'graph' && reach ? reach.officialSinceUnix : null
+      const beyondBackfill = (p: FeedPost) => backfillFloor !== null && Math.floor(p.postedAt.getTime() / 1000) < backfillFloor
+      const fresh = posts.filter((p) => (!knownSet.has(p.shortcode) || rejudge.has(p.shortcode)) && !beyondBackfill(p))
+      const beyond = posts.filter((p) => !knownSet.has(p.shortcode) && beyondBackfill(p)).length
+      if (beyond > 0) log.step('posts older than the backfill window were read on its last page and not stored', { handle: target.handle, posts: beyond })
       const detector = getDetector(target.detectorKey)
 
       /**
@@ -643,6 +833,8 @@ export async function runDetection(
          */
         const anonymous = err.anonymousError?.message ?? null
         outcome.error = anonymous ? `${anonymous}; then ${message}` : message
+        outcome.officialFailure = err.graphKind
+        if (err.graphKind === 'paused' || err.graphKind === 'cap-reached') officialUnavailable(outcome, err.graphKind)
         if (err.isParseFailure) {
           outcome.parseFailure = true
           log.alarm('the official API answered in a shape the reader does not expect', { handle: target.handle, message, anonymous })
@@ -660,6 +852,16 @@ export async function runDetection(
         throttledUntil = err.until
       } else {
         log.error('channel failed', { handle: target.handle, error: message })
+      }
+      /**
+       * An anonymous failure the official read could not catch — gate open, the feed refused, and the
+       * fallback was paused or its cap spent (feedSource.ts rethrows then). Say which, as the closed-
+       * gate branch above does, or the channel reads as a bare "throttled" and `ig:backfill` has
+       * nothing to name.
+       */
+      if (officialOn && !(err instanceof GraphFeedError)) {
+        const official = officialReadAvailability({ allowGraph, graphBudget })
+        if (official !== 'available') officialUnavailable(outcome, official)
       }
     } finally {
       // Never let one channel's vocabulary leak into the next channel's scoring.
@@ -680,15 +882,16 @@ export async function runDetection(
   }
 
   if (officialOn && (servedBy.graph > 0 || graphBudget.dropped > 0)) {
-    log.info('detection pass sources', { servedBy, officialCalls: graphBudget.used, officialCallCap: GRAPH_MAX_CALLS_PER_PASS })
+    log.info('detection pass sources', { servedBy, officialCalls: graphBudget.used, officialCallCap: callCap })
   }
   if (graphBudget.dropped > 0) {
     // NO SILENT CAPS: the channels the cap cost, by count, every pass it happens.
     log.warn('the official read call cap was reached this pass — some channels were not read through it', {
-      cap: GRAPH_MAX_CALLS_PER_PASS,
+      cap: callCap,
       channelsNotRead: graphBudget.dropped,
     })
   }
+  const officialCalls = officialOn ? { officialCalls: { used: graphBudget.used, cap: callCap, dropped: graphBudget.dropped } } : {}
 
   /**
    * RESOLVE THE BRANDS IN WHAT WE JUST CLASSIFIED — the step that makes brand discovery
@@ -735,6 +938,7 @@ export async function runDetection(
       hadError: channels.some((c) => c.error !== undefined),
       brandsResolved: { looked: 0, decided: 0, skippedUnsure: 0, haltedEarly: false, unreached: 0, backingOff: 0, awaitingRetry: 0 },
       servedBy,
+      ...officialCalls,
     }
   }
   const brandsResolved = await autoResolveBrands().catch((err): AutoResolveSummary => {
@@ -836,6 +1040,7 @@ export async function runDetection(
     hadError: channels.some((c) => c.error !== undefined),
     brandsResolved,
     servedBy,
+    ...officialCalls,
   }
 }
 

@@ -26,6 +26,9 @@
  *                                   closed gate must never be spent: every request into it only
  *                                   extends the cooldown (anonGate.ts).
  *
+ * And one row outside the table: `officialOnly` (`pnpm ig:backfill --run` only) asks the official
+ * API and never the anonymous feed, gate open or closed; unusable, it throws with no request made.
+ *
  * With the official read unusable the module is a pass-through, and `tests/feed-source.test.ts`
  * proves it byte for byte — same requests, same errors — because "dormant" is a claim about
  * behaviour, and only a test of behaviour can hold it.
@@ -63,6 +66,28 @@ export interface ChannelFeedOptions {
   maxPages?: number
   delayMs?: number
   /**
+   * OFFICIAL-ONLY — the mirror of `completeSinceUnix` (16 Oct 2026, officialReach.ts). How far back,
+   * and how deep, the OFFICIAL read reaches when that is further than the routine read: set by the
+   * pipeline for a channel with a real gap (nothing stored inside the lookback) and by
+   * `pnpm ig:backfill --run` for every channel. `viaGraph` uses each in place of `sinceUnix` /
+   * `maxPosts` / `maxPages`; `fetchFeed` never sees them — the anonymous door's throttle is what
+   * volume earned, and its 48-post window could not reach that far anyway. Absent (every channel
+   * without a gap, and every host without the fallback) means the routine values, byte for byte.
+   */
+  officialSinceUnix?: number
+  officialMaxPosts?: number
+  officialMaxPages?: number
+  /**
+   * OFFICIAL-ONLY READ: `pnpm ig:backfill --run` and nothing else (review, 16 Oct 2026). The
+   * official API is asked directly and the anonymous feed NOT AT ALL — so a channel the anonymous
+   * feed would answer is still backfilled (its 48-post window could never reach a blind stretch;
+   * Business Discovery can), the run reads through the same door as its dry run, and no anonymous
+   * request is spent from a gate that refuses on volume. When the official read is unusable it
+   * throws a `GraphFeedError` naming why and makes NO request of either door. Absent, or false,
+   * is the table at the top of this file, unchanged.
+   */
+  officialOnly?: boolean
+  /**
    * May THIS PASS use the official API? The pipeline sets it from `role === 'primary'`: the token
    * lives on the server only, and a Mac's failover pass must behave exactly as it always has.
    */
@@ -99,9 +124,10 @@ async function viaGraph(
 ): Promise<ChannelFeedResult> {
   try {
     const r = await fetchFeedViaGraph(handle, {
-      maxPosts: o.maxPosts,
-      sinceUnix: o.sinceUnix,
-      maxPages: o.maxPages,
+      // The official-only reach when the pipeline set one (a gap, or a backfill); otherwise exactly today's.
+      maxPosts: o.officialMaxPosts ?? o.maxPosts,
+      sinceUnix: o.officialSinceUnix ?? o.sinceUnix,
+      maxPages: o.officialMaxPages ?? o.maxPages,
       delayMs: o.delayMs,
       budget: o.graphBudget,
     })
@@ -127,6 +153,7 @@ export async function fetchChannelFeed(handle: string, opts: ChannelFeedOptions)
    * or not this pass's to use, it answers 'off' everywhere and every line below is `fetchFeed`
    * and its own answer. (`anonGateCheck` is a read with no side effect; `fetchFeed` asks it too.)
    */
+  if (opts.officialOnly) return officialOnlyRead(handle, opts)
   const gate = anonGateCheck()
   if (!gate.ok && canFallBack(opts)) {
     return viaGraph(handle, opts, `anonymous reads are paused on this host until ${gate.until.toISOString()} — no anonymous request made`, null)
@@ -146,6 +173,29 @@ export async function fetchChannelFeed(handle: string, opts: ChannelFeedOptions)
     return viaGraph(handle, opts, 'the anonymous feed answered with no posts', null)
   }
   return { ...anon, source: 'anonymous', fallbackReason: null, anonymousError: null }
+}
+
+/**
+ * The backfill's read: the official API or nothing. `canFallBack` is the one availability check
+ * (it counts a channel the cap cost, as everywhere else); an unusable official read throws without
+ * a request of either door, carrying the reason, so the pipeline files it as the official read's
+ * failure and never as an anonymous one.
+ */
+async function officialOnlyRead(handle: string, opts: ChannelFeedOptions): Promise<ChannelFeedResult> {
+  const why = officialReadAvailability(opts)
+  if (canFallBack(opts)) return viaGraph(handle, opts, 'an official-only read (pnpm ig:backfill) — no anonymous request made', null)
+  const cd = graphCooldown()
+  const paused = why === 'paused' && !cd.open ? cd : null
+  throw new GraphFeedError(
+    handle,
+    why === 'off' ? 'not-configured' : why === 'cap-reached' ? 'cap-reached' : 'paused',
+    why === 'off'
+      ? 'this read is official-only and the official read is not usable by this pass — no request made'
+      : why === 'cap-reached'
+        ? "this pass's official call cap is spent — no request made"
+        : `paused on this host until ${paused?.until.toISOString() ?? 'unknown'} (${paused?.kind ?? 'unknown'}) — no request made`,
+    { isThrottle: paused?.kind === 'graph-rate-limit', until: paused?.until ?? null },
+  )
 }
 
 /**

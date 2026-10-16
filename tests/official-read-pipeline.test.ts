@@ -42,6 +42,10 @@ import { join } from 'node:path'
  *  10. (review) a pass whose every page was EMPTY does not stamp `detectFeedOkAt`. MUTATION (applied
  *      by hand, saw red, restored): reverting either the first-page stamp's `posts.length > 0` or
  *      `recordDetectionOutput`'s `pagesWithPosts` fails "an all-empty pass is not a read".
+ *  11. (16 Oct 2026, officialReach.ts) a channel with a REAL GAP — nothing stored inside the lookback —
+ *      is read back through the official API to the newest stored post, past the 6-hour floor, and
+ *      the post that ends the gap is stored. MUTATION (applied by hand, saw red, restored): never
+ *      passing the reach to fetchChannelFeed fails "a channel with a real gap is read back…".
  */
 
 const dir = mkdtempSync(join(tmpdir(), 'ds-official-read-'))
@@ -165,7 +169,8 @@ let anonQueue: Answer[] = []
 let anonByHandle: Record<string, Answer> | null = null
 /** When set, the anonymous feed answers per handle AND url — for pagination. */
 let anonFn: null | ((handle: string, url: string) => Answer) = null
-let graphAnswer: (handle: string) => Answer = () => ({ status: 500, body: '' })
+/** The official API's answer per handle; `url` is decoded, so a test can route on `media.after(<cursor>)`. */
+let graphAnswer: (handle: string, url: string) => Answer = () => ({ status: 500, body: '' })
 
 function graphPage(handle: string): Answer {
   return {
@@ -209,7 +214,7 @@ beforeEach(async () => {
     if (url.startsWith('https://graph.facebook.com/')) {
       const handle = decodeURIComponent(url).match(/business_discovery\.username\(([^)]+)\)/)![1]!
       calls.push({ host: 'graph', handle })
-      const a = graphAnswer(handle)
+      const a = graphAnswer(handle, decodeURIComponent(url))
       return { status: a.status, ok: a.status >= 200 && a.status < 300, contentType: 'application/json', text: async () => a.body, json: async () => JSON.parse(a.body) as unknown } satisfies IgResponse
     }
     const handle = url.match(/feed\/user\/([^/]+)\//)![1]!
@@ -278,6 +283,36 @@ describe('a pass the anonymous feed refuses', () => {
     expect(calls.map((c) => c.host)).toEqual(['anonymous'])
     expect(s.servedBy.graph).toBe(0)
   })
+
+  it('a channel with a real gap is read back through the official API past the lookback, and the post ending the gap is stored', async () => {
+    configure()
+    const nowS = Math.floor(Date.now() / 1000)
+    const iso = (unix: number) => new Date(unix * 1000).toISOString().replace('.000Z', '+0000')
+    // chan_a's newest stored post is 20 hours old: nothing inside the 6-hour lookback — a gap.
+    await prisma.detectedCampaign.create({
+      data: { targetId: 't_chan_a', shortcode: 'DcGapOld', permalink: 'https://www.instagram.com/p/DcGapOld/', postedAt: new Date((nowS - 20 * 3600) * 1000), caption: 'stored', verdict: 'ORGANIC' },
+    })
+    const item = (code: string, hoursAgo: number) => ({ id: code, caption: 'g', timestamp: iso(nowS - hoursAgo * 3600), permalink: `https://www.instagram.com/p/${code}/`, media_type: 'IMAGE' })
+    const bd = (handle: string, data: unknown[], after: string | null): Answer => ({
+      status: 200,
+      body: JSON.stringify({ business_discovery: { username: handle, media: { data, paging: { cursors: after ? { after } : {} } } } }),
+    })
+    graphAnswer = (handle, url) => {
+      if (handle === 'chan_b') return graphPage(handle)
+      // Page 1 already reaches past the 6-hour floor, so the routine read stops after it.
+      return url.includes('media.after(p2)') ? bd(handle, [item('DcGapEnd', 15)], null) : bd(handle, [item('DcGapNew', 1), item('DcGapMid', 8)], 'p2')
+    }
+    anonQueue = [{ status: 401, body: WALL }]
+    const s = await runDetection({ channelSpacingMs: 0 })
+
+    expect(calls.filter((c) => c.host === 'graph' && c.handle === 'chan_a')).toHaveLength(2)
+    expect(await row('DcGapEnd')).not.toBeNull()
+    const a = s.channels.find((c) => c.handle === 'chan_a')!
+    expect(a.servedBy).toBe('graph')
+    expect(a.officialReach).toEqual({ sinceUnix: nowS - 20 * 3600 - 60, reached: true })
+    // chan_b has nothing stored: no gap, today's read, nothing to report.
+    expect(s.channels.find((c) => c.handle === 'chan_b')!.officialReach).toBeUndefined()
+  }, 20_000) // the official read's real 2.5 s between pages
 
   it('a Graph rate limit is not the anonymous cooldown — detectThrottledUntil stays the anonymous gate’s', async () => {
     configure()
