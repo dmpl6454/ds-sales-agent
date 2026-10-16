@@ -71,6 +71,11 @@ export interface Reservation {
 export type ReserveResult =
   | { ok: true; reservation: Reservation | null }
   | { ok: false; reason: 'cap-reached'; used: number; limit: number }
+  /**
+   * `used` is BELOW `floor(limit)` here, always: a give-up whose final count reached the cap is
+   * `cap-reached` (see the end of `reserveDaily`). That is what lets the contended sentence say
+   * the cap is not reached.
+   */
   | { ok: false; reason: 'contended'; used: number; limit: number }
 
 /**
@@ -79,8 +84,12 @@ export type ReserveResult =
  * Losing means another claimer took the position we tried, which means it is sending — so
  * re-reading and trying the next free position is correct. Without releases each retry tries a
  * strictly HIGHER position (the set of held positions only grows), so a caller can lose at most
- * `limit` times before it reads the cap as reached; the bound matters for a limit above 12 or
- * releases interleaving, and hitting it is reported as `contended`, never as permission.
+ * floor(limit) times (the cap: positions run 1..cap), and its NEXT read sees the cap as reached —
+ * if it has a next read. With a cap of 12 or more it may not: a claimer that loses 12 times has
+ * spent every iteration before the 13th read (at exactly 12 too — the 12th loss is the last
+ * iteration, not the one before it). With releases interleaving, a claimer can lose 12 times at
+ * ANY limit. Either way the give-up path re-counts and reports a reached cap as `cap-reached`;
+ * only a count below the cap is `contended`, and neither is ever permission.
  */
 const MAX_CLAIM_ATTEMPTS = 12
 
@@ -130,15 +139,49 @@ export function lowestFreeSeq(heldSeqs: readonly number[], limit: number): numbe
  * A row outside 1..limit occupies no position, so the index alone would admit `limit` in-range
  * rows BESIDE it. Two real sources: rows written today under the old rule (cap 5: claim 1-4,
  * release 1, claim, claim → {2,3,4,5,6}, no race needed), and a limit lowered mid-day. There the
- * COUNT is what holds the cap, and it holds it under concurrency too, by this argument:
+ * COUNT is what holds the cap. What it guarantees under concurrency depends on whether every
+ * claimer in flight passed the SAME limit, so the two are stated separately — the first version
+ * of this docblock claimed the first for both.
  *
- *   - a claimer creates p only when `used < cap` and positions 1..p-1 are held in its view, so
- *     p ≤ (in-range rows it saw) + 1 ≤ cap − (out-of-range rows it saw);
- *   - out-of-range rows are never WRITTEN any more (every new seq is ≤ cap), so every read sees
- *     all of them that still exist — a stale read can miss a NEW in-range row, never an old one,
- *     and a since-released one only makes its bound tighter;
- *   - so every in-range position anyone creates is ≤ cap − (out-of-range rows now), the index
- *     makes them distinct, and the total cannot pass the cap.
+ * ONE LIMIT FOR EVERY CONCURRENT CLAIMER: no claim takes the total past floor(limit) = cap.
+ *
+ *   - Every new row sits at a position ≤ cap, so no claim writes a row outside 1..cap.
+ *   - Take the HIGHEST position q* any claim created. Its creator's snapshot held positions
+ *     1..q*-1 (that is why `lowestFreeSeq` chose q*) and fewer than cap rows in all (that is why
+ *     `used < cap` let it through). No claim created anything above q*, so every row now above q*
+ *     was there before the claims began and still exists — and so was in that snapshot too: a
+ *     stale read can miss a NEW row, never an old one.
+ *   - So the rows at or below q* number at most q*, the rows above it at most (snapshot − (q*−1)),
+ *     and the total is at most snapshot + 1 ≤ cap. The index makes the new positions distinct.
+ *
+ * A LIMIT CHANGED WHILE CLAIMS ARE IN FLIGHT: bounded by the LARGEST limit in play, not the new
+ * one. Claimer H reads limit 5, sees {1,2,3}, picks 4; a release frees 3; claimer B reads the
+ * lowered limit 3, sees {1,2}, picks 3; both create → 4 rows against a cap of 3, every one at a
+ * position ≤ 5 (`tests/reservation-no-overshoot.test.ts` → "a limit changed while claims are in
+ * flight" drives exactly this interleaving). The argument above still bounds the total by the cap
+ * of whoever created q* (here H's 5), so no claim takes the total past the largest limit any
+ * claimer in flight passed. A lowered limit binds every claim whose CALLER READ SETTINGS AFTER
+ * THE CHANGE — none is admitted while its own view shows the new cap reached. That is not every
+ * claim made after the change: the Send button (`sendNow`) reads settings inside the lock, so its
+ * claim carries the current limit, but a dispatch tick (`dispatchTick`) reads them once, before
+ * the lock, and hands that snapshot down — so the claims remaining in that tick carry the old
+ * limit until the tick ends. A post-create recount is deliberately NOT added: it would close only
+ * one ordering (B creating and recounting before H creates leaves H's recount, under its own
+ * limit of 5, keeping its row), so it would read as a fix and be half of one.
+ *
+ * IN PRODUCTION CLAIMS DO NOT OVERLAP. `claimForAttempt` has one caller, `deliverOne`, and both of
+ * its callers hold `withSendLock` — the fleet-wide lock, a row in the shared database — for the
+ * whole call: `dispatchTick`'s withSendLock(`dispatch:…`) → `deliverWaiting` → `deliverOne`, and
+ * `sendNow`'s withSendLock(`operator:…`) → `deliverOne`. The lock is held twice only through its
+ * own takeover of a holder it judges gone. `decideSendLock` takes the lock over in exactly these
+ * cases: the row is unreadable; the row names THIS process's own pid (a row left behind, by this
+ * process or by a dead one whose pid it now has — `withSendLock` refuses to nest, so never a live
+ * hold of its own); the row names this Mac and its pid is dead, or it was written before this Mac
+ * last booted (`writtenBeforeBoot`, whatever the pid now answers); or the row names another Mac
+ * (or no Mac at all — an agent older than the field) and the lock is stale AND that Mac has
+ * stopped beating. So everything above about concurrent claimers is defence in
+ * depth: it is what holds if one of those judgements is wrong or a future caller claims outside
+ * the lock, not what keeps today's claims apart.
  *
  * On deploy day the guarantee therefore rests on the count AND the position together, and the
  * count must not be read as redundant just because, in steady state, it is.
@@ -222,7 +265,22 @@ export async function reserveDaily(args: {
     }
   }
 
+  /**
+   * ── OUT OF ATTEMPTS IS NOT THE SAME AS CONTENDED (2026-10-16, review of 01576f4) ──
+   *
+   * Losing every race usually means the cap FILLED while we tried. Limit 12, thirteen claimers
+   * at once (`Promise.all` on SQLite moves them in lockstep: round k reads k-1 rows, one wins):
+   * the losers spend all twelve iterations with twelve rows held and never reach the read that
+   * would have said so. This used to return `contended` from there regardless, and the hold read
+   * "12 of 12 used, so the cap is NOT reached" — a false sentence about the one ceiling a person
+   * must be able to trust, and the opposite of what the draft is waiting for.
+   *
+   * So the final count is measured against the SAME `cap` the loop uses: at or past it is a
+   * reached cap; only a count BELOW it is contention. `tests/reservation-no-overshoot.test.ts` →
+   * "out of attempts with the cap full" goes red without this line.
+   */
   const used = await prisma.dailyReservation.count({ where: { day, scope, subjectId } })
+  if (used >= cap) return { ok: false, reason: 'cap-reached', used, limit }
   log.warn('gave up claiming a daily reservation under contention', {
     scope,
     subjectId,
@@ -338,19 +396,31 @@ export type ClaimResult =
  * The sentence for a claim that lost every race. It names the ROOM that was left, because the
  * whole difference from a reached cap is that there was some: nothing was sent, and the draft
  * waits for the next tick.
+ *
+ * "NOT reached" is said only when the numbers in the same sentence show it. From `reserveDaily`
+ * that is always — a `contended` result carries a count below `floor(limit)` by construction —
+ * but the sentence is the one place a person reads the claim, and it once printed "12 of 12 used,
+ * so the cap is NOT reached" (the give-up path did not re-ask the cap). So it asks again here.
+ *
+ * What this guard covers is the SENTENCE, and only that: it keeps the detail's words consistent
+ * with the count printed beside them. It does not reach the `contended` flag `claimForAttempt`
+ * returns, nor `deliverOne`'s "the cap is not reached" log line, which reads that flag and not this
+ * sentence. Those are honest because of the `ReserveResult` invariant — `used < floor(limit)` for
+ * every `contended` result, which `reserveDaily`'s give-up recount enforces — and a builder that
+ * broke it would get a truthful detail beside an untruthful flag.
+ * Exported for that test alone; nothing outside this module builds a detail.
  */
-function contendedDetail(where: string, r: { used: number; limit: number }): string {
-  return (
-    `${CLAIM_CONTENDED_PREFIX} too many sends are being claimed ${where} at once (${r.used} of ${r.limit} used, ` +
-    `so the cap is NOT reached) — nothing was sent; deferring`
-  )
+export function contendedDetail(where: string, r: { used: number; limit: number }): string {
+  const roomLeft = r.used < Math.floor(r.limit)
+  const state = roomLeft ? `${r.used} of ${r.limit} used, so the cap is NOT reached` : `${r.used} of ${r.limit} used`
+  return `${CLAIM_CONTENDED_PREFIX} too many sends are being claimed ${where} at once (${state}) — nothing was sent; deferring`
 }
 
 /**
  * Claim the recipient's AND the sender's daily allowance for one attempt, or neither.
  *
- * ONE function, called by `deliverWaiting` and by `sendNow`. Those two drifted once
- * before — the button silently lacked five of the eight checks the slot ran, including
+ * ONE function, called, through `deliverOne`, by `deliverWaiting` and by `sendNow`. Those two
+ * drifted once before — the button silently lacked five of the eight checks the slot ran, including
  * *they replied* — and the fix was `gate.ts`. This is the same lesson applied to the
  * thing `gate.ts` cannot do: the gate DECIDES, this one CLAIMS, and a decision without
  * an atomic claim is what lets two runs both pass it.

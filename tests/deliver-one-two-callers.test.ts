@@ -662,6 +662,92 @@ describe('everything mode-dependent comes from mode alone', () => {
   })
 })
 
+describe('a refused allowance claim: a fleet refusal ends the tick and its log line says which kind', () => {
+  /**
+   * `claimForAttempt` reports a CONTENDED claim (every race lost, the cap NOT reached) under the
+   * same bucket reason as a reached cap, so `deliverOne`'s routing does not move: a fleet bucket
+   * stops the tick either way, a pair bucket holds one draft. What separates the two is the log
+   * line — and until these cases nothing pinned it, so a contended fleet claim could have gone on
+   * logging "fleet pacing reached" (the cap's sentence over a cap with room) and every test passed.
+   *
+   * MUTATIONS, each applied by hand once to `src/outreach/deliverOne.ts`, seen red, restored:
+   *   - the log's `claim.contended ? 'fleet claim contended …' : 'fleet pacing reached …'` replaced
+   *     by its second arm alone → the three `contended: true` cases go red (both unattended buckets
+   *     and the Send button's);
+   *   - replaced by its first arm alone → the two `contended: false` cases go red;
+   *   - routing a fleet refusal through `held(...)` instead of `stop('fleet-pace', ...)` → all five
+   *     fleet cases go red (`kind` is `held`), and the pair control stays green;
+   *   - making the SENDING → READY put-back fleet-only (wrapped in `if (claim.reason ===
+   *     'fleet-hourly-pace' || claim.reason === 'fleet-daily-cap')`, so a pair refusal leaves the
+   *     row SENDING) → the pair control goes red, and the four unattended fleet cases stay green.
+   */
+  const CONTENDED_LINE = 'fleet claim contended — the cap is not reached; the rest wait for the next tick'
+  const REACHED_LINE = 'fleet pacing reached — the rest wait for the next tick'
+  const stepLines = async () => {
+    const { log } = await import('@/lib/logger')
+    return vi.mocked(log.step).mock.calls.map((c) => c[0] as string)
+  }
+  const clearSteps = async () => {
+    const { log } = await import('@/lib/logger')
+    vi.mocked(log.step).mockClear()
+  }
+
+  it.each([
+    ['fleet-daily-cap', true],
+    ['fleet-hourly-pace', true],
+    ['fleet-daily-cap', false],
+    ['fleet-hourly-pace', false],
+  ] as const)('%s, contended %s: stop-tick on fleet-pace, the row put back, and the right line', async (reason, contended) => {
+    const detail = contended ? 'contended: too many sends are being claimed at once' : 'the fleet has already sent 9 message(s) today (limit 9)'
+    claimForAttempt.mockResolvedValue({ ok: false, reason, contended, detail })
+    await clearSteps()
+
+    const r = await run(UNATTENDED)
+
+    // Both kinds stop the tick: the next draft would meet the same bucket.
+    expect(r).toMatchObject({ kind: 'stop-tick', why: 'fleet-pace', detail })
+    expect(send).not.toHaveBeenCalled()
+    expect(tape).not.toContain('probe')
+    // The claim's READY → SENDING is undone, conditionally, because nothing was sent.
+    expect(attemptUpdateMany.mock.calls.map((c) => c[0])).toContainEqual({ where: { id: 'att_1', status: 'SENDING' }, data: { status: 'READY' } })
+
+    const lines = await stepLines()
+    expect(lines).toContain(contended ? CONTENDED_LINE : REACHED_LINE)
+    expect(lines, 'the other kind\'s sentence was logged').not.toContain(contended ? REACHED_LINE : CONTENDED_LINE)
+    const { log } = await import('@/lib/logger')
+    const call = vi.mocked(log.step).mock.calls.find((c) => c[0] === (contended ? CONTENDED_LINE : REACHED_LINE))!
+    expect(call[1]).toEqual({ reason, contended })
+  })
+
+  it('the Send button meets the same branch: a contended fleet day claim stops with the contended line', async () => {
+    claimForAttempt.mockResolvedValue({ ok: false, reason: 'fleet-daily-cap', contended: true, detail: 'contended: x' })
+    await clearSteps()
+    const r = await run(ATTENDED)
+    expect(r).toMatchObject({ kind: 'stop-tick', why: 'fleet-pace', detail: 'contended: x', drives: 0 })
+    expect(await stepLines()).toContain(CONTENDED_LINE)
+  })
+
+  it('control: a PAIR refusal, contended or not, holds this one draft, puts the row back, and logs neither fleet line', async () => {
+    for (const contended of [true, false]) {
+      claimForAttempt.mockResolvedValue({ ok: false, reason: 'pair-daily-cap', contended, detail: 'pair detail' })
+      await clearSteps()
+      // Per iteration, so the first pass's put-back cannot satisfy the second pass's assertion.
+      attemptUpdateMany.mockClear()
+      const r = await run(UNATTENDED)
+      expect(r).toMatchObject({ kind: 'held', reason: 'pair-daily-cap', detail: 'pair detail' })
+      // Nothing was sent, so the claim's READY → SENDING is undone, conditionally — a held draft
+      // left SENDING would be parked by the orphan sweep as possibly delivered, holding the pair.
+      expect(attemptUpdateMany.mock.calls.map((c) => c[0])).toContainEqual({
+        where: { id: 'att_1', status: 'SENDING' },
+        data: { status: 'READY' },
+      })
+      const lines = await stepLines()
+      expect(lines).not.toContain(CONTENDED_LINE)
+      expect(lines).not.toContain(REACHED_LINE)
+    }
+  })
+})
+
 describe('the drives it reports', () => {
   it('a send alone is one drive; a read that opened Chrome plus a send is two', async () => {
     ensureConversationChecked.mockResolvedValue({ ok: true, reason: 'fresh' })
