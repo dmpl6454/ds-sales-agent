@@ -338,6 +338,28 @@ describe('fetchFeed records what it was answered', () => {
     expect((await stored()).last).toMatchObject({ kind: 'throttle', status: 429, head: null })
   })
 
+  /**
+   * A 429 WHOSE BODY WAS CUT OFF IS A THROTTLE, NOT "NO ANSWER" (16 Oct 2026, igHttp.ts `cutAnswer`):
+   * it used to be retried three more times into the throttle that had just spoken. MUTATION (applied
+   * once, seen red, restored): deleting the `cutAnswer` branch in fetchPageWithRetry fails this case.
+   */
+  it('a 429 whose body was cut off is the throttle it was — one request, not four', async () => {
+    const cut = vi.fn(async (): Promise<IgResponse> => {
+      throw Object.assign(new Error('aborted'), { answerStatus: 429 })
+    })
+    setIgTransportForTests(cut as unknown as Parameters<typeof setIgTransportForTests>[0])
+    // Fake timers, so the broken shape (four tries with backoff) fails on the COUNT, not on a test timeout.
+    vi.useFakeTimers({ toFake: ['setTimeout'] })
+    const pending = fetchFeed('viralbhayani', { maxPages: 1 }).catch((e: unknown) => e)
+    await vi.advanceTimersByTimeAsync(10_000)
+    vi.useRealTimers()
+    const err = (await pending) as InstanceType<typeof FeedFetchError>
+    expect(cut).toHaveBeenCalledTimes(1)
+    expect(err.isThrottle).toBe(true)
+    expect(err.isTransport).toBe(false)
+    expect((await stored()).last).toMatchObject({ kind: 'throttle', status: 429 })
+  })
+
   it('a transport failure after every retry is on record with the error, redacted', async () => {
     const boom = vi.fn(async (): Promise<IgResponse> => {
       throw new Error('getaddrinfo ENOTFOUND i.instagram.com access_token=EAAsecret123')

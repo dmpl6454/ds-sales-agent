@@ -1,4 +1,4 @@
-import { igGet, type IgResponse } from './igHttp'
+import { cutAnswer, igGet, type IgResponse } from './igHttp'
 import { anonGateCheck, anonGateHost, anonGateRecordSuccess, anonGateRecordThrottle } from './anonGate'
 import { classifyFeedAnswer, evidenceHead, isRefusalKind, recordFeedAnswer, type FeedAnswer } from './feedEvidence'
 import { z } from 'zod'
@@ -370,7 +370,15 @@ async function fetchPageWithRetry(url: string, handle: string): Promise<IgRespon
     try {
       // A timeout surfaces here as a thrown AbortError, i.e. exactly like any other
       // transport failure, so it is retried the same way and bounded the same way.
-      const res = await igGet(url, { headers: HEADERS, timeoutMs: REQUEST_TIMEOUT_MS })
+      let res: IgResponse
+      try {
+        res = await igGet(url, { headers: HEADERS, timeoutMs: REQUEST_TIMEOUT_MS })
+      } catch (err) {
+        // A status arrived and the body did not (igHttp.ts, `cutAnswer`): judged below as the answer it was.
+        const cut = cutAnswer(err, err instanceof Error ? err.message : String(err))
+        if (!cut) throw err
+        res = cut
+      }
 
       // 429 and 4xx are answers, not failures. Hand them straight back — the caller
       // distinguishes them, and hammering either one makes the situation worse.

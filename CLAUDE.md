@@ -93,7 +93,10 @@ thrown page discards the channel's pages already read. It now has its own **30 s
 TRANSPORT failure (never an answer — a 4xx, 5xx, error envelope or rate limit is Meta speaking) is tried
 **once** more on the same page after the page spacing, charged to the call budget and never made past it,
 nor into a rate-limit pause another read set meanwhile — and never by `ig:probe --graph`, which announces
-one official request and makes one (`transportRetries: 0`). The cost, stated: a dead network now costs ~62 s a channel here against 12 s — about what the anonymous
+one official request and makes one (`transportRetries: 0`). **And a status that arrived is an answer even
+when its body did not** (igHttp.ts `cutAnswer`): a reset mid-body used to reject exactly like "no answer",
+so a cut-off 429 was retried into the throttle — three more times by the anonymous feed. The rejection now
+carries the status, and both doors judge a non-2xx one as the answer it was. The cost, stated: a dead network now costs ~62 s a channel here against 12 s — about what the anonymous
 door already spends (~54 s) — and with the anonymous gate closed and in every backfill this read goes
 first, so a blackholed pass runs ~18 minutes and the next 15-minute pass is skipped (no-overlap), not stacked.
 

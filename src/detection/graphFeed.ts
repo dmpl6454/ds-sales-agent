@@ -67,7 +67,7 @@
  * minutes, IN PROCESS — a restart forgets it and spends one call to learn it again, which is the
  * whole cost (the anonymous gate persists because forgetting it meant hammering; here it does not).
  */
-import { igGet } from './igHttp'
+import { cutAnswer, igGet } from './igHttp'
 import { FeedFetchError, type FeedPost, type FetchFeedResult } from './feed'
 import { anonGateHost } from './anonGate'
 import { evidenceHead, recordFeedAnswer, type FeedAnswer, type FeedAnswerKind } from './feedEvidence'
@@ -475,7 +475,10 @@ export interface GraphBudget {
  * `maxPages`, a page older than `sinceUnix`, the last cursor, or the call budget.
  *
  * Throws a `GraphFeedError` on every failure, records a `source: 'graph'` FeedAnswer on every
- * exit (the first page's ok or empty, every failure), and returns posts flagged INCOMPLETE.
+ * exit (the first page's ok or empty, every failure), and returns posts flagged INCOMPLETE —
+ * except a refusal by this host's own state (not configured, paused — on entry, or before a retry
+ * when another read set the pause meanwhile), which records nothing: the pause's cause is already
+ * on record as the read that hit it, and is the truer sentence for the banner.
  */
 export async function fetchFeedViaGraph(
   handle: string,
@@ -551,12 +554,22 @@ export async function fetchFeedViaGraph(
         break
       } catch (err) {
         const why = scrub(describe(err), cfg.token) ?? 'no answer at all'
+        // Meta answered a status and the body was lost (igHttp.ts): an ANSWER, judged below, never re-asked.
+        const cut = cutAnswer(err, why)
+        if (cut) {
+          res = cut
+          break
+        }
         // ONE more try of this page (GRAPH_REQUEST_TIMEOUT_MS), charged like any call, never past the budget.
         if (attempt < retries && !(opts.budget && opts.budget.remaining <= 0)) {
-          log.warn('the official API did not answer — trying the same page once more', { handle, page: pages + 1, why })
           await new Promise((r) => setTimeout(r, delayMs))
-          // A rate limit another read hit while this one waited is not spent into (review, 16 Oct).
+          // A rate limit another read hit while this one waited is not spent into (review, 16 Oct), and the
+          // log says so — the retry it would otherwise announce is not made.
+          if (!graphCooldown().open) {
+            log.warn('the official API did not answer, and the retry of this page was not made — the official read was paused meanwhile', { handle, page: pages + 1, why })
+          }
           refuseIfPaused('the retry of this page was not made')
+          log.warn('the official API did not answer — trying the same page once more', { handle, page: pages + 1, why })
           if (opts.budget) {
             opts.budget.remaining -= 1
             opts.budget.used += 1

@@ -450,6 +450,58 @@ describe('fetchFeedViaGraph', () => {
     expect(budget).toEqual({ remaining: 59, used: 1, dropped: 0 })
   })
 
+  it('a pause set DURING the wait before the retry is not spent into, and the log says the retry was not made', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout'] })
+    try {
+      setIgTransportForTests(async (url, init) => {
+        calls.push({ url, headers: { ...init.headers }, timeoutMs: init.timeoutMs })
+        if (decodeURIComponent(url).includes('business_discovery.username(otherpage)')) {
+          return json(400, { error: { code: 4, message: 'Application request limit reached', type: 'OAuthException' } })
+        }
+        throw new Error('timed out after 30000 ms')
+      })
+      const budget = { remaining: 60, used: 0, dropped: 0 }
+      const read = g.fetchFeedViaGraph('viralbhayani', { delayMs: 1000, budget }).catch((e: unknown) => e)
+      await vi.advanceTimersByTimeAsync(500)
+      // Halfway through the wait, another read in this process is rate-limited.
+      await g.fetchFeedViaGraph('otherpage', { delayMs: 0 }).catch(() => undefined)
+      await vi.advanceTimersByTimeAsync(500)
+      const err = (await read) as InstanceType<typeof g.GraphFeedError>
+      expect(calls.filter((c) => decodeURIComponent(c.url).includes('business_discovery.username(viralbhayani)'))).toHaveLength(1)
+      expect(err.graphKind).toBe('paused')
+      expect(budget).toEqual({ remaining: 59, used: 1, dropped: 0 })
+      const said = out.join('\n')
+      expect(said).toMatch(/the retry of this page was not made — the official read was paused meanwhile/)
+      expect(said).not.toMatch(/trying the same page once more/)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  /**
+   * A STATUS THAT ARRIVED IS AN ANSWER EVEN WHEN ITS BODY DID NOT (igHttp.ts `cutAnswer`). MUTATION
+   * (applied once, seen red, restored): deleting the `cutAnswer` branch fails both cases — the 400 is
+   * retried as a transport failure, and the cut 429 neither pauses the path nor stops the retry.
+   */
+  it('a refusal whose body was cut off is filed as the answer it was, never retried', async () => {
+    script(Object.assign(new Error('aborted'), { answerStatus: 400 }), json(200, docAnswer({ after: null })))
+    const err = (await g.fetchFeedViaGraph('viralbhayani', { delayMs: 0 }).catch((e: unknown) => e)) as InstanceType<typeof g.GraphFeedError>
+    expect(calls).toHaveLength(1)
+    expect(err.isTransport).toBe(false)
+    expect(err.graphKind).toBe('graph-error')
+    const rec = fe.parseFeedAnswerRecord(await evidenceRow())!
+    expect(rec.last).toMatchObject({ source: 'graph', kind: 'graph-error', status: 400 })
+    expect(rec.last.head).toMatch(/the answer's body was cut off \(aborted\)/)
+  })
+
+  it('a cut-off 429 pauses the path like any rate limit — it is not spent into again', async () => {
+    script(Object.assign(new Error('socket hang up'), { answerStatus: 429 }), json(200, docAnswer({ after: null })))
+    const err = (await g.fetchFeedViaGraph('viralbhayani', { delayMs: 0 }).catch((e: unknown) => e)) as InstanceType<typeof g.GraphFeedError>
+    expect(calls).toHaveLength(1)
+    expect(err.graphKind).toBe('graph-rate-limit')
+    expect(g.graphCooldown()).toMatchObject({ open: false, kind: 'graph-rate-limit' })
+  })
+
   it('a page that times out twice fails the channel as a transport failure, recorded', async () => {
     script(new Error('timed out after 30000 ms'), new Error('socket hang up'))
     const err = (await g.fetchFeedViaGraph('viralbhayani', { delayMs: 0 }).catch((e: unknown) => e)) as InstanceType<typeof g.GraphFeedError>
