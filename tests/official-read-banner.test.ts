@@ -157,6 +157,13 @@ describe('describeDetectionOutage — when the newest failure is the official AP
     expect(blind(f)).toMatch(/^The official API cannot read @someperson: it is not a Business or Creator account, or no such username exists/)
   })
 
+  it("a refusal whose body was cut off says so, and never quotes our own note as Meta's words (cutOff.ts)", () => {
+    const f = answer({ at: minsAgo(8), source: 'graph', kind: 'graph-rate-limit', status: 400, head: "the answer's body was cut off (aborted)", until: new Date(NOW + 22 * 60_000).toISOString() })
+    const s = blind(f)
+    expect(s).toMatch(/^The official API asked the server to slow down \(HTTP 400; its body was cut off\)/)
+    expect(s).not.toMatch(/"the answer's body/)
+  })
+
   it('no Graph failure is ever phrased as the anonymous feed "answering differently"', () => {
     for (const kind of ['graph-error', 'transport', 'shape', 'empty', 'not-json'] as const) {
       const s = blind(answer({ at: minsAgo(8), source: 'graph', kind, status: kind === 'transport' ? null : 400, head: 'x' }))

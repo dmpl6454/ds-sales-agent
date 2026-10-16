@@ -244,6 +244,21 @@ describe('probeIdentities — one request each, spaced, and nothing recorded', (
     expect(anonGateSnapshot('profile').strikes).toBe(0)
   })
 
+  /**
+   * A STATUS THAT ARRIVED IS AN ANSWER, FOR THE PROBE TOO (feed.ts `anonymousCutAnswer`), so the probe
+   * says what the pass would file. MUTATION (applied once, seen red, restored): dropping the
+   * `anonymousCutAnswer` call in probeIdentities fails this case (the 429 prints as "no answer").
+   */
+  it('a cut-off answer is reported as the answer it was — and a cut 403 as no answer, like the pass', async () => {
+    const answers = [Object.assign(new Error('aborted'), { answerStatus: 429 }), Object.assign(new Error('aborted'), { answerStatus: 403 }), respond(200, PAGE)]
+    useTransport((_u, i) => answers[i]!)
+    const r = await p.probeIdentities(plan(), { sleep: noSleep })
+    expect(r[0]).toMatchObject({ kind: 'throttle', status: 429 })
+    expect(r[0]!.head).toMatch(/the answer's body was cut off \(aborted\)/)
+    expect(r[1]).toMatchObject({ kind: 'transport', status: null, head: 'aborted' })
+    expect(calls).toHaveLength(3)
+  })
+
   it('… and writes no evidence row, nor any Setting row at all', async () => {
     const answers = [respond(401, WALL), respond(200, HTML, 'text/html'), new Error('getaddrinfo ENOTFOUND www.instagram.com')]
     useTransport((_u, i) => answers[i]!)

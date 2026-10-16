@@ -476,9 +476,10 @@ export interface GraphBudget {
  *
  * Throws a `GraphFeedError` on every failure, records a `source: 'graph'` FeedAnswer on every
  * exit (the first page's ok or empty, every failure), and returns posts flagged INCOMPLETE —
- * except a refusal by this host's own state (not configured, paused — on entry, or before a retry
- * when another read set the pause meanwhile), which records nothing: the pause's cause is already
- * on record as the read that hit it, and is the truer sentence for the banner.
+ * except an exit that is not about an answer: a refusal by this host's own state (not configured,
+ * paused — on entry, or before a retry when another read set the pause meanwhile), whose cause is
+ * already on record as the read that hit it and is the truer sentence for the banner; and a handle
+ * or cursor no request could be built for (`invalid-handle`, no request made).
  */
 export async function fetchFeedViaGraph(
   handle: string,
@@ -514,15 +515,13 @@ export async function fetchFeedViaGraph(
 
   const retries = opts.transportRetries ?? GRAPH_TRANSPORT_RETRIES
   /** The path's pause, asked on entry and again before a retry: another read in this process may have set it meanwhile. */
-  const refuseIfPaused = (when: string): void => {
-    const cd = graphCooldown()
-    if (cd.open) return
-    throw new GraphFeedError(handle, 'paused', `paused on this host until ${cd.until.toISOString()} (${cd.kind}) — ${when}`, {
+  const pausedError = (cd: Extract<GraphCooldown, { open: false }>, when: string): GraphFeedError =>
+    new GraphFeedError(handle, 'paused', `paused on this host until ${cd.until.toISOString()} (${cd.kind}) — ${when}`, {
       isThrottle: cd.kind === 'graph-rate-limit',
       until: cd.until,
     })
-  }
-  refuseIfPaused('no request made')
+  const entry = graphCooldown()
+  if (!entry.open) throw pausedError(entry, 'no request made')
 
   const posts: FeedPost[] = []
   let after: string | null = null
@@ -565,10 +564,12 @@ export async function fetchFeedViaGraph(
           await new Promise((r) => setTimeout(r, delayMs))
           // A rate limit another read hit while this one waited is not spent into (review, 16 Oct), and the
           // log says so — the retry it would otherwise announce is not made.
-          if (!graphCooldown().open) {
+          // ONE read of the pause decides both the log line and the refusal, so they cannot disagree.
+          const cd = graphCooldown()
+          if (!cd.open) {
             log.warn('the official API did not answer, and the retry of this page was not made — the official read was paused meanwhile', { handle, page: pages + 1, why })
+            throw pausedError(cd, 'the retry of this page was not made')
           }
-          refuseIfPaused('the retry of this page was not made')
           log.warn('the official API did not answer — trying the same page once more', { handle, page: pages + 1, why })
           if (opts.budget) {
             opts.budget.remaining -= 1

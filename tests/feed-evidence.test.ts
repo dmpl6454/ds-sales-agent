@@ -360,6 +360,27 @@ describe('fetchFeed records what it was answered', () => {
     expect((await stored()).last).toMatchObject({ kind: 'throttle', status: 429 })
   })
 
+  /**
+   * …EXCEPT A 403, which this door judges by its BODY (anonGate.ts `isThrottleResponse`), and the body is
+   * what was lost: filed as an ordinary error, the page would say "this is not a rate limit" about a
+   * refusal nobody can rule out. It stays a transport failure and is asked again. MUTATION (applied
+   * once, seen red, restored): dropping `cut.status !== 403` from `anonymousCutAnswer` fails this case.
+   */
+  it('a 403 whose body was cut off is not judged without its body — it is asked again', async () => {
+    const cut = vi.fn(async (): Promise<IgResponse> => {
+      throw Object.assign(new Error('aborted'), { answerStatus: 403 })
+    })
+    setIgTransportForTests(cut as unknown as Parameters<typeof setIgTransportForTests>[0])
+    vi.useFakeTimers({ toFake: ['setTimeout'] })
+    const pending = fetchFeed('viralbhayani', { maxPages: 1 }).catch((e: unknown) => e)
+    await vi.advanceTimersByTimeAsync(10_000)
+    vi.useRealTimers()
+    const err = (await pending) as InstanceType<typeof FeedFetchError>
+    expect(cut).toHaveBeenCalledTimes(4)
+    expect(err.isTransport).toBe(true)
+    expect((await stored()).last).toMatchObject({ kind: 'transport', status: null })
+  })
+
   it('a transport failure after every retry is on record with the error, redacted', async () => {
     const boom = vi.fn(async (): Promise<IgResponse> => {
       throw new Error('getaddrinfo ENOTFOUND i.instagram.com access_token=EAAsecret123')
@@ -513,6 +534,11 @@ describe('describeDetectionOutage — the cause on record, as a table', () => {
       'the server throttled (401) — the cooldown time comes from the server\'s own row',
       passes([row('linode-detect', { kind: 'throttle', status: 401, head: WALL })], { throttledUntil: until }),
       `Instagram is refusing anonymous reads from the server (HTTP 401: "Please wait a few minutes before you try again.") — no paid posts found for 1348 min; it retries by itself at ${HHMM}.`,
+    ],
+    [
+      "a 429 whose body was cut off — our own note is never quoted as Instagram's words (cutOff.ts)",
+      passes([row('linode-detect', { kind: 'throttle', status: 429, head: "the answer's body was cut off (aborted)" })], { throttledUntil: until }),
+      `Instagram is refusing anonymous reads from the server (HTTP 429; its body was cut off) — no paid posts found for 1348 min; it retries by itself at ${HHMM}.`,
     ],
     [
       'the server and the Mac both refused',

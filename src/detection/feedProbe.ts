@@ -36,8 +36,8 @@
  * NOT MEASURED, stated: what Instagram answers today. The machine this was written on cannot
  * reach Instagram; every answer this module handles was driven through `setIgTransportForTests`.
  */
-import { igGet } from './igHttp'
-import { FEED_IDENTITY_PROBES, FEED_HEADERS, IG_APP_ID, REQUEST_TIMEOUT_MS, acceptedFeedItems, type FeedIdentityProbe } from './feed'
+import { igGet, type IgResponse } from './igHttp'
+import { FEED_IDENTITY_PROBES, FEED_HEADERS, IG_APP_ID, REQUEST_TIMEOUT_MS, acceptedFeedItems, anonymousCutAnswer, type FeedIdentityProbe } from './feed'
 import {
   FEED_ANSWER_KEY_PREFIX,
   classifyFeedAnswer,
@@ -224,8 +224,16 @@ export async function probeIdentities(
     const url = c.url(plan.handle)
     const base = { name: c.name, note: c.note, host: hostOf(url), isApp: c.headers['X-IG-App-ID'] === IG_APP_ID }
     let result: IdentityProbeResult
+    let res: IgResponse | null = null
+    let transportWhy = ''
     try {
-      const res = await igGet(url, { headers: { ...c.headers }, timeoutMs: REQUEST_TIMEOUT_MS })
+      res = await igGet(url, { headers: { ...c.headers }, timeoutMs: REQUEST_TIMEOUT_MS })
+    } catch (err) {
+      transportWhy = err instanceof Error ? err.message || err.name : String(err)
+      // A status that arrived is an answer, judged exactly as the pass judges it (feed.ts).
+      res = anonymousCutAnswer(err, transportWhy)
+    }
+    if (res) {
       const body = await res.text().catch(() => '')
       const contentType = res.contentType ?? null
       let json: unknown
@@ -241,8 +249,8 @@ export async function probeIdentities(
       const answer = classifyFeedAnswer({ status: res.status, contentType, body, parsedItems })
       const raw = jsonOk && json && typeof json === 'object' ? (json as Record<string, unknown>).items : undefined
       result = { ...base, status: res.status, contentType, kind: answer.kind, items: Array.isArray(raw) ? raw.length : null, head: answer.head }
-    } catch (err) {
-      result = { ...base, status: null, contentType: null, kind: 'transport', items: null, head: evidenceHead(err instanceof Error ? err.message || err.name : String(err)) }
+    } else {
+      result = { ...base, status: null, contentType: null, kind: 'transport', items: null, head: evidenceHead(transportWhy) }
     }
     results.push(result)
     deps.onResult?.(result, i)

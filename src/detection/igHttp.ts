@@ -24,6 +24,7 @@
  */
 import https from 'node:https'
 import http from 'node:http'
+import { CUT_OFF_MARKER } from './cutOff'
 
 export interface IgResponse {
   status: number
@@ -68,7 +69,7 @@ export function answerStatusOf(err: unknown): number | null {
 export function cutAnswer(err: unknown, why: string): IgResponse | null {
   const status = answerStatusOf(err)
   if (status === null || (status >= 200 && status < 300)) return null
-  const body = `the answer's body was cut off (${why})`
+  const body = `${CUT_OFF_MARKER} (${why})`
   return {
     status,
     ok: false,

@@ -350,6 +350,19 @@ const RETRY_BASE_MS = 800
  */
 export const REQUEST_TIMEOUT_MS = 12_000
 
+/**
+ * THE ANONYMOUS DOOR'S RULE FOR A CUT-OFF ANSWER (16 Oct 2026, igHttp.ts `cutAnswer`): the answer it
+ * was — EXCEPT a 403, which this door judges by its BODY (`isThrottleResponse`: a 403 is a refusal
+ * only when it carries the wall), and the body is exactly what was lost. Filing one as an ordinary
+ * error would put "this is not a rate limit, so waiting will not fix it" on the landing page about a
+ * refusal it cannot rule out; it stays a transport failure and is asked again, as before. Shared with
+ * `pnpm ig:probe` (feedProbe.ts), so the probe's kind is the pass's kind.
+ */
+export function anonymousCutAnswer(err: unknown, why: string): IgResponse | null {
+  const cut = cutAnswer(err, why)
+  return cut && cut.status !== 403 ? cut : null
+}
+
 /** Transport-level retry with exponential backoff. Never retries a 429 or a 4xx. */
 async function fetchPageWithRetry(url: string, handle: string): Promise<IgResponse> {
   let lastError: unknown
@@ -375,7 +388,7 @@ async function fetchPageWithRetry(url: string, handle: string): Promise<IgRespon
         res = await igGet(url, { headers: HEADERS, timeoutMs: REQUEST_TIMEOUT_MS })
       } catch (err) {
         // A status arrived and the body did not (igHttp.ts, `cutAnswer`): judged below as the answer it was.
-        const cut = cutAnswer(err, err instanceof Error ? err.message : String(err))
+        const cut = anonymousCutAnswer(err, err instanceof Error ? err.message : String(err))
         if (!cut) throw err
         res = cut
       }

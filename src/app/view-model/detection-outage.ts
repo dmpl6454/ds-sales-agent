@@ -32,6 +32,7 @@
 import type { PassHealth } from '@/worker/scheduler'
 import type { FeedAnswer, FeedAnswerRow } from '@/detection/feedEvidence'
 import { istDateKey, istDayMonth, istTimeKey } from '@/lib/time'
+import { isCutOffHead } from '@/detection/cutOff'
 
 export type OutagePasses = Pick<PassHealth, 'feedOkAt' | 'throttledUntil' | 'feedAnswers' | 'detectionHost'>
 
@@ -62,6 +63,8 @@ export function quoteOf(answer: Pick<FeedAnswer, 'head' | 'kind'>): string | nul
   // otherwise read as a JSON array below.
   const head = answer.head?.replace(/^\[@[^\]]+\]\s*/, '').trim()
   if (!head || answer.kind === 'not-json' || head.startsWith('<')) return null
+  // Our own note that the body was lost (cutOff.ts) is not the remote's words and is never quoted as them.
+  if (isCutOffHead(head)) return null
   const m = head.match(/"message"\s*:\s*"((?:[^"\\]|\\.)*)"/)
   let text = head
   if (m) {
@@ -140,7 +143,7 @@ function causeOf(f: FeedAnswer): string {
       // The status alone ("HTTP 200") reads as success; the wall is what made it a refusal.
       return `HTTP ${status}, the login wall${q ? `: "${q}"` : ''}`
     default:
-      return `HTTP ${status}${q ? `: "${q}"` : ''}`
+      return `HTTP ${status}${q ? `: "${q}"` : isCutOffHead(f.head) ? '; its body was cut off' : ''}`
   }
 }
 
@@ -230,7 +233,7 @@ const capitalised = (s: string): string => (s ? s[0]!.toUpperCase() + s.slice(1)
 /** "HTTP 400: "(#100) …"" — the status and Meta's own words, already redacted when recorded. */
 function officialCause(f: FeedAnswer): string {
   const q = quoteOf({ head: f.head, kind: 'graph-error' })
-  return `HTTP ${f.status ?? 0}${q ? `: "${q}"` : ''}`
+  return `HTTP ${f.status ?? 0}${q ? `: "${q}"` : isCutOffHead(f.head) ? '; its body was cut off' : ''}`
 }
 
 /**

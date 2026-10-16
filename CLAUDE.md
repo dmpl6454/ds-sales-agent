@@ -96,7 +96,10 @@ nor into a rate-limit pause another read set meanwhile — and never by `ig:prob
 one official request and makes one (`transportRetries: 0`). **And a status that arrived is an answer even
 when its body did not** (igHttp.ts `cutAnswer`): a reset mid-body used to reject exactly like "no answer",
 so a cut-off 429 was retried into the throttle — three more times by the anonymous feed. The rejection now
-carries the status, and both doors judge a non-2xx one as the answer it was. The cost, stated: a dead network now costs ~62 s a channel here against 12 s — about what the anonymous
+carries the status, and both doors (and `ig:probe`) judge a non-2xx one as the answer it was — except a
+403 on the anonymous door, which is judged by its BODY and stays a transport failure; the banner never
+quotes our own "cut off" note as the remote's words (`cutOff.ts`). The profile-endpoint callers
+(`enrichHandle`, `exists`, `resolveBrand`) still read a cut answer as no answer, as before. The cost, stated: a dead network now costs ~62 s a channel here against 12 s — about what the anonymous
 door already spends (~54 s) — and with the anonymous gate closed and in every backfill this read goes
 first, so a blackholed pass runs ~18 minutes and the next 15-minute pass is skipped (no-overlap), not stacked.
 
