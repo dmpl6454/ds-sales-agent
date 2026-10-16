@@ -51,22 +51,30 @@ function claim(day: string, scope: string, subjectId: string, limit: number): nu
   for (let i = 0; i < 12; i++) {
     /**
      * TWO DIFFERENT NUMBERS, mirroring `reserveDaily`. Conflating them was a real bug:
-     * `used` measures the CAP, `highest + 1` picks a free SEQ. With seq 1 released and
-     * seq 2 still held they diverge, and using `used + 1` for both retried an occupied
-     * seq until it gave up — reporting "contended" against a cap with a free slot.
+     * `used` measures the CAP, the lowest free POSITION in 1..limit is the seq. With seq 1
+     * released and seq 2 still held they diverge, and using `used + 1` for both retried an
+     * occupied seq until it gave up — reporting "contended" against a cap with a free slot.
+     *
+     * Since 2026-10-16 the seq may not exceed the limit. The `highest + 1 + i` walk that cured
+     * the livelock left gaps and stepped OVER the cap, so a claimer with a stale count could
+     * insert a distinct seq past it — the overshoot `tests/reservation-no-overshoot.test.ts`
+     * reproduces against the real client. With seq a position in 1..limit, at most `limit`
+     * distinct rows can exist and the unique index below is the cap.
      */
-    const used = (
+    const held = (
       db
-        .prepare('SELECT count(*) AS n FROM DailyReservation WHERE day=? AND scope=? AND subjectId=?')
-        .get(day, scope, subjectId) as { n: number }
-    ).n
-    const highest = (
-      db
-        .prepare('SELECT max(seq) AS m FROM DailyReservation WHERE day=? AND scope=? AND subjectId=?')
-        .get(day, scope, subjectId) as { m: number | null }
-    ).m
-    if (used >= limit) return null
-    const seq = (highest ?? 0) + 1 + i
+        .prepare('SELECT seq FROM DailyReservation WHERE day=? AND scope=? AND subjectId=?')
+        .all(day, scope, subjectId) as { seq: number }[]
+    ).map((r) => r.seq)
+    if (held.length >= limit) return null
+    let seq: number | null = null
+    for (let p = 1; p <= Math.floor(limit); p++) {
+      if (!held.includes(p)) {
+        seq = p
+        break
+      }
+    }
+    if (seq === null) return null
     try {
       db.prepare('INSERT INTO DailyReservation (id, day, scope, subjectId, seq) VALUES (?,?,?,?,?)').run(
         `r${Math.floor(Math.random() * 1e12)}_${i}`,
@@ -77,7 +85,7 @@ function claim(day: string, scope: string, subjectId: string, limit: number): nu
       )
       return seq
     } catch {
-      // Lost the race for this seq — the winner is sending. Walk past it.
+      // Lost the race for this position — the winner is sending. Re-read and take the next.
     }
   }
   return null
@@ -161,6 +169,11 @@ describe('releasing', () => {
    *
    * The unit test could not have found it on its own: this helper originally
    * reimplemented the same arithmetic, so it reproduced the bug faithfully.
+   *
+   * Since 2026-10-16 the released POSITION itself is taken back, first try. The previous
+   * assertion here was "a fresh seq, not the recycled 1" — the `highest + 1 + i` rule, which is
+   * the one that could step past the cap. The real-client version of this case lives in
+   * `tests/reservation-no-overshoot.test.ts`; this mirror only keeps the arithmetic honest.
    */
   it('reclaims a released slot when a LATER seq is still held', () => {
     expect(claim('2026-08-04', 'target', 'a', 2)).toBe(1)
@@ -170,8 +183,7 @@ describe('releasing', () => {
     release(1) // the gap: count is 1, highest seq is 2
 
     const again = claim('2026-08-04', 'target', 'a', 2)
-    expect(again).not.toBeNull()
-    expect(again).toBeGreaterThan(2) // a fresh seq, not the recycled 1
+    expect(again).toBe(1) // the released position, first try — never a seq past the cap
     expect(claim('2026-08-04', 'target', 'a', 2)).toBeNull() // and full again
   })
 })

@@ -565,7 +565,14 @@ export async function deliverOne(a: {
        * writes to reach the identical answer, and a log full of the same sentence.
        */
       if (claim.reason === 'fleet-hourly-pace' || claim.reason === 'fleet-daily-cap') {
-        log.step('fleet pacing reached — the rest wait for the next tick', { reason: claim.reason })
+        /* A CONTENDED fleet claim also ends the tick (the next draft would meet the same race),
+           but the line must not say the pace was reached when it was not (Stage 1.5). */
+        log.step(
+          claim.contended
+            ? 'fleet claim contended — the cap is not reached; the rest wait for the next tick'
+            : 'fleet pacing reached — the rest wait for the next tick',
+          { reason: claim.reason, contended: claim.contended },
+        )
         return stop('fleet-pace', claim.detail)
       }
       return held(claim.reason, claim.detail)

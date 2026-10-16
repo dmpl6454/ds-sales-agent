@@ -76,20 +76,88 @@ export type ReserveResult =
 /**
  * How many times we will lose the race before giving up.
  *
- * Losing means another process claimed the seq we tried, which means it is sending —
- * so the used count has genuinely moved and retrying with the next seq is correct. The
- * bound exists so an unlimited cap under heavy contention cannot spin forever; hitting
- * it is reported as `contended`, never as permission.
+ * Losing means another claimer took the position we tried, which means it is sending — so
+ * re-reading and trying the next free position is correct. Without releases each retry tries a
+ * strictly HIGHER position (the set of held positions only grows), so a caller can lose at most
+ * `limit` times before it reads the cap as reached; the bound matters for a limit above 12 or
+ * releases interleaving, and hitting it is reported as `contended`, never as permission.
  */
 const MAX_CLAIM_ATTEMPTS = 12
 
 /**
- * Claim the next free unit of today's allowance for one subject.
+ * The lowest POSITION in 1..limit nobody holds, or null when every position is taken.
+ *
+ * PURE, and the whole of the cap's arithmetic. A held seq above `floor(limit)` occupies no
+ * position — a row written before this rule (the old `highest + 1 + i` walk reached seq 15 for a
+ * cap of 5, measured), or under a higher limit earlier today — so it cannot block a slot; the
+ * COUNT still binds it, which is `reserveDaily`'s first check. A fractional limit is floored:
+ * 2.5 allows positions 1 and 2 and never a third.
+ */
+export function lowestFreeSeq(heldSeqs: readonly number[], limit: number): number | null {
+  const top = Math.floor(limit)
+  const held = new Set(heldSeqs)
+  for (let seq = 1; seq <= top; seq++) if (!held.has(seq)) return seq
+  return null
+}
+
+/**
+ * Claim one unit of today's allowance for one subject.
  *
  * `limit` may be `Infinity`, which is what an "unlimited" setting resolves to. In that
  * case there is no cap to enforce and no row is written — the caller gets
  * `{ ok: true, reservation: null }`. Writing a row nobody will ever read back would be
  * bookkeeping pretending to be a guard.
+ *
+ * ── A SEQ IS A POSITION IN 1..limit, AND THAT IS WHAT ENFORCES THE CAP (2026-10-16) ──
+ *
+ * The unique key is `(day, scope, subjectId, seq)`. It makes each SEQ unique and says nothing
+ * about how MANY rows exist. The previous version counted the held rows, compared with the
+ * limit, then created `seq = highest + 1 + i` — so two claimers holding the same stale count
+ * both passed `used >= limit` and inserted DIFFERENT seqs (the `+ i` walk guaranteed they
+ * differed), and the cap overshot by one per concurrent claimer. Reproduced deterministically
+ * in `tests/reservation-no-overshoot.test.ts`: one claimer whose read predates a concurrent
+ * claimer's create wrote a THIRD row against a cap of two. A daily cap is the one ceiling here
+ * nobody may cross, and a count-then-compare is passed by two callers at once — the shape this
+ * module's own docblock says it exists to remove, surviving inside it.
+ *
+ * Now a claimer may only create a seq in 1..floor(limit). While every held row sits in that
+ * range, at most `limit` distinct positions exist, so the unique index refuses the (limit+1)th
+ * row however stale anybody's read was: the read only CHOOSES which position to try, and
+ * `create` on the unique key is the test-and-set.
+ *
+ * ── ROWS OUTSIDE 1..limit, AND WHY THE COUNT IS LOAD-BEARING THERE ──────────
+ *
+ * A row outside 1..limit occupies no position, so the index alone would admit `limit` in-range
+ * rows BESIDE it. Two real sources: rows written today under the old rule (cap 5: claim 1-4,
+ * release 1, claim, claim → {2,3,4,5,6}, no race needed), and a limit lowered mid-day. There the
+ * COUNT is what holds the cap, and it holds it under concurrency too, by this argument:
+ *
+ *   - a claimer creates p only when `used < cap` and positions 1..p-1 are held in its view, so
+ *     p ≤ (in-range rows it saw) + 1 ≤ cap − (out-of-range rows it saw);
+ *   - out-of-range rows are never WRITTEN any more (every new seq is ≤ cap), so every read sees
+ *     all of them that still exist — a stale read can miss a NEW in-range row, never an old one,
+ *     and a since-released one only makes its bound tighter;
+ *   - so every in-range position anyone creates is ≤ cap − (out-of-range rows now), the index
+ *     makes them distinct, and the total cannot pass the cap.
+ *
+ * On deploy day the guarantee therefore rests on the count AND the position together, and the
+ * count must not be read as redundant just because, in steady state, it is.
+ * `tests/reservation-no-overshoot.test.ts` → "rows outside 1..limit" pins it sequentially,
+ * concurrently and with a stale read.
+ *
+ * ── THE RELEASED-SEQ CASE, AND WHY THE COUNT AND THE POSITION ARE STILL TWO NUMBERS ──
+ *
+ *   `used` — how many claims are held. Measured against the cap first, so a row outside
+ *            1..limit (written under the old rule, or a higher limit) still counts.
+ *   `seq`  — the lowest position nobody holds.
+ *
+ * The first version used `used + 1` for both. Release a reservation and they diverge: with
+ * seq 1 released and seq 2 still held, `used` is 1, so it retried seq 2 twelve times and
+ * reported "contended" against a cap with a free slot — caught by running it against the real
+ * database, not by the unit test, which had reimplemented the same arithmetic and so reproduced
+ * the bug faithfully. The `highest + 1 + i` fix that replaced it cured the livelock by leaving
+ * gaps and stepping OVER the cap, which is the overshoot above. The lowest free position cures
+ * both: seq 1 released, seq 2 held → position 1 is free → taken, first try.
  */
 export async function reserveDaily(args: {
   scope: ReservationScope
@@ -103,52 +171,65 @@ export async function reserveDaily(args: {
 
   // No ceiling means nothing to claim. Deliberate: see the docblock.
   if (!Number.isFinite(limit)) return { ok: true, reservation: null }
-  if (limit < 1) return { ok: false, reason: 'cap-reached', used: 0, limit }
+  /**
+   * The cap is a whole number of messages: what `lowestFreeSeq` floors, the count floors too.
+   * Settings are whole by construction (`readNumericSetting` refuses a fraction), so this only
+   * binds a direct caller — but the two checks must agree on what the cap IS, or a fractional
+   * limit with rows outside 1..limit admits floor(limit)+1: {4,7} against 2.5 has used 2 < 2.5
+   * and a free position 1.
+   */
+  const cap = Math.floor(limit)
+  if (cap < 1) return { ok: false, reason: 'cap-reached', used: 0, limit }
 
+  let lastError: unknown = null
   for (let i = 0; i < MAX_CLAIM_ATTEMPTS; i++) {
+    // ONE read: the held positions. Its length is the count; its contents choose the position.
+    const rows = await prisma.dailyReservation.findMany({ where: { day, scope, subjectId }, select: { seq: true } })
+    const used = rows.length
     /**
-     * TWO DIFFERENT NUMBERS, and conflating them was a real bug.
-     *
-     *   `used` — how many claims are held. This is what the CAP is measured against.
-     *   `next` — a seq nobody holds. This is only a uniqueness token.
-     *
-     * The first version used `used + 1` for both. Release a reservation and they
-     * diverge: with seq 1 released and seq 2 still held, `used` is 1, so it retried
-     * seq 2 twelve times and reported "contended" against a cap with a free slot. Caught
-     * by running it against the real database, not by the unit test — which had
-     * reimplemented the same arithmetic and so reproduced the bug faithfully.
-     *
-     * Gaps are fine. `seq` is never read as a position, only as something to collide on.
+     * LOAD-BEARING, NOT REDUNDANT — do not "simplify" it away because `lowestFreeSeq` also
+     * returns null at a full cap. That is only true while every held row sits in 1..cap. A row
+     * OUTSIDE 1..cap occupies no position, so the unique index alone would admit `cap` in-range
+     * rows BESIDE it, and this count is the only thing that refuses them. Such rows are not
+     * hypothetical: the old `highest + 1 + i` rule wrote them with no race at all (cap 5: claim
+     * 1-4, release 1, claim, claim → {2,3,4,5,6}), and lowering a limit mid-day strands them.
+     * Delete this line and `tests/reservation-no-overshoot.test.ts` → "rows outside 1..limit"
+     * writes a 6th row against a cap of 5.
      */
-    const [used, highest] = await Promise.all([
-      prisma.dailyReservation.count({ where: { day, scope, subjectId } }),
-      prisma.dailyReservation.findFirst({
-        where: { day, scope, subjectId },
-        orderBy: { seq: 'desc' },
-        select: { seq: true },
-      }),
-    ])
-    if (used >= limit) return { ok: false, reason: 'cap-reached', used, limit }
+    if (used >= cap) return { ok: false, reason: 'cap-reached', used, limit }
+    const seq = lowestFreeSeq(
+      rows.map((r) => r.seq),
+      cap,
+    )
+    // Fewer rows than the cap and yet no free position: impossible while the count above holds
+    // (cap - used >= 1 positions must be free — pigeonhole), so this is a defence, not a path.
+    // If it ever fires, the cap has no position left to give, and that is a reached cap.
+    if (seq === null) return { ok: false, reason: 'cap-reached', used, limit }
 
     /**
-     * `create` on the unique key IS the test-and-set. The reads above only choose which
-     * seq to try; they are not the guard, and they are allowed to be stale. If another
-     * process took this seq in between, the create throws and we try the next one —
-     * which is the correct response, because that process is sending.
+     * `create` on the unique key IS the test-and-set, and `seq <= limit` is what makes it the
+     * cap. If another claimer took this position since our read, the create throws, and we
+     * re-read and take the next free one — the correct response, because that claimer is
+     * sending. The read is allowed to be stale; it is not the guard.
      */
     try {
-      const row = await prisma.dailyReservation.create({
-        data: { day, scope, subjectId, seq: (highest?.seq ?? 0) + 1 + i },
-      })
+      const row = await prisma.dailyReservation.create({ data: { day, scope, subjectId, seq } })
       return { ok: true, reservation: { id: row.id, seq: row.seq } }
-    } catch {
-      // Lost the race for this seq. `+ i` walks past a contended run rather than
-      // retrying the same number, which is what turned a race into a livelock.
+    } catch (e) {
+      // Lost the race for this position. Kept for the give-up line below: a create that fails
+      // for a reason OTHER than a collision would otherwise read as contention with no evidence.
+      lastError = e
     }
   }
 
   const used = await prisma.dailyReservation.count({ where: { day, scope, subjectId } })
-  log.warn('gave up claiming a daily reservation under contention', { scope, subjectId, used, limit })
+  log.warn('gave up claiming a daily reservation under contention', {
+    scope,
+    subjectId,
+    used,
+    limit,
+    lastError: lastError instanceof Error ? lastError.message.slice(0, 200) : String(lastError),
+  })
   return { ok: false, reason: 'contended', used, limit }
 }
 
@@ -223,13 +304,47 @@ export async function usedToday(scope: ReservationScope, subjectId: string, now?
   })
 }
 
+/**
+ * The first words of a CONTENDED refusal's detail. The dispatcher's hold tape and the Send
+ * button both show `detail` and nothing else, so this is what tells a person the conversation
+ * had ROOM and the claim lost races — not that today's messages were used up.
+ */
+export const CLAIM_CONTENDED_PREFIX = 'contended:'
+
 export type ClaimResult =
   | { ok: true; held: Reservation[] }
   | {
       ok: false
+      /**
+       * The BUCKET that refused, for both a reached cap and a contended claim. Kept that way so
+       * `deliverOne`'s routing does not move (a fleet bucket ends the tick, a pair bucket holds
+       * one draft), and so `'pair-daily-cap'` stays exactly the gate's `PAIR_DAILY_CAP` stop
+       * for a REACHED cap. `contended` is what separates the two.
+       */
       reason: 'pair-daily-cap' | 'fleet-hourly-pace' | 'fleet-daily-cap'
       detail: string
+      /**
+       * True when the claim gave up after losing every race, with the cap NOT reached.
+       *
+       * Its own field (2026-10-16): until then a contended claim was reported under the same
+       * reason as a spent cap and only the prose differed — a hold wearing the cap's sentence,
+       * which sends a person looking at today's volume when nothing was sent. REQUIRED rather
+       * than optional, so every construction site states which it is.
+       */
+      contended: boolean
     }
+
+/**
+ * The sentence for a claim that lost every race. It names the ROOM that was left, because the
+ * whole difference from a reached cap is that there was some: nothing was sent, and the draft
+ * waits for the next tick.
+ */
+function contendedDetail(where: string, r: { used: number; limit: number }): string {
+  return (
+    `${CLAIM_CONTENDED_PREFIX} too many sends are being claimed ${where} at once (${r.used} of ${r.limit} used, ` +
+    `so the cap is NOT reached) — nothing was sent; deferring`
+  )
+}
 
 /**
  * Claim the recipient's AND the sender's daily allowance for one attempt, or neither.
@@ -310,10 +425,11 @@ export async function claimForAttempt(args: {
     return {
       ok: false,
       reason: 'pair-daily-cap',
+      contended: pair.reason === 'contended',
       detail:
         pair.reason === 'cap-reached'
           ? `this account has already sent this recipient ${pair.used} message(s) today (limit ${pair.limit})`
-          : `too many sends are being claimed for this conversation at once — deferring`,
+          : contendedDetail('for this conversation', pair),
     }
   }
   if (pair.reservation) held.push(pair.reservation)
@@ -335,10 +451,11 @@ export async function claimForAttempt(args: {
     return {
       ok: false,
       reason: 'fleet-daily-cap',
+      contended: fleetDay.reason === 'contended',
       detail:
         fleetDay.reason === 'cap-reached'
           ? `the fleet has already sent ${fleetDay.used} message(s) today (limit ${fleetDay.limit})`
-          : `too many sends are being claimed across the fleet at once — deferring`,
+          : contendedDetail('across the fleet today', fleetDay),
     }
   }
   if (fleetDay.reservation) held.push(fleetDay.reservation)
@@ -350,11 +467,12 @@ export async function claimForAttempt(args: {
       return {
         ok: false,
         reason: 'fleet-hourly-pace',
+        contended: fleetHour.reason === 'contended',
         detail:
           fleetHour.reason === 'cap-reached'
             ? `${fleetHour.used} message(s) have already gone out this hour (pace ${fleetHour.limit}/hour) — ` +
               `this one waits for the next one`
-            : `too many sends are being claimed this hour — deferring`,
+            : contendedDetail('this hour', fleetHour),
       }
     }
     if (fleetHour.reservation) held.push(fleetHour.reservation)
