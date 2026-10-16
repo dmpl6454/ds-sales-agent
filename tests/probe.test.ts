@@ -290,6 +290,8 @@ describe('probeIdentities — one request each, spaced, and nothing recorded', (
     expect(text).toMatch(/The official API did not read @viralbhayani/)
     expect(text).not.toContain(TOKEN)
     expect(text).not.toContain(encodeURIComponent(TOKEN))
+    // The probe announced ONE official request; a failed one is NOT retried (graphFeed.ts transportRetries: 0).
+    expect(calls.filter((c) => c.url.startsWith('https://graph.facebook.com'))).toHaveLength(1)
   })
 
   it('the official sentence is scrubbed by runProbe itself — a probe that echoes the bare token', async () => {

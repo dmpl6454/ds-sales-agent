@@ -60,8 +60,9 @@
  *
  * ── VOLUME ────────────────────────────────────────────────────────────────────────────
  *
- * One call is one page of one channel. The pipeline caps calls per pass (GRAPH_MAX_CALLS_PER_PASS)
- * and the steady state is one call a channel. Meta documents a per-user budget of roughly 200
+ * One call is one page of one channel — two when a page that got no answer is tried again
+ * (GRAPH_TRANSPORT_RETRIES; the retry is charged to the same budget). The pipeline caps calls per
+ * pass (GRAPH_MAX_CALLS_PER_PASS) and the steady state is one call a channel. Meta documents a per-user budget of roughly 200
  * calls an hour; a rate-limit answer (codes 4, 17, 32, 613, 80000-80014) pauses this path for 30
  * minutes, IN PROCESS — a restart forgets it and spends one call to learn it again, which is the
  * whole cost (the anonymous gate persists because forgetting it meant hammering; here it does not).
@@ -485,6 +486,12 @@ export async function fetchFeedViaGraph(
     delayMs?: number
     budget?: GraphBudget
     /**
+     * How many times a page that got NO answer is tried again (GRAPH_TRANSPORT_RETRIES by default).
+     * `0` for a PERSON's probe: `ig:probe` announces exactly the requests it makes, "with no retry: a
+     * retry would be a second measurement wearing the first one's name" (feedProbe.ts).
+     */
+    transportRetries?: number
+    /**
      * `false` for a PERSON's probe (`ig:probe --graph`): it reports what came back and must not
      * speak for the detection pass — a one-off probe overwriting the row the landing page reads
      * would put a person's single request in front of the operator as "what the server got".
@@ -502,13 +509,17 @@ export async function fetchFeedViaGraph(
   const cfg = graphConfig()
   if (!cfg) throw new GraphFeedError(handle, 'not-configured', 'the official read fallback is not configured on this host — no request made')
 
-  const cd = graphCooldown()
-  if (!cd.open) {
-    throw new GraphFeedError(handle, 'paused', `paused on this host until ${cd.until.toISOString()} (${cd.kind}) — no request made`, {
+  const retries = opts.transportRetries ?? GRAPH_TRANSPORT_RETRIES
+  /** The path's pause, asked on entry and again before a retry: another read in this process may have set it meanwhile. */
+  const refuseIfPaused = (when: string): void => {
+    const cd = graphCooldown()
+    if (cd.open) return
+    throw new GraphFeedError(handle, 'paused', `paused on this host until ${cd.until.toISOString()} (${cd.kind}) — ${when}`, {
       isThrottle: cd.kind === 'graph-rate-limit',
       until: cd.until,
     })
   }
+  refuseIfPaused('no request made')
 
   const posts: FeedPost[] = []
   let after: string | null = null
@@ -541,13 +552,15 @@ export async function fetchFeedViaGraph(
       } catch (err) {
         const why = scrub(describe(err), cfg.token) ?? 'no answer at all'
         // ONE more try of this page (GRAPH_REQUEST_TIMEOUT_MS), charged like any call, never past the budget.
-        if (attempt < GRAPH_TRANSPORT_RETRIES && !(opts.budget && opts.budget.remaining <= 0)) {
+        if (attempt < retries && !(opts.budget && opts.budget.remaining <= 0)) {
           log.warn('the official API did not answer — trying the same page once more', { handle, page: pages + 1, why })
+          await new Promise((r) => setTimeout(r, delayMs))
+          // A rate limit another read hit while this one waited is not spent into (review, 16 Oct).
+          refuseIfPaused('the retry of this page was not made')
           if (opts.budget) {
             opts.budget.remaining -= 1
             opts.budget.used += 1
           }
-          await new Promise((r) => setTimeout(r, delayMs))
           continue
         }
         const tries = attempt + 1
@@ -647,7 +660,8 @@ export async function probeOfficialRead(handle: string): Promise<{ ok: boolean; 
   }
   try {
     // `record: false`: a person's probe reports, it does not write the evidence row the pass owns.
-    const r = await fetchFeedViaGraph(handle, { maxPages: 1, maxPosts: GRAPH_PAGE_LIMIT, delayMs: 0, record: false })
+    // `transportRetries: 0`: the probe announced ONE official request, and it makes one.
+    const r = await fetchFeedViaGraph(handle, { maxPages: 1, maxPosts: GRAPH_PAGE_LIMIT, delayMs: 0, record: false, transportRetries: 0 })
     const newest = r.posts[0]?.postedAt.toISOString() ?? null
     return {
       ok: r.posts.length > 0,

@@ -381,8 +381,11 @@ describe('fetchFeedViaGraph', () => {
    * backfill lost @rvcjinsta and @instantbollywood whole, each to one `timed out after 12000 ms`.
    * MUTATIONS (applied once, seen red, restored): `GRAPH_TRANSPORT_RETRIES = 0` fails the first case;
    * dropping the budget condition fails "the retry is never made past the budget"; retrying a non-ok
-   * answer (`if (!res.ok && attempt < GRAPH_TRANSPORT_RETRIES) continue`) fails "an ANSWER is never
-   * re-asked" and the three refusal cases below it.
+   * answer (`if (!res.ok && attempt < retries) continue`) fails "an ANSWER is never re-asked" and the
+   * three refusal cases below it. From the review the same day: recording a transport failure on every
+   * attempt fails the first case's evidence assertions; `remaining <= 1` fails "…when one call is
+   * left"; dropping the pause fails "waits the page spacing"; dropping the second pause check fails
+   * "a rate limit set meanwhile".
    */
   it('a page that times out is tried once more, charged to the budget, and the channel is kept', async () => {
     const second = docAnswer({ after: null, data: [{ id: '9', caption: 'older', timestamp: '2026-10-14T08:00:00+0000', permalink: 'https://www.instagram.com/p/DcDDDDDDDD4/', media_type: 'IMAGE', media_url: 'https://scontent.example/i4.jpg' }] })
@@ -397,9 +400,57 @@ describe('fetchFeedViaGraph', () => {
     expect(budget).toEqual({ remaining: 57, used: 3, dropped: 0 })
     expect(out.join('\n')).toMatch(/trying the same page once more/)
     expect(out.join('\n')).not.toContain(TOKEN)
+    // A read that recovered is not on record as a failure: the banner must not say "could not be reached".
+    const rec = fe.parseFeedAnswerRecord(await evidenceRow())!
+    expect(rec.last).toMatchObject({ source: 'graph', kind: 'ok' })
+    expect(rec.lastFailure).toBeNull()
   })
 
-  it('a page that times out twice fails the channel as a transport failure, once recorded', async () => {
+  it('the retry is made when exactly one call is left, and spends it', async () => {
+    script(new Error('timed out after 30000 ms'), json(200, docAnswer({ after: null })))
+    const budget = { remaining: 2, used: 0, dropped: 0 }
+    const r = await g.fetchFeedViaGraph('viralbhayani', { delayMs: 0, budget })
+    expect(calls).toHaveLength(2)
+    expect(r.posts).toHaveLength(3)
+    expect(budget).toEqual({ remaining: 0, used: 2, dropped: 0 })
+  })
+
+  it("waits the read's page spacing between the two tries", async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout'] })
+    try {
+      script(new Error('timed out after 30000 ms'), json(200, docAnswer({ after: null })))
+      const read = g.fetchFeedViaGraph('viralbhayani', { delayMs: 1000 })
+      await vi.advanceTimersByTimeAsync(999)
+      expect(calls).toHaveLength(1)
+      await vi.advanceTimersByTimeAsync(1)
+      await read
+      expect(calls).toHaveLength(2)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('a rate limit set meanwhile by another read is not spent into — the retry is not made', async () => {
+    // While this page's first try fails, another read in the same process is rate-limited.
+    setIgTransportForTests(async (url, init) => {
+      calls.push({ url, headers: { ...init.headers }, timeoutMs: init.timeoutMs })
+      if (decodeURIComponent(url).includes('business_discovery.username(otherpage)')) {
+        return json(400, { error: { code: 4, message: 'Application request limit reached', type: 'OAuthException' } })
+      }
+      await g.fetchFeedViaGraph('otherpage', { delayMs: 0 }).catch(() => undefined)
+      throw new Error('timed out after 30000 ms')
+    })
+    const budget = { remaining: 60, used: 0, dropped: 0 }
+    const err = (await g.fetchFeedViaGraph('viralbhayani', { delayMs: 0, budget }).catch((e: unknown) => e)) as InstanceType<typeof g.GraphFeedError>
+    expect(calls.filter((c) => decodeURIComponent(c.url).includes('business_discovery.username(viralbhayani)'))).toHaveLength(1)
+    expect(err.graphKind).toBe('paused')
+    expect(err.isThrottle).toBe(true)
+    expect(err.message).toMatch(/the retry of this page was not made/)
+    // Not charged: no second request was made.
+    expect(budget).toEqual({ remaining: 59, used: 1, dropped: 0 })
+  })
+
+  it('a page that times out twice fails the channel as a transport failure, recorded', async () => {
     script(new Error('timed out after 30000 ms'), new Error('socket hang up'))
     const err = (await g.fetchFeedViaGraph('viralbhayani', { delayMs: 0 }).catch((e: unknown) => e)) as InstanceType<typeof g.GraphFeedError>
     expect(calls).toHaveLength(1 + g.GRAPH_TRANSPORT_RETRIES)

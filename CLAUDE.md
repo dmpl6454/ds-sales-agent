@@ -91,8 +91,9 @@ box's first 48 h backfill: @rvcjinsta (dry run) and @instantbollywood (`--run`) 
 ONE `timed out after 12000 ms`, because the official read borrowed the anonymous feed's 12 s bound and a
 thrown page discards the channel's pages already read. It now has its own **30 s** bound, and a
 TRANSPORT failure (never an answer — a 4xx, 5xx, error envelope or rate limit is Meta speaking) is tried
-**once** more on the same page after the page spacing, charged to the call budget and never made past it.
-The cost, stated: a dead network now costs ~62 s a channel here against 12 s — about what the anonymous
+**once** more on the same page after the page spacing, charged to the call budget and never made past it,
+nor into a rate-limit pause another read set meanwhile — and never by `ig:probe --graph`, which announces
+one official request and makes one (`transportRetries: 0`). The cost, stated: a dead network now costs ~62 s a channel here against 12 s — about what the anonymous
 door already spends (~54 s) — and with the anonymous gate closed and in every backfill this read goes
 first, so a blackholed pass runs ~18 minutes and the next 15-minute pass is skipped (no-overlap), not stacked.
 

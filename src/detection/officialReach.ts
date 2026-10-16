@@ -54,7 +54,8 @@ export const WATCHED_CHANNEL_WHERE = { kind: 'CHANNEL', watchEnabled: true } as 
  *
  * The routine official read is bounded by `maxPosts: 48` — two pages — which cannot hold 36 hours
  * of the busiest channel: @viralbhayani posts 49–75 a day (measured, CLAUDE.md), so up to ~113 in
- * 36 hours. 150 covers that with room, and costs at most 6 calls for that one channel. The pass's
+ * 36 hours. 150 covers that with room, and costs at most 6 calls for that one channel (12 if every
+ * page needs its one transport retry, graphFeed.ts `GRAPH_TRANSPORT_RETRIES`). The pass's
  * call cap (`GRAPH_MAX_CALLS_PER_PASS`, 60) still bounds the PASS: a channel it costs is counted
  * and logged as before, and a channel it cuts short mid-read is logged by name with the command
  * that finishes the job (`officialShortfall` below), never dropped in silence.

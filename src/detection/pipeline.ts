@@ -198,8 +198,9 @@ export interface DetectionSummary {
 }
 
 /**
- * THE OFFICIAL READ'S CALL CAP, PER PASS (15 Oct 2026). One call is one page of one channel, so
- * the steady state is one call a channel (~19 a pass); 60 leaves room for a gap that needs a
+ * THE OFFICIAL READ'S CALL CAP, PER PASS (15 Oct 2026). One call is one page of one channel (two
+ * when a page that got no answer is retried — charged here too), so the steady state is one call a
+ * channel (~19 a pass); 60 leaves room for a gap that needs a
  * second page on most channels. STATED, NOT HIDDEN: at four passes an hour a full 60 every pass
  * would be 240 calls an hour against Meta's documented ~200 a user — the cap bounds a pass, and
  * a rate-limit answer (graphFeed.ts) is what bounds the hour. A channel the cap costs is counted
