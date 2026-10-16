@@ -67,7 +67,7 @@
  * whole cost (the anonymous gate persists because forgetting it meant hammering; here it does not).
  */
 import { igGet } from './igHttp'
-import { FeedFetchError, REQUEST_TIMEOUT_MS, type FeedPost, type FetchFeedResult } from './feed'
+import { FeedFetchError, type FeedPost, type FetchFeedResult } from './feed'
 import { anonGateHost } from './anonGate'
 import { evidenceHead, recordFeedAnswer, type FeedAnswer, type FeedAnswerKind } from './feedEvidence'
 import { log } from '@/lib/logger'
@@ -123,6 +123,35 @@ export const GRAPH_MEDIA_FIELDS = [
 
 /** Graph's documented default page size: fewer calls than the anonymous path's 12 when a gap needs paging. */
 export const GRAPH_PAGE_LIMIT = 25
+
+/**
+ * ── THE OFFICIAL READ HAS ITS OWN REQUEST BOUND, AND ONE RETRY (16 Oct 2026) ─────────────────
+ *
+ * It borrowed the anonymous feed's `REQUEST_TIMEOUT_MS` (12 s, sized for a 1,090 ms median), and
+ * that is the wrong number for a different request: Business Discovery assembles a page of 25
+ * media nodes with their URLs on Meta's side. MEASURED in the box's first backfill: two channels
+ * lost whole — @rvcjinsta in the dry run and @instantbollywood (42.8M followers) in `--run` — each
+ * on one `timed out after 12000 ms`, with every other page of every other channel answering. And a
+ * thrown page discards the pages already read for that channel, so one slow page cost a channel's
+ * whole backfill and a re-run of it.
+ *
+ * 30 s for an answer, and a transport failure (a timeout, a reset — never an ANSWER: a 4xx, a 5xx,
+ * an error envelope or a rate limit is Meta speaking, and is never re-asked here) is tried ONCE more
+ * on the same page after the read's own page spacing. The anonymous feed retries four times; the
+ * official read is a scarcer budget (200 calls an hour per token), so once. The retry is a real call
+ * and is charged to the call budget, and it is not made when the budget has nothing left.
+ *
+ * The cost, stated: a host on which every request hangs waits about a minute a channel here (30 s,
+ * the page spacing, 30 s) instead of 12 s. A dead network DOES reach this read: with the anonymous
+ * gate closed — the walled steady state since 15 Oct — and in every backfill, `fetchChannelFeed`
+ * goes to the official read first, without an anonymous request (feedSource.ts). That is about what
+ * the anonymous door already spends on a dead network (four 12 s tries plus backoff, ~54 s a
+ * channel); at 17 channels a blackholed pass runs ~18 minutes, past the 15-minute clock, and the
+ * scheduler's no-overlap skips the next pass rather than stacking it. Nothing is read either way.
+ */
+export const GRAPH_REQUEST_TIMEOUT_MS = 30_000
+/** Transport failures on one page tried again, at most. See `GRAPH_REQUEST_TIMEOUT_MS`. */
+export const GRAPH_TRANSPORT_RETRIES = 1
 
 /** An Instagram username. Anything else must never be spliced into a field expression. */
 const USERNAME = /^[A-Za-z0-9._]{1,30}$/
@@ -505,12 +534,26 @@ export async function fetchFeedViaGraph(
     }
 
     let res
-    try {
-      res = await igGet(`${url}&access_token=${encodeURIComponent(cfg.token)}`, { headers: { ...GRAPH_HEADERS }, timeoutMs: REQUEST_TIMEOUT_MS })
-    } catch (err) {
-      const why = scrub(describe(err), cfg.token) ?? 'no answer at all'
-      say({ kind: 'transport', status: null, contentType: null, head: why, items: null })
-      throw new GraphFeedError(handle, 'transport', `could not be reached: ${why}`, { isTransport: true })
+    for (let attempt = 0; ; attempt++) {
+      try {
+        res = await igGet(`${url}&access_token=${encodeURIComponent(cfg.token)}`, { headers: { ...GRAPH_HEADERS }, timeoutMs: GRAPH_REQUEST_TIMEOUT_MS })
+        break
+      } catch (err) {
+        const why = scrub(describe(err), cfg.token) ?? 'no answer at all'
+        // ONE more try of this page (GRAPH_REQUEST_TIMEOUT_MS), charged like any call, never past the budget.
+        if (attempt < GRAPH_TRANSPORT_RETRIES && !(opts.budget && opts.budget.remaining <= 0)) {
+          log.warn('the official API did not answer — trying the same page once more', { handle, page: pages + 1, why })
+          if (opts.budget) {
+            opts.budget.remaining -= 1
+            opts.budget.used += 1
+          }
+          await new Promise((r) => setTimeout(r, delayMs))
+          continue
+        }
+        const tries = attempt + 1
+        say({ kind: 'transport', status: null, contentType: null, head: why, items: null })
+        throw new GraphFeedError(handle, 'transport', `could not be reached${tries > 1 ? ` after ${tries} tries` : ''}: ${why}`, { isTransport: true })
+      }
     }
 
     const body = await res.text().catch(() => '')

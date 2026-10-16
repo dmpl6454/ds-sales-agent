@@ -338,7 +338,9 @@ describe('fetchFeedViaGraph', () => {
     const r = await g.fetchFeedViaGraph('viralbhayani', { delayMs: 0 })
     expect(calls).toHaveLength(1)
     expect(calls[0]!.headers).toEqual({ Accept: 'application/json' })
-    expect(calls[0]!.timeoutMs).toBe(REQUEST_TIMEOUT_MS)
+    // Its own bound, longer than the anonymous feed's: a page of 25 media nodes is a heavier request.
+    expect(calls[0]!.timeoutMs).toBe(g.GRAPH_REQUEST_TIMEOUT_MS)
+    expect(g.GRAPH_REQUEST_TIMEOUT_MS).toBeGreaterThan(REQUEST_TIMEOUT_MS)
     expect(new URL(calls[0]!.url).searchParams.get('access_token')).toBe(TOKEN)
     expect(r).toMatchObject({ pagesFetched: 1, moreAvailable: false, evidenceIncomplete: true })
     expect(r.posts).toHaveLength(3)
@@ -372,6 +374,59 @@ describe('fetchFeedViaGraph', () => {
     expect(calls).toHaveLength(1)
     expect(r).toMatchObject({ pagesFetched: 1, moreAvailable: true })
     expect(budget.remaining).toBe(0)
+  })
+
+  /**
+   * ONE SLOW PAGE NO LONGER COSTS A CHANNEL (16 Oct 2026, GRAPH_REQUEST_TIMEOUT_MS). The box's first
+   * backfill lost @rvcjinsta and @instantbollywood whole, each to one `timed out after 12000 ms`.
+   * MUTATIONS (applied once, seen red, restored): `GRAPH_TRANSPORT_RETRIES = 0` fails the first case;
+   * dropping the budget condition fails "the retry is never made past the budget"; retrying a non-ok
+   * answer (`if (!res.ok && attempt < GRAPH_TRANSPORT_RETRIES) continue`) fails "an ANSWER is never
+   * re-asked" and the three refusal cases below it.
+   */
+  it('a page that times out is tried once more, charged to the budget, and the channel is kept', async () => {
+    const second = docAnswer({ after: null, data: [{ id: '9', caption: 'older', timestamp: '2026-10-14T08:00:00+0000', permalink: 'https://www.instagram.com/p/DcDDDDDDDD4/', media_type: 'IMAGE', media_url: 'https://scontent.example/i4.jpg' }] })
+    script(json(200, docAnswer()), new Error('timed out after 30000 ms'), json(200, second))
+    const budget = { remaining: 60, used: 0, dropped: 0 }
+    const r = await g.fetchFeedViaGraph('viralbhayani', { delayMs: 0, budget })
+    expect(calls).toHaveLength(3)
+    // The retry asked for the SAME page: the second page's cursor, twice.
+    expect(calls[2]!.url).toBe(calls[1]!.url)
+    expect(r.posts.map((p) => p.gridIndex)).toEqual([0, 1, 2, 3])
+    expect(r.pagesFetched).toBe(2)
+    expect(budget).toEqual({ remaining: 57, used: 3, dropped: 0 })
+    expect(out.join('\n')).toMatch(/trying the same page once more/)
+    expect(out.join('\n')).not.toContain(TOKEN)
+  })
+
+  it('a page that times out twice fails the channel as a transport failure, once recorded', async () => {
+    script(new Error('timed out after 30000 ms'), new Error('socket hang up'))
+    const err = (await g.fetchFeedViaGraph('viralbhayani', { delayMs: 0 }).catch((e: unknown) => e)) as InstanceType<typeof g.GraphFeedError>
+    expect(calls).toHaveLength(1 + g.GRAPH_TRANSPORT_RETRIES)
+    expect(err).toBeInstanceOf(g.GraphFeedError)
+    expect(err.graphKind).toBe('transport')
+    expect(err.isTransport).toBe(true)
+    expect(err.message).toMatch(/could not be reached after 2 tries: socket hang up/)
+    expect(fe.parseFeedAnswerRecord(await evidenceRow())!.last).toMatchObject({ source: 'graph', kind: 'transport', status: null })
+    // A transport failure is not Meta refusing: the path stays open.
+    expect(g.graphCooldown()).toEqual({ open: true })
+  })
+
+  it('the retry is never made past the budget', async () => {
+    script(new Error('timed out after 30000 ms'), json(200, docAnswer({ after: null })))
+    const budget = { remaining: 1, used: 0, dropped: 0 }
+    const err = (await g.fetchFeedViaGraph('viralbhayani', { delayMs: 0, budget }).catch((e: unknown) => e)) as InstanceType<typeof g.GraphFeedError>
+    expect(calls).toHaveLength(1)
+    expect(err.graphKind).toBe('transport')
+    expect(err.message).toMatch(/could not be reached: timed out/)
+    expect(budget).toEqual({ remaining: 0, used: 1, dropped: 0 })
+  })
+
+  it('an ANSWER is never re-asked — a 5xx or an error envelope is Meta speaking', async () => {
+    script(json(502, '<html>Bad Gateway</html>'), json(200, docAnswer({ after: null })))
+    const err = (await g.fetchFeedViaGraph('viralbhayani', { delayMs: 0 }).catch((e: unknown) => e)) as InstanceType<typeof g.GraphFeedError>
+    expect(calls).toHaveLength(1)
+    expect(err.isTransport).toBe(false)
   })
 
   it('a rate limit pauses the path for 30 minutes — and a paused path makes no request', async () => {
@@ -436,7 +491,7 @@ describe('fetchFeedViaGraph', () => {
       calls.push({ url, headers: {}, timeoutMs: 0 })
       throw new Error(`connect ECONNREFUSED while fetching ${url} (token ${TOKEN})`)
     })
-    const e1 = (await g.fetchFeedViaGraph('viralbhayani').catch((e: unknown) => e)) as Error
+    const e1 = (await g.fetchFeedViaGraph('viralbhayani', { delayMs: 0 }).catch((e: unknown) => e)) as Error
     // 2. Meta's own message quoting it back.
     script(json(400, { error: { code: 1, message: `Unexpected token ${TOKEN} in request`, type: 'OAuthException' } }))
     const e2 = (await g.fetchFeedViaGraph('viralbhayani').catch((e: unknown) => e)) as Error

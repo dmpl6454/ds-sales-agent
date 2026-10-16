@@ -86,6 +86,16 @@ deploying:** `pnpm ig:frames --capture` on the box, soon (it refuses beside the 
 the detached stop-capture-start line, as `ig:rejudge` does) — CDN URLs expire (`oe=` is a hex expiry; the
 lifetime is unmeasured) — then the detached `ig:rejudge --run` (docs/DEPLOY.md).
 
+**16 Oct, the timeout that cost two channels (`GRAPH_REQUEST_TIMEOUT_MS`, graphFeed.ts).** MEASURED in the
+box's first 48 h backfill: @rvcjinsta (dry run) and @instantbollywood (`--run`) were each lost whole to
+ONE `timed out after 12000 ms`, because the official read borrowed the anonymous feed's 12 s bound and a
+thrown page discards the channel's pages already read. It now has its own **30 s** bound, and a
+TRANSPORT failure (never an answer — a 4xx, 5xx, error envelope or rate limit is Meta speaking) is tried
+**once** more on the same page after the page spacing, charged to the call budget and never made past it.
+The cost, stated: a dead network now costs ~62 s a channel here against 12 s — about what the anonymous
+door already spends (~54 s) — and with the anonymous gate closed and in every backfill this read goes
+first, so a blackholed pass runs ~18 minutes and the next 15-minute pass is skipped (no-overlap), not stacked.
+
 ### RULES, ADDED TO THE STANDING LIST
 
 55. **Record what the remote SAID, not only that it refused.** A refusal with no body on record makes
