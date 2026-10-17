@@ -257,9 +257,13 @@ const REST_RULES: Record<string, { label: string; needsAPerson: boolean; clock?:
      * A ring paused by replies ALONE is not stuck — it frees itself, and is counted under
      * TARGET_REPLIED with its release time below — so this sentence is for MIXED causes, where a
      * reply is one of the reasons and a sign-in or a park is another.
+     *
+     * And a fifth since 17 Oct 2026: a page signed in on no Mac that has been online in three days
+     * (availability.ts) — @bollywoodchronicle, whose only profile was on a Mac that is gone, while
+     * /senders still called it signed in. Named, or this sentence sends a person to the wrong fix.
      */
     label:
-      'not one of our pages can write to them — each page in their rotation is signed out, flagged, holding an earlier send that may already have reached them, or paused because they replied to it',
+      'not one of our pages can write to them — each page in their rotation is signed out, signed in on no Mac that has been online in the last 3 days, flagged, holding an earlier send that may already have reached them, or paused because they replied to it',
     needsAPerson: true,
   },
   [NO_PAGE_FOR_FLEET]: {

@@ -37,6 +37,13 @@ export async function discardAttempt(args: {
   reason: string
   /** `AuditLog.actor` — a signed-in email from the dashboard, `cli:<name>` from a terminal. */
   actor: string
+  /**
+   * NARROW the guard to READY/QUEUED only (2026-10-17). An automatic release that read the
+   * queue a moment ago must not, through this writer's FAILED arm, discard a row that became a
+   * failed drive in between — that row is a person's to settle on the landing page. Narrowing
+   * only: the guard is still inside the one update, and nothing can widen it.
+   */
+  onlyWaiting?: boolean
 }): Promise<DiscardResult> {
   /**
    * Conditional `updateMany` rather than read-then-write, for the same reason `sendNow`
@@ -55,10 +62,12 @@ export async function discardAttempt(args: {
      */
     where: {
       id: args.attemptId,
-      OR: [
-        { status: { in: ['READY', 'QUEUED'] } },
-        { status: 'FAILED', failureCode: { not: 'not-in-thread' } },
-      ],
+      OR: args.onlyWaiting
+        ? [{ status: { in: ['READY', 'QUEUED'] } }]
+        : [
+            { status: { in: ['READY', 'QUEUED'] } },
+            { status: 'FAILED', failureCode: { not: 'not-in-thread' } },
+          ],
     },
     data: { status: 'SKIPPED', error: args.reason || 'skipped by operator' },
   })

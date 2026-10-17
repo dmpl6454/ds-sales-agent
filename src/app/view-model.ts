@@ -25,6 +25,7 @@ import { FOLLOWER_SNAPSHOT, DELIVERED_STATUSES, IN_FLIGHT_STATUSES } from '@/lib
 // Host-aware "is this account signed in" — DB record on the hosted dashboard, disk on a
 // sending machine. Never read profileStatus directly for a page: the Linode has no profiles.
 import { sessionIsUsable } from './view-model/session-view'
+import { NOT_HELD_BY_AN_ONLINE_MAC, readSessionHolders } from '@/outreach/availability'
 import { postUrl } from '@/lib/urls'
 import { normaliseSearch, searchTerms } from '@/lib/searchTerms'
 import { attributedPostIdsForRecipients, messagedUnderElsewhere } from './view-model/recipient-search'
@@ -952,6 +953,13 @@ async function computeCeoView(): Promise<CeoView> {
   const channels = await buildChannelCards(targets, weekStart)
 
   // ── Our accounts ──────────────────────────────────────────────────────────
+  /**
+   * WHO A LIVE MAC HOLDS (17 Oct 2026) — the reader rotation uses (availability.ts), request-cached,
+   * so this card, the switch's `readyHandles` and the planner cannot disagree about an account
+   * whose only signed-in profile was on a Mac that no longer exists. `null` = no witness: inert.
+   */
+  const held = await readSessionHolders()
+  const heldByAMac = (handle: string) => held === null || held.has(handle.toLowerCase())
   const accounts: AccountCard[] = []
   for (const s of senders) {
     const sentThisWeek = await prisma.outreachAttempt.count({
@@ -982,6 +990,9 @@ async function computeCeoView(): Promise<CeoView> {
     } else if (s.status === 'PAUSED') {
       state = 'setup'
       note = 'paused'
+    } else if (!heldByAMac(s.handle)) {
+      state = 'setup'
+      note = `${NOT_HELD_BY_AN_ONLINE_MAC} — press Connect to sign it in on the sending Mac`
     } else {
       state = 'ready'
       /**
@@ -996,7 +1007,7 @@ async function computeCeoView(): Promise<CeoView> {
     accounts.push({
       handle: s.handle,
       name: operatorName(s.displayName),
-      canSendAutomatically: hasProfile,
+      canSendAutomatically: hasProfile && heldByAMac(s.handle),
       connecting: isConnecting(s.handle),
       routes: s.pairs
         .map((p) => ({
@@ -1064,8 +1075,11 @@ async function computeCeoView(): Promise<CeoView> {
      * delivering 9/hour. Tabish caught it from the live page. Same defect class the
      * /senders fix closed; the shared rule is `sessionIsUsable` (session-view.ts).
      */
-    readyHandles: senders.filter((s) => s.status === 'ACTIVE' && sessionIsUsable(s)).map((s) => s.handle),
-    needLoginHandles: senders.filter((s) => !sessionIsUsable(s)).map((s) => s.handle),
+    /* And held by a live Mac (17 Oct 2026): an account no Mac holds cannot send, and rotation skips it. */
+    readyHandles: senders
+      .filter((s) => s.status === 'ACTIVE' && sessionIsUsable(s) && heldByAMac(s.handle))
+      .map((s) => s.handle),
+    needLoginHandles: senders.filter((s) => !sessionIsUsable(s) || !heldByAMac(s.handle)).map((s) => s.handle),
   }
 
 

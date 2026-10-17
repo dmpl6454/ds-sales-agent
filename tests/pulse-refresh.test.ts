@@ -145,6 +145,8 @@ describe('the excluded Setting keys name what their owners actually write', () =
     ['sendLock', 'src/outreach/dispatcher.ts', 'SEND_LOCK_KEY'],
     ['fleetLastSendStartedAt', 'src/outreach/paceClock.ts', 'LAST_SEND_STARTED_KEY'],
     ['dispatchLastOkAt', 'src/outreach/dispatchHealth.ts', 'DISPATCH_OK_KEY'],
+    // Written by the planner every pass (2026-10-17) — rule 47, the same day.
+    ['sessionHolderSeen', 'src/outreach/availability.ts', 'SESSION_HOLDER_SEEN_KEY'],
   ]
 
   it('covers every excluded key exactly once', () => {

@@ -10,6 +10,7 @@ import { env } from '@/lib/env'
 // The "signed in" rule is host-aware and SHARED — it drifted here privately once and the
 // landing page, nav badge and /targets kept lying on the hosted dashboard. See its docblock.
 import { sessionIsUsable } from './session-view'
+import { NOT_HELD_BY_AN_ONLINE_MAC, readSessionHolders } from '@/outreach/availability'
 
 /**
  * The `/accounts` page, and only that page.
@@ -100,7 +101,7 @@ async function computeAccountsPage(connectingHandles: readonly string[]): Promis
   const today = istDateKey()
   const settings = await getSettings()
 
-  const [senders, weekCounts, todayCounts] = await Promise.all([
+  const [senders, weekCounts, todayCounts, held] = await Promise.all([
     prisma.senderAccount.findMany({
       orderBy: { handle: 'asc' },
       include: { categories: { include: { category: { select: { name: true, slug: true } } } } },
@@ -115,6 +116,8 @@ async function computeAccountsPage(connectingHandles: readonly string[]): Promis
       where: { day: today, scope: 'sender' },
       _count: { _all: true },
     }),
+    /* The same per-handle verdict rotation reads (availability.ts) — `null` = no witness, inert. */
+    readSessionHolders(),
   ])
 
   const week = new Map(weekCounts.map((c) => [c.senderId, c._count._all]))
@@ -129,7 +132,21 @@ async function computeAccountsPage(connectingHandles: readonly string[]): Promis
      * rendered @tabishmukaddam1 as "connected" while every real send failed with "not
      * logged in" — both true at once, and the dashboard was the half that lied.
      */
-    const usable = sessionIsUsable(s)
+    const signedIn = sessionIsUsable(s)
+    /**
+     * ── SIGNED IN, BUT ON NO MAC THAT EXISTS (17 Oct 2026) ─────────────────────────────────
+     *
+     * Rotation (`readSenderAvailability`) skips an account no Mac seen in 3 days lists, and the
+     * planner releases its drafts. This page read only the session record, so it filed exactly
+     * that account — @bollywoodchronicle, whose only profile was on a Mac that is gone — under
+     * "Sending on their own" while the planner dropped it and threw its queue away: the
+     * page/planner drift `availability.ts` exists to prevent. Asked the same reader, so the row
+     * cannot say "sends" about an account rotation will not use, and its remedy — sign it in on
+     * the sending Mac — is the Connect control `!connected` already renders.
+     */
+    const noMacHolds =
+      signedIn && s.status === 'ACTIVE' && held !== null && !held.has(s.handle.toLowerCase())
+    const usable = signedIn && !noMacHolds
 
     /**
      * ONE SWITCH, 2026-08-08. This used to require `s.autoSendEnabled` as well.
@@ -152,7 +169,9 @@ async function computeAccountsPage(connectingHandles: readonly string[]): Promis
     const todo =
       s.status === 'CHALLENGED'
         ? 'Instagram flagged this account. Check it by hand, then release the halt here.'
-        : /**
+        : noMacHolds
+          ? `Signed in, but ${NOT_HELD_BY_AN_ONLINE_MAC.replace(/^signed in /, '')}, so nothing can send for it. Sign it in on ${settings.activeDevice ?? 'the sending Mac'} — press Connect.`
+          : /**
              * ONE SWITCH, 2026-08-08. Every session-less row ends the same way now — the
              * sign-in IS the onboarding, and there is no second step to mention. It used to
              * be followed by "Auto-send is off", which named a control that no longer exists.

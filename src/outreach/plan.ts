@@ -27,6 +27,7 @@ import { fleetRingOrder } from './rotation'
 import { checkNewBrandTouchCap, checkRecipientIsNotAPerson } from './brandGuards'
 import { readNewBrandTouchCounts } from './brandTouchCounts'
 import { discardIntroductionsToRecipientsWhoKnowUs } from './staleIntroductions'
+import { releaseDraftsNoOnlineMacHolds } from './unheldRelease'
 /**
  * The ONLY sender this file imports, since Phase 5. `browserSender` was here too and is
  * deliberately not any more: the planner prepares and `dispatchTick` delivers, so a second
@@ -35,7 +36,7 @@ import { discardIntroductionsToRecipientsWhoKnowUs } from './staleIntroductions'
 import { manualAssistSender } from './senders/manual'
 import { profileStatus } from '@/outreach/browser/profile'
 import { sessionUsable } from './sessionHealth'
-import { readSenderAvailability } from './availability'
+import { readSenderAvailability, recordSessionHolderHistory } from './availability'
 import { replyHaltWhere } from './replyHalt'
 import type { SendOutcome } from './senders/types'
 
@@ -212,6 +213,62 @@ export async function runOutreach(): Promise<PlanSummary> {
   }
 
   /**
+   * WHICH ACCOUNTS ROTATION MUST SKIP — read HERE, before anything below counts the queue, because
+   * the release that follows changes what the queue holds (the long note on why this reader is
+   * machine-independent is beside `readSenderAvailability`'s use further down, where it has
+   * always been read).
+   */
+  /*
+   * The per-handle holder history first (availability.ts, `SESSION_HOLDER_SEEN_KEY`) — the planner is
+   * its one writer, so the read below and every screen between passes see the same history. A
+   * failed write costs nothing but the release this pass (`hadHistory: false` holds it back).
+   */
+  let holderHistory = { hadHistory: false }
+  try {
+    holderHistory = await recordSessionHolderHistory(now.getTime())
+  } catch (err) {
+    log.alarm('recording which Macs hold which accounts failed — the release of unheld drafts waits a pass', {
+      error: describeError(err),
+    })
+  }
+  const unavailableSenders = await readSenderAvailability(now.getTime())
+
+  /**
+   * ── THEN, RELEASE WHAT NO MAC CAN SEND (17 Oct 2026) ────────────────────
+   *
+   * Drafts already written for an account no Mac seen in three days holds
+   * (`NOT_HELD_BY_AN_ONLINE_MAC`) can never be delivered, and their first touches fill the
+   * fleet-wide waiting depth `readNewBrandTouchCounts` reads below — measured: one missing Mac's
+   * 147 drafts held `new-brand-daily-cap` for every page and `queued=0` for a day. Released
+   * BEFORE that depth and the pending checks are read, so the same pass writes the pages that can
+   * send. See unheldRelease.ts for what is never touched and why only this reason releases.
+   *
+   * Never able to fail a pass, for the H5 sweep's reason: rotation already skips the account, so
+   * a failed release costs one pass of depth; a thrown pass costs every draft in the fleet.
+   */
+  try {
+    const unheld = await releaseDraftsNoOnlineMacHolds({
+      unavailable: unavailableSenders,
+      actor: 'planner',
+      hadHistory: holderHistory.hadHistory,
+    })
+    if (unheld.heldBack === 'no-history') {
+      log.info('an account no online Mac holds keeps its drafts this pass — the holder history was only just seeded')
+    } else if (unheld.heldBack === 'no-page-can-send') {
+      log.info('no fleet account can send right now — waiting drafts are kept for when a Mac returns')
+    } else if (unheld.released.length > 0 || unheld.keptPersonTouched > 0) {
+      log.info('released drafts for accounts no online Mac holds', {
+        released: unheld.released.map((r) => `@${r.handle}=${r.count}`).join(' ') || 'none',
+        keptBecauseAPersonEditedOrPreparedThem: unheld.keptPersonTouched,
+      })
+    }
+  } catch (err) {
+    log.alarm('releasing drafts for accounts no online Mac holds failed — rotation still skips those accounts', {
+      error: describeError(err),
+    })
+  }
+
+  /**
    * Scoped to the FLEET. `ensureFleetPairs` only ever creates fleet rows, but historical
    * pairs for a non-fleet sender exist on disk — `@tabishmukaddam1`, the burner, has them —
    * and with the per-route switch gone there is nothing else left to keep those out of an
@@ -322,8 +379,10 @@ export async function runOutreach(): Promise<PlanSummary> {
    * `sessionUsable` on purpose, because it decides only whose turn it is to be WRITTEN to.
    * Whether a message may go OUT is re-asked at delivery by `gate.ts`, on the device that
    * actually sends, which is where it belongs.
+   *
+   * READ AT THE TOP OF THE PASS since 17 Oct 2026 (`unavailableSenders`, above the release of
+   * drafts no online Mac can send), because that release must run before the queue is counted.
    */
-  const unavailableSenders = await readSenderAvailability()
 
   /**
    * THE COMPETITOR LIST AND THE PERSON VERDICTS — once per pass, never per pair (2026-09-04).

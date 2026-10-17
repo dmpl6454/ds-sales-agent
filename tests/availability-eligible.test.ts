@@ -48,6 +48,14 @@ bootstrap.exec(`
     "updatedAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
   );
   CREATE UNIQUE INDEX "SenderAccount_handle_key" ON "SenderAccount"("handle");
+  -- Since 2026-10-17 availability also reads Setting.devicePresence (an account no online Mac
+  -- holds is not electable). The table is EMPTY here on purpose: no presence row is no
+  -- witness, so every assertion below is the pre-presence behaviour, unchanged.
+  CREATE TABLE "Setting" (
+    "key" TEXT NOT NULL PRIMARY KEY,
+    "value" TEXT NOT NULL,
+    "updatedAt" DATETIME NOT NULL
+  );
 `)
 bootstrap.exec(`
   INSERT INTO "SenderAccount" ("id","handle","displayName","personaName","personaRole","personaBrand","personaPhone","personaEmail","fleetMember","status","sessionPath","updatedAt") VALUES

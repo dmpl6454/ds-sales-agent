@@ -20,7 +20,7 @@ import { operatorName } from '@/outreach/render'
  */
 import { sessionIsUsable } from './session-view'
 import { describeRing, whoseTurnForMany } from '@/outreach/categories'
-import { readSenderAvailability } from '@/outreach/availability'
+import { readSenderAvailability, readSessionHolders } from '@/outreach/availability'
 import { auditTarget, AUDIT_WHY_SENTENCE } from '@/outreach/targetAudit'
 // PURE, and the same function `plan.ts` asks. Imported rather than mirrored: a page that
 // re-derives a guard its own way is how a dashboard comes to disagree with the enforcer.
@@ -300,7 +300,14 @@ async function computeProspectsPage(input?: ProspectsInput): Promise<ProspectsPa
    * this 0 for a fleet that was actively sending. sessionIsUsable trusts the device's DB
    * record there and this machine's disk on a sending machine.
    */
-  const sendersAble = fleetSenders.filter((s) => sessionIsUsable(s)).length
+  /*
+   * And held by a Mac seen in 3 days (17 Oct 2026) — the reader rotation uses, request-cached — so
+   * "N accounts can send" counts the accounts rotation will actually elect, not one more.
+   */
+  const held = await readSessionHolders()
+  const sendersAble = fleetSenders.filter(
+    (s) => sessionIsUsable(s) && (held === null || held.has(s.handle.toLowerCase())),
+  ).length
 
   /**
    * Delivered counts and reply state in ONE query rather than per row.

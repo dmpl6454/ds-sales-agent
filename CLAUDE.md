@@ -5,6 +5,58 @@ changing anything that touches sending.
 
 ---
 
+## 17 OCTOBER — ONE MISSING MAC JAMMED THE QUEUE
+
+**MEASURED on the box, ~05:40 IST:** zero sends since 16 Oct ~10:00 UTC. `activeDevice` = DMPLs
+Mac Studio (`57faf88`), whose presence lists paparazzii, societyy, madaboutmarketingg, totalfilmii.
+Tabish's Mac — the only one that ever held **@bollywoodchronicle** — is gone, but chronicle's row
+still read ACTIVE with a recorded session, so rotation kept electing it: **147 first touches + 45
+follow-ups waiting**, last delivery 22 Sept, every one held by the Studio as `no-session`. The
+new-brand bound is a fleet-wide DEPTH (`maxWaitingNewBrandDrafts` 150), so chronicle's drafts filled
+it and every pass read `queued=0 … new-brand-daily-cap=377` — the four pages that CAN send starved.
+
+**Now (`src/outreach/availability.ts`, `src/outreach/unheldRelease.ts`):** `readSenderAvailability`
+also reads the shared `devicePresence` row — an otherwise-available account that no entry written in
+the last **72 h** (`SESSION_HOLDER_WINDOW_MS`, not the 2-min heartbeat: a night's sleep must not spin
+rotation) lists is unavailable, *"signed in on no Mac that has been online in the last 3 days"*. No
+row / unparseable / no entry with `handles` = no witness = no change. It narrows
+`eligibleFleetSenders` too (the ring rule counts only pages that could write). At the top of each
+pass, BEFORE the depth is read, the planner RELEASES that account's READY/QUEUED drafts through
+`discardAttempt` (new `onlyWaiting` narrowing) — never SENDING, never FAILED, never a non-fleet
+account, and **never a draft a person edited or prepared** (`attempt.edited` / `ondemand.prepared`
+audit rows; kept and counted in the log). Only this reason releases: a flagged or signed-out account
+is fixable on a Mac that exists. Tests: `tests/availability-presence.test.ts`,
+`tests/unheld-release-planner.test.ts` (the live wedge, both passes), mutation-checked.
+
+**Then an adversarial review found six defects in that first version, all fixed the same day:**
+
+| finding | now |
+|---|---|
+| the 72 h window covered only a Mac that STOPS writing — a live Mac rewrites its own entry every 30 s, so ONE beat listing fewer handles (`hasSessionCookie` fails closed: a full disk, a torn Cookies copy) or a same-name twin pruned by `mergePresence` un-held accounts at once, and the release SKIPped their queue on that one snapshot | the window is PER HANDLE over a persisted history, `Setting.sessionHolderSeen` (`{handle: last listed}`), written by the planner once a pass (`recordSessionHolderHistory`, the one writer) and merged by every reader; in `PULSE_IGNORED_SETTING_KEYS` the same day (rule 47). A future-dated entry is clamped to now. The release also WAITS one pass after the history is first seeded (`heldBack: 'no-history'`) — never on one read |
+| with EVERY fleet account unheld (the Studio away past the window) the release SKIPped the whole fleet's queue for nobody, reversing the recorded queue-and-send-on-return decision (8 Sept: "drafts stay READY … they go out on reconnect") and losing follow-ups the gate's 7-day window could still send but the planner's 72 h floor can never re-write | `heldBack: 'no-page-can-send'` — nothing is released when no fleet page can send. The wedge (four pages can, one cannot) is unaffected |
+| /senders, the landing switch card (`readyHandles`/`needLoginHandles`, the account cards) and /targets' `sendersAble` read only the session record, so they called chronicle "Sending on their own" while rotation dropped it | all ask `readSessionHolders` (request-cached, one query with the presence row): chronicle reads "Signed in, but on no Mac that has been online in the last 3 days … Sign it in on DMPLs Mac Studio — press Connect", out of `readyHandles`; the ROTATION_STUCK sentence names the cause |
+| nothing pinned that ONLY the not-held reason releases; nothing called `discardAttempt({ onlyWaiting })` | a logged-out and a CHALLENGED page in the planner test keep their drafts; `tests/unheld-release.test.ts` drives every other reason, both holds, and `onlyWaiting` against a FAILED park and a SENDING row |
+
+**NOT addressed, stated:** when chronicle is signed in on the Studio again, rotation re-elects it for
+recipients a substitute page drafted meanwhile, and `hasPendingAttempt` is per PAIR — so two pages
+can each hold a first touch to one recipient. That shape predates this change (any account that
+signs back in does it), and the material allowance still bounds what is DELIVERED; `pnpm
+ig:dedupe-drafts` is the broom. A recipient-level pending check is its own decision.
+
+**The person's alternative:** sign @bollywoodchronicle in on the Studio (`/senders` → Connect);
+its next heartbeat lists it and the planner writes to it again on the next pass. **After deploy the
+release fires on the SECOND planner pass** (the first seeds the history), i.e. within ~30 minutes.
+**Deploy:** `scripts/deploy-worker-on-box.sh <sha>` ships the planner half (no lockfile or schema change); the screen half reaches the hosted dashboard only with the next web-tier build, which still needs a Mac. **Not deployed when written.** Suite **3,628 / 3,630** (the two offline `route-rule` timeouts), typecheck clean.
+
+57. **An account is electable only if a Mac that has been online recently holds it.** The planner
+    runs where no profile lives; ask the shared presence row, never assume a recorded login still
+    has a machine behind it.
+58. **A window over a row that is rewritten every beat is no window.** Hysteresis belongs on the
+    fact that can blink (each handle), persisted, and an irreversible step never rides on one read.
+59. **A release that frees room for nobody is only a loss.** Check that someone can use what it frees.
+
+---
+
 ## 15 OCTOBER — INSTAGRAM WALLED THE APP IDENTITY TOO; DETECTION NOW HAS AN OFFICIAL FALLBACK AND SAYS WHY IT FAILED
 
 **Asked: *"fix this first make it working first"*,** over a dashboard reading *"Instagram is refusing
