@@ -30,6 +30,7 @@
  */
 import { prisma } from '@/lib/db'
 import { enrichHandle } from '@/detection/enrichHandle'
+import { discardWaitingDraftsToRetiredRecipients } from '@/outreach/retiredRecipientDrafts'
 
 /**
  * 6s is the standing politeness for this endpoint. This command accepts `--spacing` because
@@ -75,6 +76,13 @@ async function main() {
     if (badgeWrong) {
       unverified++
       console.log(`  ✗  @${p.handle} is NOT verified — stored ${JSON.stringify(p.displayName)}, really ${JSON.stringify(e.fullName)}. RETIRE`)
+      /* A dry run is the real answer: say what --run will also discard (retiredRecipientDrafts.ts). */
+      const waiting = await prisma.outreachAttempt.count({
+        where: { status: { in: ['READY', 'QUEUED'] }, pair: { targetId: p.id } },
+      })
+      if (waiting > 0) {
+        console.log(`       ${waiting} waiting draft(s) to it ${run ? 'are being' : 'will be'} discarded — they can no longer be sent`)
+      }
       if (run) {
         await prisma.targetAccount.update({
           where: { id: p.id },
@@ -88,6 +96,14 @@ async function main() {
             detail: `@${p.handle} retired: re-read identity says isVerified=false (VERIFIED ONLY). Stored name was ${JSON.stringify(p.displayName)}, real name ${JSON.stringify(e.fullName)} — the old row's identity came from a collaborator.`,
           },
         })
+        /* Its waiting drafts can no longer be sent (retiredRecipientDrafts.ts). Best effort: the
+           retirement is written, so a failed discard must not abort the rest of the run. */
+        try {
+          const swept = await discardWaitingDraftsToRetiredRecipients({ actor, targetIds: [p.id] })
+          if (swept.discarded > 0) console.log(`       discarded ${swept.discarded} waiting draft(s) to it`)
+        } catch (err) {
+          console.log(`       could not discard its waiting drafts (${err instanceof Error ? err.message : String(err)}) — the planner will on its next pass`)
+        }
       }
       continue
     }

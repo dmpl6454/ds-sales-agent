@@ -469,6 +469,37 @@ describe('removeTarget on a prospect ALWAYS retires', () => {
   })
 
   /**
+   * ITS WAITING DRAFTS GO WITH IT (26 Oct 2026). A draft to a retired recipient can no longer be
+   * sent; left READY, the sending Mac re-asks the gate about it every 30 seconds for good
+   * (measured ~7,000 times a day). Remove discards them through the one audited writer and says
+   * how many — and leaves the delivery, the not-in-thread park and a send in flight exactly as
+   * they were.
+   */
+  it('discards its waiting drafts, audited, and says so — and leaves history and a send in flight alone', async () => {
+    await sender('chronicle')
+    await target('wait_p')
+    await attempt('w_ready', 'chronicle', 'wait_p', { status: 'READY' })
+    await attempt('w_queued', 'chronicle', 'wait_p', { status: 'QUEUED' })
+    await attempt('w_sent', 'chronicle', 'wait_p', { status: 'SENT' })
+    await attempt('w_park', 'chronicle', 'wait_p', { status: 'FAILED', failureCode: 'not-in-thread' })
+    await attempt('w_sending', 'chronicle', 'wait_p', { status: 'SENDING' })
+
+    const r = await removeTarget('wait_p')
+
+    const status = async (id: string) => (await prisma.outreachAttempt.findUniqueOrThrow({ where: { id } })).status
+    expect(await status('w_ready')).toBe('SKIPPED')
+    expect(await status('w_queued')).toBe('SKIPPED')
+    expect(await status('w_sent')).toBe('SENT')
+    expect(await status('w_park')).toBe('FAILED')
+    expect(await status('w_sending')).toBe('SENDING')
+    const audits = await prisma.auditLog.findMany({ where: { action: 'attempt.skipped' } })
+    expect(audits.map((a) => a.entity).sort()).toEqual(['OutreachAttempt:w_queued', 'OutreachAttempt:w_ready'])
+    expect(audits.every((a) => a.actor === 'test@dashmani.com')).toBe(true)
+    expect(r.ok).toBe(true)
+    expect(r.message).toContain('Of those, the 2 still waiting were discarded — they can no longer be sent.')
+  })
+
+  /**
    * WHY "ALWAYS". The badge door lists every asserted handle with NO row and admits a verified
    * one without a network call. A retired row stops that; a deleted one is minted again on the
    * next brand pass, with live routes and none of its history. Run dry, so nothing is created.

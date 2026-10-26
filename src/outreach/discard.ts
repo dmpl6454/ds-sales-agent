@@ -44,6 +44,13 @@ export async function discardAttempt(args: {
    * only: the guard is still inside the one update, and nothing can widen it.
    */
   onlyWaiting?: boolean
+  /**
+   * NARROW the guard to drafts whose recipient is retired AT THE MOMENT OF THE WRITE (26 Oct
+   * 2026) — the condition the gate refuses on, `pair.target.optedOut`, inside the one update,
+   * so a recipient un-retired between a sweep's read and this write keeps its draft (house
+   * rule 50: the guard is in the statement). Narrowing only, like `onlyWaiting`.
+   */
+  onlyIfRecipientRetired?: boolean
 }): Promise<DiscardResult> {
   /**
    * Conditional `updateMany` rather than read-then-write, for the same reason `sendNow`
@@ -62,6 +69,7 @@ export async function discardAttempt(args: {
      */
     where: {
       id: args.attemptId,
+      ...(args.onlyIfRecipientRetired ? { pair: { target: { optedOut: true } } } : {}),
       OR: args.onlyWaiting
         ? [{ status: { in: ['READY', 'QUEUED'] } }]
         : [

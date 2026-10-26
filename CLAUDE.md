@@ -5,6 +5,45 @@ changing anything that touches sending.
 
 ---
 
+## 26 OCTOBER — THE 19–22 OCT QUIET WAS THE SEVEN-DAY RULE ON AN EMPTY LIST; DRAFTS TO RETIRED RECIPIENTS NOW GO
+
+**Asked:** why deliveries fell to 4 / 0 / 1 / 8 a day on 19–22 Oct after 345 and 163 on 17–18 Oct,
+then came back (54 / 202 / 80). **MEASURED on the Mac Studio:** its agent logged ~11,000–12,800
+lines EVERY day 18–24 Oct, `pmset` shows no sleep, and the box's sshd shows its tunnel connected —
+so the Mac was awake and checking every 30 s. The ~10,000 holds a day mean the queue held only a
+handful of drafts, and only two reasons appear: *"no paid post of theirs has been detected and one
+of our pages has already written"* (the material allowance) and *"this recipient is retired"*. The
+17–18 Oct burst wrote to nearly every company the four pages can reach; each then waits seven days
+unless a NEW paid post naming it is detected, and under the Instagram wall (15 Oct) the official
+read carries no tags and, per Meta's docs, no `@`, so almost nothing counts, and no new prospects
+are minted. The recovery is those messages turning a week old. **Not a fault: the fleet now sends in
+weekly waves, capped by its reachable list ÷ 7 days.** The levers are Tabish's (official-read
+captions as naming evidence once a real one is seen; minting under the wall; the allowance itself).
+`scripts/diagnose-send-gap.sh` is the read-only diagnostic used, executed against a scratch Postgres
+16.15 before it was handed over.
+
+**Built the same day (`src/outreach/retiredRecipientDrafts.ts`):** a READY/QUEUED draft to an
+`optedOut` recipient can never be sent, and nothing removed one — `pnpm ig:discard-retired-drafts`
+existed since 23 Aug and nothing ran it (rule 60). Now discarded through `discardAttempt`
+(`onlyWaiting`, plus the new **`onlyIfRecipientRetired`**, which re-asks `pair.target.optedOut`
+INSIDE the update, so an `ig:unretire-target` landing mid-sweep keeps its draft — rule 50) by: the
+planner at the top of every pass, before the waiting depth is read (the backlog, and the net for any
+path or build, including the hosted web tier, which is still the old build); and, best effort after
+the retirement is written, by `removeTarget` (the message now says *"Of those, the N still waiting
+were discarded — they can no longer be sent"*), `ig:retire-target` and `ig:reverify-identity` (whose
+dry run now counts them). Never SENDING, never FAILED, never history. `ig:discard-retired-drafts` is
+that function behind a dry run (its own query read the denormalised `attempt.target`). Tests:
+`tests/retired-recipient-drafts.test.ts` (the real planner, a depth filled by a dead draft, the
+in-statement guard, comment-stripped wiring checks with asserted anchors) and a live case in
+`tests/remove-target-live.test.ts`; every reviewer-proposed break fails a test. Suite **3,645 /
+3,647** (the two offline `route-rule` timeouts), typecheck clean. **Deploy:** worker only
+(`scripts/deploy-worker-on-box.sh <sha>`); the first planner pass after it discards the backlog.
+
+60. **A cleanup that only runs when someone types a command is not running.** Put it on the clock
+    that already runs, and leave the command as a preview of the same function.
+
+---
+
 ## 17 OCTOBER — ONE MISSING MAC JAMMED THE QUEUE
 
 **MEASURED on the box, ~05:40 IST:** zero sends since 16 Oct ~10:00 UTC. `activeDevice` = DMPLs

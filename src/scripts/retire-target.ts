@@ -1,6 +1,7 @@
 import 'dotenv/config'
 import { prisma } from '@/lib/db'
 import { env } from '@/lib/env'
+import { discardWaitingDraftsToRetiredRecipients } from '@/outreach/retiredRecipientDrafts'
 
 /**
  * `pnpm ig:retire-target <handle> [<handle>...]` — mark a target NEVER TO BE CONTACTED.
@@ -32,12 +33,15 @@ import { env } from '@/lib/env'
  * a pair erases the record of messages real people received — which spacing, the
  * unanswered-touch cap and the new-material rule are all derived from.
  *
- * ── WAITING DRAFTS ARE REPORTED, NOT SILENTLY LEFT ────────────────────────
+ * ── WAITING DRAFTS ARE DISCARDED, AND SAID OUT LOUD (26 Oct 2026) ─────────
  *
- * Retiring blocks future sends; it does not tidy the queue. A draft already written to this
- * recipient stays READY and is refused by the gate's `target-opted-out` stop — correct, and
- * invisible unless it is said out loud, so the count is printed and `ig:discard-stale-drafts`
- * named as the way to clear it.
+ * A draft already written to this recipient can no longer be sent: the gate refuses it as
+ * `target-opted-out`, a stop no override crosses. So the dry run counts them and `--run`
+ * discards them through `discardWaitingDraftsToRetiredRecipients` (audited, the body kept on the
+ * SKIPPED row). Best effort — the retirement is written first, so a failed discard is reported
+ * and left to the planner, whose every pass sweeps the drafts of any retired recipient
+ * (src/outreach/retiredRecipientDrafts.ts). This header used to point at
+ * `ig:discard-stale-drafts`, which judges message copy and never looks at the recipient.
  */
 
 const args = process.argv.slice(2)
@@ -129,8 +133,10 @@ async function main(): Promise<void> {
       console.log(`      note: ${delivered} message(s) have already been DELIVERED to this recipient.`)
     }
     if (waiting > 0) {
-      console.log(`      note: ${waiting} draft(s) are waiting. The gate refuses them as target-opted-out;`)
-      console.log(`            clear them with pnpm ig:discard-stale-drafts, or leave them to be refused.`)
+      console.log(
+        `      note: ${waiting} draft(s) are waiting. They can never be sent once it is retired, so --run ` +
+          `discards them (audited; the body stays on the row).`,
+      )
     }
 
     if (!run) continue
@@ -144,6 +150,15 @@ async function main(): Promise<void> {
         detail: `@${target.handle} retired: ${reason} (category was ${JSON.stringify(target.brandCategory ?? null)})`,
       },
     })
+    /* Its waiting drafts can no longer be sent; the planner's sweep would discard them on its
+       next pass anyway — done here so the count is in front of the person who retired it. Best
+       effort: the retirement is written, so a failed discard must not stop the next handle. */
+    try {
+      const swept = await discardWaitingDraftsToRetiredRecipients({ actor, targetIds: [target.id] })
+      if (swept.discarded > 0) console.log(`      discarded ${swept.discarded} waiting draft(s) to it`)
+    } catch (err) {
+      console.log(`      could not discard its waiting drafts (${err instanceof Error ? err.message : String(err)}) — the planner will on its next pass`)
+    }
     retired++
   }
 

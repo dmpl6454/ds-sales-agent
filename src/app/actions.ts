@@ -48,6 +48,8 @@ import { routeAllowed, fleetHandles } from '@/outreach/routes'
 import { readCategoryMemberships, categoriesFor } from '@/outreach/categories'
 import { ensureCategory, addTargetToCategory } from '@/outreach/categories'
 import { discardAttempt } from '@/outreach/discard'
+import { discardWaitingDraftsToRetiredRecipients } from '@/outreach/retiredRecipientDrafts'
+import { log, describeError } from '@/lib/logger'
 import { handOffWaitingDrafts, releasableWhere } from '@/outreach/handOff'
 import { removeSenderResult, tallyHeld } from './remove-sender-message'
 import { validatePersona } from '@/outreach/render'
@@ -2421,10 +2423,34 @@ export async function removeTarget(handle: string): Promise<MutationResult> {
     `TargetAccount:${handle}`,
     `${posts} posts, ${attempts} attempts (${delivered} delivered) kept`,
   )
+  /* Its waiting drafts can no longer be sent (`target-opted-out`); discard them here so the
+     person sees the count. Best effort: the retirement above is already written, so a failed
+     sweep must not throw past it — the card would show nothing and the retirement would look
+     undone. The planner's next pass discards whatever is left (retiredRecipientDrafts.ts). */
+  let discardedDrafts = 0
+  let sweepFailed = false
+  try {
+    discardedDrafts = (await discardWaitingDraftsToRetiredRecipients({ actor: user.email, targetIds: [target.id] }))
+      .discarded
+  } catch (err) {
+    sweepFailed = true
+    log.alarm('retired a recipient but could not discard its waiting drafts — the planner will on its next pass', {
+      handle,
+      error: describeError(err),
+    })
+  }
   refresh()
   return {
     ok: true,
-    message: removeTargetResult({ handle, outcome: isWatch ? 'watch-retired' : 'retired', posts, attempts, delivered }),
+    message: removeTargetResult({
+      handle,
+      outcome: isWatch ? 'watch-retired' : 'retired',
+      posts,
+      attempts,
+      delivered,
+      discardedDrafts,
+      sweepFailed,
+    }),
   }
 }
 

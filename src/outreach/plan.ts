@@ -28,6 +28,7 @@ import { checkNewBrandTouchCap, checkRecipientIsNotAPerson } from './brandGuards
 import { readNewBrandTouchCounts } from './brandTouchCounts'
 import { discardIntroductionsToRecipientsWhoKnowUs } from './staleIntroductions'
 import { releaseDraftsNoOnlineMacHolds } from './unheldRelease'
+import { discardWaitingDraftsToRetiredRecipients } from './retiredRecipientDrafts'
 /**
  * The ONLY sender this file imports, since Phase 5. `browserSender` was here too and is
  * deliberately not any more: the planner prepares and `dispatchTick` delivers, so a second
@@ -208,6 +209,30 @@ export async function runOutreach(): Promise<PlanSummary> {
     }
   } catch (err) {
     log.alarm('the sweep for introductions to recipients who already know us failed — the gate still refuses them', {
+      error: describeError(err),
+    })
+  }
+
+  /**
+   * ── AND THE DRAFTS TO RETIRED RECIPIENTS (26 Oct 2026) ──────────────────
+   *
+   * A draft to a retired recipient is refused by the gate forever and, until now, nothing ever
+   * removed it — the Mac re-asked the gate about each one every 30 seconds for weeks, and a
+   * touch-1 draft to a brand held a slot of the waiting depth read below. Discarded HERE for the
+   * H5 sweep's reasons (the server runs this whatever autopilot says, and it catches a
+   * retirement made by any path or any build); see retiredRecipientDrafts.ts. Never able to fail
+   * a pass: the gate keeps refusing these meanwhile.
+   */
+  try {
+    const retired = await discardWaitingDraftsToRetiredRecipients({ actor: 'planner' })
+    if (retired.discarded > 0) {
+      log.info('discarded drafts to retired recipients', {
+        discarded: retired.discarded,
+        recipients: retired.byRecipient.map((r) => `@${r.handle}=${r.count}`).join(' '),
+      })
+    }
+  } catch (err) {
+    log.alarm('the sweep for drafts to retired recipients failed — the gate still refuses them', {
       error: describeError(err),
     })
   }

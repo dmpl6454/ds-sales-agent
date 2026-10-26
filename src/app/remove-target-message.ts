@@ -83,7 +83,22 @@ export function removeTargetResult(r: {
   posts: number
   attempts: number
   delivered: number
+  /** Waiting drafts to it discarded by the retirement (retiredRecipientDrafts.ts). */
+  discardedDrafts?: number
+  /** The discard threw after the retirement was written — the planner's next pass will do it. */
+  sweepFailed?: boolean
 }): string {
+  /* The discarded drafts are AMONG the recorded messages counted as kept (a SKIPPED row is kept
+     as history), so they are worded as a subset of that figure, never as a second number. */
+  const n = r.discardedDrafts ?? 0
+  const waitingNow = (lead: string) =>
+    n > 0
+      ? ` ${lead}${n === 1 ? 'the 1 still waiting was' : `the ${n} still waiting were`} discarded — ` +
+        `${n === 1 ? 'it' : 'they'} can no longer be sent.`
+      : ''
+  const sweepNote = r.sweepFailed
+    ? ' Its waiting drafts could not be discarded just now; the planner discards them within 15 minutes.'
+    : ''
   switch (r.outcome) {
     case 'deleted':
       return `Stopped watching @${r.handle} and removed it — nothing had been stored from it.`
@@ -93,7 +108,9 @@ export function removeTargetResult(r: {
         (r.posts > 0
           ? `Its ${plural(r.posts, 'stored post')} ${r.posts === 1 ? 'is' : 'are'} kept. ${STILL_COUNTS} `
           : `Messages were once recorded under it, so it is retired rather than deleted and that record is kept. `) +
-        `It is still never messaged. Add it again to read it again.`
+        `It is still never messaged. Add it again to read it again.` +
+        waitingNow('Of its drafts, ') +
+        sweepNote
       )
     case 'retired':
       return (
@@ -102,6 +119,8 @@ export function removeTargetResult(r: {
           ? ` Its ${plural(r.attempts, 'recorded message')} (${r.delivered} delivered) ` +
             `${r.attempts === 1 ? 'is' : 'are'} kept, so nobody there is written to twice.`
           : '') +
+        (r.attempts > 0 ? waitingNow('Of those, ') : '') +
+        sweepNote +
         ` To message it again, \`pnpm ig:unretire-target @${r.handle}\` re-reads its badge first.`
       )
   }
