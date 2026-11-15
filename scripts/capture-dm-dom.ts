@@ -1,8 +1,11 @@
 /**
  * WHAT DOES INSTAGRAM'S CONVERSATION PAGE CONTAIN, SECOND BY SECOND? — a read-only capture.
  *
- *   pnpm exec tsx scripts/capture-dm-dom.ts <sender> <target>            the conversation
- *   pnpm exec tsx scripts/capture-dm-dom.ts <sender> --inbox             the inbox list
+ *   pnpm exec tsx scripts/capture-dm-dom.ts <sender> <target> [--shots]   the conversation
+ *   pnpm exec tsx scripts/capture-dm-dom.ts <sender> --inbox [--shots]    the inbox list
+ *
+ * --shots saves screenshots at 1 s, 3 s and 16 s to /tmp/ds-capture-*.png (the business's own
+ * inbox — look at them, share them only if you choose to).
  *
  * WHY IT EXISTS (15 Nov). The sending Mac's agent has filed ~200 conversation reads a day
  * `unreadable` since at least 27 Oct, and every inbox scan of two pages "no conversation rows
@@ -19,6 +22,14 @@
  * This prints, at fixed times after the click, how many nodes each selector the reader relies
  * on matches, and at the end WHERE our own message's text sits in the settled page (the chain
  * of tag/role/dir/aria-label above it). That is what a selector fix is written from.
+ *
+ * WHAT THE FIRST RUN SHOWED (15 Nov, the Mac Studio). It is not a selector drift. The thread's
+ * one message matched the reader at 2 s after the click and was GONE from the page by 3 s — its
+ * text no longer anywhere in the DOM at 16 s, the composer still present. The inbox list rendered
+ * 15 conversations at 1 s and collapsed to 3 elements by 2 s. Instagram loads the messages and
+ * then removes them, so the second run also records WHY: the visible text of the page (a prompt
+ * or an error banner a count cannot show), the console errors, failed requests and WebSocket
+ * closes during the sampling, the window size, and — with --shots — screenshots to /tmp.
  *
  * READ-ONLY. It opens the account's own Chrome profile the way every read does (launchProfile),
  * clicks Message (or opens the inbox) and LOOKS. It types nothing, accepts nothing, dismisses
@@ -79,6 +90,16 @@ export const INBOX_PROBE = `(() => {
   }
 })()`
 
+/** The window, and what a person would read on the page (a prompt or banner shows up here). */
+export const PAGE_TEXT_PROBE = `(() => {
+  const root = document.querySelector('[role="main"]') || document.body
+  return {
+    window: window.innerWidth + 'x' + window.innerHeight,
+    text: (root.innerText || '').replace(/\\s+/g, ' ').trim().slice(0, 1500),
+    bodyText: root === document.body ? '' : (document.body.innerText || '').replace(/\\s+/g, ' ').trim().slice(0, 600),
+  }
+})()`
+
 /** Where a piece of text sits: the innermost element containing it, and the chain above it. */
 export function locateProbe(needle: string): string {
   return `(() => {
@@ -133,7 +154,53 @@ function printTable(rows: { atMs: number; probe: Record<string, unknown> }[]): v
   for (const r of cells) console.log('  ' + r.map((c, i) => c.padEnd(w[i]!)).join(' | '))
 }
 
-async function sampleOverTime(page: Page, probe: string): Promise<{ atMs: number; probe: Record<string, unknown> }[]> {
+/** A URL with no query string or fragment — they can carry tokens, and the path is what matters here. */
+export function bareUrl(u: string): string {
+  try {
+    const x = new URL(u)
+    return (x.origin + x.pathname).slice(0, 110)
+  } catch {
+    return u.split(/[?#]/)[0]!.slice(0, 110)
+  }
+}
+
+/** Console errors, page errors, failed requests and WebSocket closes while the sampling runs. */
+export function recordEvents(page: Page): string[] {
+  const events: string[] = []
+  const started = Date.now()
+  const at = () => `${((Date.now() - started) / 1000).toFixed(1)}s`
+  const push = (line: string) => {
+    if (events.length < 40) events.push(`${at()} ${line}`)
+  }
+  // Patchright suppresses Runtime.enable (it is a detection signal), so the PAGE's own console.log
+  // and uncaught errors mostly never arrive here; the browser's own messages (failed loads, socket
+  // errors) do. URLs inside them lose their query strings for the same reason as bareUrl.
+  page.on('console', (m) => {
+    if (m.type() === 'error' || m.type() === 'warning') {
+      const text = m.text().replace(/(?:https?|wss?):\/\/[^\s'"]+/g, (u) => bareUrl(u)).replace(/\s+/g, ' ')
+      push(`console.${m.type()}: ${text.slice(0, 160)}`)
+    }
+  })
+  page.on('pageerror', (e) => push(`page error: ${e.message.replace(/\s+/g, ' ').slice(0, 160)}`))
+  page.on('requestfailed', (r) => push(`request failed: ${r.method()} ${bareUrl(r.url())} — ${r.failure()?.errorText ?? '?'}`))
+  page.on('response', (r) => {
+    if (r.status() >= 400) push(`HTTP ${r.status()}: ${r.request().method()} ${bareUrl(r.url())}`)
+  })
+  page.on('websocket', (ws) => {
+    push(`websocket opened: ${bareUrl(ws.url())}`)
+    ws.on('close', () => push(`websocket closed: ${bareUrl(ws.url())}`))
+    ws.on('socketerror', (err) => push(`websocket error: ${bareUrl(ws.url())} — ${String(err).slice(0, 80)}`))
+  })
+  return events
+}
+
+const SHOT_AT_MS = new Set([1_000, 3_000, 16_000])
+
+async function sampleOverTime(
+  page: Page,
+  probe: string,
+  shots: { prefix: string } | null,
+): Promise<{ atMs: number; probe: Record<string, unknown> }[]> {
   const started = Date.now()
   const out: { atMs: number; probe: Record<string, unknown> }[] = []
   for (const at of SAMPLE_AT_MS) {
@@ -141,18 +208,35 @@ async function sampleOverTime(page: Page, probe: string): Promise<{ atMs: number
     if (wait > 0) await page.waitForTimeout(wait)
     const probeResult = (await page.evaluate(probe).catch((e: Error) => ({ error: e.message.slice(0, 80) }))) as Record<string, unknown>
     out.push({ atMs: Date.now() - started, probe: probeResult })
+    if (shots && SHOT_AT_MS.has(at)) {
+      const file = `/tmp/${shots.prefix}-${String(at / 1000).padStart(2, '0')}s.png`
+      await page.screenshot({ path: file }).then(() => console.log(`  screenshot saved: ${file}`)).catch(() => undefined)
+    }
   }
   return out
+}
+
+async function printAfter(page: Page, events: string[]): Promise<void> {
+  const t = (await page.evaluate(PAGE_TEXT_PROBE).catch(() => null)) as { window: string; text: string; bodyText: string } | null
+  if (t) {
+    console.log(`\n  window ${t.window}; what the page says at the end (up to 1500 characters):`)
+    console.log('    ' + (t.text || '(no text)'))
+    if (t.bodyText) console.log('  and outside the main area: ' + t.bodyText)
+  }
+  console.log(`\n  errors, failed requests and connections while sampling (${events.length}${events.length >= 40 ? ', first 40' : ''}):`)
+  if (events.length === 0) console.log('    (none)')
+  for (const e of events) console.log('    ' + e)
 }
 
 async function main(): Promise<void> {
   const argv = process.argv.slice(2)
   const inbox = argv.includes('--inbox')
+  const wantShots = argv.includes('--shots')
   const needleAt = argv.indexOf('--needle')
   const needle = needleAt >= 0 && argv[needleAt + 1] ? argv[needleAt + 1]! : DEFAULT_NEEDLE
   const [sender, target] = argv.filter((a, i) => !a.startsWith('--') && (needleAt < 0 || i !== needleAt + 1))
   if (!sender || (!inbox && !target)) {
-    console.log('\n  Usage: pnpm exec tsx scripts/capture-dm-dom.ts <sender> <target>   |   <sender> --inbox\n')
+    console.log('\n  Usage: pnpm exec tsx scripts/capture-dm-dom.ts <sender> <target> [--shots]   |   <sender> --inbox [--shots]\n')
     process.exitCode = 1
     return
   }
@@ -167,9 +251,11 @@ async function main(): Promise<void> {
 
     if (inbox) {
       console.log(`\n  @${sender}: the inbox list, sampled after it opens\n`)
+      const events = recordEvents(page)
       await page.goto('https://www.instagram.com/direct/inbox/', { waitUntil: 'domcontentloaded', timeout: 60_000 })
       assertNoCheckpoint(page, sender)
-      printTable(await sampleOverTime(page, INBOX_PROBE))
+      printTable(await sampleOverTime(page, INBOX_PROBE, wantShots ? { prefix: `ds-capture-inbox-${sender}` } : null))
+      await printAfter(page, events)
       console.log('\n  the first rows that hold an avatar (what a row looks like now):')
       for (const r of (await page.evaluate(INBOX_ROWS_PROBE)) as Record<string, unknown>[]) console.log('   ', JSON.stringify(r))
       return
@@ -184,6 +270,8 @@ async function main(): Promise<void> {
       page.locator('div[role="button"]', { hasText: /^Message$/ }),
     ]
     let clicked = false
+    // Recording starts BEFORE the click: what fails is in the first second or two after it.
+    const events = recordEvents(page)
     for (const c of candidates) {
       const first = c.first()
       if (await first.isVisible({ timeout: 5_000 }).catch(() => false)) {
@@ -197,7 +285,8 @@ async function main(): Promise<void> {
       process.exitCode = 1
       return
     }
-    printTable(await sampleOverTime(page, THREAD_PROBE))
+    printTable(await sampleOverTime(page, THREAD_PROBE, wantShots ? { prefix: `ds-capture-thread-${sender}` } : null))
+    await printAfter(page, events)
     console.log(`\n  where "${needle}" sits now, innermost element first:`)
     const located = (await page.evaluate(locateProbe(needle))) as string[][]
     if (located.length === 0) console.log('    (not on the page)')
