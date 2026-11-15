@@ -293,10 +293,18 @@ const Q = [
                  count(*) FILTER (WHERE "verdictSource" = 'semantic') AS judged_by_model
           FROM "DetectedCampaign" WHERE "detectedAt" >= ${SEVEN_IST_DAYS} GROUP BY 1) x
     ORDER BY d`],
-  ['R2 classifier calls in the last 48 h — failures here mean posts are stored and never judged', `
-    SELECT purpose, ok, count(*) AS calls, ${IST('max(at)')} AS newest_ist, left(max(coalesce(error, '')), 140) AS an_error
+  ['R2 classifier calls in the last 48 h — failures here mean posts are stored and never judged. avg_ms near 30000 is our own timeout; a short one means the far end cut the connection', `
+    SELECT purpose, ok, count(*) AS calls, round(avg(ms)) AS avg_ms, max(ms) AS max_ms,
+           ${IST('min(at)')} AS oldest_ist, ${IST('max(at)')} AS newest_ist, left(max(coalesce(error, '')), 100) AS an_error
     FROM "ModelCall" WHERE at >= ${NOW} - interval '48 hours'
     GROUP BY 1, 2 ORDER BY 1, 2`],
+  ['R3 classifier calls per IST day, last 14 days — when the failures started', `
+    SELECT to_char(d, 'DD Mon') AS ist_day, ok_calls, failed_calls, top_error
+    FROM (SELECT (at + interval '5 hours 30 minutes')::date AS d,
+                 count(*) FILTER (WHERE ok) AS ok_calls, count(*) FILTER (WHERE ok = false) AS failed_calls,
+                 left(mode() WITHIN GROUP (ORDER BY error), 60) AS top_error
+          FROM "ModelCall" WHERE purpose = 'classify' AND at >= ${NOW} - interval '14 days' GROUP BY 1) x
+    ORDER BY d`],
   ['S  per page: recipients it could still write a FIRST message to (needs no new paid post) — only pages that can_send_now actually will', `
     SELECT s.handle AS page,
            (s."fleetMember" AND s.status = 'ACTIVE' AND s."sessionPath" IS NOT NULL AND s."sessionInvalidAt" IS NULL
@@ -514,16 +522,21 @@ echo
 echo "== T  per IST day, from the logs: deliveries, and the conversation reads that failed (oldest first; the last 20 days that had any)"
 # A follow-up's thread is read before it is sent, and the reply sweep reads inboxes; when Instagram
 # changes its page the reads fail closed and the follow-up is parked "unreadable". This shows WHEN.
+# watch.log is rotated (disk care keeps its tail), so it covers fewer days than the error log;
+# a day before its first line shows '-' for delivered rather than a false 0. Section Q is the record.
+FIRSTDAY="$( [ -f "$LOGFILE" ] && head -n 1 "$LOGFILE" | sed -nE 's/^([0-9]{1,2} [A-Za-z]+ [0-9]{4}),.*/\1/p' )"
 { [ -f "$LOGFILE" ] && grep -E 'dm delivered' "$LOGFILE"; [ -f "$ERRLOG" ] && grep -E 'could not read thread|inbox scan unreadable|could not be read repeatedly'  "$ERRLOG"; } 2>/dev/null \
   | sed -E 's/^([0-9]{1,2} [A-Za-z]+ [0-9]{4}), .*(dm delivered|could not read thread|inbox scan unreadable|could not be read repeatedly).*/\1  \2/' \
   | grep -E '^[0-9]{1,2} [A-Za-z]+ [0-9]{4}  (dm delivered|could not read thread|inbox scan unreadable|could not be read repeatedly)$' \
-  | awk 'BEGIN { split("Jan Feb Mar Apr May Jun Jul Aug Sep Oct Nov Dec", m, " "); for (i = 1; i <= 12; i++) mon[m[i]] = i; mon["Sept"] = 9 }
+  | awk -v first="$FIRSTDAY" 'BEGIN { split("Jan Feb Mar Apr May Jun Jul Aug Sep Oct Nov Dec", m, " "); for (i = 1; i <= 12; i++) mon[m[i]] = i; mon["Sept"] = 9
+                                     split(first, q, " "); firstkey = (first == "") ? 0 : q[3] * 10000 + mon[q[2]] * 100 + q[1] }
          { split($0, f, "  "); day = f[1]; what = f[2]; split(day, p, " ")
            key = p[3] * 10000 + mon[p[2]] * 100 + p[1]
            if ((day in seen) == 0) { seen[day] = key; days[++k] = day } c[day, what]++ }
          END { for (i = 2; i <= k; i++) { v = days[i]; j = i - 1; while (j > 0 && seen[days[j]] > seen[v]) { days[j + 1] = days[j]; j-- } days[j + 1] = v }
                printf "   %-14s %10s %18s %22s %17s\n", "day", "delivered", "thread unreadable", "inbox scan unreadable", "parked as unread"
-               for (i = 1; i <= k; i++) { d = days[i]; printf "   %-14s %10d %18d %22d %17d\n", d, c[d, "dm delivered"], c[d, "could not read thread"], c[d, "inbox scan unreadable"], c[d, "could not be read repeatedly"] } }' \
+               for (i = 1; i <= k; i++) { d = days[i]; dl = (seen[d] < firstkey) ? "-" : c[d, "dm delivered"] + 0
+                 printf "   %-14s %10s %18d %22d %17d\n", d, dl, c[d, "could not read thread"], c[d, "inbox scan unreadable"], c[d, "could not be read repeatedly"] } }' \
   | { IFS= read -r header; echo "$header"; tail -n 20; }
 echo
 echo "== O  sleep and wake, newest last (the agent cannot send while the Mac sleeps; a closed lid on battery always sleeps)"
@@ -532,6 +545,15 @@ if command -v pmset >/dev/null 2>&1; then
   # scheduled for the FUTURE) and the 'Kernel Client Acks … Sleep/Wake notifications' lines.
   pmset -g log 2>/dev/null | grep -E 'Entering Sleep state|Wake from ' | tail -n 10 | cut -c1-140 | sed 's/^/   /'
   pmset -g batt 2>/dev/null | head -n 1 | sed 's/^/   /'
+  # Instagram draws a conversation only while Chrome is rendering frames, and a Mac whose display
+  # has slept renders none — so a display that sleeps is the first suspect when unattended reads
+  # fail and the same read run by hand works. 'displaysleep 0' means never.
+  echo "   power settings that decide whether the display sleeps:"
+  pmset -g 2>/dev/null | grep -E '^ *(displaysleep|sleep|powernap) ' | sed 's/^ */     /'
+  if command -v system_profiler >/dev/null 2>&1; then
+    echo "   displays connected:"
+    system_profiler SPDisplaysDataType 2>/dev/null | grep -E '^ {8}[^ ].*:$|Online:|Main Display:|Display Asleep:' | sed 's/^ */     /' | head -n 12
+  fi
 else
   echo "   (not a Mac — pmset not found)"
 fi
