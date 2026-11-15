@@ -68,12 +68,21 @@ function out(s) { process.stdout.write(s + '\n') }
 
 let url = null
 let deviceName = os.hostname()
+const REPAIR_STEPS_EARLY = [
+  'Opening DS Sales Agent.app will NOT fix this on a finished install. Re-pair: move ~/ds-sales-agent/.env aside,',
+  'delete ~/.ds-sales-agent-data/setup-complete, open DS Sales Agent.app and approve the Mac on /senders.',
+]
 try {
   const parsed = req('dotenv').parse(fs.readFileSync(path.join(app, '.env')))
   url = typeof parsed.DATABASE_URL === 'string' ? parsed.DATABASE_URL : null
   // The same rule as deviceId() in src/outreach/devicePresence.ts, so section C can say whether
   // activeDevice names THIS Mac. A device name is not a secret.
   if (typeof parsed.DS_DEVICE_NAME === 'string' && parsed.DS_DEVICE_NAME.trim()) deviceName = parsed.DS_DEVICE_NAME.trim()
+  if (url === null) {
+    out('   ' + path.join(app, '.env') + ' has NO DATABASE_URL line — the agent cannot start without it, so this Mac sends')
+    out('   nothing, and the database half of this check is skipped.')
+    for (const line of REPAIR_STEPS_EARLY) out('   ' + line)
+  }
 } catch (e) {
   out('   could not read ' + path.join(app, '.env') + ' (' + (e.code || e.message) + ') — the agent cannot start without it')
 }
@@ -106,6 +115,18 @@ function ist(iso) {
 // What a failed connect means, by its code. Every one of these used to be blamed on the tunnel,
 // and reinstalling a healthy tunnel does nothing for a server that is out of connection slots (the
 // 22 Aug outage, 53300) or a .env with the wrong password (28P01).
+//
+// NEVER ADVISE `install-tunnel.sh install`. On a Mac set up from the installer the tunnel was
+// installed with DS_TUNNEL_HOST=ds-linode, and the script's default host `linode` is an ssh alias
+// that exists only on the maintainer's old Mac — so a bare reinstall points the tunnel at nothing
+// and stops all sending. Restarting the existing job keeps its own settings. (Review of 157afdc.)
+const TUNNEL_RESTART = 'launchctl kickstart -k gui/$(id -u)/com.digitalsukoon.ds-sales-agent.tunnel'
+const REPAIR_STEPS = [
+  'Opening DS Sales Agent.app will NOT fix this on a finished install: it only opens the dashboard, and the',
+  'installer keeps an existing .env. Ask whoever runs the server for the current database credentials, or',
+  're-pair this Mac with them present: move ~/ds-sales-agent/.env aside, delete',
+  '~/.ds-sales-agent-data/setup-complete, open DS Sales Agent.app and approve the Mac on /senders.',
+]
 function whyUnreachable(e) {
   const code = String(e.code || '')
   const msg = String(e.message || e)
@@ -113,20 +134,33 @@ function whyUnreachable(e) {
     return [
       'The tunnel is UP — the server answered — but its Postgres is out of connection slots.',
       'Something is holding connections (on 22 Aug it was a `pnpm local` dashboard on a Mac). The agent cannot',
-      'connect either, so nothing sends until they are freed. Stop any local dashboard, then check the box.',
+      'connect either, so nothing sends until they are freed. Stop any local dashboard, then check the server.',
     ]
   }
-  if (['28P01', '28000', '3D000'].includes(code) || /password|SASL|does not exist/i.test(msg)) {
+  if (/SASL|client password must be a string/i.test(msg)) {
+    // Raised by the driver HERE, before the server is asked: the URL in .env carries no password.
+    return ['The DATABASE_URL in ~/ds-sales-agent/.env has no password in it, so the login cannot be completed.', ...REPAIR_STEPS]
+  }
+  if (['28P01', '28000', '3D000'].includes(code) || /password authentication|does not exist/i.test(msg)) {
     return [
-      'The server answered and REJECTED the login in ~/ds-sales-agent/.env (wrong password or database).',
-      'The tunnel is fine. Re-pair this Mac (open DS Sales Agent.app) to get a fresh DATABASE_URL.',
+      'The tunnel is fine: the server answered and REFUSED the login stored in ~/ds-sales-agent/.env, so either the',
+      'server\'s credentials changed or that file is stale. The agent uses the same login, so it sends nothing.',
+      ...REPAIR_STEPS,
+    ]
+  }
+  if (['ECONNREFUSED', 'EHOSTUNREACH', 'ENOTFOUND'].includes(code)) {
+    return [
+      'Nothing is listening at the tunnel\'s local port, so the tunnel on this Mac is down. The agent reads and',
+      'writes through it, so it cannot send while this lasts.',
+      'Check:    launchctl list | grep digitalsukoon     (the .tunnel line should show a PID in its first column)',
+      'Restart:  ' + TUNNEL_RESTART,
+      'Do not reinstall it with install-tunnel.sh — that would point it at the wrong server.',
     ]
   }
   return [
-    'The tunnel\'s local port did not answer (or the server behind it did not), so the agent cannot reach the',
-    'database either and cannot send while this fails.',
-    'Check:  launchctl list | grep digitalsukoon     (the .tunnel job should show a PID)',
-    'Fix:    cd ~/ds-sales-agent && bash scripts/install-tunnel.sh install',
+    'The tunnel\'s port answered but the server behind it did not (a timeout or a dropped connection). Either the',
+    'server or the network to it is down, or the tunnel is restarting. Nothing on this Mac fixes that: run this',
+    'check again in a few minutes, and if it persists, someone with access to the server should look at it.',
   ]
 }
 
@@ -156,6 +190,53 @@ const SEVEN_IST_DAYS = `(date_trunc('day', ${NOW} + interval '5 hours 30 minutes
 // rule's own fallback) — and share a fleet with the recipient (no membership = 'bollywood', the
 // same intersection routes.ts and gate.ts ask). Still an approximation: it does not know which page
 // rotation elects NEXT, or whether a park blocks that route.
+// The fleet rule: a page may write to a recipient only if their categories meet, and no
+// membership means 'bollywood' (routes.ts / senderCategories.ts — the same intersection).
+const FLEET_MATCH = (sender, target) => `EXISTS (
+  SELECT 1 FROM (
+    SELECT lower(c.slug) AS slug FROM "CategorySender" cs JOIN "Category" c ON c.id = cs."categoryId"
+      WHERE cs."senderId" = ${sender} AND cs.enabled = true
+    UNION ALL SELECT 'bollywood'
+      WHERE NOT EXISTS (SELECT 1 FROM "CategorySender" cs WHERE cs."senderId" = ${sender} AND cs.enabled = true)
+  ) sc JOIN (
+    SELECT lower(c.slug) AS slug FROM "CategoryTarget" ct JOIN "Category" c ON c.id = ct."categoryId"
+      WHERE ct."targetId" = ${target} AND ct.enabled = true
+    UNION ALL SELECT 'bollywood'
+      WHERE NOT EXISTS (SELECT 1 FROM "CategoryTarget" ct WHERE ct."targetId" = ${target} AND ct.enabled = true)
+  ) tc ON tc.slug = sc.slug)`
+// A page rotation could elect today: readSenderAvailability's tests (ACTIVE, a recorded session not
+// since proved dead, listed by a Mac within 72 h — $1, computed in JS below; NULL = no witness).
+const ELECTABLE = (s) => `${s}."fleetMember" = true AND ${s}.status = 'ACTIVE' AND ${s}."sessionPath" IS NOT NULL
+  AND ${s}."sessionInvalidAt" IS NULL AND ($1::text[] IS NULL OR lower(${s}.handle) = ANY ($1::text[]))`
+// checkRecipientIsNotAPerson (brandGuards.ts) with isPersonRoleCategory (resolveBrand.ts): a BRAND
+// row whose Instagram category is a profession is never written to, unless admitted as campaign
+// talent. The two word lists are COPIED from src/detection/resolveBrand.ts — a diagnostic, so a
+// drift costs a miscount, never a send.
+const PERSON_CATEGORIES = ['artist','actor','musician/band','public figure','politician','personal blog','digital creator',
+  'content creator','entrepreneur','author','athlete','blogger','video creator','gamer','comedian','fashion designer',
+  'designer','photographer','model','writer','journalist','editor','chef','dancer','musician','singer','producer',
+  'director','filmmaker','makeup artist','hair stylist','fashion model','actress','influencer','coach','doctor','lawyer',
+  'teacher','personal trainer','fitness trainer','health/beauty','gaming video creator','gaming creator']
+const PERSON_ROLE_WORDS = ['actor','actress','artist','astrologer','astrologist','athlete','author','blogger','celebrities',
+  'celebrity','chef','coach','comedian','creator','creators','dancer','designer','director','doctor','entrepreneur',
+  'filmmaker','gamer','influencer','investigator','journalist','lawyer','model','musician','photographer','politician',
+  'producer','singer','teacher','writer']
+const sqlArray = (xs) => `ARRAY[${xs.map((x) => `'${x.replace(/'/g, "''")}'`).join(',')}]::text[]`
+const IS_A_PERSON = (t) => `(${t}.kind = 'BRAND' AND ${t}."campaignTalent" = false AND (
+  lower(trim(coalesce(${t}."brandCategory", ''))) = ANY (${sqlArray(PERSON_CATEGORIES)})
+  OR regexp_split_to_array(lower(coalesce(${t}."brandCategory", '')), '[^a-z]+') && ${sqlArray(PERSON_ROLE_WORDS)}))`
+
+// One row per resting recipient (heard from a page inside the window) and what can release it.
+// A follow-up needs a NEW paid post naming them (governor NO_NEW_MATERIAL), so when their rest ends
+// only a page that has NEVER delivered to them may write — an introduction — and only if they never
+// replied (isFollowUp: touchesSoFar > 0 || targetHasEverReplied). Four outcomes, because they have
+// four different cures (reviews of 9e55189 and 157afdc):
+//   no_page_can_send      no same-fleet page rotation could elect at all — bring a Mac or a sign-in back
+//   introducible          an electable page that never wrote exists — time frees them
+//   blocked_on_a_page     a page that never wrote exists but cannot send now (no Mac holds it, logged out)
+//   needs_new_paid_post   every same-fleet page has written, or they replied — only material frees them
+// Still an approximation of rotation: it does not know which page is elected NEXT, or a park.
+const NEVER_DELIVERED = (p) => `NOT EXISTS (SELECT 1 FROM "OutreachAttempt" d WHERE d."pairId" = ${p}.id AND d.status IN ('SENT','REPLIED'))`
 const RESTING = `
   WITH x AS (
     SELECT a."targetId", max(a."sentAt") AS last_sent
@@ -163,28 +244,39 @@ const RESTING = `
     WHERE a.status IN ('SENT','REPLIED') AND ${LIVE}
     GROUP BY a."targetId"
     HAVING max(a."sentAt") >= ${NOW} - ${WIN} * interval '1 day'
-  ), y AS (
+  ), y0 AS (
     SELECT x.*,
-      (NOT EXISTS (SELECT 1 FROM "OutreachAttempt" r WHERE r."targetId" = x."targetId" AND r."replyPostedAt" IS NOT NULL)
-       AND EXISTS (SELECT 1 FROM "OutreachPair" p JOIN "SenderAccount" s ON s.id = p."senderId"
-                   WHERE p."targetId" = x."targetId" AND s."fleetMember" = true AND s.status = 'ACTIVE'
-                     AND s."sessionPath" IS NOT NULL AND s."sessionInvalidAt" IS NULL
-                     AND ($1::text[] IS NULL OR lower(s.handle) = ANY ($1::text[]))
-                     AND EXISTS (
-                       SELECT 1 FROM (
-                         SELECT lower(c.slug) AS slug FROM "CategorySender" cs JOIN "Category" c ON c.id = cs."categoryId"
-                           WHERE cs."senderId" = s.id AND cs.enabled = true
-                         UNION ALL SELECT 'bollywood'
-                           WHERE NOT EXISTS (SELECT 1 FROM "CategorySender" cs WHERE cs."senderId" = s.id AND cs.enabled = true)
-                       ) sc JOIN (
-                         SELECT lower(c.slug) AS slug FROM "CategoryTarget" ct JOIN "Category" c ON c.id = ct."categoryId"
-                           WHERE ct."targetId" = x."targetId" AND ct.enabled = true
-                         UNION ALL SELECT 'bollywood'
-                           WHERE NOT EXISTS (SELECT 1 FROM "CategoryTarget" ct WHERE ct."targetId" = x."targetId" AND ct.enabled = true)
-                       ) tc ON tc.slug = sc.slug)
-                     AND NOT EXISTS (SELECT 1 FROM "OutreachAttempt" d WHERE d."pairId" = p.id AND d.status IN ('SENT','REPLIED')))
-      ) AS a_page_can_introduce
-    FROM x)`
+      EXISTS (SELECT 1 FROM "OutreachAttempt" r WHERE r."targetId" = x."targetId" AND r."replyPostedAt" IS NOT NULL) AS replied,
+      EXISTS (SELECT 1 FROM "OutreachPair" p JOIN "SenderAccount" s ON s.id = p."senderId"
+              WHERE p."targetId" = x."targetId" AND ${ELECTABLE('s')} AND ${FLEET_MATCH('s.id', 'x."targetId"')}) AS any_page_can_send,
+      EXISTS (SELECT 1 FROM "OutreachPair" p JOIN "SenderAccount" s ON s.id = p."senderId"
+              WHERE p."targetId" = x."targetId" AND ${ELECTABLE('s')} AND ${FLEET_MATCH('s.id', 'x."targetId"')}
+                AND ${NEVER_DELIVERED('p')}) AS electable_never_wrote,
+      EXISTS (SELECT 1 FROM "OutreachPair" p JOIN "SenderAccount" s ON s.id = p."senderId"
+              WHERE p."targetId" = x."targetId" AND s."fleetMember" = true AND ${FLEET_MATCH('s.id', 'x."targetId"')}
+                AND ${NEVER_DELIVERED('p')}) AS some_page_never_wrote
+    FROM x
+  ), y AS (
+    SELECT y0.*,
+      CASE WHEN any_page_can_send = false THEN 'no_page_can_send'
+           WHEN replied = false AND electable_never_wrote THEN 'introducible'
+           WHEN replied = false AND some_page_never_wrote THEN 'blocked_on_a_page'
+           ELSE 'needs_new_paid_post' END AS outcome
+    FROM y0)`
+
+// What each count in a 'kv' section means, printed beside it.
+const MEANS = {
+  live_recipients: 'verified companies we may write to (not retired)',
+  can_get_a_first_message_now: 'never messaged, not a person, and a page that can send reaches them',
+  never_messaged_but_refused: 'never messaged, but a person (never written to) or no page that can send reaches them',
+  never_delivered_but_parked: 'a message to them was parked — it may have arrived, a person settles it',
+  resting: 'heard from one of our pages inside the window',
+  resting_time_frees: 'when their rest ends, a page that can send and never wrote to them can introduce itself',
+  resting_blocked_on_a_page: 'a page that never wrote to them exists but cannot send now — sign it in on the sending Mac',
+  resting_needs_a_new_paid_post: 'every page has written (or they replied) — only a new paid post naming them frees them',
+  resting_no_page_can_send: 'no page that can send reaches them at all — bring back a Mac or a sign-in',
+  window_days: 'the rest window (Setting defaultCooldownDays)',
+}
 
 const Q = [
   ['A  deliveries per IST day, the last 7 days plus today (a missing day sent nothing). Low or zero days after a big day are the seven-day rule — a fault only if N shows the waiting drafts held by something else', `
@@ -197,9 +289,10 @@ const Q = [
           WHERE status IN ('SENT','REPLIED') AND "sentAt" >= ${SEVEN_IST_DAYS}
           GROUP BY 1) x
     ORDER BY d`],
-  ['B  the queue now, per sending page. READY waits to be sent (oldest_draft_written is when the draft was WRITTEN). SENDING is a drive in progress — stuck only if C shows no sendLock, or a sendLock more than ~6 min old', `
+  ['B  the queue now, per sending page. READY waits to be sent; a failed send or an unreadable thread read moves a draft to the back, so oldest_in_line_since is when it was written OR last retried, and retrying/most_tries show drafts failing toward a park (3 tries). SENDING is a drive in progress — stuck only if C shows no sendLock, or one more than ~6 min old', `
     SELECT s.handle AS sender, a.status, count(*) AS drafts,
-           CASE WHEN a.status = 'SENDING' THEN NULL ELSE ${IST('min(a."queuedAt")')} END AS oldest_draft_written_ist
+           CASE WHEN a.status = 'SENDING' THEN NULL ELSE ${IST('min(a."queuedAt")')} END AS oldest_in_line_since_ist,
+           count(*) FILTER (WHERE a.attempts > 0) AS retrying, max(a.attempts) AS most_tries
     FROM "OutreachAttempt" a JOIN "SenderAccount" s ON s.id = a."senderId"
     WHERE a.status IN ('READY','QUEUED','SENDING')
     GROUP BY 1, 2 ORDER BY 1, 2`],
@@ -220,22 +313,37 @@ const Q = [
            (SELECT count(*) FROM "OutreachAttempt" a
              WHERE a."senderId" = s.id AND a.status IN ('SENT','REPLIED') AND a."sentAt" >= ${NOW} - interval '24 hours') AS sent_24h
     FROM "SenderAccount" s ORDER BY s.handle`],
-  ['F  who can be written to. never_messaged can get a first message; resting heard from a page inside the window; resting_time_cannot_free have had every page that can send write to them (or replied) — only a NEW paid post naming them frees those', `
+  ['F  who can be written to', `
     ${RESTING}
     SELECT (SELECT count(*) FROM "TargetAccount" t WHERE ${LIVE}) AS live_recipients,
            (SELECT count(*) FROM "TargetAccount" t WHERE ${LIVE}
-              AND NOT EXISTS (SELECT 1 FROM "OutreachAttempt" a WHERE a."targetId" = t.id AND a.status IN ('SENT','REPLIED','FAILED'))) AS never_messaged,
+              AND NOT EXISTS (SELECT 1 FROM "OutreachAttempt" a WHERE a."targetId" = t.id AND a.status IN ('SENT','REPLIED','FAILED'))
+              AND NOT ${IS_A_PERSON('t')}
+              AND EXISTS (SELECT 1 FROM "OutreachPair" p JOIN "SenderAccount" s ON s.id = p."senderId"
+                          WHERE p."targetId" = t.id AND ${ELECTABLE('s')} AND ${FLEET_MATCH('s.id', 't.id')})) AS can_get_a_first_message_now,
+           (SELECT count(*) FROM "TargetAccount" t WHERE ${LIVE}
+              AND NOT EXISTS (SELECT 1 FROM "OutreachAttempt" a WHERE a."targetId" = t.id AND a.status IN ('SENT','REPLIED','FAILED'))
+              AND (${IS_A_PERSON('t')}
+                   OR NOT EXISTS (SELECT 1 FROM "OutreachPair" p JOIN "SenderAccount" s ON s.id = p."senderId"
+                                  WHERE p."targetId" = t.id AND ${ELECTABLE('s')} AND ${FLEET_MATCH('s.id', 't.id')}))) AS never_messaged_but_refused,
            (SELECT count(*) FROM "TargetAccount" t WHERE ${LIVE}
               AND NOT EXISTS (SELECT 1 FROM "OutreachAttempt" a WHERE a."targetId" = t.id AND a.status IN ('SENT','REPLIED'))
               AND EXISTS (SELECT 1 FROM "OutreachAttempt" a WHERE a."targetId" = t.id AND a.status = 'FAILED')) AS never_delivered_but_parked,
            (SELECT count(*) FROM y) AS resting,
-           (SELECT count(*) FROM y WHERE a_page_can_introduce = false) AS resting_time_cannot_free,
-           ${WIN} AS window_days`],
-  ['G  resting recipients by the IST day their rest ends. could_be_introduced: a page that can send and has never written to them exists. needs_a_new_paid_post: every such page has written (or they replied), so the date alone frees nothing', `
+           (SELECT count(*) FROM y WHERE outcome = 'introducible') AS resting_time_frees,
+           (SELECT count(*) FROM y WHERE outcome = 'blocked_on_a_page') AS resting_blocked_on_a_page,
+           (SELECT count(*) FROM y WHERE outcome = 'needs_new_paid_post') AS resting_needs_a_new_paid_post,
+           (SELECT count(*) FROM y WHERE outcome = 'no_page_can_send') AS resting_no_page_can_send,
+           ${WIN} AS window_days`, 'kv'],
+  ['G  resting recipients by the IST day their rest ends, and what releases them then (see F for what each column means)', `
     ${RESTING}
-    SELECT to_char(d, 'DD Mon') AS rest_ends_ist, n AS recipients, intro AS could_be_introduced, n - intro AS needs_a_new_paid_post
-    FROM (SELECT (last_sent + ${WIN} * interval '1 day' + interval '5 hours 30 minutes')::date AS d,
-                 count(*) AS n, count(*) FILTER (WHERE a_page_can_introduce) AS intro
+    SELECT to_char(d, 'DD Mon') AS rest_ends_ist, n AS recipients, intro AS time_frees, blocked AS blocked_on_a_page,
+           needs AS needs_a_new_paid_post, nopage AS no_page_can_send
+    FROM (SELECT (last_sent + ${WIN} * interval '1 day' + interval '5 hours 30 minutes')::date AS d, count(*) AS n,
+                 count(*) FILTER (WHERE outcome = 'introducible') AS intro,
+                 count(*) FILTER (WHERE outcome = 'blocked_on_a_page') AS blocked,
+                 count(*) FILTER (WHERE outcome = 'needs_new_paid_post') AS needs,
+                 count(*) FILTER (WHERE outcome = 'no_page_can_send') AS nopage
           FROM y GROUP BY 1) z
     ORDER BY d`],
   ['H  new material — detection still finding posts, paid posts, and new companies to write to', `
@@ -244,9 +352,18 @@ const Q = [
            (SELECT count(*) FROM "DetectedCampaign" WHERE verdict = 'CAMPAIGN' AND "detectedAt" >= ${NOW} - interval '24 hours') AS paid_24h,
            (SELECT count(*) FROM "DetectedCampaign" WHERE verdict = 'CAMPAIGN' AND "detectedAt" >= ${NOW} - interval '7 days') AS paid_7d,
            (SELECT count(*) FROM "TargetAccount" WHERE role = 'PROSPECT' AND "createdAt" >= ${NOW} - interval '7 days') AS new_prospects_7d`],
-  ['I  the server\'s last slot runs (4 a day) — a status other than OK, or an error, means the planner or detection is failing there', `
-    SELECT slot, ${IST('"startedAt"')} AS started_ist, status, "newPosts" AS new_posts, queued, left(coalesce(error, ''), 160) AS error
-    FROM "ScrapeRun" ORDER BY "startedAt" DESC LIMIT 4`],
+  ['I  the server\'s last slot runs (4 a day) — a status other than OK, or an error, means the planner or detection is failing there; an unfinished run shows no counts', `
+    SELECT r.slot, ${IST('r."startedAt"')} AS started_ist,
+           CASE WHEN r."finishedAt" IS NOT NULL THEN r.status
+                WHEN r."startedAt" = (SELECT max("startedAt") FROM "ScrapeRun")
+                     AND (r."startedAt" > ${NOW} - interval '60 minutes'
+                          OR EXISTS (SELECT 1 FROM "Setting" WHERE key = 'slotRunning' AND "updatedAt" > ${NOW} - interval '3 minutes'))
+                  THEN 'STILL RUNNING'
+                ELSE 'NEVER FINISHED (the worker stopped mid-slot?)' END AS status,
+           CASE WHEN r."finishedAt" IS NULL THEN NULL ELSE r."newPosts" END AS new_posts,
+           CASE WHEN r."finishedAt" IS NULL THEN NULL ELSE r.queued END AS queued,
+           left(coalesce(r.error, ''), 160) AS error
+    FROM "ScrapeRun" r ORDER BY r."startedAt" DESC LIMIT 4`],
   ['I2 the newest planned slot\'s verdicts — one row per reason a route got no new draft; "draft FAILED" means the planner threw on that route', `
     WITH r AS (SELECT "startedAt", detail FROM "ScrapeRun" WHERE detail LIKE '%"outreach"%' ORDER BY "startedAt" DESC LIMIT 1),
     o AS (SELECT r."startedAt", e FROM r, LATERAL jsonb_array_elements(
@@ -319,6 +436,7 @@ const Q = [
       AND NOT EXISTS (SELECT 1 FROM "OutreachAttempt" a WHERE a."pairId" = p.id
                         AND (a.status IN ('SENT','REPLIED','SENDING','READY','QUEUED') OR a.status = 'FAILED'))
       AND NOT EXISTS (SELECT 1 FROM "OutreachAttempt" r WHERE r."targetId" = t.id AND r."replyPostedAt" IS NOT NULL)
+      AND NOT ${IS_A_PERSON('t')}
       AND NOT EXISTS (SELECT 1 FROM "OutreachAttempt" w WHERE w."targetId" = t.id AND w.status IN ('SENT','REPLIED')
                         AND w."sentAt" >= ${NOW} - ${WIN} * interval '1 day')
       AND EXISTS (
@@ -337,7 +455,11 @@ const Q = [
     GROUP BY s.id, s.handle, s.status, s."fleetMember", s."sessionPath", s."sessionInvalidAt"
     ORDER BY s.handle`],
   ['P  the server\'s connection slots (on 22 Aug a full pool stopped everything)', `
-    SELECT count(*) AS connections_in_use, current_setting('max_connections') AS max_connections FROM pg_stat_activity`],
+    SELECT count(*) FILTER (WHERE backend_type = 'client backend') AS connections_in_use,
+           current_setting('max_connections')::int - current_setting('superuser_reserved_connections')::int
+             - coalesce(current_setting('reserved_connections', true), '0')::int AS usable_by_the_app,
+           current_setting('max_connections') AS max_connections
+    FROM pg_stat_activity`],
 ]
 
 // Which handles a Mac has listed within 72 h — the same rule as onlineSessionHolders() in
@@ -427,6 +549,12 @@ async function main() {
           if (r.key === 'autopilotEnabled' && r.value !== 'true') note = '   <- autopilot is OFF, nothing sends unattended'
           out('   ' + r.key.padEnd(20) + ' ' + cell(r.updated_ist) + ' (' + cell(r.mins_ago) + ' min ago)  ' + cell(r.value) + note)
         }
+      } else if (mode === 'kv') {
+        out('')
+        out('== ' + title)
+        const r = rows[0] || {}
+        const w = Math.max(...Object.keys(r).map((k) => k.length))
+        for (const [k, v] of Object.entries(r)) out('   ' + k.padEnd(w) + '  ' + cell(v).padStart(6) + (MEANS[k] ? '   ' + MEANS[k] : ''))
       } else if (mode === 'presence') {
         out('')
         out('== ' + title)
@@ -458,9 +586,9 @@ async function main() {
     if (lost) {
       out('')
       out('== THE CONNECTION TO THE SERVER DATABASE WAS LOST MID-CHECK: ' + (lost.code || '') + ' ' + lost.message)
-      out('   The agent uses the same tunnel, so it cannot send while this happens.')
-      out('   Check:  launchctl list | grep digitalsukoon     then run this check again')
-      out('   Fix:    cd ~/ds-sales-agent && bash scripts/install-tunnel.sh install')
+      out('   The tunnel restarted or the server went away while the check ran; the sections above it are real,')
+      out('   the rest did not run. Run the check again in a minute — if the database is then unreachable, it says')
+      out('   what to do. Do not reinstall the tunnel with install-tunnel.sh.')
     }
   } finally {
     await c.end().catch(() => undefined)
@@ -546,7 +674,10 @@ echo "== O  sleep and wake, newest last (the agent cannot send while the Mac sle
 if command -v pmset >/dev/null 2>&1; then
   # The event messages, not the domain word: ' Wake ' alone also matches 'Wake Requests' (a wake
   # scheduled for the FUTURE) and the 'Kernel Client Acks … Sleep/Wake notifications' lines.
-  pmset -g log 2>/dev/null | grep -E 'Entering Sleep state|Wake from ' | tail -n 10 | cut -c1-140 | sed 's/^/   /'
+  # Real sleeps and wakes only: a DarkWake is a few seconds awake (the agent cannot send in it) and
+  # its 'Maintenance Sleep' re-sleeps would push the sleep that started an outage out of view.
+  pmset -g log 2>/dev/null | grep -E 'Entering Sleep state|[[:space:]]Wake from |FullWake from ' \
+    | grep -vE 'Maintenance Sleep|Sleep Service Back to Sleep' | tail -n 10 | cut -c1-140 | sed 's/^/   /'
   pmset -g batt 2>/dev/null | head -n 1 | sed 's/^/   /'
   # Instagram draws a conversation only while Chrome is rendering frames, and a Mac whose display
   # has slept renders none — so a display that sleeps is the first suspect when unattended reads
