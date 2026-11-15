@@ -277,6 +277,54 @@ const Q = [
     SELECT 'drafts to RETIRED recipients still waiting now', count(*), NULL
       FROM "OutreachAttempt" a JOIN "OutreachPair" p ON p.id = a."pairId" JOIN "TargetAccount" t ON t.id = p."targetId"
       WHERE a.status IN ('READY','QUEUED') AND t."optedOut" = true`],
+  ['Q  the last delivery ever, and deliveries per IST day over the last 30 days (days with none are left out)', `
+    SELECT ${IST('max("sentAt")')} AS last_delivery_ist,
+           round((extract(epoch FROM ${NOW} - max("sentAt")) / 86400.0)::numeric, 1) AS days_ago,
+           (SELECT string_agg(to_char(d, 'DD Mon') || '=' || n, '  ' ORDER BY d)
+              FROM (SELECT ("sentAt" + interval '5 hours 30 minutes')::date AS d, count(*) AS n FROM "OutreachAttempt"
+                    WHERE status IN ('SENT','REPLIED') AND "sentAt" >= ${NOW} - interval '30 days' GROUP BY 1) z) AS per_day_30d
+    FROM "OutreachAttempt" WHERE status IN ('SENT','REPLIED')`],
+  ['R  detection verdicts per IST day — paid posts are the only new material for a follow-up; many "unjudged" means the classifier is failing', `
+    SELECT to_char(d, 'DD Mon') AS ist_day, n AS posts, campaign AS paid, organic, unjudged, judged_by_model
+    FROM (SELECT ("detectedAt" + interval '5 hours 30 minutes')::date AS d, count(*) AS n,
+                 count(*) FILTER (WHERE verdict = 'CAMPAIGN') AS campaign,
+                 count(*) FILTER (WHERE verdict = 'ORGANIC') AS organic,
+                 count(*) FILTER (WHERE verdict NOT IN ('CAMPAIGN','ORGANIC')) AS unjudged,
+                 count(*) FILTER (WHERE "verdictSource" = 'semantic') AS judged_by_model
+          FROM "DetectedCampaign" WHERE "detectedAt" >= ${SEVEN_IST_DAYS} GROUP BY 1) x
+    ORDER BY d`],
+  ['R2 classifier calls in the last 48 h — failures here mean posts are stored and never judged', `
+    SELECT purpose, ok, count(*) AS calls, ${IST('max(at)')} AS newest_ist, left(max(coalesce(error, '')), 140) AS an_error
+    FROM "ModelCall" WHERE at >= ${NOW} - interval '48 hours'
+    GROUP BY 1, 2 ORDER BY 1, 2`],
+  ['S  per page: recipients it could still write a FIRST message to (needs no new paid post) — only pages that can_send_now actually will', `
+    SELECT s.handle AS page,
+           (s."fleetMember" AND s.status = 'ACTIVE' AND s."sessionPath" IS NOT NULL AND s."sessionInvalidAt" IS NULL
+            AND ($1::text[] IS NULL OR lower(s.handle) = ANY ($1::text[]))) AS can_send_now,
+           count(t.id) AS could_introduce_to
+    FROM "SenderAccount" s
+    LEFT JOIN "OutreachPair" p ON p."senderId" = s.id
+    LEFT JOIN "TargetAccount" t ON t.id = p."targetId" AND ${LIVE}
+      AND NOT EXISTS (SELECT 1 FROM "OutreachAttempt" a WHERE a."pairId" = p.id
+                        AND (a.status IN ('SENT','REPLIED','SENDING','READY','QUEUED') OR a.status = 'FAILED'))
+      AND NOT EXISTS (SELECT 1 FROM "OutreachAttempt" r WHERE r."targetId" = t.id AND r."replyPostedAt" IS NOT NULL)
+      AND NOT EXISTS (SELECT 1 FROM "OutreachAttempt" w WHERE w."targetId" = t.id AND w.status IN ('SENT','REPLIED')
+                        AND w."sentAt" >= ${NOW} - ${WIN} * interval '1 day')
+      AND EXISTS (
+        SELECT 1 FROM (
+          SELECT lower(c.slug) AS slug FROM "CategorySender" cs JOIN "Category" c ON c.id = cs."categoryId"
+            WHERE cs."senderId" = s.id AND cs.enabled = true
+          UNION ALL SELECT 'bollywood'
+            WHERE NOT EXISTS (SELECT 1 FROM "CategorySender" cs WHERE cs."senderId" = s.id AND cs.enabled = true)
+        ) sc JOIN (
+          SELECT lower(c.slug) AS slug FROM "CategoryTarget" ct JOIN "Category" c ON c.id = ct."categoryId"
+            WHERE ct."targetId" = t.id AND ct.enabled = true
+          UNION ALL SELECT 'bollywood'
+            WHERE NOT EXISTS (SELECT 1 FROM "CategoryTarget" ct WHERE ct."targetId" = t.id AND ct.enabled = true)
+        ) tc ON tc.slug = sc.slug)
+    WHERE s."fleetMember" = true
+    GROUP BY s.id, s.handle, s.status, s."fleetMember", s."sessionPath", s."sessionInvalidAt"
+    ORDER BY s.handle`],
   ['P  the server\'s connection slots (on 22 Aug a full pool stopped everything)', `
     SELECT count(*) AS connections_in_use, current_setting('max_connections') AS max_connections FROM pg_stat_activity`],
 ]
@@ -462,6 +510,21 @@ else
   echo "   no error log at $ERRLOG"
 fi
 
+echo
+echo "== T  per IST day, from the logs: deliveries, and the conversation reads that failed (oldest first; the last 20 days that had any)"
+# A follow-up's thread is read before it is sent, and the reply sweep reads inboxes; when Instagram
+# changes its page the reads fail closed and the follow-up is parked "unreadable". This shows WHEN.
+{ [ -f "$LOGFILE" ] && grep -E 'dm delivered' "$LOGFILE"; [ -f "$ERRLOG" ] && grep -E 'could not read thread|inbox scan unreadable|could not be read repeatedly'  "$ERRLOG"; } 2>/dev/null \
+  | sed -E 's/^([0-9]{1,2} [A-Za-z]+ [0-9]{4}), .*(dm delivered|could not read thread|inbox scan unreadable|could not be read repeatedly).*/\1  \2/' \
+  | grep -E '^[0-9]{1,2} [A-Za-z]+ [0-9]{4}  (dm delivered|could not read thread|inbox scan unreadable|could not be read repeatedly)$' \
+  | awk 'BEGIN { split("Jan Feb Mar Apr May Jun Jul Aug Sep Oct Nov Dec", m, " "); for (i = 1; i <= 12; i++) mon[m[i]] = i; mon["Sept"] = 9 }
+         { split($0, f, "  "); day = f[1]; what = f[2]; split(day, p, " ")
+           key = p[3] * 10000 + mon[p[2]] * 100 + p[1]
+           if ((day in seen) == 0) { seen[day] = key; days[++k] = day } c[day, what]++ }
+         END { for (i = 2; i <= k; i++) { v = days[i]; j = i - 1; while (j > 0 && seen[days[j]] > seen[v]) { days[j + 1] = days[j]; j-- } days[j + 1] = v }
+               printf "   %-14s %10s %18s %22s %17s\n", "day", "delivered", "thread unreadable", "inbox scan unreadable", "parked as unread"
+               for (i = 1; i <= k; i++) { d = days[i]; printf "   %-14s %10d %18d %22d %17d\n", d, c[d, "dm delivered"], c[d, "could not read thread"], c[d, "inbox scan unreadable"], c[d, "could not be read repeatedly"] } }' \
+  | { IFS= read -r header; echo "$header"; tail -n 20; }
 echo
 echo "== O  sleep and wake, newest last (the agent cannot send while the Mac sleeps; a closed lid on battery always sleeps)"
 if command -v pmset >/dev/null 2>&1; then
