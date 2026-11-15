@@ -295,15 +295,18 @@ const Q = [
     ORDER BY d`],
   ['R2 classifier calls in the last 48 h — failures here mean posts are stored and never judged. avg_ms near 30000 is our own timeout; a short one means the far end cut the connection', `
     SELECT purpose, ok, count(*) AS calls, round(avg(ms)) AS avg_ms, max(ms) AS max_ms,
-           ${IST('min(at)')} AS oldest_ist, ${IST('max(at)')} AS newest_ist, left(max(coalesce(error, '')), 100) AS an_error
+           ${IST('min(at)')} AS oldest_ist, ${IST('max(at)')} AS newest_ist,
+           left(mode() WITHIN GROUP (ORDER BY error), 100) AS commonest_error
     FROM "ModelCall" WHERE at >= ${NOW} - interval '48 hours'
     GROUP BY 1, 2 ORDER BY 1, 2`],
-  ['R3 classifier calls per IST day, last 14 days — when the failures started', `
-    SELECT to_char(d, 'DD Mon') AS ist_day, ok_calls, failed_calls, top_error
+  ['R3 classifier calls per IST day, last 14 days — when the failures started, and what a working day costs (spend_usd is every model call that day). HTTP 402 is DeepSeek saying the account is OUT OF CREDIT', `
+    SELECT to_char(d, 'DD Mon') AS ist_day, ok_calls, failed_calls, spend_usd, top_error
     FROM (SELECT (at + interval '5 hours 30 minutes')::date AS d,
-                 count(*) FILTER (WHERE ok) AS ok_calls, count(*) FILTER (WHERE ok = false) AS failed_calls,
-                 left(mode() WITHIN GROUP (ORDER BY error), 60) AS top_error
-          FROM "ModelCall" WHERE purpose = 'classify' AND at >= ${NOW} - interval '14 days' GROUP BY 1) x
+                 count(*) FILTER (WHERE ok AND purpose = 'classify') AS ok_calls,
+                 count(*) FILTER (WHERE ok = false AND purpose = 'classify') AS failed_calls,
+                 round(sum("costUsd")::numeric, 4) AS spend_usd,
+                 left(mode() WITHIN GROUP (ORDER BY error) FILTER (WHERE purpose = 'classify'), 60) AS top_error
+          FROM "ModelCall" WHERE at >= ${NOW} - interval '14 days' GROUP BY 1) x
     ORDER BY d`],
   ['S  per page: recipients it could still write a FIRST message to (needs no new paid post) — only pages that can_send_now actually will', `
     SELECT s.handle AS page,
