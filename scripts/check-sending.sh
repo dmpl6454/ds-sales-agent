@@ -145,9 +145,17 @@ const SEVEN_IST_DAYS = `(date_trunc('day', ${NOW} + interval '5 hours 30 minutes
 // One row per resting recipient (heard from a page inside the window), and whether time alone can
 // release it. A follow-up needs a NEW paid post naming them (governor NO_NEW_MATERIAL), so when
 // their rest ends only a page that has NEVER delivered to them may write — an introduction — and
-// only if they have never replied (isFollowUp: touchesSoFar > 0 || targetHasEverReplied). This is
-// an approximation of rotation: it does not know which page rotation elects next, whether that page
-// is held by an online Mac, or whether a park blocks it. It says which recipients time CANNOT free.
+// only if they have never replied (isFollowUp: touchesSoFar > 0 || targetHasEverReplied).
+//
+// And only a page rotation can actually ELECT counts, which the first fix missed (re-review of
+// 9e55189, reproduced): ensureFleetPairs gives every fleet page a pair to every recipient whether or
+// not it can send, so a page held by no Mac (@bollywoodchronicle since 22 Sept) left an undelivered
+// pair on every recipient and made all of them read "could be introduced" for a date that frees
+// nothing. So the page must pass readSenderAvailability's tests — ACTIVE, a recorded session not
+// since proved dead, listed by a Mac within 72 h ($1, computed in JS below; NULL = no witness, the
+// rule's own fallback) — and share a fleet with the recipient (no membership = 'bollywood', the
+// same intersection routes.ts and gate.ts ask). Still an approximation: it does not know which page
+// rotation elects NEXT, or whether a park blocks that route.
 const RESTING = `
   WITH x AS (
     SELECT a."targetId", max(a."sentAt") AS last_sent
@@ -160,6 +168,20 @@ const RESTING = `
       (NOT EXISTS (SELECT 1 FROM "OutreachAttempt" r WHERE r."targetId" = x."targetId" AND r."replyPostedAt" IS NOT NULL)
        AND EXISTS (SELECT 1 FROM "OutreachPair" p JOIN "SenderAccount" s ON s.id = p."senderId"
                    WHERE p."targetId" = x."targetId" AND s."fleetMember" = true AND s.status = 'ACTIVE'
+                     AND s."sessionPath" IS NOT NULL AND s."sessionInvalidAt" IS NULL
+                     AND ($1::text[] IS NULL OR lower(s.handle) = ANY ($1::text[]))
+                     AND EXISTS (
+                       SELECT 1 FROM (
+                         SELECT lower(c.slug) AS slug FROM "CategorySender" cs JOIN "Category" c ON c.id = cs."categoryId"
+                           WHERE cs."senderId" = s.id AND cs.enabled = true
+                         UNION ALL SELECT 'bollywood'
+                           WHERE NOT EXISTS (SELECT 1 FROM "CategorySender" cs WHERE cs."senderId" = s.id AND cs.enabled = true)
+                       ) sc JOIN (
+                         SELECT lower(c.slug) AS slug FROM "CategoryTarget" ct JOIN "Category" c ON c.id = ct."categoryId"
+                           WHERE ct."targetId" = x."targetId" AND ct.enabled = true
+                         UNION ALL SELECT 'bollywood'
+                           WHERE NOT EXISTS (SELECT 1 FROM "CategoryTarget" ct WHERE ct."targetId" = x."targetId" AND ct.enabled = true)
+                       ) tc ON tc.slug = sc.slug)
                      AND NOT EXISTS (SELECT 1 FROM "OutreachAttempt" d WHERE d."pairId" = p.id AND d.status IN ('SENT','REPLIED')))
       ) AS a_page_can_introduce
     FROM x)`
@@ -198,7 +220,7 @@ const Q = [
            (SELECT count(*) FROM "OutreachAttempt" a
              WHERE a."senderId" = s.id AND a.status IN ('SENT','REPLIED') AND a."sentAt" >= ${NOW} - interval '24 hours') AS sent_24h
     FROM "SenderAccount" s ORDER BY s.handle`],
-  ['F  who can be written to. never_messaged can get a first message; resting heard from a page inside the window; resting_time_cannot_free have had every page write to them (or replied) — only a NEW paid post naming them frees those', `
+  ['F  who can be written to. never_messaged can get a first message; resting heard from a page inside the window; resting_time_cannot_free have had every page that can send write to them (or replied) — only a NEW paid post naming them frees those', `
     ${RESTING}
     SELECT (SELECT count(*) FROM "TargetAccount" t WHERE ${LIVE}) AS live_recipients,
            (SELECT count(*) FROM "TargetAccount" t WHERE ${LIVE}
@@ -209,7 +231,7 @@ const Q = [
            (SELECT count(*) FROM y) AS resting,
            (SELECT count(*) FROM y WHERE a_page_can_introduce = false) AS resting_time_cannot_free,
            ${WIN} AS window_days`],
-  ['G  resting recipients by the IST day their rest ends. could_be_introduced: a page that has never written to them exists. needs_a_new_paid_post: every page has written (or they replied), so the date alone frees nothing', `
+  ['G  resting recipients by the IST day their rest ends. could_be_introduced: a page that can send and has never written to them exists. needs_a_new_paid_post: every such page has written (or they replied), so the date alone frees nothing', `
     ${RESTING}
     SELECT to_char(d, 'DD Mon') AS rest_ends_ist, n AS recipients, intro AS could_be_introduced, n - intro AS needs_a_new_paid_post
     FROM (SELECT (last_sent + ${WIN} * interval '1 day' + interval '5 hours 30 minutes')::date AS d,
@@ -259,6 +281,33 @@ const Q = [
     SELECT count(*) AS connections_in_use, current_setting('max_connections') AS max_connections FROM pg_stat_activity`],
 ]
 
+// Which handles a Mac has listed within 72 h — the same rule as onlineSessionHolders() in
+// src/outreach/availability.ts (the persisted per-handle history merged with the presence row),
+// or null when no presence entry carries `handles` (no witness: rotation then excludes nobody).
+const HOLD_MS = 72 * 3600000
+function heldHandles(presenceRaw, historyRaw, now) {
+  let entries = []
+  try { const p = JSON.parse(presenceRaw); if (Array.isArray(p)) entries = p } catch (e) { entries = [] }
+  const witness = entries.some((e) => e !== null && typeof e === 'object' && Array.isArray(e.handles))
+  if (witness === false) return null
+  const latest = new Map()
+  const note = (h, t) => { const k = h.toLowerCase(); if (latest.has(k) === false || t > latest.get(k)) latest.set(k, t) }
+  let hist = {}
+  try { const h = JSON.parse(historyRaw); if (h !== null && typeof h === 'object' && Array.isArray(h) === false) hist = h } catch (e) { hist = {} }
+  for (const [h, at] of Object.entries(hist)) {
+    if (typeof at !== 'string') continue
+    const t = new Date(at).getTime()
+    if (Number.isFinite(t)) note(h, Math.min(t, now))
+  }
+  for (const e of entries) {
+    if (e === null || typeof e !== 'object' || Array.isArray(e.handles) === false || typeof e.at !== 'string') continue
+    const t = new Date(e.at).getTime()
+    if (Number.isFinite(t) === false) continue
+    for (const h of e.handles) if (typeof h === 'string') note(h, Math.min(t, now))
+  }
+  return [...latest].filter(([, t]) => now - t <= HOLD_MS).map(([k]) => k)
+}
+
 async function main() {
   if (url === null || isPg === false) return
   const { Client } = req('pg')
@@ -288,11 +337,19 @@ async function main() {
       out('   the session did not become read-only — stopping before any query')
       return
     }
+    let held = null
+    try {
+      const hr = (await c.query(`SELECT key, value FROM "Setting" WHERE key IN ('devicePresence','sessionHolderSeen')`)).rows
+      const val = (k) => { const r = hr.find((x) => x.key === k); return r ? r.value : null }
+      held = heldHandles(val('devicePresence'), val('sessionHolderSeen'), Date.now())
+    } catch (e) {
+      held = null
+    }
     for (const [title, sql, mode] of Q) {
       if (lost) break
       let rows
       try {
-        rows = (await c.query(sql)).rows
+        rows = (await c.query(sql, sql.includes('$1') ? [held] : [])).rows
       } catch (e) {
         if (/Query read timeout/i.test(String(e.message))) lost = e
         if (lost) break
@@ -322,6 +379,18 @@ async function main() {
           if (d === null || typeof d !== 'object' || typeof d.device !== 'string' || typeof d.at !== 'string') continue
           out('   ' + d.device.padEnd(22) + ' last beat ' + ist(d.at) + '  build ' + (d.version || '?') +
               '  holds: ' + (Array.isArray(d.handles) && d.handles.length ? d.handles.map((h) => '@' + h).join(' ') : '(no signed-in accounts)'))
+        }
+        if (held === null) {
+          out('   (no Mac reports which accounts it holds, so rotation excludes no page on that ground)')
+        } else {
+          try {
+            const fleet = (await c.query(`SELECT handle FROM "SenderAccount" WHERE "fleetMember" = true AND status = 'ACTIVE' ORDER BY handle`)).rows
+            const unheld = fleet.map((r) => r.handle).filter((h) => held.includes(h.toLowerCase()) === false)
+            out('   pages in rotation that NO Mac has listed in 72 h (rotation skips them; sign them in on the sending Mac): ' +
+                (unheld.length ? unheld.map((h) => '@' + h).join(' ') : 'none'))
+          } catch (e) {
+            if (/Query read timeout/i.test(String(e.message))) lost = e
+          }
         }
       } else {
         table(title, rows)
