@@ -5,6 +5,36 @@ changing anything that touches sending.
 
 ---
 
+## 16 NOVEMBER — NOTHING SENT SINCE 2 NOV: CHROME WINDOWS AT 500x232, A CLASSIFIER OUT OF CREDIT, AND NOTHING LEFT TO SAY
+
+**Asked: *"why message not is sending / sales agent is not working".*** Last delivery **2 Nov 15:51**.
+Measured from the Mac Studio with `scripts/check-sending.sh` (read-only; runs ON the sending Mac and
+reads the server's Postgres through that Mac's own tunnel — run it as a FILE by bash, never pasted into
+zsh). The Mac, its tunnel, autopilot, `activeDevice` and the four signed-in pages were all healthy.
+Three independent causes, each enough on its own:
+
+| | measured | fixed by |
+|---|---|---|
+| **every sending profile's Chrome window was 500x232** | ~200 conversation reads a day `unreadable` and 96 inbox scans "no conversation rows matched" since at least 27 Oct (the oldest the error log keeps) — so every follow-up that earned material was parked and **no reply was seen**. `scripts/capture-dm-dom.ts`: the thread's one message matched the reader at 2-3 s after clicking Message and was GONE from the DOM by 4 s; the inbox listed 15 conversations at 1 s and none from 2 s. At 1280x717 the same message stays matched through 16 s, in `div[role=presentation] div[dir=auto]`. `launchProfile` passes `viewport: null` and Chrome restores each profile's saved window placement, so one small session (a small Screen Sharing resolution is the likely way — `screensharingd` was asserting) made every later launch small. A read by hand happened to look at the 2-second mark and worked, which is why the code looked fine | `scripts/fix-chrome-window.ts <handles>` — opens each profile on a blank page, sets 1280x860 through Chrome's own `Browser.setWindowBounds`, closes normally (Chrome saves the placement), reopens and reports. Run 16 Nov 17:45 for paparazzii, madaboutmarketingg, totalfilmii (`reopened at 1280x717 — the new size stuck`); societyy was in use and needs a re-run |
+| **DeepSeek out of credit** | every classify call refused `HTTP 402` 8–10 Nov and 13 Nov 12:30 → 16 Nov 17:31 (6,929 failures in 48 h); posts stored, never judged, so no paid post could fund a follow-up. A working day costs **$0.14–0.18** of model calls | a person topped the account up, 16 Nov ~17:30 |
+| **nothing left to say** | all 1,566 live recipients already messaged; the planner's last slot held 5,421 routes for `no-new-material-to-reference` and wrote nothing. Under the 15 Oct wall the official read carries no tags or `@`, so even judged paid posts rarely name a prospect, and 0 prospects were minted in 7 days. First messages that need no paid post exist — 73 from signed-in pages, 516 from @bollywoodchronicle — but rotation keeps each recipient's turn on a page that has already written, and chronicle is held by no online Mac | **Tabish's** (below) |
+
+**Still a person's, not done:** (1) whether a recipient's turn may pass to a page that has never
+written to them when the elected page has nothing new to say (Appendix A.9 of the outreach plan — 73
+messages now); (2) signing @bollywoodchronicle in on the Mac Studio (516 first messages, all from one
+account, and only after reads are confirmed working, or introductions land on companies mid-conversation
+with another page); (3) deploying `f4dc4b1` on the box (3 retired drafts still waiting).
+**Owed in code:** `launchProfile` should enforce a minimum window on every launch and the readers should
+alarm on a tiny window — which reaches the Mac only with an update path, because the Mac Studio runs the
+10 Sept build `57faf88` and the DMG route needed the Mac that is gone.
+
+61. **A browser's window size is state, and Chrome persists it per profile.** A reader that depends on
+    rendered layout fails silently when the window shrinks; measure the window before blaming the selectors.
+62. **When a guard fails closed for weeks, that is the alarm.** ~200 `unreadable` reads a day for three
+    weeks meant the precondition could not be met, not that Instagram kept misbehaving.
+
+---
+
 ## 26 OCTOBER — THE 19–22 OCT QUIET WAS THE SEVEN-DAY RULE ON AN EMPTY LIST; DRAFTS TO RETIRED RECIPIENTS NOW GO
 
 **Asked:** why deliveries fell to 4 / 0 / 1 / 8 a day on 19–22 Oct after 345 and 163 on 17–18 Oct,
