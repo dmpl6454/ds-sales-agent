@@ -205,7 +205,7 @@ function sameHandles(a: readonly string[], b: readonly string[]): boolean {
  * cell must cost one comparison, never a detection pass. A row with no payload at all
  * reports its flag as `null` — "we do not know" — never `false`.
  */
-function parseRawPayload(raw: string | null): {
+export function parseRawPayload(raw: string | null): {
   collabHandles: string[]
   sponsorHandles: string[]
   isPaidPartnership: boolean | null

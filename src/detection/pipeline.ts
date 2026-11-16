@@ -30,6 +30,7 @@ import {
 } from './officialReach'
 import { autoResolveBrands, type AutoResolveSummary } from './autoResolve'
 import { rejudgeUnusedEvidence, emptyRejudgeSummary, rejudgeLogFields, type RejudgeSummary } from './rejudge'
+import { judgeUnjudgedPosts, emptyUnjudgedSummary, unjudgedLogFields, type UnjudgedSummary } from './unjudged'
 
 /**
  * Detection: read each watched channel's recent posts and classify them.
@@ -1054,6 +1055,26 @@ export async function runDetection(
     // The field names are rejudge.ts's (`rejudgeLogFields`), tested there: each skip reason is named,
     // because a number that names a reason must be true about that reason.
     log.info('re-judged evidence read earlier', rejudgeLogFields(rejudged))
+  }
+
+  /**
+   * ── AND POSTS A CLASSIFIER OUTAGE LEFT UNJUDGED (16 Nov 2026) ────────────────────────────
+   *
+   * The frame re-judge above retries a failed FRAME call and never a failed CAPTION call, so the
+   * ~3,000 posts stored while DeepSeek answered `HTTP 402` (8-10 and 13-16 Nov) stayed unjudged for
+   * good — and an unjudged paid post gives no page anything new to say. unjudged.ts judges them on
+   * this clock, newest first, bounded, stopping at the first call that does not answer. Caught on its
+   * own for the same reason as the re-judge: it is the least urgent thing in the pass.
+   */
+  const unjudged = await judgeUnjudgedPosts().catch((err): UnjudgedSummary => {
+    log.warn('judging posts left unjudged failed — next pass retries', {
+      error: err instanceof Error ? err.message : String(err),
+    })
+    return emptyUnjudgedSummary()
+  })
+  // `remaining` in the condition, as above: a stuck backlog must say so, a drained one goes quiet.
+  if (unjudged.examined > 0 || unjudged.remaining > 0) {
+    log.info('judged posts a classifier outage left unjudged', unjudgedLogFields(unjudged))
   }
 
   /**

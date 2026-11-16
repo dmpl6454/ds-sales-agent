@@ -23,7 +23,18 @@ Three independent causes, each enough on its own:
 written to them when the elected page has nothing new to say (Appendix A.9 of the outreach plan — 73
 messages now); (2) signing @bollywoodchronicle in on the Mac Studio (516 first messages, all from one
 account, and only after reads are confirmed working, or introductions land on companies mid-conversation
-with another page); (3) deploying `f4dc4b1` on the box (3 retired drafts still waiting).
+with another page); (3) deploying on the box — now the commit that adds the item below, which carries
+`f4dc4b1` too (3 retired drafts still waiting): `bash scripts/deploy-worker-on-box.sh <sha>`, worker only.
+
+**Built the same evening (`src/detection/unjudged.ts`):** posts a classifier outage left unjudged were
+never asked again — the frame re-judge retries a failed FRAME call, never a failed CAPTION call, and only
+`pnpm ig:classify --run` selects `verdictSource: 'none'` (rule 60 again). ~3,000 posts from 9-16 Nov sat
+there. Every primary detection pass now judges up to 30 of them (`UNJUDGED_PER_PASS`), newest first,
+through the detector's own `classify` and the one `judgeWithFrame`, stopping at the first call that does
+not answer, writing only while the row is still unlabelled and unjudged. Log line: *"judged posts a
+classifier outage left unjudged"*. Tests `tests/unjudged-pass.test.ts`, five guards each seen red. The
+expected YIELD is small — 157 judged paid posts in the window produced no new material — but the next
+credit outage no longer leaves a permanent hole.
 **Owed in code:** `launchProfile` should enforce a minimum window on every launch and the readers should
 alarm on a tiny window — which reaches the Mac only with an update path, because the Mac Studio runs the
 10 Sept build `57faf88` and the DMG route needed the Mac that is gone.
