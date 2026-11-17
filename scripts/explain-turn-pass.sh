@@ -5,6 +5,8 @@
 #
 # Name sections to print only those (a browser console scrolls back one screen):  bash etp.sh 4 8
 # Section 9 estimates the risk of switching the read requirement off:             bash etp.sh 9
+# Each query stops with an error after 3 minutes rather than hanging; to allow longer: DS_STEP_LIMIT=10min bash etp.sh 9
+# A run that fails ends with a line starting "-- STOPPED", so filtering the output for '^-- ' still shows it.
 #
 # The planner logs `turn passes passed=… keptWhileIntroWaits=… waitingForARead=…` only when one of
 # those is above zero, so a pass that ends on any other rule leaves NO trace — exactly the silence
@@ -31,7 +33,17 @@
 set -euo pipefail
 
 APP="${DS_APP_DIR:-/opt/ds-sales-agent}"
+# An override must keep -q, or psql prints "SET" twice before every table.
 PSQL="${DS_PSQL:-sudo -u postgres psql -X -q -d ds_sales_agent}"
+STEP_LIMIT="${DS_STEP_LIMIT:-180s}"
+if [[ ! "$STEP_LIMIT" =~ ^[0-9]+(ms|s|min|h)$ ]]; then
+  echo "DS_STEP_LIMIT must look like 180s, 10min or 1h — got: $STEP_LIMIT" >&2
+  exit 2
+fi
+
+# A failed step must not look like a finished run: the output is usually filtered for its '-- ' headings, which would
+# hide psql's own error line. This line survives that filter.
+trap 'rc=$?; if [[ $rc -ne 0 ]]; then echo "-- STOPPED (exit $rc): the step above did not finish. Its error is on the line above this one, and nothing after it ran. If the error says statement timeout, run again with DS_STEP_LIMIT=10min in front."; fi' EXIT
 
 # No arguments: every section. Otherwise only the numbered ones, e.g. `4 8`.
 WANT=" $* "
@@ -225,7 +237,9 @@ SQL
 
 # jit off: Postgres spent ~10 s compiling this very large query on every call, and nothing here runs long enough to
 # repay it. statement_timeout: a step that takes over 3 minutes stops with an error instead of hanging in silence.
-run() { $PSQL -v ON_ERROR_STOP=1 -P footer=off -P pager=off -c "SET jit = off" -c "SET statement_timeout = '180s'" "$@"; }
+# The heavy steps grow with the SQUARE of the data (each company rescans the per-conversation rows): measured on one CPU,
+# section 9 takes 14 s at 17 Nov's size and about 2 minutes at three times that.
+run() { $PSQL -v ON_ERROR_STOP=1 -P footer=off -P pager=off -c "SET jit = off" -c "SET statement_timeout = '$STEP_LIMIT'" "$@"; }
 # Unaligned: no padding to the widest cell, so a row fits a console line instead of wrapping into five.
 runc() { run -A -F ' | ' "$@"; }
 
