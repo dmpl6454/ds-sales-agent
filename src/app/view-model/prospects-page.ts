@@ -19,6 +19,7 @@ import { operatorName } from '@/outreach/render'
  * time and carries no runtime edge; keep it that way.
  */
 import { sessionIsUsable } from './session-view'
+import { buildRestTally } from './rest-tally'
 import { describeRing, whoseTurnForMany } from '@/outreach/categories'
 import { readSenderAvailability, readSessionHolders } from '@/outreach/availability'
 import { auditTarget, AUDIT_WHY_SENTENCE } from '@/outreach/targetAudit'
@@ -353,9 +354,18 @@ async function computeProspectsPage(input?: ProspectsInput): Promise<ProspectsPa
    * ~30 ms across the tunnel, which is the unbounded N+1 that made `buildBrandsPanel` a
    * ten-second page. Four queries here regardless of the count.
    */
+  /**
+   * The turn PASS's material fact comes from the rest tally (`turnPassNothingNew`), which already
+   * holds every in-window paid post and every claim in memory — so this page names the page the
+   * planner will actually use when the elected one has nothing new to say (17 Nov 2026,
+   * `TurnPass`), at no query of its own. `buildRestTally` is memoised and single-flight per
+   * process, and `/targets` already builds it beside this one.
+   */
+  const [availability, tally] = await Promise.all([readSenderAvailability(), buildRestTally()])
   const turns = await whoseTurnForMany(
     targets.map((t) => t.id),
-    await readSenderAvailability(),
+    availability,
+    tally.turnPassNothingNew,
   )
 
   /** Which handles are our own sending pages — the ground-truth set. */
@@ -426,8 +436,12 @@ async function computeProspectsPage(input?: ProspectsInput): Promise<ProspectsPa
       }
     }
     const where = turn.ring === 'group' ? ` (${describeRing(turn)})` : ''
+    /* Passed (17 Nov 2026): say why a page that is not next after the last writer is writing. */
+    const passed = turn.choice.passedFrom
+      ? ` — @${turn.choice.passedFrom.handle} has written to them before and has nothing new to say, so a page that never has writes instead`
+      : ''
     return {
-      sentence: `Next message comes from @${turn.choice.handle}${where}, while Autopilot is on. One account writes, not all of them.`,
+      sentence: `Next message comes from @${turn.choice.handle}${where}${passed}, while Autopilot is on. One account writes, not all of them.`,
       willWrite: true,
     }
   }

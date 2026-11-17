@@ -119,7 +119,13 @@ describe('the plumbing', () => {
     expect(cat).toMatch(/export async function readBlockedRoutes/)
     // Both loaders — the single-target one and the batch one — must merge it.
     const single = cat.slice(cat.indexOf('export async function whoseTurn('), cat.indexOf('function decideTurn'))
-    expect(single).toMatch(/readBlockedRoutes\(\{ targetIds: \[args\.targetId\] \}\)/)
+    /* Since 17 Nov whoseTurn reads the settings once (the turn-pass switch) and hands the reply-halt
+       facts in; they must be the SAME two settings readBlockedRoutes would read itself — the ones
+       the gate enforces — or a route blocker could be computed by a different rule. */
+    expect(single).toMatch(
+      /readBlockedRoutes\(\{\s*targetIds: \[args\.targetId\],\s*replyHalt: \{ scope: settings\.replyHaltScope, resumeHours: settings\.replyResumeHours \},?\s*\}\)/,
+    )
+    expect(single).toMatch(/const settings = await getSettings\(\)/)
     expect(single).toMatch(/unavailableForTarget\(args\.unavailable, blocked, args\.targetId\)/)
     const many = cat.slice(cat.indexOf('export async function whoseTurnForMany'))
     expect(many).toMatch(/readBlockedRoutes\(\{ targetIds: ids \}\)/)

@@ -1,7 +1,7 @@
 import { cache } from 'react'
 import { prisma } from '@/lib/db'
 import { DELIVERED_STATUSES } from '@/lib/constants'
-import { fleetRingOrder, nextSender, type RingMember, type RotationChoice } from './rotation'
+import { fleetRingOrder, nextSender, type RingMember, type RotationChoice, type TurnPass } from './rotation'
 import { categoriesFor, fleetMembersFor, type CategoryMemberships } from './senderCategories'
 import { replyHaltFloor, type ReplyHaltScope } from './replyHalt'
 import { replyRouteReason } from './replyHaltCopy'
@@ -90,25 +90,88 @@ export async function ringFor(categoryId: string): Promise<RingMember[]> {
 }
 
 /**
- * Who wrote to this target most recently — the whole of rotation's state.
+ * Each recipient's history — the whole of rotation's state — in ONE query for any number of
+ * recipients: who wrote last and who ever delivered to them, who holds a waiting draft, and
+ * whether they ever replied to any page. The last three feed the turn PASS (17 Nov 2026, see
+ * `TurnPass` in rotation.ts); `lastSenderId` is what `lastSenderTo` answered, which this replaced.
  *
- * DELIVERED_STATUSES, not 'SENT'. `REPLIED` REPLACES `SENT`, so a bare 'SENT' filter
- * would forget that a sender ever wrote the moment the recipient answered — and rotation
- * would then hand that same account the next message, into the one conversation where
- * repeating a sender is most obviously wrong.
+ * DELIVERED_STATUSES, not 'SENT'. `REPLIED` REPLACES `SENT`, so a bare 'SENT' filter would forget
+ * that a sender ever wrote the moment the recipient answered — and rotation would then hand that
+ * same account the next message, into the one conversation where repeating a sender is most
+ * obviously wrong. Only DELIVERED messages count as writing: a draft never sent, or a send that
+ * failed, did not reach the recipient, so it is still that sender's turn — precisely what a
+ * stored cursor gets wrong.
  *
- * Only DELIVERED messages count. A draft that was never sent, or a send that failed, did
- * not reach the recipient, so it is still that sender's turn. This is precisely what a
- * stored cursor gets wrong: advanced at dispatch, it would silently skip an account whose
- * message never landed.
+ * `lastSenderId` is the newest DELIVERED message by `sentAt`, and a delivered row with no
+ * `sentAt` is skipped. `lastSenderTo` read `ORDER BY sentAt DESC`, and Postgres puts NULL FIRST
+ * there, which made such a row the "last writer"; the rest tally already skipped it, so this also
+ * stops the dashboard and the planner disagreeing about that one shape (the 2 Sept `nulls:
+ * 'last'` lesson). Ties on `sentAt` fall back to the higher id, so the answer is total.
+ *
+ * "Replied" counts `repliedAt` as well as `replyPostedAt`: a legacy reply with no date is still
+ * someone who answered us, and an introduction from a second page must never reach them.
  */
-export async function lastSenderTo(targetId: string): Promise<string | null> {
-  const row = await prisma.outreachAttempt.findFirst({
-    where: { targetId, status: { in: [...DELIVERED_STATUSES] } },
-    orderBy: { sentAt: 'desc' },
-    select: { senderId: true },
+export interface TurnHistory {
+  lastSenderId: string | null
+  wroteBefore: Set<string>
+  holdsDraft: Set<string>
+  everReplied: boolean
+}
+
+const TURN_HISTORY_DRAFT_STATUSES = ['QUEUED', 'READY', 'SENDING'] as const
+
+export async function readTurnHistory(targetIds: readonly string[]): Promise<Map<string, TurnHistory>> {
+  const out = new Map<string, TurnHistory>()
+  const ids = [...new Set(targetIds)]
+  for (const id of ids) out.set(id, { lastSenderId: null, wroteBefore: new Set(), holdsDraft: new Set(), everReplied: false })
+  if (ids.length === 0) return out
+  const rows = await prisma.outreachAttempt.findMany({
+    where: {
+      targetId: { in: ids },
+      OR: [
+        { status: { in: [...DELIVERED_STATUSES, ...TURN_HISTORY_DRAFT_STATUSES] } },
+        { repliedAt: { not: null } },
+        { replyPostedAt: { not: null } },
+      ],
+    },
+    select: { id: true, targetId: true, senderId: true, status: true, sentAt: true, repliedAt: true, replyPostedAt: true },
   })
-  return row?.senderId ?? null
+  const newest = new Map<string, { at: number; id: string }>()
+  const delivered = new Set<string>(DELIVERED_STATUSES)
+  const drafting = new Set<string>(TURN_HISTORY_DRAFT_STATUSES)
+  for (const r of rows) {
+    const h = out.get(r.targetId)
+    if (!h) continue
+    if (r.repliedAt !== null || r.replyPostedAt !== null) h.everReplied = true
+    if (drafting.has(r.status)) h.holdsDraft.add(r.senderId)
+    if (!delivered.has(r.status)) continue
+    h.wroteBefore.add(r.senderId)
+    if (r.sentAt === null) continue
+    const cur = newest.get(r.targetId)
+    const at = r.sentAt.getTime()
+    if (!cur || at > cur.at || (at === cur.at && r.id > cur.id)) {
+      newest.set(r.targetId, { at, id: r.id })
+      h.lastSenderId = r.senderId
+    }
+  }
+  return out
+}
+
+/**
+ * The pass facts for one recipient, or undefined when there must be no pass: the switch is off,
+ * or the caller does not know whether there is anything new to say. PURE.
+ */
+export function turnPassFor(
+  history: TurnHistory | undefined,
+  args: { enabled: boolean; nothingNewToSay: boolean | undefined },
+): TurnPass | undefined {
+  if (!args.enabled || args.nothingNewToSay === undefined) return undefined
+  return {
+    wroteBefore: history?.wroteBefore ?? new Set(),
+    holdsDraft: history?.holdsDraft ?? new Set(),
+    everReplied: history?.everReplied ?? false,
+    nothingNewToSay: args.nothingNewToSay,
+  }
 }
 
 /** Every category this target belongs to, enabled ones first. */
@@ -381,6 +444,13 @@ export async function whoseTurn(args: {
   targetId: string
   unavailable?: ReadonlyMap<string, string>
   fleet?: readonly RingMember[]
+  /**
+   * Is there nothing new to say to this recipient — no fresh, unclaimed, describable paid post
+   * naming them? The caller holds the material, so the caller answers. Omitted (undefined)
+   * means "not known", and then the turn is NEVER passed: a pass must not ride on a guess.
+   * See `TurnPass`.
+   */
+  nothingNewToSay?: boolean
 }): Promise<WhoseTurnResult> {
   const categories = await categoriesForTarget(args.targetId)
 
@@ -394,21 +464,29 @@ export async function whoseTurn(args: {
    */
   const category = categories[0] ?? null
 
-  const [ring, lastSenderId, blocked] = await Promise.all([
+  /* The settings are read ONCE here and handed to `readBlockedRoutes`, so the pass switch
+     costs no extra query — `readBlockedRoutes` read them itself before. */
+  const settings = await getSettings()
+  const [ring, histories, blocked] = await Promise.all([
     category !== null
       ? ringFor(category.id)
       : (args.fleet ?? (await fleetRingFor(args.targetId))),
-    lastSenderTo(args.targetId),
+    readTurnHistory([args.targetId]),
     /* Loaded here so no caller can forget it — see `readBlockedRoutes`. */
-    readBlockedRoutes({ targetIds: [args.targetId] }),
+    readBlockedRoutes({
+      targetIds: [args.targetId],
+      replyHalt: { scope: settings.replyHaltScope, resumeHours: settings.replyResumeHours },
+    }),
   ])
+  const history = histories.get(args.targetId)
 
   return decideTurn({
     targetId: args.targetId,
     category,
     ring,
-    lastSenderId,
+    lastSenderId: history?.lastSenderId ?? null,
     unavailable: unavailableForTarget(args.unavailable, blocked, args.targetId),
+    pass: turnPassFor(history, { enabled: settings.passTurnWhenNothingNew, nothingNewToSay: args.nothingNewToSay }),
   })
 }
 
@@ -427,6 +505,7 @@ function decideTurn(input: {
   ring: readonly RingMember[]
   lastSenderId: string | null
   unavailable?: ReadonlyMap<string, string>
+  pass?: TurnPass
 }): WhoseTurnResult {
   return {
     ring: input.category !== null ? 'group' : 'fleet',
@@ -438,6 +517,7 @@ function decideTurn(input: {
       lastSenderId: input.lastSenderId,
       unavailable: input.unavailable,
       targetId: input.targetId,
+      pass: input.pass,
     }),
   }
 }
@@ -453,24 +533,28 @@ function decideTurn(input: {
  * That is the same unbounded-N+1 that made `buildBrandsPanel` a ten-second page, and adding
  * a second one in the commit that fixes rotation would be a poor trade.
  *
- * FOUR queries regardless of how many recipients are asked about. The rings, the group
- * memberships and the delivery history are all read in full and joined in memory.
+ * A FIXED number of queries regardless of how many recipients are asked about. The rings, the
+ * group memberships and the delivery history are all read in full and joined in memory.
  *
- * `lastSenderTo` is the only subtle one: it wants the most recent DELIVERED sender PER
- * target, which SQL would express as a window function Prisma cannot emit. Reading the
- * delivered rows newest-first and keeping the first sighting of each target gives the same
- * answer, and the set is bounded by messages actually sent — 0 today, and bounded by the
- * fleet's own caps forever after.
+ * The last writer is the only subtle one: it wants the most recent DELIVERED sender PER
+ * target, which SQL would express as a window function Prisma cannot emit. `readTurnHistory`
+ * reads the rows once and keeps the newest per target in memory; the set is bounded by messages
+ * actually sent and the drafts waiting.
  */
 export async function whoseTurnForMany(
   targetIds: readonly string[],
   unavailable?: ReadonlyMap<string, string>,
+  /**
+   * Per recipient, is there nothing new to say? A recipient missing from the map is "not known"
+   * and its turn is never passed — see `whoseTurn`'s `nothingNewToSay`.
+   */
+  nothingNewToSay?: ReadonlyMap<string, boolean>,
 ): Promise<Map<string, WhoseTurnResult>> {
   const out = new Map<string, WhoseTurnResult>()
   if (targetIds.length === 0) return out
   const ids = [...new Set(targetIds)]
 
-  const [pairRows, groupRows, ringRows, delivered, blocked, memberships, targetRows] = await Promise.all([
+  const [pairRows, groupRows, ringRows, histories, blocked, memberships, targetRows, settings] = await Promise.all([
     prisma.outreachPair.findMany({
       where: { targetId: { in: ids }, sender: { fleetMember: true } },
       select: { targetId: true, sender: { select: { id: true, handle: true, cohort: true } } },
@@ -488,17 +572,15 @@ export async function whoseTurnForMany(
         sender: { select: { id: true, handle: true } },
       },
     }),
-    prisma.outreachAttempt.findMany({
-      where: { targetId: { in: ids }, status: { in: [...DELIVERED_STATUSES] } },
-      orderBy: { sentAt: 'desc' },
-      select: { targetId: true, senderId: true },
-    }),
+    /* Who wrote last, who ever wrote, who holds a draft, who replied — one query. */
+    readTurnHistory(ids),
     /* ONE batched query for the whole page, not one per target. */
     readBlockedRoutes({ targetIds: ids }),
     /* Cached per request; see readCategoryMemberships. Needed so the ring cannot name a
        sender the gate refuses — see ringMembersFor. */
     readCategoryMemberships(),
     prisma.targetAccount.findMany({ where: { id: { in: ids } }, select: { id: true, handle: true } }),
+    getSettings(),
   ])
   const handleById = new Map(targetRows.map((t) => [t.id, t.handle]))
 
@@ -508,10 +590,6 @@ export async function whoseTurnForMany(
     list.push(p.sender)
     fleetByTarget.set(p.targetId, list)
   }
-
-  /** First sighting wins, because the rows arrived newest-first. */
-  const lastSenderByTarget = new Map<string, string>()
-  for (const a of delivered) if (!lastSenderByTarget.has(a.targetId)) lastSenderByTarget.set(a.targetId, a.senderId)
 
   const groupByTarget = new Map<string, { id: string; name: string }>()
   for (const g of groupRows) if (!groupByTarget.has(g.targetId)) groupByTarget.set(g.targetId, g.category)
@@ -537,8 +615,12 @@ export async function whoseTurnForMany(
         targetId,
         category,
         ring,
-        lastSenderId: lastSenderByTarget.get(targetId) ?? null,
+        lastSenderId: histories.get(targetId)?.lastSenderId ?? null,
         unavailable: unavailableForTarget(unavailable, blocked, targetId),
+        pass: turnPassFor(histories.get(targetId), {
+          enabled: settings.passTurnWhenNothingNew,
+          nothingNewToSay: nothingNewToSay?.get(targetId),
+        }),
       }),
     )
   }

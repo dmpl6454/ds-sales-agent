@@ -7,6 +7,9 @@
  * pitched by the NEXT sender in that category's ring. Never the same sender twice in a
  * row. Wraps forever.
  *
+ * Except (17 Nov 2026): when the next sender has already written to them and has nothing new
+ * to say, the turn passes to a page in the ring that has never written to them. See `TurnPass`.
+ *
  * ── DERIVED, NEVER STORED ─────────────────────────────────────────────────
  *
  * The ring position comes from `OutreachAttempt` history — *who sent the most recent
@@ -57,10 +60,97 @@ export interface RotationInput {
   unavailable?: ReadonlyMap<string, string>
   /** The recipient, so a sender that is also this target is never chosen. */
   targetId?: string | null
+  /**
+   * The facts the turn PASS reads (17 Nov 2026) — see `TurnPass`. Absent means no pass: the
+   * walk behaves exactly as it always has. A caller that does not know whether there is
+   * anything new to say must leave it out rather than guess.
+   */
+  pass?: TurnPass
+}
+
+/**
+ * ── A PAGE WITH NOTHING NEW TO SAY HANDS THE TURN TO A PAGE THAT NEVER WROTE (17 Nov 2026) ──
+ *
+ * Asked, measured and decided the same morning. MEASURED on the live database, 17 Nov 07:12
+ * IST: nothing had been delivered for 14.6 days, all 1,566 live recipients had been messaged at
+ * least once, no recipient was resting, and the planner wrote NOTHING — 5,408 routes skipped
+ * `no-new-material-to-reference` and 585 `not-this-senders-turn`. The walk starts after
+ * whoever wrote last, so it elected a page that had ALREADY written to the recipient; that page
+ * may only send a FOLLOW-UP, a follow-up needs a new paid post naming them, and none existed.
+ * Meanwhile another page in the same ring had never written to them at all and could send the
+ * standard introduction — which needs no new post (`isFollowUp` is false for it) — but the turn
+ * only advances on a DELIVERY, so it never reached that page. 73 introductions were waiting
+ * behind pages with nothing to say (@bollywoodpaparazzii 40, @totalfilmii 28,
+ * @bollywoodsocietyy 5).
+ *
+ * Sudhanshu chose "build it, switched on" on 17 Nov, with the risk below put to them first:
+ * CLAUDE.md had recorded this as Tabish's decision, so it is recorded as Sudhanshu's, and
+ * Tabish can switch it off with one Setting row (`passTurnWhenNothingNew` = false). It is the
+ * content of Tabish's ring rule of 20 August ("the 7 day constraint … only if target has been
+ * contacted by all [our pages] or a reply has been detected") and of Tabish's 4 September
+ * instruction to hand the turn "to the next page whose route is clear".
+ *
+ * THE EXPOSURE, STATED: a company that heard from one of our pages and did not answer will hear
+ * the same standard introduction from a second page, then (after each 7-day allowance window)
+ * a third — byte-identical copy from a different page name. It is bounded by everything that
+ * already bounds a message: one per paid post per 7 days (`materialAllowance`, recipient-wide,
+ * so a pass can never send two in one window), the ring rule, the reply halt, verified-only, no
+ * people, the pair cap, the pace.
+ *
+ * THE RULE, in the order `nextSender` applies it after the ordinary walk has elected page E:
+ *   1. The recipient ever replied to any page        → E. Every page's message is a follow-up
+ *      then (`isFollowUp`), so no page has an introduction to offer, and an introduction to
+ *      someone already talking to us is the H5 mistake. DATED OR NOT: `everReplied` counts
+ *      `repliedAt` as well as `replyPostedAt`, stricter than `isFollowUp`, on purpose.
+ *   2. E never delivered to them                     → E. E's message is already a first touch.
+ *   3. E holds a waiting draft for them              → E. Its message is in the queue.
+ *   4. A page that never wrote to them already holds a waiting draft → THAT page. The turn was
+ *      passed on an earlier pass and stays passed until the draft is delivered or discarded —
+ *      otherwise each planning pass would hand it to yet another page while the first
+ *      introduction waits (two first touches to one company, the fan-out this file exists to
+ *      stop). Pinned even if new material has appeared since: the allowance lets only one of
+ *      them through in the window anyway, and the other would sit held at the gate.
+ *   5. Nothing new to say (no fresh, unclaimed paid post naming them that a follow-up could
+ *      describe) → the first page AFTER E in ring order that is available for this recipient,
+ *      is not the recipient, and has never delivered to them. Walking from E keeps the spread
+ *      deterministic: the same inputs elect the same page on every host and every pass.
+ *   6. Otherwise, or when no such page exists        → E. Never a refusal: "every page has
+ *      written and there is nothing new" is NO_NEW_MATERIAL, a rule with a clock, and must not
+ *      become `all-unavailable`, which the screens file as rotation stuck — "needs a person".
+ *
+ * "Available" is the same `unavailable` map the ordinary walk reads — account facts plus the
+ * routes this recipient's pages cannot use (parks, pair reply halts) — so a pass can never
+ * elect a page with no online Mac, a flagged page, or a page whose earlier message to them is
+ * parked as maybe-delivered.
+ */
+export interface TurnPass {
+  /** Ring members that have EVER delivered a message to this recipient. */
+  wroteBefore: ReadonlySet<string>
+  /** Ring members holding a waiting draft (QUEUED, READY or SENDING) to this recipient. */
+  holdsDraft: ReadonlySet<string>
+  /** The recipient replied to any page, ever — `repliedAt` OR `replyPostedAt`, dated or not. */
+  everReplied: boolean
+  /**
+   * No fresh, unclaimed paid post names them that a follow-up could describe — i.e. the elected
+   * page, having written before, would be refused `no-new-material-to-reference` or
+   * `no-post-we-can-describe`. Supplied by the caller, which is the one that holds the material.
+   */
+  nothingNewToSay: boolean
 }
 
 export type RotationChoice =
-  | { ok: true; senderId: string; handle: string; position: number }
+  | {
+      ok: true
+      senderId: string
+      handle: string
+      position: number
+      /**
+       * Set when the turn was PASSED: the page the ordinary walk elected, which has written to
+       * this recipient before and has nothing new to say. Carried so a refusal or a screen can
+       * say why a page that is not next after the last writer is writing.
+       */
+      passedFrom?: { senderId: string; handle: string }
+    }
   | { ok: false; reason: 'empty-ring' | 'all-unavailable'; detail: string }
 
 /**
@@ -196,7 +286,8 @@ export function nextSender(input: RotationInput): RotationChoice {
       continue
     }
 
-    return { ok: true, senderId: member.senderId, handle: member.handle, position: member.position }
+    const elected = { ok: true as const, senderId: member.senderId, handle: member.handle, position: member.position }
+    return input.pass ? passTurn(elected, order, (start + step) % order.length, input.pass, unavailable, targetId) : elected
   }
 
   return {
@@ -204,6 +295,45 @@ export function nextSender(input: RotationInput): RotationChoice {
     reason: 'all-unavailable',
     detail: `every sender in this category is unavailable — ${blocked.join('; ')}`,
   }
+}
+
+/**
+ * PURE. The pass, applied to the page the ordinary walk elected. See `TurnPass` for the rule,
+ * the measurement and whose decision it is. Never returns a refusal: when nothing qualifies, the
+ * ordinary choice stands.
+ */
+function passTurn(
+  elected: { ok: true; senderId: string; handle: string; position: number },
+  order: readonly RingMember[],
+  electedIndex: number,
+  pass: TurnPass,
+  unavailable: ReadonlyMap<string, string>,
+  targetId: string | null,
+): RotationChoice {
+  if (pass.everReplied) return elected
+  if (!pass.wroteBefore.has(elected.senderId)) return elected
+  if (pass.holdsDraft.has(elected.senderId)) return elected
+
+  /* Pages that may introduce themselves, in ring order starting after the elected page. */
+  const candidates: RingMember[] = []
+  for (let step = 1; step < order.length; step++) {
+    const m = order[(electedIndex + step) % order.length]!
+    if (targetId !== null && m.senderId === targetId) continue
+    if (unavailable.has(m.senderId)) continue
+    if (pass.wroteBefore.has(m.senderId)) continue
+    candidates.push(m)
+  }
+
+  const from = { senderId: elected.senderId, handle: elected.handle }
+  /* Rule 4: a turn already passed stays passed while its draft waits. */
+  const waiting = candidates.find((m) => pass.holdsDraft.has(m.senderId))
+  if (waiting) return { ok: true, senderId: waiting.senderId, handle: waiting.handle, position: waiting.position, passedFrom: from }
+  /* Rule 5: nothing new to say, so the first page that never wrote takes the turn. */
+  const first = candidates[0]
+  if (pass.nothingNewToSay && first) {
+    return { ok: true, senderId: first.senderId, handle: first.handle, position: first.position, passedFrom: from }
+  }
+  return elected
 }
 
 /**

@@ -12,7 +12,13 @@ import { replyHaltFloor, replyHaltKey } from '@/outreach/replyHalt'
 import { replyHaltSpan, replyRouteReason, restReplyLabel } from '@/outreach/replyHaltCopy'
 import { eligibleFleetSenders, readSenderAvailability } from '@/outreach/availability'
 import { fleetRingOrder, nextSender } from '@/outreach/rotation'
-import { categoriesFor, readCategoryMemberships, ringMembersFor, unavailableForTarget } from '@/outreach/categories'
+import {
+  categoriesFor,
+  readCategoryMemberships,
+  ringMembersFor,
+  turnPassFor,
+  unavailableForTarget,
+} from '@/outreach/categories'
 import { parkBlocksRoute } from '@/outreach/parkedRows'
 import { readPersonHandles } from '@/outreach/compose'
 import { watchMarksFrom } from '@/detection/ownMarks'
@@ -350,6 +356,19 @@ export interface RestTally {
    * everything" when it did not.
    */
   pairChecksSkipped: number
+  /**
+   * ── THE TURN PASS'S ONE MATERIAL FACT, FOR THE SCREENS THAT NAME A PAGE (17 Nov 2026) ──
+   *
+   * Per recipient: is there nothing new to say to them (no fresh, unclaimed, describable paid
+   * post)? Present ONLY where the pass could matter and the planner would actually reach
+   * rotation — the switch is on, some page has delivered to them, they never replied, and the
+   * 7-day material allowance is not holding them (when it is, the governor refuses every page
+   * before rotation is asked, so naming a passed page would promise a message nobody writes).
+   * Absent = "not known", and `whoseTurnForMany` then passes no turn. /targets hands this to
+   * `whoseTurnForMany` so "Next message comes from @x" names the page the planner will use.
+   * Computed in the loop below from rows already in memory: no query.
+   */
+  turnPassNothingNew: ReadonlyMap<string, boolean>
 }
 
 /**
@@ -452,6 +471,9 @@ async function computeRestTally(now: Date): Promise<RestTally> {
           OR: [
             { status: { in: [...DELIVERED_STATUSES] }, sentAt: { not: null } },
             { replyPostedAt: { not: null } },
+            /* An UNDATED reply too — the turn pass must never introduce a second page to anyone
+               who answered us, dated or not (see `TurnPass`). Same table, same query. */
+            { repliedAt: { not: null } },
             { status: { in: ['QUEUED', 'READY', 'SENDING'] } },
             { status: 'FAILED', failureCode: { not: null } },
           ],
@@ -460,6 +482,7 @@ async function computeRestTally(now: Date): Promise<RestTally> {
           status: true,
           sentAt: true,
           replyPostedAt: true,
+          repliedAt: true,
           replyHandledAt: true,
           failureCode: true,
           queuedAt: true,
@@ -562,6 +585,10 @@ async function computeRestTally(now: Date): Promise<RestTally> {
   const allReplies = attempts.filter((a) => a.replyPostedAt !== null)
 
   const everRepliedTargetIds = new Set(allReplies.map((r) => r.pair.targetId))
+  /** Answered us at all, dated or not — the turn pass's own, stricter test (`TurnPass.everReplied`). */
+  const everAnsweredTargetIds = new Set(
+    attempts.filter((a) => a.replyPostedAt !== null || a.repliedAt !== null).map((a) => a.pair.targetId),
+  )
 
   /**
    * The ACTIVE halts — the windowed, unhandled subset of the same read. The filter is the one
@@ -593,6 +620,40 @@ async function computeRestTally(now: Date): Promise<RestTally> {
   /** id → the post's brands and publisher, for the describable-post prediction. In memory already. */
   const postById = new Map(posts.map((c) => [c.id, c]))
 
+  /**
+   * IS THERE ANYTHING NEW TO SAY TO THIS RECIPIENT, excluding `used`? The governor's two
+   * material stops in the governor's own order — NO_NEW_MATERIAL (no fresh post at all), then
+   * NO_DESCRIBABLE_POST (fresh posts, none a follow-up could describe) — asked once here so the
+   * per-pair prediction below and the turn pass above cannot answer it two ways.
+   *
+   * `newMaterialFloor`, NOT the allowance window — that is the floor the governor's own query
+   * uses, and the two are genuinely different (72h vs 7 days). The subject rule is the one the
+   * composer picks with (`followUpSubject`), over the preloaded rows: no query per prospect.
+   * A follow-up must say what the post was about (the date-only fallback is deleted, 2026-09-01),
+   * so unclaimed posts none of which it attributes to this recipient hold exactly as no posts at
+   * all would.
+   */
+  async function materialToSay(
+    p: { handle: string; displayName: string | null },
+    used: ReadonlySet<string>,
+  ): Promise<'nothing-fresh' | 'nothing-describable' | 'something-new'> {
+    const rows = await campaignsNamingHandleRows(preloaded, p, materialFloor)
+    const unclaimed = rows.filter((r) => !used.has(r.id))
+    if (unclaimed.length === 0) return 'nothing-fresh'
+    const describable = unclaimed.some((r) => {
+      const post = postById.get(r.id)
+      return post
+        ? followUpSubject(
+            readStringArray(post.brands),
+            post.target,
+            { handle: p.handle, displayName: p.displayName, isPerson: personHandles.has(p.handle) },
+            watchChannels,
+          ) !== null
+        : false
+    })
+    return describable ? 'something-new' : 'nothing-describable'
+  }
+
   const lastBySenderPerTarget = new Map<string, Map<string, { sentAt: Date; handle: string }>>()
   /**
    * ── EVERY DELIVERY PER RECIPIENT, NOT THE LAST ONE PER SENDER (2026-08-26) ──
@@ -612,6 +673,8 @@ async function computeRestTally(now: Date): Promise<RestTally> {
   const allDeliveriesPerTarget = new Map<string, Date[]>()
   const lastSenderPerTarget = new Map<string, string>()
   const deliveredPairKeys = new Set<string>()
+  /** target → every page that ever delivered to them — `TurnPass.wroteBefore`. */
+  const wroteBeforeByTarget = new Map<string, Set<string>>()
   const sentTodayPairKeys = new Set<string>()
   for (const d of deliveries) {
     if (!d.sentAt) continue
@@ -623,6 +686,9 @@ async function computeRestTally(now: Date): Promise<RestTally> {
     lastBySenderPerTarget.set(d.pair.targetId, m)
     lastSenderPerTarget.set(d.pair.targetId, d.pair.senderId)
     deliveredPairKeys.add(`${d.pair.targetId}:${d.pair.senderId}`)
+    const wrote = wroteBeforeByTarget.get(d.pair.targetId)
+    if (wrote) wrote.add(d.pair.senderId)
+    else wroteBeforeByTarget.set(d.pair.targetId, new Set([d.pair.senderId]))
     /* A delivery from THIS page to THIS recipient today (IST) — the same boundary the pair cap
        is counted against, so the two cannot name different days across midnight. */
     if (d.sentAt >= istDayStart(now)) sentTodayPairKeys.add(`${d.pair.targetId}:${d.pair.senderId}`)
@@ -639,6 +705,15 @@ async function computeRestTally(now: Date): Promise<RestTally> {
   }
 
   const pendingTargets = new Set(pending.map((p) => p.pair.targetId))
+  /** target → the pages holding a waiting draft to them — `TurnPass.holdsDraft`. */
+  const holdsDraftByTarget = new Map<string, Set<string>>()
+  for (const d of pending) {
+    const set = holdsDraftByTarget.get(d.pair.targetId)
+    if (set) set.add(d.pair.senderId)
+    else holdsDraftByTarget.set(d.pair.targetId, new Set([d.pair.senderId]))
+  }
+  /** See `RestTally.turnPassNothingNew`. */
+  const turnPassNothingNew = new Map<string, boolean>()
   /**
    * Routes this recipient's pages cannot use, in the shape rotation wants.
    *
@@ -744,11 +819,43 @@ async function computeRestTally(now: Date): Promise<RestTally> {
     /* Filtered by fleet exactly as the planner's ring is (plan.ts) — a page the recipient's fleet
        refuses must not be elected here either, or this panel names a turn the planner never takes. */
     const ring = fleetRingOrder(ringMembersFor(ringByTarget.get(p.id) ?? [], p.handle, memberships))
+    /**
+     * ── THE TURN PASS, MIRRORED (17 Nov 2026) ─────────────────────────────────
+     *
+     * The planner hands the turn past a page that has written to them before and has nothing new
+     * to say, to a page that never wrote (`TurnPass`, rotation.ts). Without the same pass here
+     * this panel would file every such company under "nothing new to reference" while the
+     * planner writes them an introduction — a screen reporting a rule by a different rule than
+     * the one enforcing it. The material fact is asked only where it can matter (some page wrote,
+     * they never answered, the switch is on) and only when the allowance is not holding them,
+     * because the planner never reaches rotation for a held recipient. Same facts the loader
+     * reads (`readTurnHistory`), from rows already in memory; the same `turnPassFor` builds them.
+     */
+    let nothingNewToSay: boolean | undefined
+    const wroteBefore = wroteBeforeByTarget.get(p.id)
+    if (settings.passTurnWhenNothingNew && wroteBefore && wroteBefore.size > 0 && !everAnsweredTargetIds.has(p.id)) {
+      const camps = await campaignsNamingHandleRows(preloaded, p, allowanceFloor)
+      const inWindowCount = (allDeliveriesPerTarget.get(p.id) ?? []).filter((sentAt) => sentAt >= allowanceFloor).length
+      if (!materialAllowance({ campaignsInWindow: camps.length, deliveredInWindow: inWindowCount }).held) {
+        nothingNewToSay =
+          (await materialToSay(p, new Set(claimedByTarget.get(p.id) ?? []))) !== 'something-new'
+        turnPassNothingNew.set(p.id, nothingNewToSay)
+      }
+    }
     const turn = nextSender({
       ring,
       lastSenderId: lastSenderPerTarget.get(p.id) ?? null,
       unavailable: unavailableForTarget(unavailable, blockedRoutes, p.id),
       targetId: p.id,
+      pass: turnPassFor(
+        {
+          lastSenderId: lastSenderPerTarget.get(p.id) ?? null,
+          wroteBefore: wroteBefore ?? new Set(),
+          holdsDraft: holdsDraftByTarget.get(p.id) ?? new Set(),
+          everReplied: everAnsweredTargetIds.has(p.id),
+        },
+        { enabled: settings.passTurnWhenNothingNew, nothingNewToSay },
+      ),
     })
 
     /**
@@ -861,35 +968,12 @@ async function computeRestTally(now: Date): Promise<RestTally> {
          `freshCampaignsFor` verbatim. Pair-only here would file a fully-claimed company
          under a later rule; see `claimedByTarget` above. */
       const used = new Set([...(usedByPair.get(electedPairId) ?? []), ...(claimedByTarget.get(p.id) ?? [])])
-      /* `newMaterialFloor`, NOT the allowance window — that is the floor the governor's own
-         query uses, and the two are genuinely different (72h vs 7 days). */
-      const rows = await campaignsNamingHandleRows(preloaded, p, materialFloor)
-      const unclaimed = rows.filter((r) => !used.has(r.id))
-      if (unclaimed.length === 0) {
+      const said = await materialToSay(p, used)
+      if (said === 'nothing-fresh') {
         bump(SKIP_REASONS.NO_NEW_MATERIAL, null)
         continue
       }
-      /**
-       * ── AND CAN ANY OF THEM BE DESCRIBED? (2026-09-01) ────────────────────
-       *
-       * The governor's next stop, in the governor's own position: a follow-up must say what
-       * the post was about (the date-only fallback is deleted), so unclaimed posts none of
-       * which `followUpSubject` attributes to this recipient hold the pair exactly as no
-       * posts at all would. Same subject rule the composer picks with, over the preloaded
-       * rows — no query per prospect.
-       */
-      const describable = unclaimed.some((r) => {
-        const post = postById.get(r.id)
-        return post
-          ? followUpSubject(
-              readStringArray(post.brands),
-              post.target,
-              { handle: p.handle, displayName: p.displayName, isPerson: personHandles.has(p.handle) },
-              watchChannels,
-            ) !== null
-          : false
-      })
-      if (!describable) {
+      if (said === 'nothing-describable') {
         bump(SKIP_REASONS.NO_DESCRIBABLE_POST, null)
         continue
       }
@@ -1015,5 +1099,6 @@ async function computeRestTally(now: Date): Promise<RestTally> {
     pairChecksSkipped,
     measuredAt: now,
     replyHaltSpan: replyHaltSpan(settings.replyResumeHours),
+    turnPassNothingNew,
   }
 }

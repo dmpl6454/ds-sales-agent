@@ -857,15 +857,34 @@ export async function runOutreach(): Promise<PlanSummary> {
         targetId: pair.targetId,
         unavailable: unavailableSenders,
         fleet: fleetRingByTarget.get(pair.targetId) ?? [],
+        /**
+         * ── IS THERE ANYTHING NEW TO SAY TO THEM? (17 Nov 2026) ──
+         *
+         * The turn PASS reads it (see `TurnPass` in rotation.ts): when the page rotation elects
+         * has written to them before and there is no new paid post a follow-up could describe,
+         * the turn passes to a page that never wrote. `describableCampaigns` is the RECIPIENT's
+         * figure whichever pair asks first — its inputs are the posts naming the recipient, less
+         * the recipient's claims (which contain every pair's own uses), and the subject rule
+         * reads only the recipient — so the answer cannot depend on the order pairs are walked
+         * in, and it is exactly the count the governor refuses an elected follow-up on
+         * (NO_NEW_MATERIAL when no post is fresh, NO_DESCRIBABLE_POST when none is describable).
+         */
+        nothingNewToSay: describableCampaigns.length === 0,
       })
       turnByTarget.set(pair.targetId, turn)
     }
     if (turn.choice.ok && turn.choice.senderId !== pair.senderId) {
+      /* The detail still OPENS "@x is next in …" — scripts/diagnose-send-gap.sh parses that
+         prefix — and says why when the turn was passed, so a page that is not next after the
+         last writer is never a mystery in the log. */
+      const passed = turn.choice.passedFrom
       outcomes.push({
         pairKey,
         eligible: false,
         skipReason: 'not-this-senders-turn',
-        skipDetail: `@${turn.choice.handle} is next in ${describeRing(turn)}`,
+        skipDetail: passed
+          ? `@${turn.choice.handle} is next in ${describeRing(turn)} — @${passed.handle} has written to them before and has nothing new to say`
+          : `@${turn.choice.handle} is next in ${describeRing(turn)}`,
       })
       continue
     }

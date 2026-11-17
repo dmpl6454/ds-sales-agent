@@ -5,6 +5,61 @@ changing anything that touches sending.
 
 ---
 
+## 17 NOVEMBER — THE FIXES ARE LIVE AND NOTHING WAS LEFT TO SAY, SO A RECIPIENT'S TURN NOW PASSES TO A PAGE THAT NEVER WROTE
+
+**Measured from the Mac Studio, 07:12 IST, with `scripts/check-sending.sh`, after `760d504` was
+deployed on the box (`deploy-worker-on-box.sh`, 01:21 UTC):**
+
+| | |
+|---|---|
+| `760d504` live | the f4dc4b1 sweep discarded the **3** drafts to retired recipients at 07:03 (0 left); the unjudged pass judged its first 30 (16 Nov 423 → 393); 140 classifier calls today, 0 failed |
+| the Chrome window fix | inbox scans unreadable **96/day → 0**; thread reads unreadable ~200/day → 11, the one shown `no-message-button` (a profile with no Message button), not the window |
+| the Mac | AC power, sleep prevented, agent and tunnel running, autopilot on, `activeDevice` = this Mac, four pages signed in |
+| why still zero | `dispatchState` **nothing-waiting**: the planner wrote nothing. All 1,566 live recipients had been messaged; none resting (last delivery 14.6 days ago); every page rotation elected had written before and had no new paid post to cite (`no-new-material-to-reference` ×5,408), while 73 pages that NEVER wrote to a recipient sat behind it as `not-this-senders-turn` |
+| the backlog | the 72 h new-material window (`newMaterialFloor`) means only 15–16 Nov's unjudged posts can still fund a follow-up; 10–14 Nov's cannot, whatever they turn out to be |
+
+**Decided (Sudhanshu, "build it, switched on", with the exposure put first; it was recorded here as
+Tabish's call, and Tabish can reverse it with one Setting row):** the turn PASS — `TurnPass` /
+`passTurn` in `src/outreach/rotation.ts`. After the ordinary walk elects page E: if the recipient
+never replied to any page (`repliedAt` OR `replyPostedAt` — stricter than `isFollowUp`), E has
+delivered to them before and holds no waiting draft, then a never-wrote page already holding a
+waiting draft keeps the turn (no fan-out across passes), else — when there is nothing new to say
+(no fresh, unclaimed, describable paid post) — the first AVAILABLE never-wrote page after E in ring
+order writes the standard introduction. Otherwise, or when no such page exists, E: never a refusal,
+so "every page wrote" stays NO_NEW_MATERIAL and never becomes "rotation stuck". Switch
+`passTurnWhenNothingNew`, default **true**.
+
+- The facts are loaded INSIDE rotation (`readTurnHistory`, `turnPassFor`, categories.ts), so the
+  planner, `/targets` and every other caller get them; the caller supplies only the material fact
+  (`nothingNewToSay`), and an unknown one means no pass. The planner gives `describableCampaigns.length
+  === 0`, the recipient's own figure whichever pair asks first. `lastSenderTo` is gone
+  (`readTurnHistory` replaces it, skipping a delivered row with no `sentAt` — Postgres sorted those
+  first).
+- Bounded by everything that already bounds a message: the 7-day allowance is recipient-wide and is
+  checked before rotation, so a pass can never buy a second message in a window; ring rule, reply
+  halt, verified-only, no people, pair cap, pace. Unavailable pages (no online Mac, flagged, parked
+  route, pair reply halt) are skipped, so @bollywoodchronicle is never chosen while no Mac holds it.
+- **Exposure, stated:** a company that heard from one page and did not answer hears the same
+  standard introduction from a second page, then a third a week later, byte-identical copy under a
+  different page name. ~73 introductions are due at once (@bollywoodpaparazzii 40, @totalfilmii 28,
+  @bollywoodsocietyy 5), i.e. about an hour at the fleet's one-a-minute pace.
+- **Server-only.** The Mac's 10 Sept build (`fb1e843` in this repo's history; the box calls it
+  `57faf88`) delivers a passed introduction: its gate has no turn check and its repeat check is
+  PAIR-scoped, walked stop by stop. Deploy: `bash scripts/deploy-worker-on-box.sh <sha>` from the
+  box's console. The screens mirror it (`rest-tally.ts` exposes `turnPassNothingNew`, which
+  `/targets` hands to `whoseTurnForMany`; `/rules` states it from the setting) but reach the hosted
+  dashboard only with the next web-tier build, which still needs a Mac with the management key.
+- Tests: `tests/turn-pass.test.ts` (pure, both directions), `tests/turn-pass-planner.test.ts`
+  (12 scenarios through the real `runOutreach` and both screens). 14 mutations each seen red. The
+  planner-golden fixture is unchanged — none of its recipients has the pass shape, which makes it the
+  tripwire for a pass that fires too widely.
+
+63. **A rotation that advances only on a delivery stalls on a page that has nothing to deliver.**
+    When the elected page can only send what does not exist, the turn must move to a page that can
+    say something, or the recipient waits on material forever.
+
+---
+
 ## 16 NOVEMBER — NOTHING SENT SINCE 2 NOV: CHROME WINDOWS AT 500x232, A CLASSIFIER OUT OF CREDIT, AND NOTHING LEFT TO SAY
 
 **Asked: *"why message not is sending / sales agent is not working".*** Last delivery **2 Nov 15:51**.
@@ -19,7 +74,7 @@ Three independent causes, each enough on its own:
 | **DeepSeek out of credit** | every classify call refused `HTTP 402` 8–10 Nov and 13 Nov 12:30 → 16 Nov 17:31 (6,929 failures in 48 h); posts stored, never judged, so no paid post could fund a follow-up. A working day costs **$0.14–0.18** of model calls | a person topped the account up, 16 Nov ~17:30 |
 | **nothing left to say** | all 1,566 live recipients already messaged; the planner's last slot held 5,421 routes for `no-new-material-to-reference` and wrote nothing. Under the 15 Oct wall the official read carries no tags or `@`, so even judged paid posts rarely name a prospect, and 0 prospects were minted in 7 days. First messages that need no paid post exist — 73 from signed-in pages, 516 from @bollywoodchronicle — but rotation keeps each recipient's turn on a page that has already written, and chronicle is held by no online Mac | **Tabish's** (below) |
 
-**Still a person's, not done:** (1) whether a recipient's turn may pass to a page that has never
+**Still a person's, not done:** (1) [DECIDED 17 Nov — built and switched on, see the entry above] whether a recipient's turn may pass to a page that has never
 written to them when the elected page has nothing new to say (Appendix A.9 of the outreach plan — 73
 messages now); (2) signing @bollywoodchronicle in on the Mac Studio (516 first messages, all from one
 account, and only after reads are confirmed working, or introductions land on companies mid-conversation

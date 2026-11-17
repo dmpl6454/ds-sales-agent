@@ -57,6 +57,8 @@ export const SETTING_KEYS = {
   publisherAsContext: 'publisherAsContext',
   replyResumeHours: 'replyResumeHours',
   crossPageGapHours: 'crossPageGapHours',
+  /** A page with nothing new to say hands the recipient's turn to a page that never wrote. */
+  passTurnWhenNothingNew: 'passTurnWhenNothingNew',
   officialMinFollowers: 'officialMinFollowers',
   celebrityMinFollowers: 'celebrityMinFollowers',
 } as const
@@ -358,6 +360,17 @@ export interface RuntimeSettings {
   tagsAsEvidence: boolean
   /** Tell the classifier whose feed a post is from. See detection/publisherContext.ts. */
   publisherAsContext: boolean
+  /**
+   * ── THE TURN PASSES PAST A PAGE WITH NOTHING NEW TO SAY (17 Nov 2026) ──
+   *
+   * ON. When rotation elects a page that has already written to a recipient, and there is no
+   * new paid post for it to follow up on, the turn passes to a page in the ring that has never
+   * written to them, which sends the standard introduction. Sudhanshu's decision, 17 Nov
+   * ("build it, switched on"), with 73 introductions waiting and nothing else sending; Tabish
+   * can switch it off with this one row. The rule, the measurement and the exposure are in
+   * `TurnPass` (outreach/rotation.ts).
+   */
+  passTurnWhenNothingNew: boolean
 }
 
 function defaults(): RuntimeSettings {
@@ -405,6 +418,8 @@ function defaults(): RuntimeSettings {
     // ZERO — no inter-page gap. Tabish, 2026-08-20: "7 day constraint only no other
     // limitation." The mechanism is kept and is one number from being restored.
     crossPageGapHours: 0,
+    // ON — Sudhanshu, 17 Nov. See the interface comment and `TurnPass`.
+    passTurnWhenNothingNew: true,
     officialMinFollowers: 100_000,
     celebrityMinFollowers: 500_000,
   }
@@ -583,6 +598,7 @@ async function readSettings(): Promise<RuntimeSettings> {
     replyHaltScope: parseReplyHaltScope(map.get(SETTING_KEYS.replyHaltScope)),
     tagsAsEvidence: bool(SETTING_KEYS.tagsAsEvidence, d.tagsAsEvidence),
     publisherAsContext: bool(SETTING_KEYS.publisherAsContext, d.publisherAsContext),
+    passTurnWhenNothingNew: bool(SETTING_KEYS.passTurnWhenNothingNew, d.passTurnWhenNothingNew),
     /**
      * Both fleet ceilings accept "unlimited", and for opposite reasons.
      *

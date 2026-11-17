@@ -162,6 +162,14 @@ export default async function RulesPage() {
         */
         `Every page of a recipient\u2019s own fleet may write to them. Once every one of those pages that is able to send has written, the recipient rests until the oldest of those messages is ${settings.defaultCooldownDays} days old — and nothing else spaces our pages apart${settings.crossPageGapHours > 0 ? `, beyond ${settings.crossPageGapHours}h between two different pages reaching the same inbox` : ''}. Sending volume is otherwise uncapped, by explicit decision.`,
         'A follow-up must reference a paid post not used before for that conversation — fresh material is what makes a second message new rather than a repeat, which is what Instagram penalises.',
+        /*
+          THE TURN PASS (17 Nov 2026, Sudhanshu's decision, switch `passTurnWhenNothingNew`). Read
+          from the setting the loaders read, so this page cannot claim a pass that is switched off.
+          The rule, the measurement and the exposure are in `TurnPass` (outreach/rotation.ts).
+        */
+        settings.passTurnWhenNothingNew
+          ? 'When the page whose turn it is has already written to a company and has nothing new to say, the turn passes to one of their pages that never has — its first message needs no new paid post. Never to a company that has replied to any page.'
+          : 'When the page whose turn it is has already written to a company and has nothing new to say, the company waits for a new paid post naming them — the turn does not pass to a page that never wrote (switched off).',
         settings.fleetMaxPerDay === Number.POSITIVE_INFINITY
           ? 'No fleet-wide daily cap — chosen deliberately, one setting away from binding.'
           : `${settings.fleetMaxPerDay} per day across all accounts together.`,
