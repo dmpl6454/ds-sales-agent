@@ -23,7 +23,8 @@ Tabish's call, and Tabish can reverse it with one Setting row):** the turn PASS 
 `passTurn` in `src/outreach/rotation.ts`. After the ordinary walk elects page E: if the recipient
 never replied to any page (`repliedAt` OR `replyPostedAt` — stricter than `isFollowUp`), E has
 delivered to them before and holds no waiting draft, then a never-wrote page already holding a
-waiting draft keeps the turn (no fan-out across passes), else — when there is nothing new to say
+waiting draft keeps the turn (no fan-out across passes; since review 3, ANY page with a message out to
+them — waiting, mid-send or parked as maybe-delivered, in the ring or not — means no pass), else — when there is nothing new to say
 (no fresh, unclaimed, describable paid post) — the first AVAILABLE never-wrote page after E in ring
 order writes the standard introduction. Otherwise, or when no such page exists, E: never a refusal,
 so "every page wrote" stays NO_NEW_MATERIAL and never becomes "rotation stuck". Switch
@@ -82,6 +83,23 @@ and gate in a copy of the repo), found more; what was fixed has tests and six mo
 | "never the recipient itself" compares a SenderAccount id with a TargetAccount id, which never coincide | pre-existing and inherited; a self-route cannot exist (`routes.ts`), so the worst case is a group-ring stall, not a message |
 | rule 5 trusts read stamps from the Mac's 10 Sept build, whose inbox fallback (audit C1) can open the wrong conversation for a recipient with no Message button — and under one standard template a stranger's thread holds the identical message, so the completeness check would pass | stated, not fixable from the server: affects only door-less recipients, until the Mac runs a build with the C1 fix |
 
+**A THIRD REVIEW, of `b13242d` — a workflow: three reviewers with distinct lenses (send safety,
+planner/screen agreement, stalls and test holes), each finding reproduced in a copy of the repo,
+then two skeptics per finding trying to refute it. 14 findings, 12 survived, 2 refuted (both about
+the tally's ring for two-group companies — the planner's own ring was right).** Fixed, each with a
+test seen red when its guard is removed:
+
+| finding | now |
+|---|---|
+| **The dashboard could hang.** `buildProspectsPage` (since `3e03c67`) calls `buildRestTally` while holding one of `memoView`'s two slots; two `/targets` renders with different keys across a tally expiry deadlocked every view in the worker until pm2 restarted it. Reproduced with the memo on (it is off under vitest, so no test could see it). Not yet on the hosted dashboard (needs a web-tier build); sending unaffected | `viewMemo.ts`: a call made inside a slot-holding computation (`AsyncLocalStorage`) runs on its parent's slot and never joins an entry still queued for one. Also covers the older `/paid-posts` → `buildCeoView` nesting |
+| the pin and rule 5 saw only never-wrote RING members: a retired or out-of-fleet page's maybe-delivered introduction, a writer's parked follow-up, and a writer's waiting follow-up were all invisible, and the pass drafted an introduction beside each | **rule 4: no pass while ANY page has a message out to them** (waiting, SENDING, or a `not-in-thread` park). An available never-wrote ring member holding one keeps the turn; anything else means E |
+| a kept turn was labelled and logged as a fresh pass, with "has nothing new to say" as the reason | `passKeptFor`, its own sentence ("its introduction to them is already waiting, so it goes before @x") and its own log count (`keptWhileIntroWaits`) |
+| untested: newest-delivery aggregation (loader and tally), a SENDING holder, the describability half of `nothingNewToSay` (planner and tally), the walk reaching the member just before E, a read on a never-delivered row (loader and tally) | each tested; each mutation seen red |
+
+Known and left, low: when rule 5 holds a pass, the rest tally files the company under
+`no-new-material-to-reference` ("waits for their next paid post"), while a read alone would also
+release it; `/targets` and the planner's log name the read.
+
 **What rule 5 costs, stated:** the pass now arrives as fast as the reply sweep reads conversations
 (4 deep reads a 30-minute run, newest-unread first), not as ~73 at once, and a company that
 @bollywoodchronicle or @bachelorssociety ever wrote to is not passed until that page's inbox can be
@@ -89,9 +107,9 @@ read again. **Measure it before judging it:** `scripts/check-sending.sh` section
 page, how many unanswered companies it wrote to and how many of those conversations have been read
 since; its `=` row is the number of companies the pass may now reach. Run against a scratch
 Postgres 16 with the real schema before shipping. `passTurnOnlyAfterRead` = false restores
-the record-only pass in one Setting row, accepting the risk above. Tests: 33 pure + 21 planner
-scenarios; fifteen more mutations across both reviews, each seen red. Suite **3,714 / 3,716** after
-the second review (the two offline `route-rule` timeouts).
+the record-only pass in one Setting row, accepting the risk above. Tests: 36 pure + 28 planner
+scenarios + 3 memo; every guard added by the three reviews mutation-checked red. Suite **3,727 / 3,729**
+(the two offline `route-rule` timeouts).
 
 63. **A rotation that advances only on a delivery stalls on a page that has nothing to deliver.**
     When the elected page can only send what does not exist, the turn must move to a page that can

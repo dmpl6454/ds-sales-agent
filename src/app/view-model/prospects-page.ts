@@ -440,6 +440,8 @@ async function computeProspectsPage(input?: ProspectsInput): Promise<ProspectsPa
     const waits = turn.choice.passWaitsForRead
     const passed = turn.choice.passedFrom
       ? ` — @${turn.choice.passedFrom.handle} has written to them before and has nothing new to say, so a page that never has writes instead`
+      : turn.choice.passKeptFor
+        ? ` — its introduction to them is already waiting, so it goes before @${turn.choice.passKeptFor.handle}`
       : waits
         ? ` — it has nothing new to say; a page that never wrote to them takes over once ` +
           `${waits.map((h) => `@${h}`).join(', ')} ${waits.length === 1 ? 'has' : 'have'} had the conversation with them read since writing`

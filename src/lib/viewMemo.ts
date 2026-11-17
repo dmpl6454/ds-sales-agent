@@ -34,6 +34,19 @@
  * second; a ten-second memo would make them assert against the previous fixture. The tests
  * of THIS module pass `enabled: true` explicitly.
  *
+ * A VIEW COMPUTED INSIDE ANOTHER NEVER WAITS FOR A SLOT (17 Nov 2026). `buildProspectsPage`
+ * calls `buildRestTally` and `buildPaidPostsView` calls `buildCeoView`, each while holding one of
+ * the two slots. Before this, the inner call queued for a slot like any other — so two outer
+ * computations holding both slots, each waiting on an inner one queued behind them, waited for
+ * ever, and every later view in that worker queued behind THEM: every page hung until pm2
+ * restarted the process (an idle hang never trips the memory ceiling). Found by review of the
+ * turn pass, reproduced with the memo on (it is off under vitest, which is how no test saw it).
+ * Now a call made inside a slot-holding computation (`AsyncLocalStorage`) runs on its parent's
+ * slot: on a miss it computes at once; on a hit it joins only a computation that is already
+ * RUNNING; and if the entry it finds is still QUEUED for a slot it computes its own answer
+ * rather than wait on something that may be waiting on it. The bound is unchanged in kind — an
+ * inner view runs inside its parent's budget — and the outer level still admits at most two.
+ *
  * PER PROCESS, BY DESIGN. The web tier is a two-worker pm2 cluster; each worker holds its
  * own map, so the bound is per worker and the fleet-wide ceiling is twice the constant.
  * That is the correct granularity — heap is per process — and nothing here needs to agree
@@ -55,6 +68,11 @@ export const MAX_INFLIGHT_VIEWS = 2
 /** Default freshness window. Inside the 30-45 s auto-refresh the pages already accept. */
 export const VIEW_MEMO_TTL_MS = 10_000
 
+import { AsyncLocalStorage } from 'node:async_hooks'
+
+/** Set while a computation holds a slot — its nested `memoView` calls run on that slot. */
+const insideSlot = new AsyncLocalStorage<true>()
+
 interface Entry {
   /**
    * When the computation SETTLED, or null while it is still in flight. Stamped on
@@ -64,6 +82,8 @@ interface Entry {
    */
   settledAt: number | null
   value: Promise<unknown>
+  /** True once the computation is RUNNING (admitted, or started on a parent's slot). */
+  running: boolean
 }
 
 const cache = new Map<string, Entry>()
@@ -114,16 +134,22 @@ export function memoView<T>(
   const enabled = opts?.enabled ?? !process.env.VITEST
   if (!enabled) return fn()
 
+  const nested = insideSlot.getStore() === true
   const hit = cache.get(key)
   if (hit && (hit.settledAt === null || Date.now() - hit.settledAt < ttlMs)) {
-    return hit.value as Promise<T>
+    /* A nested caller must not wait on an entry still queued for a slot — that entry may be
+       queued behind the very computation asking. It computes its own answer instead, uncached. */
+    if (!nested || hit.settledAt !== null || hit.running) return hit.value as Promise<T>
+    return fn()
   }
 
-  const entry: Entry = { settledAt: null, value: undefined as unknown as Promise<unknown> }
+  const entry: Entry = { settledAt: null, value: undefined as unknown as Promise<unknown>, running: false }
   const value = (async () => {
-    const release = await admit()
+    /* A nested call runs on its parent's slot; only an outer call takes one. */
+    const release = nested ? () => {} : await admit()
+    entry.running = true
     try {
-      return await fn()
+      return await insideSlot.run(true, fn)
     } finally {
       release()
     }

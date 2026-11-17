@@ -878,6 +878,7 @@ export async function runOutreach(): Promise<PlanSummary> {
          prefix — and says why when the turn was passed, so a page that is not next after the
          last writer is never a mystery in the log. */
       const passed = turn.choice.passedFrom
+      const kept = turn.choice.passKeptFor
       const waitsForRead = turn.choice.passWaitsForRead
       outcomes.push({
         pairKey,
@@ -885,6 +886,8 @@ export async function runOutreach(): Promise<PlanSummary> {
         skipReason: 'not-this-senders-turn',
         skipDetail: passed
           ? `@${turn.choice.handle} is next in ${describeRing(turn)} — @${passed.handle} has written to them before and has nothing new to say`
+          : kept
+            ? `@${turn.choice.handle} is next in ${describeRing(turn)} — its introduction to them is already waiting, so it goes before @${kept.handle}`
           : waitsForRead
             ? `@${turn.choice.handle} is next in ${describeRing(turn)} — it has nothing new to say, and a page that never wrote ` +
               `takes over once ${waitsForRead.map((h) => `@${h}`).join(', ')} ${waitsForRead.length === 1 ? 'has' : 'have'} ` +
@@ -1078,9 +1081,12 @@ export async function runOutreach(): Promise<PlanSummary> {
    */
   const turns = [...turnByTarget.values()].map((t) => t.choice)
   const passedTurns = turns.filter((c) => c.ok && c.passedFrom).length
+  const keptTurns = turns.filter((c) => c.ok && c.passKeptFor).length
   const waitingForRead = turns.filter((c) => c.ok && c.passWaitsForRead).length
-  if (passedTurns > 0 || waitingForRead > 0) {
-    log.info('turn passes', { passed: passedTurns, waitingForARead: waitingForRead })
+  if (passedTurns > 0 || keptTurns > 0 || waitingForRead > 0) {
+    /* `passed` is fresh passes only; `keptWhileIntroWaits` is a turn passed earlier whose
+       introduction has not gone yet, so it is not counted twice. */
+    log.info('turn passes', { passed: passedTurns, keptWhileIntroWaits: keptTurns, waitingForARead: waitingForRead })
   }
 
   if (summary.skipped > 0) {

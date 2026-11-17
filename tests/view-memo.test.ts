@@ -116,6 +116,64 @@ describe('memoView — admission control', () => {
  * files gained the import and not the wrapper. No behavioural test can fail for a caller
  * nobody has written, so this is a source grep, in the style of one-route-rule.test.ts.
  */
+describe('memoView — a view computed inside another never deadlocks (17 Nov 2026)', () => {
+  /** Resolve or report "still waiting" after `ms` — a deadlock is a promise that never settles. */
+  const within = <T,>(p: Promise<T>, ms = 1500) =>
+    Promise.race([p, sleep(ms).then(() => 'STILL WAITING' as const)])
+
+  it('two outer views holding both slots, each asking for an inner view queued behind them, all finish', async () => {
+    // The shape review 3 reproduced with buildProspectsPage → buildRestTally: both slots taken by
+    // outer views with different keys; a third OUTER caller creates the inner entry, which queues;
+    // then each outer view asks for that inner view. Before the fix all three waited for ever.
+    invalidateViews()
+    let release!: () => void
+    const gate = new Promise<void>((r) => (release = r))
+    const inner = async () => 'inner'
+    const outer = (k: string) =>
+      memoView(k, async () => {
+        await gate
+        return `${k}+${await memoView('k:inner', inner, on)}`
+      }, on)
+    const a = outer('k:outerA')
+    const b = outer('k:outerB')
+    await sleep(5)
+    const queuedInner = memoView('k:inner', inner, on) // outer-level miss: queues for a slot
+    await sleep(5)
+    release()
+    expect(await within(Promise.all([a, b, queuedInner]))).toEqual(['k:outerA+inner', 'k:outerB+inner', 'inner'])
+  })
+
+  it('an inner view asked for on a miss runs on its parent\'s slot, not a new one', async () => {
+    invalidateViews()
+    let release!: () => void
+    const gate = new Promise<void>((r) => (release = r))
+    const a = memoView('k:pA', async () => {
+      await gate
+      return memoView('k:childA', async () => 'cA', on)
+    }, on)
+    const b = memoView('k:pB', async () => {
+      await gate
+      return memoView('k:childB', async () => 'cB', on)
+    }, on)
+    await sleep(5)
+    release()
+    expect(await within(Promise.all([a, b]))).toEqual(['cA', 'cB'])
+  })
+
+  it('outer callers are still bounded: a third distinct outer view waits for a slot', async () => {
+    invalidateViews()
+    let release!: () => void
+    const gate = new Promise<void>((r) => (release = r))
+    let started = 0
+    const slow = (k: string) => memoView(k, async () => { started += 1; await gate; return k }, on)
+    const all = [slow('k:o1'), slow('k:o2'), slow('k:o3')]
+    await sleep(10)
+    expect(started).toBe(MAX_INFLIGHT_VIEWS)
+    release()
+    expect(await within(Promise.all(all))).toEqual(['k:o1', 'k:o2', 'k:o3'])
+  })
+})
+
 describe('every page builder delegates to memoView', () => {
   const root = join(import.meta.dirname, '..')
   const read = (p: string) => readFileSync(join(root, p), 'utf8')

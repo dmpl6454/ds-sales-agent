@@ -119,10 +119,11 @@ describe('a turn already passed stays passed while its draft waits (no fan-out)'
   it('a never-wrote page holding a draft keeps the turn, even if it is not the first after the elected one', () => {
     // charlie would be first; delta already holds the passed introduction.
     const p = pass({ holdsDraft: new Set(['id_delta']) })
-    expect(nextSender({ ring: RING, lastSenderId: 'id_alpha', pass: p })).toMatchObject({
-      handle: 'delta',
-      passedFrom: { handle: 'bravo' },
-    })
+    const choice = nextSender({ ring: RING, lastSenderId: 'id_alpha', pass: p })
+    // KEPT, not passed again: labelled apart so the log does not count it twice and the reason
+    // is not "nothing new to say" (review 3).
+    expect(choice).toMatchObject({ handle: 'delta', passKeptFor: { handle: 'bravo' } })
+    expect(choice.ok && choice.passedFrom).toBeFalsy()
   })
 
   it('…and keeps it even after new material appears, so the elected page does not draft beside it', () => {
@@ -161,7 +162,30 @@ describe('a turn already passed stays passed while its draft waits (no fan-out)'
     const unavailable = new Map([['id_charlie', 'flagged']])
     expect(nextSender({ ring: RING, lastSenderId: 'id_alpha', unavailable, pass: p })).toMatchObject({
       handle: 'delta',
-      passedFrom: { handle: 'bravo' },
+      passKeptFor: { handle: 'bravo' },
+    })
+  })
+
+  it('no pass while a page OUTSIDE the ring has a message out to them (review 3)', () => {
+    // A retired page, or one out of their fleet, with a waiting draft or a maybe-delivered park.
+    const choice = nextSender({ ring: RING, lastSenderId: 'id_alpha', pass: pass({ holdsDraft: new Set(['id_gone']) }) })
+    expect(choice).toMatchObject({ ok: true, handle: 'bravo' })
+    expect(choice.ok && (choice.passedFrom || choice.passKeptFor)).toBeFalsy()
+  })
+
+  it('no pass while a page that HAS written has a message out to them — its waiting or parked follow-up (review 3)', () => {
+    const choice = nextSender({ ring: RING, lastSenderId: 'id_alpha', pass: pass({ holdsDraft: new Set(['id_alpha']) }) })
+    expect(choice).toMatchObject({ ok: true, handle: 'bravo' })
+    expect(choice.ok && choice.passedFrom).toBeFalsy()
+  })
+
+  it('walks the whole ring: the page just BEFORE the elected one is a candidate too', () => {
+    // The last writer left the ring, so the walk starts at the front: alpha is elected (wrote),
+    // and the only page that never wrote is delta — the member immediately before alpha.
+    const p = pass({ wroteBefore: new Set(['id_alpha', 'id_bravo', 'id_charlie', 'id_gone']) })
+    expect(nextSender({ ring: RING, lastSenderId: 'id_gone', pass: p })).toMatchObject({
+      handle: 'delta',
+      passedFrom: { handle: 'alpha' },
     })
   })
 

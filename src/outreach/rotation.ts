@@ -111,10 +111,15 @@ export interface RotationInput {
  *      CLAUDE.md). A review proposed checking the pin first; doing so changed the golden, so it
  *      was not shipped here.
  *   3. E holds a waiting draft for them              → E. Its message is in the queue.
- *   4. A page that never delivered to them holds an introduction that is still OUT — a waiting
- *      draft, or one parked `not-in-thread` (the composer cleared and the message never showed:
- *      the recipient MAY have it) → THAT page, if it is available; otherwise E, never a further
- *      page. The turn was passed on an earlier pass and stays passed until the draft is
+ *   4. Any page has a message OUT to them — a waiting draft, one mid-send, or one parked
+ *      `not-in-thread` (the composer cleared and the message never showed: the recipient MAY
+ *      have it) → no pass. If that page is in the ring, has never delivered to them, and is
+ *      available, the turn is KEPT on it (its introduction is already waiting —
+ *      `passKeptFor`); otherwise E. Any page means any: a page outside this ring (retired, or
+ *      out of the recipient's fleet) and a page that HAS written (its waiting or parked
+ *      follow-up) both count — the third review found the pass drafting an introduction beside
+ *      each of those, because the first two versions looked only at never-wrote ring members.
+ *      A pass is for a company nothing is on its way to. The turn was passed on an earlier pass and stays passed until the draft is
  *      delivered or discarded, or the park is settled — otherwise each planning pass would hand
  *      it to yet another page while the first introduction is out (two first touches to one
  *      company, the fan-out this file exists to stop). Pinned even if new material has appeared
@@ -125,7 +130,8 @@ export interface RotationInput {
  *      second introduction); and a `not-in-thread` park counts as out (it is neither waiting nor
  *      delivered, so it was invisible, its route was blocked, and the next pass handed a
  *      byte-identical introduction to another page minutes later — to a company that may
- *      already hold the first).
+ *      already hold the first). A park waits for a person to settle it; until then the
+ *      recipient waits too, which is the conservative direction and has a release.
  *   5. A page that wrote to them has not had its conversation with them READ since it last
  *      wrote → E. Rule 1 trusts our record of replies, and a record is only as good as the
  *      reading behind it: from at least 27 Oct to 16 Nov 2026 every sending profile's Chrome
@@ -155,9 +161,9 @@ export interface TurnPass {
   /** Ring members that have EVER delivered a message to this recipient. */
   wroteBefore: ReadonlySet<string>
   /**
-   * Ring members with a message to this recipient that is still OUT: a waiting draft (QUEUED,
-   * READY or SENDING), or a park the recipient may have received (FAILED `not-in-thread`,
-   * unsettled until a person confirms it either way). Rules 3 and 4.
+   * Pages — in this ring or not — with a message to this recipient that is still OUT: a waiting
+   * draft (QUEUED or READY), one mid-send (SENDING), or a park the recipient may have received
+   * (FAILED `not-in-thread`, unsettled until a person confirms it either way). Rules 3 and 4.
    */
   holdsDraft: ReadonlySet<string>
   /** The recipient replied to any page, ever — `repliedAt` OR `replyPostedAt`, dated or not. */
@@ -228,6 +234,13 @@ export type RotationChoice =
        * feature not working.
        */
       passWaitsForRead?: readonly string[]
+      /**
+       * Set when rule 4 KEPT the turn on a page whose introduction to them is already waiting,
+       * rather than passing it now. Distinct from a fresh pass so the planner's log and /targets
+       * do not count it again or give "nothing new to say" as the reason — the elected page may
+       * well have something new; the waiting introduction simply goes first.
+       */
+      passKeptFor?: { senderId: string; handle: string }
     }
   | { ok: false; reason: 'empty-ring' | 'all-unavailable'; detail: string }
 
@@ -395,7 +408,7 @@ function passTurn(
   if (pass.holdsDraft.has(elected.senderId)) return elected
 
   /* Pages that may introduce themselves, in ring order starting after the elected page —
-     availability NOT yet asked, because rule 3 must see a holder that has become unavailable. */
+     availability NOT yet asked, because rule 4 must see a holder that has become unavailable. */
   const neverWrote: RingMember[] = []
   for (let step = 1; step < order.length; step++) {
     const m = order[(electedIndex + step) % order.length]!
@@ -405,12 +418,12 @@ function passTurn(
   }
 
   const from = { senderId: elected.senderId, handle: elected.handle }
-  /* Rule 4: an introduction already out keeps the turn — on an available holder; an unavailable
-     holder's draft still waits (and a park may already have arrived), so no further page writes. */
-  const holders = neverWrote.filter((m) => pass.holdsDraft.has(m.senderId))
-  const holder = holders.find((m) => !unavailable.has(m.senderId))
-  if (holder) return { ok: true, senderId: holder.senderId, handle: holder.handle, position: holder.position, passedFrom: from }
-  if (holders.length > 0) return elected
+  /* Rule 4: a message already out to them. An available never-wrote ring member holding one keeps
+     the turn; any other holder — unavailable, outside the ring, or a page that has written —
+     means no pass at all. */
+  const holder = neverWrote.find((m) => pass.holdsDraft.has(m.senderId) && !unavailable.has(m.senderId))
+  if (holder) return { ok: true, senderId: holder.senderId, handle: holder.handle, position: holder.position, passKeptFor: from }
+  if (pass.holdsDraft.size > 0) return elected
 
   const first = neverWrote.find((m) => !unavailable.has(m.senderId))
   if (!pass.nothingNewToSay || !first) return elected

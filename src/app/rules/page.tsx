@@ -168,7 +168,7 @@ export default async function RulesPage() {
           The rule, the measurement and the exposure are in `TurnPass` (outreach/rotation.ts).
         */
         settings.passTurnWhenNothingNew
-          ? 'When the page whose turn it is has already written to a company and has nothing new to say, the turn passes to one of their pages that never has — its first message needs no new paid post. Never to a company that has replied to any page' +
+          ? 'When the page whose turn it is has already written to a company and has nothing new to say, the turn passes to one of their pages that never has — its first message needs no new paid post. Never to a company that has replied to any page, never while any of our pages has a message on its way to them' +
             (settings.passTurnOnlyAfterRead
               ? ', and only once every page that wrote to them has had that conversation read since it wrote, so a reply nobody has looked for is never taken for silence.'
               : '. (The wait for each conversation to be read first is switched off.)')

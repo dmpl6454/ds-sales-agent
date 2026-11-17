@@ -251,6 +251,28 @@ describe('the pass does NOT fire', () => {
     expect(r.byPair.get(key('charlie'))?.skipDetail).toBe('@bravo is next in the fleet rotation')
   })
 
+  it('a FRESH post that no follow-up could describe is nothing new to say — the pass fires (planner and tally)', async () => {
+    // The post names them but is about two other advertisers, so bravo would be refused
+    // no-post-we-can-describe. That is the describability half of nothingNewToSay.
+    await seedFleet({ displayName: 'BoroPlus' })
+    await setSetting(prisma, 'followUpBody', FOLLOW_UP_BODY)
+    await seedPost(prisma, { shortcode: 'ND1', channelId: WATCH, postedAt: h(12), caption: 'with @co', brands: JSON.stringify(['Netflix India', 'Amazon Prime']) })
+    await deliver('bravo', 20)
+    await deliver('alpha', 10)
+    const r = await plan()
+    expect(r.byPair.get(key('bravo'))).toMatchObject({ skipReason: SKIP_REASONS.NO_DESCRIBABLE_POST })
+    expect(r.drafts.map((x) => x.senderId)).toEqual([S.charlie])
+    await wipe()
+    await seedFleet({ displayName: 'BoroPlus' })
+    await setSetting(prisma, 'followUpBody', FOLLOW_UP_BODY)
+    await seedPost(prisma, { shortcode: 'ND1', channelId: WATCH, postedAt: h(12), caption: 'with @co', brands: JSON.stringify(['Netflix India', 'Amazon Prime']) })
+    await deliver('bravo', 20)
+    await deliver('alpha', 10)
+    const tally = await buildRestTally(ANCHOR)
+    expect(tally.turnPassNothingNew.get(CO)).toBe(true)
+    expect(tally.clear).toBe(1)
+  })
+
   it('when there is something new to say — bravo writes its follow-up, charlie waits', async () => {
     await seedFleet({ displayName: 'BoroPlus' })
     await setSetting(prisma, 'followUpBody', FOLLOW_UP_BODY)
@@ -284,6 +306,40 @@ describe('the pass does NOT fire', () => {
 })
 
 describe('the pass waits until every page that wrote has had its conversation read since (rule 5)', () => {
+  it('measures the read against the page’s NEWEST delivery, not its oldest', async () => {
+    // Two in-window posts older than the 72 h new-material window: the allowance is 2, so a
+    // second message is allowed, and nothing is fresh, so bravo has nothing new to say.
+    await seedFleet()
+    await seedPost(prisma, { shortcode: 'OLD1', channelId: WATCH, postedAt: d(5), caption: 'with @co', brands: JSON.stringify(['Co Brand']) })
+    await seedPost(prisma, { shortcode: 'OLD2', channelId: WATCH, postedAt: d(4), caption: 'with @co', brands: JSON.stringify(['Co Brand']) })
+    await deliver('bravo', 20)
+    await deliver('alpha', 20, { read: null })
+    const fresh = await seedDelivery(prisma, { pairId: pairId(S.alpha, CO), sentAt: h(3), touchNumber: 2, body: 'y'.repeat(80) })
+    /* alpha's thread was read at h-10: after its old message and after the fix, but BEFORE its newest. */
+    await prisma.outreachAttempt.update({ where: { id: fresh.id }, data: { replyCheckedAt: h(10) } })
+    /* The tally reads the same newest delivery: alpha is unread, so bravo stays elected. */
+    expect((await buildRestTally(ANCHOR)).clear).toBe(0)
+    const held = await plan()
+    expect(held.drafts).toHaveLength(0)
+    expect(held.byPair.get(key('charlie'))?.skipDetail).toMatch(/takes over once @alpha has had the conversation/)
+    await prisma.outreachAttempt.update({ where: { id: fresh.id }, data: { replyCheckedAt: h(1) } })
+    const passed = await plan()
+    expect(passed.drafts.map((x) => x.senderId)).toEqual([S.charlie])
+  })
+
+  it('counts a vouched read stamped on a row that was never delivered (the pre-send read on a draft)', async () => {
+    await seedFleet()
+    await deliver('bravo', 20)
+    await deliver('alpha', 10, { read: null })
+    const skipped = await seedDraft(prisma, { pairId: pairId(S.alpha, CO), status: 'SKIPPED', touchNumber: 2, body: 'z'.repeat(60), queuedAt: h(2) })
+    await prisma.outreachAttempt.update({ where: { id: skipped.id }, data: { replyCheckedAt: h(1) } })
+    /* The tally BEFORE the planner writes: after it, the company holds a draft rather than being clear. */
+    const tally = await buildRestTally(ANCHOR)
+    const r = await plan()
+    expect(r.drafts.map((x) => x.senderId)).toEqual([S.charlie])
+    expect(tally.clear).toBe(1)
+  })
+
   it('holds while alpha’s conversation is unread, names it, and passes once it has been read', async () => {
     await seedFleet()
     await deliver('bravo', 20)
@@ -398,7 +454,60 @@ describe('a passed turn stays passed while its introduction is OUT (review of fa
     await seedPost(prisma, { shortcode: 'BP2', channelId: WATCH, postedAt: h(2), caption: 'with @co', brands: JSON.stringify(['BoroPlus Cream']) })
     const r = await plan()
     expect(r.drafts.map((x) => x.senderId)).toEqual([S.charlie])
-    expect(r.byPair.get(key('bravo'))?.skipDetail).toMatch(/^@charlie is next in the fleet rotation — @bravo/)
+    /* Kept, and said so — bravo may well have something new; the waiting introduction goes first. */
+    expect(r.byPair.get(key('bravo'))?.skipDetail).toBe(
+      '@charlie is next in the fleet rotation — its introduction to them is already waiting, so it goes before @bravo',
+    )
+  })
+
+  it('a SENDING introduction keeps the turn: no second page drafts beside one mid-drive', async () => {
+    await seedFleet()
+    await deliver('bravo', 20)
+    await deliver('alpha', 10)
+    /* delta, not charlie: charlie is the first page the pass would pick, so a SENDING row on charlie
+       would pass this test even if SENDING were not counted — charlie's own pair is busy. */
+    await seedDraft(prisma, { pairId: pairId(S.delta, CO), status: 'SENDING', touchNumber: 1, body: SINGLE_TEMPLATE_MIDDLE, queuedAt: h(1) })
+    const r = await plan()
+    expect(r.drafts.map((x) => [x.senderId, x.status])).toEqual([[S.delta, 'SENDING']])
+  })
+})
+
+describe('no pass while ANY page has a message out to them (review 3)', () => {
+  it('a page outside the ring with a maybe-delivered introduction: nothing is drafted', async () => {
+    await seedFleet()
+    await seedSender(prisma, { handle: 'gone', fleetMember: false })
+    await seedVariants(prisma, senderId('gone'))
+    await seedPair(prisma, senderId('gone'), CO)
+    await seedPark(prisma, { pairId: pairId(senderId('gone'), CO), failureCode: 'not-in-thread', queuedAt: d(3), body: SINGLE_TEMPLATE_MIDDLE })
+    await deliver('bravo', 20)
+    await deliver('alpha', 10)
+    const r = await plan()
+    expect(r.drafts).toHaveLength(0)
+    const tally = await buildRestTally(ANCHOR)
+    expect(tally.clear).toBe(0)
+  })
+
+  it('a writer’s follow-up parked as maybe-delivered: nothing is drafted until a person settles it', async () => {
+    await seedFleet()
+    await deliver('charlie', 25)
+    await deliver('bravo', 20)
+    await deliver('alpha', 10)
+    await seedPark(prisma, { pairId: pairId(S.bravo, CO), failureCode: 'not-in-thread', queuedAt: h(5), touchNumber: 2, body: SINGLE_TEMPLATE_MIDDLE })
+    const r = await plan()
+    expect(r.drafts).toHaveLength(0)
+  })
+
+  it('a writer’s waiting follow-up: the pass does not draft an introduction beside it', async () => {
+    await seedFleet({ unsignedIn: ['alpha'] })
+    await deliver('bravo', 20)
+    await deliver('alpha', 10)
+    /* A follow-up's bytes, not the standard message — a standard message on a page that already
+       wrote is an introduction to someone who knows us, which the planner discards (H5). */
+    await seedDraft(prisma, { pairId: pairId(S.alpha, CO), status: 'READY', touchNumber: 2, body: `Hi,Following up on your placement — ${'w'.repeat(60)}`, queuedAt: h(2) })
+    const r = await plan()
+    expect(r.drafts.map((x) => x.senderId)).toEqual([S.alpha])
+    const tally = await buildRestTally(ANCHOR)
+    expect(tally.clear).toBe(0)
   })
 })
 
