@@ -303,18 +303,24 @@ run -c "BEGIN READ ONLY; $BASE SELECT '@' || s.handle AS page, count(*) AS conve
   GROUP BY s.handle ORDER BY 2 DESC; COMMIT;"
 fi
 
+
 if want 9; then
 echo "== 9. Risk of switching the read requirement off (passTurnOnlyAfterRead): which held companies may have answered unseen =="
-echo "   An ESTIMATE from the conversations of the pages no Mac reads. Replies to pages a Mac holds are left out:"
-echo "   its inbox check would have recorded them, and a recorded reply already stops any pass (rule 1)."
+echo "   A rough ESTIMATE. Read the range from as_seen to corrected, not one number."
 # Rough autoresponder phrasing. A reply with no words (a like, an attachment) is not counted as words.
 AUTO='(thank(s| you) for (reaching out|contacting|your message|messaging)|out of (the )?office|auto.?reply|automated (message|response|reply)|we.?ve received your|we have received your (message|query|request|enquiry|inquiry)|our team will (get back|respond|revert)|will (get back|respond|revert) (to you )?(shortly|soon|within)|we.?ll (get back|respond|revert))'
-R9="unheld AS (SELECT id, handle FROM acct WHERE unavailable_why IS NOT NULL),
-/* The last time the inbox check found anything in that page's inbox: a LOWER bound on when it stopped looking. */
-inbox_end AS (
-  SELECT u.id AS sid, max(l.at) AS at FROM unheld u
-  JOIN \"AuditLog\" l ON l.action = 'reply.record.inbox' AND l.detail LIKE '%in @' || u.handle || '''s inbox%'
-  GROUP BY u.id
+FLOOR="timestamp '2026-11-16 12:35:00'"
+R9="/* Per page: is it read by a Mac, when its inbox check last found anything, and (for Mac-held pages) the stretch nothing
+   could see: from the last inbox find before the 16 Nov fix (27 Oct at the latest) to that page's last send before it.
+   A reply from that stretch was pushed down the inbox by the later sends, below what the check scrolls to. */
+pg AS (
+  SELECT f.id AS sid, f.handle, (f.unavailable_why IS NOT NULL) AS unheld, i.inbox_last,
+    least(COALESCE(i.g1, timestamp '2026-10-27 00:00:00'), timestamp '2026-10-27 00:00:00') AS g1,
+    (SELECT max(a.\"sentAt\") FROM \"OutreachAttempt\" a WHERE a.\"senderId\" = f.id AND a.status IN ('SENT','REPLIED')
+       AND a.\"sentAt\" < $FLOOR) AS g2
+  FROM acct f LEFT JOIN LATERAL (
+    SELECT max(l.at) AS inbox_last, max(l.at) FILTER (WHERE l.at < $FLOOR) AS g1 FROM \"AuditLog\" l
+    WHERE l.action = 'reply.record.inbox' AND l.detail LIKE '%in @' || f.handle || '''s inbox%') i ON true
 ),
 conv AS (
   SELECT a.\"targetId\" AS tid, a.\"senderId\" AS sid,
@@ -322,101 +328,133 @@ conv AS (
     max(a.\"replyCheckedAt\") AS last_read, max(a.\"repliedAt\") AS seen_at,
     bool_or(a.\"repliedAt\" IS NOT NULL OR a.\"replyPostedAt\" IS NOT NULL) AS replied,
     bool_or((a.\"repliedAt\" IS NOT NULL OR a.\"replyPostedAt\" IS NOT NULL) AND a.\"replyText\" IS NOT NULL
-            AND a.\"replyText\" !~* '$AUTO') AS replied_words
+            AND a.\"replyText\" !~* '$AUTO') AS replied_words,
+    /* Before 3 Sept the inbox check placed a row by NAME only; a company stored under its raw handle could not be placed. */
+    bool_or(t.\"displayName\" IS NOT NULL AND regexp_replace(lower(t.\"displayName\"), '[^a-z0-9]', '', 'g')
+            <> regexp_replace(lower(t.handle), '[^a-z0-9]', '', 'g')) AS name_placeable
   FROM \"OutreachAttempt\" a
   JOIN \"TargetAccount\" t ON t.id = a.\"targetId\" AND t.role = 'PROSPECT'
     AND lower(t.handle) NOT IN (SELECT lower(handle) FROM \"SenderAccount\")
-  WHERE a.\"senderId\" IN (SELECT id FROM unheld)
   GROUP BY 1, 2
   HAVING bool_or(a.status IN ('SENT','REPLIED') AND a.\"sentAt\" IS NOT NULL)
 ),
-/* Reply delays, every page: the dated reply minus our latest message before it (the pair's, else the company's). */
+/* Reply delays, every page. A reply date equal to one of our send times was clamped to it: 0 days. Otherwise the
+   dated reply minus our latest message before it (the pair's, else the company's). */
 dd AS (
   SELECT d, words FROM (
-    SELECT EXTRACT(EPOCH FROM (a.\"replyPostedAt\" - COALESCE(
+    SELECT CASE WHEN EXISTS (SELECT 1 FROM \"OutreachAttempt\" x WHERE x.\"targetId\" = a.\"targetId\"
+                 AND x.status IN ('SENT','REPLIED') AND x.\"sentAt\" = a.\"replyPostedAt\") THEN 0
+      ELSE EXTRACT(EPOCH FROM (a.\"replyPostedAt\" - COALESCE(
         (SELECT max(x.\"sentAt\") FROM \"OutreachAttempt\" x WHERE x.\"targetId\" = a.\"targetId\" AND x.\"senderId\" = a.\"senderId\"
            AND x.status IN ('SENT','REPLIED') AND x.\"sentAt\" <= a.\"replyPostedAt\"),
         (SELECT max(x.\"sentAt\") FROM \"OutreachAttempt\" x WHERE x.\"targetId\" = a.\"targetId\"
-           AND x.status IN ('SENT','REPLIED') AND x.\"sentAt\" <= a.\"replyPostedAt\")))) / 86400.0 AS d,
+           AND x.status IN ('SENT','REPLIED') AND x.\"sentAt\" <= a.\"replyPostedAt\")))) / 86400.0 END AS d,
       (a.\"replyText\" IS NOT NULL AND a.\"replyText\" !~* '$AUTO') AS words
     FROM \"OutreachAttempt\" a WHERE a.\"replyPostedAt\" IS NOT NULL
   ) x WHERE d IS NOT NULL
 ),
-/* How long each conversation was watched after our last message: a read, a recorded reply, or the inbox check. */
+/* w: days a conversation of a page no Mac reads was watched after our last message (a read, a recorded reply, or the
+   inbox check where it could place the company). lo..hi: for a Mac-held page, the days after our message nothing saw. */
 cw AS (
-  SELECT c.*, EXTRACT(EPOCH FROM (greatest(c.last_read, c.seen_at, ie.at) - c.last_wrote)) / 86400.0 AS w,
-    EXTRACT(EPOCH FROM (nowu.n - c.last_wrote)) / 86400.0 AS age
-  FROM conv c LEFT JOIN inbox_end ie ON ie.sid = c.sid, nowu
+  SELECT c.*, pg.unheld, pg.handle AS page,
+    EXTRACT(EPOCH FROM (greatest(c.last_read, c.seen_at, CASE WHEN c.name_placeable
+        OR pg.inbox_last >= timestamp '2026-09-03 08:00:00' THEN pg.inbox_last END) - c.last_wrote)) / 86400.0 AS w,
+    EXTRACT(EPOCH FROM (nowu.n - c.last_wrote)) / 86400.0 AS age,
+    EXTRACT(EPOCH FROM (greatest(pg.g1, c.last_read, c.last_wrote) - c.last_wrote)) / 86400.0 AS lo,
+    EXTRACT(EPOCH FROM (pg.g2 - c.last_wrote)) / 86400.0 AS hi,
+    (c.last_read IS NULL OR c.last_read < greatest(c.last_wrote, $FLOOR)) AS unread
+  FROM conv c JOIN pg ON pg.sid = c.sid, nowu
 ),
 /* F(x) = share of dated replies that came within x days. Three curves: all, words only, and without 0-day replies. */
 cf AS (
   SELECT cw.*,
-    CASE WHEN cw.w > 0 THEN COALESCE((SELECT avg((dd.d <= cw.w)::int) FROM dd), 0) ELSE 0 END AS fw,
-    CASE WHEN cw.w > 0 THEN COALESCE((SELECT avg((dd.d <= cw.w)::int) FROM dd WHERE dd.words), 0) ELSE 0 END AS fw_words,
-    CASE WHEN cw.w > 0 THEN COALESCE((SELECT avg((dd.d <= cw.w)::int) FROM dd WHERE dd.d > 0), 0) ELSE 0 END AS fw_nz,
-    COALESCE((SELECT avg((dd.d <= cw.age)::int) FROM dd), 1) AS fa,
-    COALESCE((SELECT avg((dd.d <= cw.age)::int) FROM dd WHERE dd.words), 1) AS fa_words,
-    COALESCE((SELECT avg((dd.d <= cw.age)::int) FROM dd WHERE dd.d > 0), 1) AS fa_nz
-  FROM cw
+    CASE WHEN cw.replied THEN 1 WHEN cw.w > 0 THEN COALESCE(f.w_a, 0) ELSE 0 END AS fw,
+    CASE WHEN cw.replied_words THEN 1 WHEN cw.w > 0 THEN COALESCE(f.w_w, 0) ELSE 0 END AS fw_words,
+    CASE WHEN cw.replied THEN 1 WHEN cw.w > 0 THEN COALESCE(f.w_z, 0) ELSE 0 END AS fw_nz,
+    COALESCE(f.age_a, 1) AS fa, COALESCE(f.age_w, 1) AS fa_words, COALESCE(f.age_z, 1) AS fa_nz,
+    CASE WHEN cw.hi > cw.lo THEN greatest(0, COALESCE(f.hi_a, 1) - CASE WHEN cw.lo > 0 THEN COALESCE(f.lo_a, 0) ELSE 0 END) ELSE 0 END AS gap,
+    CASE WHEN cw.hi > cw.lo THEN greatest(0, COALESCE(f.hi_w, 1) - CASE WHEN cw.lo > 0 THEN COALESCE(f.lo_w, 0) ELSE 0 END) ELSE 0 END AS gap_words,
+    CASE WHEN cw.hi > cw.lo THEN greatest(0, COALESCE(f.hi_z, 1) - CASE WHEN cw.lo > 0 THEN COALESCE(f.lo_z, 0) ELSE 0 END) ELSE 0 END AS gap_nz
+  FROM cw, LATERAL (
+    SELECT avg((dd.d <= cw.w)::int) AS w_a, avg((dd.d <= cw.w)::int) FILTER (WHERE dd.words) AS w_w, avg((dd.d <= cw.w)::int) FILTER (WHERE dd.d > 0) AS w_z,
+      avg((dd.d <= cw.age)::int) AS age_a, avg((dd.d <= cw.age)::int) FILTER (WHERE dd.words) AS age_w, avg((dd.d <= cw.age)::int) FILTER (WHERE dd.d > 0) AS age_z,
+      avg((dd.d <= cw.lo)::int) AS lo_a, avg((dd.d <= cw.lo)::int) FILTER (WHERE dd.words) AS lo_w, avg((dd.d <= cw.lo)::int) FILTER (WHERE dd.d > 0) AS lo_z,
+      avg((dd.d <= cw.hi)::int) AS hi_a, avg((dd.d <= cw.hi)::int) FILTER (WHERE dd.words) AS hi_w, avg((dd.d <= cw.hi)::int) FILTER (WHERE dd.d > 0) AS hi_z
+    FROM dd) f
 ),
-/* Per page: replies seen / conversations (as seen), and replies seen / expected share watched (corrected). */
+/* Per page: replies seen / conversations (as seen), and replies seen / the share of each conversation that was watched
+   (corrected; unknown when nothing was watched — LEAST ignores a NULL, so it is guarded, never 100%). */
 pr AS (
-  SELECT sid, count(*) AS convs, count(*) FILTER (WHERE replied) AS seen, count(*) FILTER (WHERE replied_words) AS seen_words,
+  SELECT sid, bool_or(unheld) AS unheld, count(*) AS convs, count(*) FILTER (WHERE replied) AS seen,
+    count(*) FILTER (WHERE NOT name_placeable) AS not_nameable, sum(fw) AS watched,
     count(*) FILTER (WHERE replied)::numeric / nullif(count(*), 0) AS r_raw,
-    least(1, count(*) FILTER (WHERE replied)::numeric / nullif(sum(fw), 0)) AS r_corr,
-    least(1, count(*) FILTER (WHERE replied_words)::numeric / nullif(sum(fw_words), 0)) AS r_words,
-    least(1, count(*) FILTER (WHERE replied)::numeric / nullif(sum(fw_nz), 0)) AS r_nz
+    count(*) FILTER (WHERE replied_words)::numeric / nullif(count(*), 0) AS r_raw_words,
+    CASE WHEN sum(fw) > 0 THEN least(1, count(*) FILTER (WHERE replied)::numeric / sum(fw)) END AS r_corr,
+    CASE WHEN sum(fw_words) > 0 THEN least(1, count(*) FILTER (WHERE replied_words)::numeric / sum(fw_words)) END AS r_words,
+    CASE WHEN sum(fw_nz) > 0 THEN least(1, count(*) FILTER (WHERE replied)::numeric / sum(fw_nz)) END AS r_nz
   FROM cf GROUP BY sid
 ),
-/* The held population: live verified companies with no recorded reply anywhere and a conversation with such a page. */
+/* Every unread conversation of a live verified company with no recorded reply anywhere. Where a corrected rate is
+   unknown it falls back to the rate as seen. */
 hc AS (
-  SELECT cl.tid, cl.handle, cl.bucket, cl.bucket LIKE '5%' AS held_now, cf.sid, cf.last_wrote, cf.last_read, cf.w,
-    least(0.999999, COALESCE(pr.r_raw * (cf.fa - cf.fw) / nullif(1 - pr.r_raw * cf.fw, 0), 0)) AS p_raw,
-    least(0.999999, COALESCE(pr.r_corr * (cf.fa - cf.fw) / nullif(1 - pr.r_corr * cf.fw, 0), 0)) AS p_corr,
-    least(0.999999, COALESCE(pr.r_words * (cf.fa_words - cf.fw_words) / nullif(1 - pr.r_words * cf.fw_words, 0), 0)) AS p_words,
-    least(0.999999, COALESCE(pr.r_nz * (cf.fa_nz - cf.fw_nz) / nullif(1 - pr.r_nz * cf.fw_nz, 0), 0)) AS p_nz
-  FROM classified cl JOIN cf ON cf.tid = cl.tid JOIN pr ON pr.sid = cf.sid
+  SELECT cl.tid, cl.handle, cl.bucket, cf.sid, cf.page, cf.unheld, cf.last_wrote, cf.w, cf.lo, cf.hi, cf.gap,
+    least(0.999999, COALESCE(CASE WHEN cf.unheld THEN pr.r_raw * (cf.fa - cf.fw) / nullif(1 - pr.r_raw * cf.fw, 0)
+      ELSE pr.r_raw * cf.gap / nullif(1 - pr.r_raw * (cf.fa - cf.gap), 0) END, 0)) AS p_raw,
+    least(0.999999, COALESCE(CASE WHEN cf.unheld THEN COALESCE(pr.r_corr, pr.r_raw) * (cf.fa - cf.fw) / nullif(1 - COALESCE(pr.r_corr, pr.r_raw) * cf.fw, 0)
+      ELSE pr.r_raw * cf.gap / nullif(1 - pr.r_raw * (cf.fa - cf.gap), 0) END, 0)) AS p_corr,
+    least(0.999999, COALESCE(CASE WHEN cf.unheld THEN COALESCE(pr.r_words, pr.r_raw_words) * (cf.fa_words - cf.fw_words) / nullif(1 - COALESCE(pr.r_words, pr.r_raw_words) * cf.fw_words, 0)
+      ELSE pr.r_raw_words * cf.gap_words / nullif(1 - pr.r_raw_words * (cf.fa_words - cf.gap_words), 0) END, 0)) AS p_words,
+    least(0.999999, COALESCE(CASE WHEN cf.unheld THEN COALESCE(pr.r_nz, pr.r_raw) * (cf.fa_nz - cf.fw_nz) / nullif(1 - COALESCE(pr.r_nz, pr.r_raw) * cf.fw_nz, 0)
+      ELSE pr.r_raw * cf.gap_nz / nullif(1 - pr.r_raw * (cf.fa_nz - cf.gap_nz), 0) END, 0)) AS p_nz
+  FROM classified cl JOIN cf ON cf.tid = cl.tid AND cf.unread JOIN pr ON pr.sid = cf.sid
   WHERE NOT cl.replied
 ),
 co AS (
-  SELECT h.tid, h.handle, min(h.bucket) AS bucket, bool_or(h.held_now) AS held_now,
+  SELECT h.tid, h.handle, min(h.bucket) AS bucket,
     1 - exp(sum(ln(1 - h.p_raw))) AS risk_raw, 1 - exp(sum(ln(1 - h.p_corr))) AS risk_corr,
     1 - exp(sum(ln(1 - h.p_words))) AS risk_words, 1 - exp(sum(ln(1 - h.p_nz))) AS risk_nz,
+    1 - exp(sum(ln(1 - CASE WHEN h.unheld THEN 0 ELSE h.p_corr END))) AS risk_mac_held,
     (SELECT count(*) FROM walk w WHERE w.tid = h.tid AND w.free
        AND NOT EXISTS (SELECT 1 FROM pa WHERE pa.tid = w.tid AND pa.sid = w.sid AND pa.wrote)) AS k
   FROM hc h GROUP BY h.tid, h.handle
 )"
-echo "-- 9a. Certain: an inbound message seen from one of these companies but never attached to a conversation"
-run -c "BEGIN READ ONLY; $BASE, $R9 SELECT count(DISTINCT co.tid) AS companies_with_one,
-  COALESCE(string_agg(DISTINCT '@' || co.handle, ', '), '') AS which FROM co
-  JOIN \"AuditLog\" l ON l.action = 'reply.unattached' AND l.entity LIKE 'Conversation:%:' || co.tid; COMMIT;"
-echo "-- 9b. The pages no Mac reads: how often their companies answered while something was still looking"
-run -c "BEGIN READ ONLY; $BASE, $R9 SELECT '@' || u.handle AS page, pr.convs AS conversations, pr.seen AS replies_seen,
-  round(100 * pr.r_raw, 1) AS seen_pct, round(100 * pr.r_corr, 1) AS corrected_pct, round(100 * pr.r_words, 1) AS words_pct,
-  to_char((SELECT max(at) FROM inbox_end ie WHERE ie.sid = u.id), 'DD Mon') AS inbox_last_found_something,
-  to_char((SELECT max(c.last_read) FROM conv c WHERE c.sid = u.id), 'DD Mon') AS last_read
-  FROM unheld u LEFT JOIN pr ON pr.sid = u.id ORDER BY u.handle; COMMIT;"
+echo "-- 9a. Pages no Mac reads: how often their companies answered while something was still looking"
+echo "   watched = conversations' worth actually watched (corrected = replies seen / watched). not_nameable = the August inbox check could not place them."
+run -c "BEGIN READ ONLY; $BASE, $R9 SELECT '@' || pg.handle AS page, pr.convs AS conversations, pr.seen AS replies_seen,
+  round(100 * pr.r_raw, 1) AS seen_pct, round(pr.watched, 1) AS watched, round(100 * pr.r_corr, 1) AS corrected_pct,
+  round(100 * pr.r_words, 1) AS words_pct, pr.not_nameable, to_char(pg.inbox_last, 'DD Mon') AS inbox_last_find,
+  to_char((SELECT max(c.last_read) FROM conv c WHERE c.sid = pg.sid), 'DD Mon') AS last_read
+  FROM pg JOIN pr ON pr.sid = pg.sid WHERE pg.unheld ORDER BY pg.handle; COMMIT;"
+echo "-- 9b. Pages a Mac holds: only the stretch its reader was blind and later sends buried the rows counts"
+run -c "BEGIN READ ONLY; $BASE, $R9 SELECT '@' || pg.handle AS page, pr.convs AS conversations, pr.seen AS replies_seen,
+  round(100 * pr.r_raw, 1) AS seen_pct,
+  CASE WHEN pg.g2 > pg.g1 THEN to_char(pg.g1, 'DD Mon') || ' to ' || to_char(pg.g2, 'DD Mon') ELSE 'none' END AS unseen_stretch
+  FROM pg JOIN pr ON pr.sid = pg.sid WHERE NOT pg.unheld ORDER BY pg.handle; COMMIT;"
 echo "-- 9c. How soon replies come (every page, dated replies)"
 run -c "BEGIN READ ONLY; $BASE, $R9 SELECT count(*) AS dated_replies, round(100.0 * avg((d = 0)::int), 0) AS at_0_days_pct,
   round(100.0 * avg((d <= 1)::int), 0) AS within_1_day_pct, round(100.0 * avg((d <= 7)::int), 0) AS within_7_days_pct,
   round(100.0 * avg((d <= 30)::int), 0) AS within_30_days_pct, round(percentile_cont(0.5) WITHIN GROUP (ORDER BY d)::numeric, 1) AS median_days
   FROM dd; COMMIT;"
-echo "-- 9d. Expected number with an unseen reply, by what the switch does to them (first row is the decision)"
+echo "-- 9d. Expected number with an unseen reply, by what the switch does to them (the first row is the decision)"
 run -c "BEGIN READ ONLY; $BASE, $R9 SELECT CASE
     WHEN bucket LIKE '5%' THEN '1 held now - released at once'
-    WHEN bucket LIKE '3%' OR bucket LIKE '4%' OR bucket LIKE '0%' THEN '2 held by a message out - released later'
-    WHEN bucket LIKE '2%' THEN '3 introduced anyway - no difference'
-    ELSE '4 no page left to write - no difference' END AS what_the_switch_does,
+    WHEN bucket LIKE '3%' OR bucket LIKE '4b%' THEN '2 held by a message out - released later'
+    WHEN bucket LIKE '2%' OR bucket LIKE '4a%' OR bucket LIKE '7%' THEN '3 introduced anyway - no difference'
+    WHEN bucket LIKE '6%' THEN '4 no page left to write - no difference'
+    ELSE '5 no page can take a turn' END AS what_the_switch_does,
   count(*) AS companies, round(sum(risk_raw), 1) AS as_seen, round(sum(risk_corr), 1) AS corrected,
-  round(sum(risk_words), 1) AS corrected_words_only, round(sum(risk_nz), 1) AS corrected_no_0_day,
+  round(sum(risk_words), 1) AS words_only, round(sum(risk_nz), 1) AS no_0_day,
+  round(sum(risk_mac_held), 1) AS of_which_mac_held_pages,
   round(100 * (1 - exp(sum(ln(1 - least(0.999999, risk_corr))))), 0) AS chance_at_least_one_pct,
-  round(sum(risk_corr * k), 1) AS unwanted_intros_corrected
+  round(sum(risk_corr * k), 1) AS unwanted_intros
   FROM co GROUP BY 1 ORDER BY 1; COMMIT;"
 echo "-- 9e. The ten riskiest companies held now"
-run -c "BEGIN READ ONLY; $BASE, $R9 SELECT '@' || co.handle AS company, round(100 * co.risk_corr, 0) AS risk_pct, co.k AS intros_due,
-  string_agg('@' || s.handle || ' wrote ' || to_char(h.last_wrote, 'DD Mon') ||
-    CASE WHEN h.w > 0 THEN ', watched ' || round(h.w)::int || ' d' ELSE ', never watched after' END, '; ' ORDER BY s.handle) AS unread_conversations
-  FROM co JOIN hc h ON h.tid = co.tid JOIN \"SenderAccount\" s ON s.id = h.sid WHERE co.held_now
+runc -c "BEGIN READ ONLY; $BASE, $R9 SELECT '@' || co.handle AS company, round(100 * co.risk_corr, 0) AS risk_pct, co.k AS intros_due,
+  string_agg('@' || h.page || ' wrote ' || to_char(h.last_wrote, 'DD Mon') || CASE
+      WHEN NOT h.unheld THEN ', unseen days ' || round(h.lo)::int || '-' || round(h.hi)::int
+      WHEN h.w > 0 THEN ', watched ' || round(h.w)::int || ' d' ELSE ', never watched after' END, '; ' ORDER BY h.page)
+    FILTER (WHERE h.p_corr > 0) AS conversations_at_risk
+  FROM co JOIN hc h ON h.tid = co.tid WHERE co.bucket LIKE '5%'
   GROUP BY co.handle, co.risk_corr, co.k ORDER BY co.risk_corr DESC, co.handle LIMIT 10; COMMIT;"
 echo "   Nothing later catches these: the Mac reads a thread only before a follow-up, its gate has no 'they know us' stop,"
 echo "   and the server's check needs a recorded reply, which nothing can record on a page no Mac holds."
