@@ -878,13 +878,18 @@ export async function runOutreach(): Promise<PlanSummary> {
          prefix — and says why when the turn was passed, so a page that is not next after the
          last writer is never a mystery in the log. */
       const passed = turn.choice.passedFrom
+      const waitsForRead = turn.choice.passWaitsForRead
       outcomes.push({
         pairKey,
         eligible: false,
         skipReason: 'not-this-senders-turn',
         skipDetail: passed
           ? `@${turn.choice.handle} is next in ${describeRing(turn)} — @${passed.handle} has written to them before and has nothing new to say`
-          : `@${turn.choice.handle} is next in ${describeRing(turn)}`,
+          : waitsForRead
+            ? `@${turn.choice.handle} is next in ${describeRing(turn)} — it has nothing new to say, and a page that never wrote ` +
+              `takes over once ${waitsForRead.map((h) => `@${h}`).join(', ')} ${waitsForRead.length === 1 ? 'has' : 'have'} ` +
+              `had the conversation with them read since writing (a reply nobody has looked for is not a reply that never came)`
+            : `@${turn.choice.handle} is next in ${describeRing(turn)}`,
       })
       continue
     }
@@ -1065,6 +1070,19 @@ export async function runOutreach(): Promise<PlanSummary> {
    * same number under `sender-not-active` or `no-session` would be an outage wearing its
    * costume.
    */
+  /**
+   * The turn pass, counted (17 Nov 2026): how many recipients were handed to a page that never
+   * wrote this pass, and how many would have been but are waiting for a read of a conversation
+   * (rule 5 of `TurnPass`). The second number is the one to watch after a deploy: it falls as the
+   * reply sweep reads the conversations, and a figure that never falls means nothing is reading.
+   */
+  const turns = [...turnByTarget.values()].map((t) => t.choice)
+  const passedTurns = turns.filter((c) => c.ok && c.passedFrom).length
+  const waitingForRead = turns.filter((c) => c.ok && c.passWaitsForRead).length
+  if (passedTurns > 0 || waitingForRead > 0) {
+    log.info('turn passes', { passed: passedTurns, waitingForARead: waitingForRead })
+  }
+
   if (summary.skipped > 0) {
     const byReason = new Map<string, number>()
     for (const o of outcomes) {

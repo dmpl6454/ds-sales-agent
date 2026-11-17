@@ -1,7 +1,7 @@
 import { cache } from 'react'
 import { prisma } from '@/lib/db'
 import { DELIVERED_STATUSES } from '@/lib/constants'
-import { fleetRingOrder, nextSender, type RingMember, type RotationChoice, type TurnPass } from './rotation'
+import { fleetRingOrder, nextSender, threadsUnreadSinceWrote, type RingMember, type RotationChoice, type TurnPass } from './rotation'
 import { categoriesFor, fleetMembersFor, type CategoryMemberships } from './senderCategories'
 import { replyHaltFloor, type ReplyHaltScope } from './replyHalt'
 import { replyRouteReason } from './replyHaltCopy'
@@ -110,12 +110,18 @@ export async function ringFor(categoryId: string): Promise<RingMember[]> {
  *
  * "Replied" counts `repliedAt` as well as `replyPostedAt`: a legacy reply with no date is still
  * someone who answered us, and an introduction from a second page must never reach them.
+ *
+ * `writers` carries, for every page that delivered to them, when it last wrote and when its
+ * conversation was last READ and vouched for (`replyCheckedAt`, on any of that pair's rows — the
+ * sweep stamps a delivered row, the pre-send read stamps the draft it is about to send), so the
+ * pass can refuse to treat a reply nobody looked for as a reply that never came (rule 5).
  */
 export interface TurnHistory {
   lastSenderId: string | null
   wroteBefore: Set<string>
   holdsDraft: Set<string>
   everReplied: boolean
+  writers: Map<string, { handle: string; lastWroteAt: Date | null; lastReadAt: Date | null }>
 }
 
 const TURN_HISTORY_DRAFT_STATUSES = ['QUEUED', 'READY', 'SENDING'] as const
@@ -123,7 +129,9 @@ const TURN_HISTORY_DRAFT_STATUSES = ['QUEUED', 'READY', 'SENDING'] as const
 export async function readTurnHistory(targetIds: readonly string[]): Promise<Map<string, TurnHistory>> {
   const out = new Map<string, TurnHistory>()
   const ids = [...new Set(targetIds)]
-  for (const id of ids) out.set(id, { lastSenderId: null, wroteBefore: new Set(), holdsDraft: new Set(), everReplied: false })
+  for (const id of ids) {
+    out.set(id, { lastSenderId: null, wroteBefore: new Set(), holdsDraft: new Set(), everReplied: false, writers: new Map() })
+  }
   if (ids.length === 0) return out
   const rows = await prisma.outreachAttempt.findMany({
     where: {
@@ -132,20 +140,42 @@ export async function readTurnHistory(targetIds: readonly string[]): Promise<Map
         { status: { in: [...DELIVERED_STATUSES, ...TURN_HISTORY_DRAFT_STATUSES] } },
         { repliedAt: { not: null } },
         { replyPostedAt: { not: null } },
+        { replyCheckedAt: { not: null } },
       ],
     },
-    select: { id: true, targetId: true, senderId: true, status: true, sentAt: true, repliedAt: true, replyPostedAt: true },
+    select: {
+      id: true,
+      targetId: true,
+      senderId: true,
+      status: true,
+      sentAt: true,
+      repliedAt: true,
+      replyPostedAt: true,
+      replyCheckedAt: true,
+      sender: { select: { handle: true } },
+    },
   })
   const newest = new Map<string, { at: number; id: string }>()
   const delivered = new Set<string>(DELIVERED_STATUSES)
   const drafting = new Set<string>(TURN_HISTORY_DRAFT_STATUSES)
+  /* Reads per (recipient, page), from every row of the pair — kept apart from `writers` until the
+     end, because a read can sit on a row that is not a delivery. */
+  const lastRead = new Map<string, Date>()
   for (const r of rows) {
     const h = out.get(r.targetId)
     if (!h) continue
     if (r.repliedAt !== null || r.replyPostedAt !== null) h.everReplied = true
+    if (r.replyCheckedAt !== null) {
+      const k = `${r.targetId}\u0000${r.senderId}`
+      const cur = lastRead.get(k)
+      if (!cur || r.replyCheckedAt > cur) lastRead.set(k, r.replyCheckedAt)
+    }
     if (drafting.has(r.status)) h.holdsDraft.add(r.senderId)
     if (!delivered.has(r.status)) continue
     h.wroteBefore.add(r.senderId)
+    const w = h.writers.get(r.senderId) ?? { handle: r.sender.handle, lastWroteAt: null, lastReadAt: null }
+    if (r.sentAt !== null && (w.lastWroteAt === null || r.sentAt > w.lastWroteAt)) w.lastWroteAt = r.sentAt
+    h.writers.set(r.senderId, w)
     if (r.sentAt === null) continue
     const cur = newest.get(r.targetId)
     const at = r.sentAt.getTime()
@@ -154,16 +184,21 @@ export async function readTurnHistory(targetIds: readonly string[]): Promise<Map
       h.lastSenderId = r.senderId
     }
   }
+  for (const [targetId, h] of out) {
+    for (const [senderId, w] of h.writers) w.lastReadAt = lastRead.get(`${targetId}\u0000${senderId}`) ?? null
+  }
   return out
 }
 
 /**
  * The pass facts for one recipient, or undefined when there must be no pass: the switch is off,
  * or the caller does not know whether there is anything new to say. PURE.
+ *
+ * `onlyAfterRead` is the `passTurnOnlyAfterRead` switch; off, no page counts as unread.
  */
 export function turnPassFor(
   history: TurnHistory | undefined,
-  args: { enabled: boolean; nothingNewToSay: boolean | undefined },
+  args: { enabled: boolean; nothingNewToSay: boolean | undefined; onlyAfterRead: boolean },
 ): TurnPass | undefined {
   if (!args.enabled || args.nothingNewToSay === undefined) return undefined
   return {
@@ -171,6 +206,7 @@ export function turnPassFor(
     holdsDraft: history?.holdsDraft ?? new Set(),
     everReplied: history?.everReplied ?? false,
     nothingNewToSay: args.nothingNewToSay,
+    unreadSinceWrote: args.onlyAfterRead ? threadsUnreadSinceWrote([...(history?.writers.values() ?? [])]) : [],
   }
 }
 
@@ -486,7 +522,11 @@ export async function whoseTurn(args: {
     ring,
     lastSenderId: history?.lastSenderId ?? null,
     unavailable: unavailableForTarget(args.unavailable, blocked, args.targetId),
-    pass: turnPassFor(history, { enabled: settings.passTurnWhenNothingNew, nothingNewToSay: args.nothingNewToSay }),
+    pass: turnPassFor(history, {
+      enabled: settings.passTurnWhenNothingNew,
+      nothingNewToSay: args.nothingNewToSay,
+      onlyAfterRead: settings.passTurnOnlyAfterRead,
+    }),
   })
 }
 
@@ -620,6 +660,7 @@ export async function whoseTurnForMany(
         pass: turnPassFor(histories.get(targetId), {
           enabled: settings.passTurnWhenNothingNew,
           nothingNewToSay: nothingNewToSay?.get(targetId),
+          onlyAfterRead: settings.passTurnOnlyAfterRead,
         }),
       }),
     )

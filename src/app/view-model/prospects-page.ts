@@ -437,9 +437,13 @@ async function computeProspectsPage(input?: ProspectsInput): Promise<ProspectsPa
     }
     const where = turn.ring === 'group' ? ` (${describeRing(turn)})` : ''
     /* Passed (17 Nov 2026): say why a page that is not next after the last writer is writing. */
+    const waits = turn.choice.passWaitsForRead
     const passed = turn.choice.passedFrom
       ? ` — @${turn.choice.passedFrom.handle} has written to them before and has nothing new to say, so a page that never has writes instead`
-      : ''
+      : waits
+        ? ` — it has nothing new to say; a page that never wrote to them takes over once ` +
+          `${waits.map((h) => `@${h}`).join(', ')} ${waits.length === 1 ? 'has' : 'have'} had the conversation with them read since writing`
+        : ''
     return {
       sentence: `Next message comes from @${turn.choice.handle}${where}${passed}, while Autopilot is on. One account writes, not all of them.`,
       willWrite: true,

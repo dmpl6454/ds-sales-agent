@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { nextSender, type RingMember, type TurnPass } from '@/outreach/rotation'
+import { nextSender, threadsUnreadSinceWrote, REPLY_READS_TRUSTED_SINCE, type RingMember, type TurnPass } from '@/outreach/rotation'
 import { turnPassFor } from '@/outreach/categories'
 
 /**
@@ -28,6 +28,7 @@ const pass = (over: Partial<TurnPass> = {}): TurnPass => ({
   holdsDraft: new Set(),
   everReplied: false,
   nothingNewToSay: true,
+  unreadSinceWrote: [],
   ...over,
 })
 
@@ -135,6 +136,26 @@ describe('a turn already passed stays passed while its draft waits (no fan-out)'
     expect(nextSender({ ring: RING, lastSenderId: 'id_alpha', unavailable, pass: p })).toMatchObject({ handle: 'bravo' })
   })
 
+  it('…and an unavailable holder does NOT free the turn for a SECOND introduction (review of 3e03c67)', () => {
+    // delta holds the passed introduction and has gone unavailable; there is still nothing new to
+    // say. The first version filtered delta out before looking for a holder and handed the turn to
+    // charlie — a second introduction while delta's still waits, delivered when delta returns.
+    const p = pass({ holdsDraft: new Set(['id_delta']) })
+    const unavailable = new Map([['id_delta', 'signed in on no Mac']])
+    const choice = nextSender({ ring: RING, lastSenderId: 'id_alpha', unavailable, pass: p })
+    expect(choice).toMatchObject({ ok: true, handle: 'bravo' })
+    expect(choice.ok && choice.passedFrom).toBeFalsy()
+  })
+
+  it('…while an AVAILABLE holder keeps the turn even when an earlier one is unavailable', () => {
+    const p = pass({ holdsDraft: new Set(['id_charlie', 'id_delta']) })
+    const unavailable = new Map([['id_charlie', 'flagged']])
+    expect(nextSender({ ring: RING, lastSenderId: 'id_alpha', unavailable, pass: p })).toMatchObject({
+      handle: 'delta',
+      passedFrom: { handle: 'bravo' },
+    })
+  })
+
   it('is deterministic: the same facts elect the same page every time', () => {
     const a = nextSender({ ring: RING, lastSenderId: 'id_alpha', pass: pass() })
     const b = nextSender({ ring: [...RING].reverse(), lastSenderId: 'id_alpha', pass: pass() })
@@ -142,30 +163,97 @@ describe('a turn already passed stays passed while its draft waits (no fan-out)'
   })
 })
 
+describe('a page whose conversation nobody has read since it wrote holds the pass (rule 5)', () => {
+  it('holds it, and says which conversation the recipient is waiting on', () => {
+    // bravo is elected, has nothing new, charlie never wrote and is available — everything the
+    // pass needs — but alpha's conversation has not been read since alpha wrote. A reply could be
+    // sitting there; a second introduction must wait until somebody has looked.
+    const choice = nextSender({ ring: RING, lastSenderId: 'id_alpha', pass: pass({ unreadSinceWrote: ['alpha'] }) })
+    expect(choice).toMatchObject({ ok: true, handle: 'bravo', passWaitsForRead: ['alpha'] })
+    expect(choice.ok && choice.passedFrom).toBeFalsy()
+  })
+
+  it('says nothing about a read when the pass was never going to fire anyway', () => {
+    for (const over of [{ nothingNewToSay: false }, { everReplied: true }, { holdsDraft: new Set(['id_bravo']) }]) {
+      const choice = nextSender({ ring: RING, lastSenderId: 'id_alpha', pass: pass({ unreadSinceWrote: ['alpha'], ...over }) })
+      expect(choice).toMatchObject({ handle: 'bravo' })
+      expect(choice.ok && choice.passWaitsForRead).toBeFalsy()
+    }
+    const allUnavailable = new Map([['id_charlie', 'x'], ['id_delta', 'x']])
+    const choice = nextSender({ ring: RING, lastSenderId: 'id_alpha', unavailable: allUnavailable, pass: pass({ unreadSinceWrote: ['alpha'] }) })
+    expect(choice.ok && choice.passWaitsForRead).toBeFalsy()
+  })
+
+  it('does not unpin a turn already passed: the waiting introduction is still the next message', () => {
+    const p = pass({ unreadSinceWrote: ['alpha'], holdsDraft: new Set(['id_delta']) })
+    expect(nextSender({ ring: RING, lastSenderId: 'id_alpha', pass: p })).toMatchObject({ handle: 'delta' })
+  })
+})
+
+describe('threadsUnreadSinceWrote — silence counts only from a read after the page last wrote', () => {
+  const floor = REPLY_READS_TRUSTED_SINCE
+  const at = (offsetHours: number) => new Date(floor.getTime() + offsetHours * 3_600_000)
+  it('never read → unread', () => {
+    expect(threadsUnreadSinceWrote([{ handle: 'a', lastWroteAt: at(-400), lastReadAt: null }])).toEqual(['a'])
+  })
+  it('read before the window fix → unread, however long after the message', () => {
+    expect(threadsUnreadSinceWrote([{ handle: 'a', lastWroteAt: at(-400), lastReadAt: at(-1) }])).toEqual(['a'])
+  })
+  it('read after the fix → read', () => {
+    expect(threadsUnreadSinceWrote([{ handle: 'a', lastWroteAt: at(-400), lastReadAt: at(1) }])).toEqual([])
+  })
+  it('read after the fix but BEFORE the page wrote again → unread', () => {
+    expect(threadsUnreadSinceWrote([{ handle: 'a', lastWroteAt: at(5), lastReadAt: at(2) }])).toEqual(['a'])
+    expect(threadsUnreadSinceWrote([{ handle: 'a', lastWroteAt: at(5), lastReadAt: at(5) }])).toEqual([])
+  })
+  it('a delivery with no time still needs a read after the fix', () => {
+    expect(threadsUnreadSinceWrote([{ handle: 'a', lastWroteAt: null, lastReadAt: at(-1) }])).toEqual(['a'])
+    expect(threadsUnreadSinceWrote([{ handle: 'a', lastWroteAt: null, lastReadAt: at(1) }])).toEqual([])
+  })
+  it('names them in a stable order', () => {
+    const pages = [
+      { handle: 'zeta', lastWroteAt: at(-9), lastReadAt: null },
+      { handle: 'beta', lastWroteAt: at(-9), lastReadAt: null },
+      { handle: 'mid', lastWroteAt: at(-9), lastReadAt: at(3) },
+    ]
+    expect(threadsUnreadSinceWrote(pages)).toEqual(['beta', 'zeta'])
+  })
+})
+
 describe('turnPassFor — the switch and an unknown material fact both mean NO pass', () => {
+  const read = new Date(REPLY_READS_TRUSTED_SINCE.getTime() + 3_600_000)
   const history = {
     lastSenderId: 'id_alpha',
-    wroteBefore: new Set(['id_alpha']),
+    wroteBefore: new Set(['id_alpha', 'id_bravo']),
     holdsDraft: new Set<string>(),
     everReplied: false,
+    writers: new Map([
+      ['id_alpha', { handle: 'alpha', lastWroteAt: new Date('2026-10-20T10:00:00Z'), lastReadAt: read }],
+      ['id_bravo', { handle: 'bravo', lastWroteAt: new Date('2026-10-21T10:00:00Z'), lastReadAt: null }],
+    ]),
   }
   it('switched off → no pass facts', () => {
-    expect(turnPassFor(history, { enabled: false, nothingNewToSay: true })).toBeUndefined()
+    expect(turnPassFor(history, { enabled: false, nothingNewToSay: true, onlyAfterRead: true })).toBeUndefined()
   })
   it('material not known → no pass facts, never a guess', () => {
-    expect(turnPassFor(history, { enabled: true, nothingNewToSay: undefined })).toBeUndefined()
+    expect(turnPassFor(history, { enabled: true, nothingNewToSay: undefined, onlyAfterRead: true })).toBeUndefined()
   })
-  it('switched on and known → the history, carried through', () => {
-    expect(turnPassFor(history, { enabled: true, nothingNewToSay: true })).toEqual({
+  it('switched on and known → the history, carried through, with the unread conversations named', () => {
+    expect(turnPassFor(history, { enabled: true, nothingNewToSay: true, onlyAfterRead: true })).toEqual({
       wroteBefore: history.wroteBefore,
       holdsDraft: history.holdsDraft,
       everReplied: false,
       nothingNewToSay: true,
+      unreadSinceWrote: ['bravo'],
     })
   })
+  it('the read requirement switched off → nothing counts as unread', () => {
+    expect(turnPassFor(history, { enabled: true, nothingNewToSay: true, onlyAfterRead: false })!.unreadSinceWrote).toEqual([])
+  })
   it('no history at all → nobody wrote, so the pass can never fire', () => {
-    const p = turnPassFor(undefined, { enabled: true, nothingNewToSay: true })!
+    const p = turnPassFor(undefined, { enabled: true, nothingNewToSay: true, onlyAfterRead: true })!
     expect(nextSender({ ring: RING, lastSenderId: null, targetId: 't', pass: p }).ok).toBe(true)
     expect(p.wroteBefore.size).toBe(0)
+    expect(p.unreadSinceWrote).toEqual([])
   })
 })

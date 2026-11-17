@@ -129,8 +129,21 @@ async function seedFleet(opts: { unsignedIn?: readonly string[]; displayName?: s
   for (const p of PAGES) await seedPair(prisma, S[p], CO)
 }
 
-async function deliver(page: (typeof PAGES)[number], daysAgo: number): Promise<{ id: string }> {
-  return seedDelivery(prisma, { pairId: pairId(S[page], CO), sentAt: d(daysAgo), touchNumber: 1, body: SINGLE_TEMPLATE_MIDDLE })
+/**
+ * A delivery, and — unless `read: null` — a vouched read of that conversation an hour ago, after
+ * the 16 Nov window fix and after the delivery. Rule 5 of `TurnPass` holds the pass until every
+ * page that wrote has had its conversation read since it wrote, so the scenarios that are about
+ * something else start from conversations that have been read; the ones about the read say so.
+ */
+async function deliver(
+  page: (typeof PAGES)[number],
+  daysAgo: number,
+  opts: { read?: Date | null } = {},
+): Promise<{ id: string }> {
+  const row = await seedDelivery(prisma, { pairId: pairId(S[page], CO), sentAt: d(daysAgo), touchNumber: 1, body: SINGLE_TEMPLATE_MIDDLE })
+  const read = opts.read === undefined ? h(1) : opts.read
+  if (read !== null) await prisma.outreachAttempt.update({ where: { id: row.id }, data: { replyCheckedAt: read } })
+  return row
 }
 
 async function plan() {
@@ -252,7 +265,81 @@ describe('the pass does NOT fire', () => {
   })
 })
 
+describe('the pass waits until every page that wrote has had its conversation read since (rule 5)', () => {
+  it('holds while alpha’s conversation is unread, names it, and passes once it has been read', async () => {
+    await seedFleet()
+    await deliver('bravo', 20)
+    const a = await deliver('alpha', 10, { read: null })
+
+    const held = await plan()
+    expect(held.drafts).toHaveLength(0)
+    expect(held.byPair.get(key('charlie'))?.skipDetail).toMatch(
+      /^@bravo is next in the fleet rotation — it has nothing new to say, and a page that never wrote takes over once @alpha has had the conversation with them read since writing/,
+    )
+
+    /* The sweep reads alpha's thread and vouches for the silence → the next pass hands the turn on. */
+    await prisma.outreachAttempt.update({ where: { id: a.id }, data: { replyCheckedAt: h(0.5) } })
+    const passed = await plan()
+    expect(passed.drafts.map((x) => x.senderId)).toEqual([S.charlie])
+  })
+
+  it('a read from BEFORE the 16 Nov window fix is not a read', async () => {
+    await seedFleet()
+    await deliver('bravo', 20, { read: d(5) })
+    await deliver('alpha', 10)
+    const r = await plan()
+    expect(r.drafts).toHaveLength(0)
+    expect(r.byPair.get(key('charlie'))?.skipDetail).toMatch(/takes over once @bravo has had the conversation/)
+  })
+
+  it('counts a page outside the ring too — a reply to a retired page is still a reply', async () => {
+    await seedFleet()
+    await seedSender(prisma, { handle: 'retired', fleetMember: false })
+    await seedVariants(prisma, senderId('retired'))
+    await seedPair(prisma, senderId('retired'), CO)
+    await seedDelivery(prisma, { pairId: pairId(senderId('retired'), CO), sentAt: d(30), touchNumber: 1, body: SINGLE_TEMPLATE_MIDDLE })
+    await deliver('bravo', 20)
+    await deliver('alpha', 10)
+    const r = await plan()
+    expect(r.drafts).toHaveLength(0)
+    expect(r.byPair.get(key('charlie'))?.skipDetail).toMatch(/takes over once @retired has had/)
+  })
+
+  it('switched off (passTurnOnlyAfterRead=false), our record of replies alone decides', async () => {
+    await seedFleet()
+    await setSetting(prisma, 'passTurnOnlyAfterRead', 'false')
+    await deliver('bravo', 20, { read: null })
+    await deliver('alpha', 10, { read: null })
+    const r = await plan()
+    expect(r.drafts.map((x) => x.senderId)).toEqual([S.charlie])
+  })
+
+  it('/targets says what the recipient is waiting for, and the rest tally does not claim a pass', async () => {
+    await seedFleet()
+    await deliver('bravo', 20)
+    await deliver('alpha', 10, { read: null })
+    /* The tally mirrors the planner: bravo stays elected and is held by its own rule. */
+    const tally = await buildRestTally(ANCHOR)
+    expect(tally.byReason.find((r) => r.reason === SKIP_REASONS.NO_NEW_MATERIAL)?.count).toBe(1)
+    expect(tally.clear).toBe(0)
+    const row = (await buildProspectsPage()).prospects.find((p) => p.handle === 'co')!
+    expect(row.nextSenderSentence).toMatch(
+      /^Next message comes from @bravo — it has nothing new to say; a page that never wrote to them takes over once @alpha has had the conversation with them read since writing/,
+    )
+  })
+})
+
 describe('a passed turn stays passed while its introduction waits', () => {
+  it('an UNAVAILABLE holder still holds it: no second introduction from another page (review of 3e03c67)', async () => {
+    await seedFleet({ unsignedIn: ['charlie'] })
+    await deliver('bravo', 20)
+    await deliver('alpha', 10)
+    await seedDraft(prisma, { pairId: pairId(S.charlie, CO), status: 'READY', touchNumber: 1, body: SINGLE_TEMPLATE_MIDDLE, queuedAt: h(1) })
+    const r = await plan()
+    expect(r.drafts.map((x) => x.senderId)).toEqual([S.charlie])
+    expect(r.byPair.get(key('delta'))?.skipDetail).toBe('@bravo is next in the fleet rotation')
+  })
+
   it('new material after the introduction was written does not put bravo’s follow-up beside it', async () => {
     await seedFleet({ displayName: 'BoroPlus' })
     await setSetting(prisma, 'followUpBody', FOLLOW_UP_BODY)

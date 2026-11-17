@@ -474,6 +474,9 @@ async function computeRestTally(now: Date): Promise<RestTally> {
             /* An UNDATED reply too — the turn pass must never introduce a second page to anyone
                who answered us, dated or not (see `TurnPass`). Same table, same query. */
             { repliedAt: { not: null } },
+            /* A vouched read of a conversation — the turn pass waits for one on every page that
+               wrote (rule 5 of `TurnPass`). Same table, same query. */
+            { replyCheckedAt: { not: null } },
             { status: { in: ['QUEUED', 'READY', 'SENDING'] } },
             { status: 'FAILED', failureCode: { not: null } },
           ],
@@ -483,6 +486,7 @@ async function computeRestTally(now: Date): Promise<RestTally> {
           sentAt: true,
           replyPostedAt: true,
           repliedAt: true,
+          replyCheckedAt: true,
           replyHandledAt: true,
           failureCode: true,
           queuedAt: true,
@@ -675,6 +679,8 @@ async function computeRestTally(now: Date): Promise<RestTally> {
   const deliveredPairKeys = new Set<string>()
   /** target → every page that ever delivered to them — `TurnPass.wroteBefore`. */
   const wroteBeforeByTarget = new Map<string, Set<string>>()
+  /** target → page → when it last wrote and was last read — `TurnHistory.writers`. */
+  const writersByTarget = new Map<string, Map<string, { handle: string; lastWroteAt: Date | null; lastReadAt: Date | null }>>()
   const sentTodayPairKeys = new Set<string>()
   for (const d of deliveries) {
     if (!d.sentAt) continue
@@ -689,6 +695,11 @@ async function computeRestTally(now: Date): Promise<RestTally> {
     const wrote = wroteBeforeByTarget.get(d.pair.targetId)
     if (wrote) wrote.add(d.pair.senderId)
     else wroteBeforeByTarget.set(d.pair.targetId, new Set([d.pair.senderId]))
+    const writers = writersByTarget.get(d.pair.targetId) ?? new Map()
+    const w = writers.get(d.pair.senderId) ?? { handle: d.pair.sender.handle, lastWroteAt: null, lastReadAt: null }
+    if (w.lastWroteAt === null || d.sentAt > w.lastWroteAt) w.lastWroteAt = d.sentAt
+    writers.set(d.pair.senderId, w)
+    writersByTarget.set(d.pair.targetId, writers)
     /* A delivery from THIS page to THIS recipient today (IST) — the same boundary the pair cap
        is counted against, so the two cannot name different days across midnight. */
     if (d.sentAt >= istDayStart(now)) sentTodayPairKeys.add(`${d.pair.targetId}:${d.pair.senderId}`)
@@ -711,6 +722,12 @@ async function computeRestTally(now: Date): Promise<RestTally> {
     const set = holdsDraftByTarget.get(d.pair.targetId)
     if (set) set.add(d.pair.senderId)
     else holdsDraftByTarget.set(d.pair.targetId, new Set([d.pair.senderId]))
+  }
+  /* The newest vouched read of each conversation, from any row of the pair — as the loader. */
+  for (const a of attempts) {
+    if (a.replyCheckedAt === null) continue
+    const w = writersByTarget.get(a.pair.targetId)?.get(a.pair.senderId)
+    if (w && (w.lastReadAt === null || a.replyCheckedAt > w.lastReadAt)) w.lastReadAt = a.replyCheckedAt
   }
   /** See `RestTally.turnPassNothingNew`. */
   const turnPassNothingNew = new Map<string, boolean>()
@@ -853,8 +870,9 @@ async function computeRestTally(now: Date): Promise<RestTally> {
           wroteBefore: wroteBefore ?? new Set(),
           holdsDraft: holdsDraftByTarget.get(p.id) ?? new Set(),
           everReplied: everAnsweredTargetIds.has(p.id),
+          writers: writersByTarget.get(p.id) ?? new Map(),
         },
-        { enabled: settings.passTurnWhenNothingNew, nothingNewToSay },
+        { enabled: settings.passTurnWhenNothingNew, nothingNewToSay, onlyAfterRead: settings.passTurnOnlyAfterRead },
       ),
     })
 

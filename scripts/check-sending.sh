@@ -454,6 +454,28 @@ const Q = [
     WHERE s."fleetMember" = true
     GROUP BY s.id, s.handle, s.status, s."fleetMember", s."sessionPath", s."sessionInvalidAt"
     ORDER BY s.handle`],
+  ['S2 the turn pass waits for reads: for companies that never answered us, each page that wrote to them and how many of those conversations have been READ since it wrote and since the 16 Nov window fix (18:05 IST). A page with nothing new hands its turn to one that never wrote only when EVERY page that wrote is read — the "=" row counts those companies. read_since_it_wrote rising between checks means the reply sweep is reading; flat means nothing is', `
+    WITH pairs AS (
+      SELECT a."senderId", a."targetId",
+             bool_or(a.status IN ('SENT','REPLIED')) AS wrote,
+             max(a."sentAt") FILTER (WHERE a.status IN ('SENT','REPLIED')) AS last_wrote,
+             max(a."replyCheckedAt") AS last_read
+      FROM "OutreachAttempt" a GROUP BY 1, 2
+    ), w AS (
+      SELECT p."senderId", p."targetId",
+             (p.last_read IS NOT NULL AND p.last_read >= greatest(coalesce(p.last_wrote, TIMESTAMP '2026-11-16 12:35:00'),
+                                                               TIMESTAMP '2026-11-16 12:35:00')) AS read_since
+      FROM pairs p JOIN "TargetAccount" t ON t.id = p."targetId"
+      WHERE p.wrote AND ${LIVE}
+        AND NOT EXISTS (SELECT 1 FROM "OutreachAttempt" r WHERE r."targetId" = t.id
+                          AND (r."repliedAt" IS NOT NULL OR r."replyPostedAt" IS NOT NULL))
+    )
+    SELECT s.handle AS page_that_wrote, count(*) AS unanswered_companies, count(*) FILTER (WHERE w.read_since) AS read_since_it_wrote
+    FROM w JOIN "SenderAccount" s ON s.id = w."senderId" GROUP BY 1
+    UNION ALL
+    SELECT '= companies, every writing page read', count(*), count(*) FILTER (WHERE all_read)
+    FROM (SELECT "targetId", bool_and(read_since) AS all_read FROM w GROUP BY 1) c
+    ORDER BY 1`],
   ['P  the server\'s connection slots (on 22 Aug a full pool stopped everything)', `
     SELECT count(*) FILTER (WHERE backend_type = 'client backend') AS connections_in_use,
            current_setting('max_connections')::int - current_setting('superuser_reserved_connections')::int

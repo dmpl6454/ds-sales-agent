@@ -54,9 +54,32 @@ so "every page wrote" stays NO_NEW_MATERIAL and never becomes "rotation stuck". 
   planner-golden fixture is unchanged — none of its recipients has the pass shape, which makes it the
   tripwire for a pass that fires too widely.
 
+**THE SAME DAY, A REVIEW OF `3e03c67` (most reviewer agents died on the weekly usage limit; the three
+safety findings that came back were checked by reading the code, not taken on trust):**
+
+| finding | verdict | now |
+|---|---|---|
+| the pass reads "no reply recorded" as "did not answer", and from at least 27 Oct to 16 Nov the sweep was nearly blind (the 500x232 windows), so a reply sent then may never have been recorded — and the pass would introduce a second page to a company that answered (the H5 mistake, aimed at the one that engaged) | **REAL.** Absence of data hardening into a verdict, the most repeated defect in this file. The inbox scan now reads every name-matched row of any age, but an unmatched row older than 14 days is never opened, the list is 8 scroll rounds deep, and @bollywoodchronicle's inbox has had no reader since its Mac went | **Rule 5 of `TurnPass`:** the pass waits until EVERY page that delivered to the recipient — retired and unheld pages included — has a vouched read of that conversation (`replyCheckedAt`, written only by a complete read) after its own last message and after `REPLY_READS_TRUSTED_SINCE` (16 Nov 18:05 IST). Switch `passTurnOnlyAfterRead`, default **true**. The planner names the waiting conversations (`… takes over once @x has had the conversation with them read since writing`) and logs `turn passes passed=N waitingForARead=M` once a pass; `/targets` says the same |
+| the rule-4 pin filtered unavailable pages out BEFORE looking for the draft holder, so a holder that went unavailable lost the pin and the next pass wrote a second introduction from another page | **REAL** | the holder is found before availability is asked; an unavailable holder returns E, so the turn goes nowhere new while its introduction waits |
+| the H5 sweep counts only DATED replies, so an undated reply arriving after a passed introduction is drafted does not withdraw it | **UNREACHABLE for the pass.** `plausibleReplyDate` returns our last delivery whenever one exists, so a reply is undated only when nothing was ever delivered to that company — and a pass needs a delivery. `ig:reply` always dates. Not changed: counting undated replies in the sweep would churn an ordinary introduction (discard, redraft, discard) every 15 minutes | — |
+
+**What rule 5 costs, stated:** the pass now arrives as fast as the reply sweep reads conversations
+(4 deep reads a 30-minute run, newest-unread first), not as ~73 at once, and a company that
+@bollywoodchronicle or @bachelorssociety ever wrote to is not passed until that page's inbox can be
+read again. **Measure it before judging it:** `scripts/check-sending.sh` section **S2** prints, per
+page, how many unanswered companies it wrote to and how many of those conversations have been read
+since; its `=` row is the number of companies the pass may now reach. Run against a scratch
+Postgres 16 with the real schema before shipping. `passTurnOnlyAfterRead` = false restores
+the record-only pass in one Setting row, accepting the risk above. Tests: 32 pure + 18 planner
+scenarios; nine more mutations, each seen red. Suite **3,710 / 3,712** (the two offline
+`route-rule` timeouts).
+
 63. **A rotation that advances only on a delivery stalls on a page that has nothing to deliver.**
     When the elected page can only send what does not exist, the turn must move to a page that can
     say something, or the recipient waits on material forever.
+64. **"No reply recorded" is a fact about the reader before it is a fact about the recipient.**
+    Any rule that acts on silence must ask whether anyone looked since the message went out — and
+    after an outage of the reader, the answer is no until someone has.
 
 ---
 

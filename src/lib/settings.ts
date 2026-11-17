@@ -59,6 +59,7 @@ export const SETTING_KEYS = {
   crossPageGapHours: 'crossPageGapHours',
   /** A page with nothing new to say hands the recipient's turn to a page that never wrote. */
   passTurnWhenNothingNew: 'passTurnWhenNothingNew',
+  passTurnOnlyAfterRead: 'passTurnOnlyAfterRead',
   officialMinFollowers: 'officialMinFollowers',
   celebrityMinFollowers: 'celebrityMinFollowers',
 } as const
@@ -371,6 +372,19 @@ export interface RuntimeSettings {
    * `TurnPass` (outreach/rotation.ts).
    */
   passTurnWhenNothingNew: boolean
+  /**
+   * ── …AND ONLY ONCE EVERY PAGE THAT WROTE HAS HAD ITS CONVERSATION READ SINCE (17 Nov 2026) ──
+   *
+   * ON. The pass trusts "no reply recorded", and from at least 27 Oct to 16 Nov the reply sweep
+   * was nearly blind (500x232 Chrome windows), so for a message sent before then that record is
+   * absence of data. A recipient is passed on only when every page that delivered to them has a
+   * vouched read of its conversation (`replyCheckedAt`) after its own last message and after
+   * `REPLY_READS_TRUSTED_SINCE` — rule 5 of `TurnPass`. The reply sweep reads four conversations
+   * a run, so passes arrive as fast as those reads do rather than all at once. OFF passes on
+   * our record of replies alone, accepting that an answer we never saw gets a second
+   * introduction from another page.
+   */
+  passTurnOnlyAfterRead: boolean
 }
 
 function defaults(): RuntimeSettings {
@@ -420,6 +434,8 @@ function defaults(): RuntimeSettings {
     crossPageGapHours: 0,
     // ON — Sudhanshu, 17 Nov. See the interface comment and `TurnPass`.
     passTurnWhenNothingNew: true,
+    // ON — the pass waits for a read of every writing page's conversation. See the interface.
+    passTurnOnlyAfterRead: true,
     officialMinFollowers: 100_000,
     celebrityMinFollowers: 500_000,
   }
@@ -599,6 +615,7 @@ async function readSettings(): Promise<RuntimeSettings> {
     tagsAsEvidence: bool(SETTING_KEYS.tagsAsEvidence, d.tagsAsEvidence),
     publisherAsContext: bool(SETTING_KEYS.publisherAsContext, d.publisherAsContext),
     passTurnWhenNothingNew: bool(SETTING_KEYS.passTurnWhenNothingNew, d.passTurnWhenNothingNew),
+    passTurnOnlyAfterRead: bool(SETTING_KEYS.passTurnOnlyAfterRead, d.passTurnOnlyAfterRead),
     /**
      * Both fleet ceilings accept "unlimited", and for opposite reasons.
      *

@@ -8,7 +8,8 @@
  * row. Wraps forever.
  *
  * Except (17 Nov 2026): when the next sender has already written to them and has nothing new
- * to say, the turn passes to a page in the ring that has never written to them. See `TurnPass`.
+ * to say, and every page that wrote has had its conversation read since, the turn passes to a
+ * page in the ring that has never written to them. See `TurnPass`.
  *
  * ── DERIVED, NEVER STORED ─────────────────────────────────────────────────
  *
@@ -104,17 +105,34 @@ export interface RotationInput {
  *      `repliedAt` as well as `replyPostedAt`, stricter than `isFollowUp`, on purpose.
  *   2. E never delivered to them                     → E. E's message is already a first touch.
  *   3. E holds a waiting draft for them              → E. Its message is in the queue.
- *   4. A page that never wrote to them already holds a waiting draft → THAT page. The turn was
- *      passed on an earlier pass and stays passed until the draft is delivered or discarded —
- *      otherwise each planning pass would hand it to yet another page while the first
- *      introduction waits (two first touches to one company, the fan-out this file exists to
- *      stop). Pinned even if new material has appeared since: the allowance lets only one of
- *      them through in the window anyway, and the other would sit held at the gate.
- *   5. Nothing new to say (no fresh, unclaimed paid post naming them that a follow-up could
+ *   4. A page that never wrote to them already holds a waiting draft → THAT page, if it is
+ *      available; E if it is not. The turn was passed on an earlier pass and stays passed until
+ *      the draft is delivered or discarded — otherwise each planning pass would hand it to yet
+ *      another page while the first introduction waits (two first touches to one company, the
+ *      fan-out this file exists to stop). Pinned even if new material has appeared since: the
+ *      allowance lets only one of them through in the window anyway. And the holder is looked
+ *      for BEFORE availability is asked: the first version filtered unavailable pages out first,
+ *      so a holder that went unavailable (signed out, flagged, its Mac gone) lost the pin and
+ *      the next pass wrote a SECOND introduction from another page while the first still waited
+ *      (review of 3e03c67). A waiting draft is still delivered when its page comes back,
+ *      whatever rotation says, so the turn must not move on while it exists.
+ *   5. A page that wrote to them has not had its conversation with them READ since it last
+ *      wrote → E. Rule 1 trusts our record of replies, and a record is only as good as the
+ *      reading behind it: from at least 27 Oct to 16 Nov 2026 every sending profile's Chrome
+ *      window was 500x232 and the reply sweep could read almost nothing, so "no reply recorded"
+ *      for a message sent before then is ABSENCE OF DATA, not silence. A recipient who answered
+ *      in that stretch and is introduced to by a second page is the H5 mistake — aimed at the
+ *      one company that engaged. So a page's silence counts only when its thread was read and
+ *      vouched for (`replyCheckedAt`, written only by a COMPLETE read that saw every message we
+ *      sent) after it last wrote and after `REPLY_READS_TRUSTED_SINCE`. Every page that wrote,
+ *      not only E: a reply sits in the thread of the page it answered. Retired or unheld pages
+ *      included — a page nobody can read is a page whose replies nobody has seen. Switch:
+ *      `passTurnOnlyAfterRead` (default ON).
+ *   6. Nothing new to say (no fresh, unclaimed paid post naming them that a follow-up could
  *      describe) → the first page AFTER E in ring order that is available for this recipient,
  *      is not the recipient, and has never delivered to them. Walking from E keeps the spread
  *      deterministic: the same inputs elect the same page on every host and every pass.
- *   6. Otherwise, or when no such page exists        → E. Never a refusal: "every page has
+ *   7. Otherwise, or when no such page exists        → E. Never a refusal: "every page has
  *      written and there is nothing new" is NO_NEW_MATERIAL, a rule with a clock, and must not
  *      become `all-unavailable`, which the screens file as rotation stuck — "needs a person".
  *
@@ -136,6 +154,44 @@ export interface TurnPass {
    * `no-post-we-can-describe`. Supplied by the caller, which is the one that holds the material.
    */
   nothingNewToSay: boolean
+  /**
+   * Handles of the pages that delivered to them whose conversation has NOT been read since they
+   * last wrote (rule 5; `threadsUnreadSinceWrote`). Empty when every one has been, or when the
+   * switch is off. Handles rather than ids because a page outside the ring (retired, or another
+   * fleet's) counts too, and the sentence that explains a held pass must be able to name it.
+   */
+  unreadSinceWrote: readonly string[]
+}
+
+/**
+ * When the reply sweep's reads became trustworthy again: 16 Nov 2026 18:05 IST, when the last
+ * sending profile's Chrome window was restored to 1280 wide (`scripts/fix-chrome-window.ts`; the
+ * 16 Nov entry in CLAUDE.md). Before it the window was 500x232, a thread's messages left the DOM
+ * within two seconds, and ~200 reads a day failed. A read stamped before this moment is not
+ * evidence of silence for the turn pass. It is a floor, not a schedule: from here on a page's
+ * silence counts only from a read AFTER its own last message, which is the rule that outlasts
+ * this outage.
+ */
+export const REPLY_READS_TRUSTED_SINCE = new Date('2026-11-16T12:35:00Z')
+
+/**
+ * PURE. The pages whose conversation with a recipient has not been read since they last wrote —
+ * rule 5 of the turn pass. A page counts as read only when the newest vouched read of its thread
+ * (`replyCheckedAt`) is at or after both its own newest delivery and `trustedSince`. A page with no
+ * read, or whose delivery time is unknown and has no read after the floor, is unread: "we never
+ * looked" must never become "they did not answer". Returned in handle order so the sentence that
+ * names them is the same on every host.
+ */
+export function threadsUnreadSinceWrote(
+  pages: ReadonlyArray<{ handle: string; lastWroteAt: Date | null; lastReadAt: Date | null }>,
+  trustedSince: Date = REPLY_READS_TRUSTED_SINCE,
+): string[] {
+  const unread: string[] = []
+  for (const p of pages) {
+    const need = Math.max(p.lastWroteAt?.getTime() ?? 0, trustedSince.getTime())
+    if (p.lastReadAt === null || p.lastReadAt.getTime() < need) unread.push(p.handle)
+  }
+  return unread.sort()
 }
 
 export type RotationChoice =
@@ -150,6 +206,14 @@ export type RotationChoice =
        * say why a page that is not next after the last writer is writing.
        */
       passedFrom?: { senderId: string; handle: string }
+      /**
+       * Set when the turn WOULD have passed (rules 1-4 allow it, nothing new to say, a page that
+       * never wrote is available) but rule 5 held it: the pages whose conversation has not been
+       * read since they last wrote. Carried so the planner's log and /targets can say what the
+       * recipient is waiting for — a held pass with no reason on any screen would read as the
+       * feature not working.
+       */
+      passWaitsForRead?: readonly string[]
     }
   | { ok: false; reason: 'empty-ring' | 'all-unavailable'; detail: string }
 
@@ -314,26 +378,30 @@ function passTurn(
   if (!pass.wroteBefore.has(elected.senderId)) return elected
   if (pass.holdsDraft.has(elected.senderId)) return elected
 
-  /* Pages that may introduce themselves, in ring order starting after the elected page. */
-  const candidates: RingMember[] = []
+  /* Pages that may introduce themselves, in ring order starting after the elected page —
+     availability NOT yet asked, because rule 4 must see a holder that has become unavailable. */
+  const neverWrote: RingMember[] = []
   for (let step = 1; step < order.length; step++) {
     const m = order[(electedIndex + step) % order.length]!
     if (targetId !== null && m.senderId === targetId) continue
-    if (unavailable.has(m.senderId)) continue
     if (pass.wroteBefore.has(m.senderId)) continue
-    candidates.push(m)
+    neverWrote.push(m)
   }
 
   const from = { senderId: elected.senderId, handle: elected.handle }
-  /* Rule 4: a turn already passed stays passed while its draft waits. */
-  const waiting = candidates.find((m) => pass.holdsDraft.has(m.senderId))
-  if (waiting) return { ok: true, senderId: waiting.senderId, handle: waiting.handle, position: waiting.position, passedFrom: from }
-  /* Rule 5: nothing new to say, so the first page that never wrote takes the turn. */
-  const first = candidates[0]
-  if (pass.nothingNewToSay && first) {
-    return { ok: true, senderId: first.senderId, handle: first.handle, position: first.position, passedFrom: from }
-  }
-  return elected
+  /* Rule 4: a turn already passed stays passed while its draft waits — on an available holder;
+     an unavailable holder's draft still waits, so the turn goes nowhere new. */
+  const holders = neverWrote.filter((m) => pass.holdsDraft.has(m.senderId))
+  const holder = holders.find((m) => !unavailable.has(m.senderId))
+  if (holder) return { ok: true, senderId: holder.senderId, handle: holder.handle, position: holder.position, passedFrom: from }
+  if (holders.length > 0) return elected
+
+  const first = neverWrote.find((m) => !unavailable.has(m.senderId))
+  if (!pass.nothingNewToSay || !first) return elected
+  /* Rule 5: a page whose silence nobody has read since it wrote — wait for the read. */
+  if (pass.unreadSinceWrote.length > 0) return { ...elected, passWaitsForRead: pass.unreadSinceWrote }
+  /* Rule 6: nothing new to say, so the first available page that never wrote takes the turn. */
+  return { ok: true, senderId: first.senderId, handle: first.handle, position: first.position, passedFrom: from }
 }
 
 /**
