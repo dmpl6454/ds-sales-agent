@@ -214,7 +214,7 @@ classified AS (
 SQL
 )
 
-run() { $PSQL -v ON_ERROR_STOP=1 -P footer=off "$@"; }
+run() { $PSQL -v ON_ERROR_STOP=1 -P footer=off -P pager=off "$@"; }
 
 echo "== 2. The switches (a row here overrides the shipped default: both default to true) =="
 run -c "BEGIN READ ONLY; SELECT key, value, \"updatedAt\" FROM \"Setting\" WHERE key IN ('passTurnWhenNothingNew','passTurnOnlyAfterRead','replyHaltScope') ORDER BY key; COMMIT;"
