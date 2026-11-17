@@ -3,6 +3,8 @@
 #
 #   curl -fsSL https://raw.githubusercontent.com/dmpl6454/ds-sales-agent/<sha>/scripts/explain-turn-pass.sh -o /tmp/etp.sh && bash /tmp/etp.sh
 #
+# Name sections to print only those (a browser console scrolls back one screen):  bash etp.sh 4 8
+#
 # The planner logs `turn passes passed=… keptWhileIntroWaits=… waitingForARead=…` only when one of
 # those is above zero, so a pass that ends on any other rule leaves NO trace — exactly the silence
 # 17 Nov's first post-deploy log showed. This replays `passTurn` (src/outreach/rotation.ts) rule by
@@ -30,6 +32,11 @@ set -euo pipefail
 APP="${DS_APP_DIR:-/opt/ds-sales-agent}"
 PSQL="${DS_PSQL:-sudo -u postgres psql -X -q -d ds_sales_agent}"
 
+# No arguments: every section. Otherwise only the numbered ones, e.g. `4 8`.
+WANT=" $* "
+want() { [[ "$WANT" == "  " || "$WANT" == *" $1 "* ]]; }
+
+if want 1; then
 echo "== 1. Is the turn-pass build the one running? =="
 if [[ -d "$APP" ]]; then
   echo "   deployed build: $(cat "$APP/.version" 2>/dev/null || echo 'no .version file')"
@@ -56,6 +63,7 @@ else
   echo "   $APP not found — set DS_APP_DIR, or this is not the server (the database part still runs)"
 fi
 echo
+fi
 
 BASE=$(cat <<'SQL'
 WITH RECURSIVE
@@ -215,27 +223,38 @@ SQL
 )
 
 run() { $PSQL -v ON_ERROR_STOP=1 -P footer=off -P pager=off "$@"; }
+# Unaligned: no padding to the widest cell, so a row fits a console line instead of wrapping into five.
+runc() { run -A -F ' | ' "$@"; }
 
+if want 2; then
 echo "== 2. The switches (a row here overrides the shipped default: both default to true) =="
 run -c "BEGIN READ ONLY; SELECT key, value, \"updatedAt\" FROM \"Setting\" WHERE key IN ('passTurnWhenNothingNew','passTurnOnlyAfterRead','replyHaltScope') ORDER BY key; COMMIT;"
 echo
+fi
 
+if want 3; then
 echo "== 3. Our pages, as rotation sees them =="
 run -c "BEGIN READ ONLY; $BASE SELECT '@' || handle AS page, CASE WHEN fleet THEN 'in rotation' ELSE 'out of rotation' END AS rotation,
   COALESCE(unavailable_why, 'can send') AS state, array_to_string(cats, ',') AS fleets FROM acct ORDER BY fleet DESC, handle; COMMIT;"
 echo
+fi
 
+if want 4; then
 echo "== 4. Every live verified company, by the rule that ends the turn pass (first rule that applies) =="
 run -c "BEGIN READ ONLY; $BASE SELECT bucket, count(*) AS companies FROM classified GROUP BY bucket ORDER BY bucket; COMMIT;"
 echo
+fi
 
+if want 5; then
 echo "== 5. Up to 6 examples per rule =="
-run -c "BEGIN READ ONLY; $BASE SELECT bucket, '@' || handle AS company, '@' || elected AS turn_is_with, writers AS pages_wrote,
+runc -c "BEGIN READ ONLY; $BASE SELECT bucket, '@' || handle AS company, '@' || elected AS turn_is_with, writers AS pages_wrote,
   COALESCE(out_list, '') AS messages_out, COALESCE(unread_list, '') AS unread_since_wrote
   FROM (SELECT c.*, row_number() OVER (PARTITION BY bucket ORDER BY handle) AS r FROM classified c) x
   WHERE r <= 6 ORDER BY bucket, handle; COMMIT;"
 echo
+fi
 
+if want 6; then
 echo "== 6. Messages out that block a pass (rule 4b), by page: a parked one may have reached them =="
 run -c "BEGIN READ ONLY; $BASE SELECT '@' || s.handle AS page,
   count(*) FILTER (WHERE pa.park_out) AS parked_not_in_thread,
@@ -246,10 +265,39 @@ run -c "BEGIN READ ONLY; $BASE SELECT '@' || s.handle AS page,
   JOIN \"SenderAccount\" s ON s.id = pa.sid
   WHERE c.bucket LIKE '4b%' GROUP BY s.handle ORDER BY s.handle; COMMIT;"
 echo
+fi
 
+if want 7; then
 echo "== 7. not-in-thread parks to live companies, by IST day they were queued (all pages) =="
 run -c "BEGIN READ ONLY; SELECT to_char(a.\"queuedAt\" + interval '330 minutes', 'YYYY-MM-DD') AS ist_day, count(*) AS parks,
   count(DISTINCT a.\"targetId\") AS companies
   FROM \"OutreachAttempt\" a JOIN \"TargetAccount\" t ON t.id = a.\"targetId\"
   WHERE a.status = 'FAILED' AND a.\"failureCode\" = 'not-in-thread' AND NOT t.\"optedOut\" AND t.role = 'PROSPECT'
   GROUP BY 1 ORDER BY 1 DESC LIMIT 30; COMMIT;"
+echo
+fi
+
+if want 8; then
+echo "== 8. Rule 5 — the companies waiting for a read: whose conversation, and can anything read it? =="
+echo "   (the Mac's reply sweep can read a page only while it holds that page's sign-in)"
+R5="r5 AS (SELECT tid FROM classified WHERE bucket LIKE '5%'),
+uw AS (
+  SELECT r5.tid, s.handle AS page, f.unavailable_why IS NULL AS readable
+  FROM r5 JOIN pa ON pa.tid = r5.tid AND pa.wrote
+    AND (pa.last_read IS NULL OR pa.last_read < greatest(pa.last_wrote, timestamp '2026-11-16 12:35:00'))
+  JOIN \"SenderAccount\" s ON s.id = pa.sid JOIN acct f ON f.id = pa.sid
+)"
+run -c "BEGIN READ ONLY; $BASE, $R5 SELECT
+  CASE WHEN all_readable THEN 'released as the Mac reads them' ELSE 'stuck: a page no Mac holds wrote to them' END AS outlook,
+  count(*) AS companies FROM (SELECT tid, bool_and(readable) AS all_readable FROM uw GROUP BY tid) x
+  GROUP BY 1 ORDER BY 1; COMMIT;"
+run -c "BEGIN READ ONLY; $BASE, $R5 SELECT '@' || u.page AS unread_page,
+  CASE WHEN u.readable THEN 'yes — a Mac holds it' ELSE 'no — ' || f.unavailable_why END AS can_be_read,
+  count(*) AS companies_waiting_on_it
+  FROM uw u JOIN acct f ON f.handle = u.page GROUP BY u.page, u.readable, f.unavailable_why ORDER BY 3 DESC, 1; COMMIT;"
+echo "   every conversation the sweep still has to read since a page last wrote (all live companies, not only rule 5):"
+run -c "BEGIN READ ONLY; $BASE SELECT '@' || s.handle AS page, count(*) AS conversations_unread_since_it_wrote
+  FROM pa JOIN \"SenderAccount\" s ON s.id = pa.sid
+  WHERE pa.wrote AND (pa.last_read IS NULL OR pa.last_read < greatest(pa.last_wrote, timestamp '2026-11-16 12:35:00'))
+  GROUP BY s.handle ORDER BY 2 DESC; COMMIT;"
+fi
