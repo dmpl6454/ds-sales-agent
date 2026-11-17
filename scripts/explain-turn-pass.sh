@@ -158,13 +158,13 @@ fnv(tid, i, h) AS (
   SELECT f.tid, f.i + 1, ((f.h # ascii(substr(f.tid, f.i + 1, 1))::bigint) * 16777619) % 4294967296
   FROM fnv f WHERE f.i < length(f.tid)
 ),
-lastw AS (
+lastw AS MATERIALIZED (
   SELECT DISTINCT ON (a."targetId") a."targetId" AS tid, a."senderId" AS sid
   FROM "OutreachAttempt" a
   WHERE a."targetId" IN (SELECT id FROM pros) AND a.status IN ('SENT','REPLIED') AND a."sentAt" IS NOT NULL
   ORDER BY a."targetId", a."sentAt" DESC, a.id COLLATE "C" DESC
 ),
-startpos AS (
+startpos AS MATERIALIZED (
   SELECT t.id AS tid,
     COALESCE(
       (SELECT rg.pos + 1 FROM ring rg JOIN lastw l ON l.tid = rg.tid AND l.sid = rg.sid WHERE rg.tid = t.id),
@@ -195,7 +195,7 @@ unread AS (
   WHERE pa.wrote AND (pa.last_read IS NULL OR pa.last_read < greatest(pa.last_wrote, timestamp '2026-11-16 12:35:00'))
   GROUP BY pa.tid
 ),
-classified AS (
+classified AS MATERIALIZED (
   SELECT t.id AS tid, t.handle, e.handle AS elected,
     COALESCE((SELECT bool_or(pa.replied) FROM pa WHERE pa.tid = t.id), false) AS replied,
     COALESCE((SELECT count(*) FROM pa WHERE pa.tid = t.id AND pa.wrote), 0) AS writers,
@@ -223,7 +223,9 @@ classified AS (
 SQL
 )
 
-run() { $PSQL -v ON_ERROR_STOP=1 -P footer=off -P pager=off "$@"; }
+# jit off: Postgres spent ~10 s compiling this very large query on every call, and nothing here runs long enough to
+# repay it. statement_timeout: a step that takes over 3 minutes stops with an error instead of hanging in silence.
+run() { $PSQL -v ON_ERROR_STOP=1 -P footer=off -P pager=off -c "SET jit = off" -c "SET statement_timeout = '180s'" "$@"; }
 # Unaligned: no padding to the widest cell, so a row fits a console line instead of wrapping into five.
 runc() { run -A -F ' | ' "$@"; }
 
@@ -313,7 +315,7 @@ FLOOR="timestamp '2026-11-16 12:35:00'"
 R9="/* Per page: is it read by a Mac, when its inbox check last found anything, and (for Mac-held pages) the stretch nothing
    could see: from the last inbox find before the 16 Nov fix (27 Oct at the latest) to that page's last send before it.
    A reply from that stretch was pushed down the inbox by the later sends, below what the check scrolls to. */
-pg AS (
+pg AS MATERIALIZED (
   SELECT f.id AS sid, f.handle, (f.unavailable_why IS NOT NULL) AS unheld, i.inbox_last,
     least(COALESCE(i.g1, timestamp '2026-10-27 00:00:00'), timestamp '2026-10-27 00:00:00') AS g1,
     (SELECT max(a.\"sentAt\") FROM \"OutreachAttempt\" a WHERE a.\"senderId\" = f.id AND a.status IN ('SENT','REPLIED')
@@ -322,7 +324,7 @@ pg AS (
     SELECT max(l.at) AS inbox_last, max(l.at) FILTER (WHERE l.at < $FLOOR) AS g1 FROM \"AuditLog\" l
     WHERE l.action = 'reply.record.inbox' AND l.detail LIKE '%in @' || f.handle || '''s inbox%') i ON true
 ),
-conv AS (
+conv AS MATERIALIZED (
   SELECT a.\"targetId\" AS tid, a.\"senderId\" AS sid,
     max(a.\"sentAt\") FILTER (WHERE a.status IN ('SENT','REPLIED')) AS last_wrote,
     max(a.\"replyCheckedAt\") AS last_read, max(a.\"repliedAt\") AS seen_at,
@@ -340,7 +342,7 @@ conv AS (
 ),
 /* Reply delays, every page. A reply date equal to one of our send times was clamped to it: 0 days. Otherwise the
    dated reply minus our latest message before it (the pair's, else the company's). */
-dd AS (
+dd AS MATERIALIZED (
   SELECT d, words FROM (
     SELECT CASE WHEN EXISTS (SELECT 1 FROM \"OutreachAttempt\" x WHERE x.\"targetId\" = a.\"targetId\"
                  AND x.status IN ('SENT','REPLIED') AND x.\"sentAt\" = a.\"replyPostedAt\") THEN 0
@@ -355,7 +357,7 @@ dd AS (
 ),
 /* w: days a conversation of a page no Mac reads was watched after our last message (a read, a recorded reply, or the
    inbox check where it could place the company). lo..hi: for a Mac-held page, the days after our message nothing saw. */
-cw AS (
+cw AS MATERIALIZED (
   SELECT c.*, pg.unheld, pg.handle AS page,
     EXTRACT(EPOCH FROM (greatest(c.last_read, c.seen_at, CASE WHEN c.name_placeable
         OR pg.inbox_last >= timestamp '2026-09-03 08:00:00' THEN pg.inbox_last END) - c.last_wrote)) / 86400.0 AS w,
@@ -409,14 +411,18 @@ hc AS (
   FROM classified cl JOIN cf ON cf.tid = cl.tid AND cf.unread JOIN pr ON pr.sid = cf.sid
   WHERE NOT cl.replied
 ),
+/* k: the ring pages that can write and never wrote to the company (pa has one row per company and page). */
+kk AS MATERIALIZED (
+  SELECT w.tid, count(*) FILTER (WHERE w.free AND NOT COALESCE(pa.wrote, false)) AS k
+  FROM walk w LEFT JOIN pa ON pa.tid = w.tid AND pa.sid = w.sid GROUP BY w.tid
+),
 co AS (
   SELECT h.tid, h.handle, min(h.bucket) AS bucket,
     1 - exp(sum(ln(1 - h.p_raw))) AS risk_raw, 1 - exp(sum(ln(1 - h.p_corr))) AS risk_corr,
     1 - exp(sum(ln(1 - h.p_words))) AS risk_words, 1 - exp(sum(ln(1 - h.p_nz))) AS risk_nz,
     1 - exp(sum(ln(1 - CASE WHEN h.unheld THEN 0 ELSE h.p_corr END))) AS risk_mac_held,
-    (SELECT count(*) FROM walk w WHERE w.tid = h.tid AND w.free
-       AND NOT EXISTS (SELECT 1 FROM pa WHERE pa.tid = w.tid AND pa.sid = w.sid AND pa.wrote)) AS k
-  FROM hc h GROUP BY h.tid, h.handle
+    COALESCE(max(kk.k), 0) AS k
+  FROM hc h LEFT JOIN kk ON kk.tid = h.tid GROUP BY h.tid, h.handle
 )"
 echo "-- 9a. Pages no Mac reads: how often their companies answered while something was still looking"
 echo "   watched = conversations' worth actually watched (corrected = replies seen / watched). not_nameable = the August inbox check could not place them."
