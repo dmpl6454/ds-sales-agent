@@ -4,6 +4,7 @@
 #   curl -fsSL https://raw.githubusercontent.com/dmpl6454/ds-sales-agent/<sha>/scripts/explain-turn-pass.sh -o /tmp/etp.sh && bash /tmp/etp.sh
 #
 # Name sections to print only those (a browser console scrolls back one screen):  bash etp.sh 4 8
+# Section 9 estimates the risk of switching the read requirement off:             bash etp.sh 9
 #
 # The planner logs `turn passes passed=… keptWhileIntroWaits=… waitingForARead=…` only when one of
 # those is above zero, so a pass that ends on any other rule leaves NO trace — exactly the silence
@@ -300,4 +301,99 @@ run -c "BEGIN READ ONLY; $BASE SELECT '@' || s.handle AS page, count(*) AS conve
   FROM pa JOIN \"SenderAccount\" s ON s.id = pa.sid
   WHERE pa.wrote AND (pa.last_read IS NULL OR pa.last_read < greatest(pa.last_wrote, timestamp '2026-11-16 12:35:00'))
   GROUP BY s.handle ORDER BY 2 DESC; COMMIT;"
+fi
+
+if want 9; then
+echo "== 9. The risk of switching the read requirement off (passTurnOnlyAfterRead): how many held companies probably answered unseen =="
+echo "   Estimated, not observed. Reply rate from conversations we DID read after writing; reply delays from replies we DID see."
+# Rough autoresponder phrasing. Rough on purpose: a reply with no text counts as possibly human.
+AUTO='(thank(s| you) for (reaching out|contacting|your message|messaging)|out of (the )?office|auto.?reply|automated (message|response|reply)|we have received your (message|query|request|enquiry|inquiry)|our team will (get back|respond|revert)|will (get back|respond|revert) (to you )?(shortly|soon|within))'
+R9="allc AS (
+  SELECT a.\"targetId\" AS tid, a.\"senderId\" AS sid,
+    max(a.\"sentAt\") FILTER (WHERE a.status IN ('SENT','REPLIED')) AS last_wrote,
+    max(a.\"replyCheckedAt\") AS last_read,
+    min(COALESCE(a.\"replyPostedAt\", a.\"repliedAt\")) FILTER (WHERE a.\"repliedAt\" IS NOT NULL OR a.\"replyPostedAt\" IS NOT NULL) AS reply_at,
+    bool_or(a.\"repliedAt\" IS NOT NULL OR a.\"replyPostedAt\" IS NOT NULL) AS replied,
+    bool_or((a.\"repliedAt\" IS NOT NULL OR a.\"replyPostedAt\" IS NOT NULL) AND NOT COALESCE(a.\"replyText\" ~* '$AUTO', false)) AS replied_human
+  FROM \"OutreachAttempt\" a JOIN \"TargetAccount\" t ON t.id = a.\"targetId\" AND t.role = 'PROSPECT'
+  GROUP BY 1, 2
+  HAVING bool_or(a.status IN ('SENT','REPLIED') AND a.\"sentAt\" IS NOT NULL)
+),
+seen AS (SELECT *, (last_read >= last_wrote) AS read_after FROM allc),
+rates AS (
+  SELECT count(*) FILTER (WHERE read_after) AS n_read,
+    count(*) FILTER (WHERE read_after AND replied) AS n_read_replied,
+    count(*) FILTER (WHERE read_after AND replied_human) AS n_read_human,
+    count(*) FILTER (WHERE replied AND NOT COALESCE(read_after, false)) AS n_replied_unread
+  FROM seen
+),
+r AS (
+  SELECT n_read_replied::numeric / nullif(n_read, 0) AS central,
+    (n_read_replied + n_replied_unread)::numeric / nullif(n_read + n_replied_unread, 0) AS pessimistic,
+    n_read_human::numeric / nullif(n_read, 0) AS human
+  FROM rates
+),
+dly AS (
+  SELECT EXTRACT(EPOCH FROM (c.reply_at - (SELECT max(a.\"sentAt\") FROM \"OutreachAttempt\" a
+      WHERE a.\"targetId\" = c.tid AND a.\"senderId\" = c.sid AND a.status IN ('SENT','REPLIED') AND a.\"sentAt\" <= c.reply_at))) / 86400.0 AS d
+  FROM allc c WHERE c.replied AND c.reply_at IS NOT NULL
+),
+dd AS (SELECT d FROM dly WHERE d IS NOT NULL),
+uc AS (
+  SELECT c.tid, c.handle, c.bucket, pa.sid, pa.last_wrote, pa.last_read,
+    CASE WHEN pa.last_read >= pa.last_wrote THEN EXTRACT(EPOCH FROM (pa.last_read - pa.last_wrote)) / 86400.0 END AS g,
+    EXTRACT(EPOCH FROM (nowu.n - pa.last_wrote)) / 86400.0 AS age
+  FROM classified c JOIN pa ON pa.tid = c.tid AND pa.wrote
+    AND (pa.last_read IS NULL OR pa.last_read < greatest(pa.last_wrote, timestamp '2026-11-16 12:35:00')), nowu
+  WHERE c.bucket LIKE '5%'
+),
+ucf AS (
+  SELECT uc.*,
+    CASE WHEN uc.g IS NULL THEN 0 ELSE COALESCE((SELECT avg((dd.d <= uc.g)::int) FROM dd), 0) END AS fg,
+    COALESCE((SELECT avg((dd.d <= uc.age)::int) FROM dd), 1) AS fa
+  FROM uc
+),
+pc AS (
+  SELECT ucf.*,
+    /* LEAST ignores a NULL, so a missing rate must stay NULL explicitly, never become 0.999999. */
+    CASE WHEN r.central IS NOT NULL THEN least(0.999999, r.central * (ucf.fa - ucf.fg) / nullif(1 - r.central * ucf.fg, 0)) END AS p_central,
+    CASE WHEN r.pessimistic IS NOT NULL THEN least(0.999999, r.pessimistic * ucf.fa) END AS p_pess,
+    CASE WHEN r.human IS NOT NULL THEN least(0.999999, r.human * (ucf.fa - ucf.fg) / nullif(1 - r.human * ucf.fg, 0)) END AS p_human
+  FROM ucf, r
+),
+co AS (
+  SELECT tid, handle,
+    1 - exp(sum(ln(1 - p_central))) AS risk_central,
+    1 - exp(sum(ln(1 - p_pess))) AS risk_pess,
+    1 - exp(sum(ln(1 - p_human))) AS risk_human
+  FROM pc GROUP BY tid, handle
+)"
+echo "-- 9a. Of the conversations we fully read after our last message, how many held a reply"
+run -c "BEGIN READ ONLY; $BASE, $R9 SELECT n_read AS read_after_we_wrote, n_read_replied AS with_a_reply,
+  round(100.0 * n_read_replied / nullif(n_read, 0), 1) AS reply_pct,
+  n_read_human AS with_a_reply_not_obviously_automatic,
+  round(100.0 * n_read_human / nullif(n_read, 0), 1) AS not_automatic_pct,
+  n_replied_unread AS replies_seen_without_a_full_read FROM rates; COMMIT;"
+run -c "BEGIN READ ONLY; $BASE, $R9 SELECT '@' || s.handle AS page, count(*) FILTER (WHERE read_after) AS read_after_we_wrote,
+  count(*) FILTER (WHERE read_after AND replied) AS with_a_reply,
+  round(100.0 * count(*) FILTER (WHERE read_after AND replied) / nullif(count(*) FILTER (WHERE read_after), 0), 1) AS reply_pct,
+  count(*) AS conversations, to_char(max(last_read), 'DD Mon') AS last_read_any
+  FROM seen JOIN \"SenderAccount\" s ON s.id = seen.sid GROUP BY s.handle ORDER BY s.handle; COMMIT;"
+echo "-- 9b. How long after our message replies arrive (replies we saw, with a date)"
+run -c "BEGIN READ ONLY; $BASE, $R9 SELECT count(*) AS dated_replies,
+  round(100.0 * avg((d <= 1)::int), 0) AS within_1_day_pct, round(100.0 * avg((d <= 3)::int), 0) AS within_3_days_pct,
+  round(100.0 * avg((d <= 7)::int), 0) AS within_7_days_pct, round(100.0 * avg((d <= 30)::int), 0) AS within_30_days_pct,
+  round(percentile_cont(0.5) WITHIN GROUP (ORDER BY d)::numeric, 1) AS median_days FROM dd; COMMIT;"
+echo "-- 9c. Expected number of the rule-5 companies with an unseen reply"
+echo "   central: that reply rate, a read after we wrote counts as looking · pessimistic: replies seen any way, and no read counts"
+run -c "BEGIN READ ONLY; $BASE, $R9 SELECT count(*) AS companies,
+  round(sum(risk_central), 1) AS expected_central, round(sum(risk_pess), 1) AS expected_pessimistic,
+  round(sum(risk_human), 1) AS expected_not_automatic,
+  count(*) FILTER (WHERE risk_central >= 0.10) AS companies_10pct_or_more_central FROM co; COMMIT;"
+echo "-- 9d. The ten riskiest, and the unread conversation behind each"
+run -c "BEGIN READ ONLY; $BASE, $R9 SELECT '@' || co.handle AS company, round(100 * co.risk_central, 0) AS risk_pct,
+  string_agg('@' || s.handle || ' wrote ' || to_char(pc.last_wrote, 'DD Mon') ||
+    CASE WHEN pc.last_read IS NULL THEN ', never read' ELSE ', read ' || to_char(pc.last_read, 'DD Mon') END, '; ' ORDER BY s.handle) AS unread_conversations
+  FROM co JOIN pc ON pc.tid = co.tid JOIN \"SenderAccount\" s ON s.id = pc.sid
+  GROUP BY co.handle, co.risk_central ORDER BY co.risk_central DESC, co.handle LIMIT 10; COMMIT;"
 fi
