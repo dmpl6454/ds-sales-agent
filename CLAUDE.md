@@ -111,6 +111,8 @@ the record-only pass in one Setting row, accepting the risk above. Tests: 36 pur
 scenarios + 3 memo; every guard added by the three reviews mutation-checked red. Suite **3,727 / 3,729**
 (the two offline `route-rule` timeouts).
 
+**After the deploy of `ad62a53` (17 Nov, 14:23-15:10 IST) the planner logged NO `turn passes` line and `queued=0`** — the line is printed only when a pass, a kept turn or a read-wait happened, so a pass that ends on any earlier rule leaves no trace (owed: log the line always, with the rule that ended each pass). `scripts/explain-turn-pass.sh` (read-only, run on the box) replays `passTurn` rule by rule over the live database and buckets every live verified company by the rule that ended it, with examples, the pages holding messages out and the `not-in-thread` parks by day. Checked against the real `whoseTurn` on a scratch Postgres 16 with the real schema: identical elections and verdicts on 14 seeded companies covering every rule, the FNV start, a group ring with out-of-order positions, and the presence witness on and off.
+
 63. **A rotation that advances only on a delivery stalls on a page that has nothing to deliver.**
     When the elected page can only send what does not exist, the turn must move to a page that can
     say something, or the recipient waits on material forever.
