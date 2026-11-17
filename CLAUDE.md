@@ -36,12 +36,18 @@ so "every page wrote" stays NO_NEW_MATERIAL and never becomes "rotation stuck". 
   (`readTurnHistory` replaces it, skipping a delivered row with no `sentAt` — Postgres sorted those
   first).
 - Bounded by everything that already bounds a message: the 7-day allowance is recipient-wide and is
-  checked before rotation, so a pass can never buy a second message in a window; ring rule, reply
-  halt, verified-only, no people, pair cap, pace. Unavailable pages (no online Mac, flagged, parked
+  checked before rotation, so a pass never buys a message the allowance would refuse (it allows
+  max(1, paid posts naming them in the window) — more than one when several in-window posts name
+  them); ring rule, reply halt, verified-only, no people, pair cap, pace. Unavailable pages (no online Mac, flagged, parked
   route, pair reply halt) are skipped, so @bollywoodchronicle is never chosen while no Mac holds it.
 - **Exposure, stated:** a company that heard from one page and did not answer hears the same
-  standard introduction from a second page, then a third a week later, byte-identical copy under a
-  different page name. ~73 introductions are due at once (@bollywoodpaparazzii 40, @totalfilmii 28,
+  standard introduction from a second page, byte-identical copy under a different page name. And
+  once that introduction is DELIVERED the ordinary walk moves on to the next page after it, which
+  may introduce itself as soon as the allowance permits — a week later with no paid post naming
+  them, or straight away when an in-window post (older than the 72 h new-material window, so no
+  follow-up can cite it) still funds a message. Those ordinary-walk introductions are NOT subject to
+  rule 5's read requirement; it guards the pass only (corrected after review — this line used to
+  say "then a third a week later" as if that were the bound). ~73 introductions are due at once (@bollywoodpaparazzii 40, @totalfilmii 28,
   @bollywoodsocietyy 5), i.e. about an hour at the fleet's one-a-minute pace.
 - **Server-only.** The Mac's 10 Sept build (`fb1e843` in this repo's history; the box calls it
   `57faf88`) delivers a passed introduction: its gate has no turn check and its repeat check is
@@ -63,6 +69,19 @@ safety findings that came back were checked by reading the code, not taken on tr
 | the rule-4 pin filtered unavailable pages out BEFORE looking for the draft holder, so a holder that went unavailable lost the pin and the next pass wrote a second introduction from another page | **REAL** | the holder is found before availability is asked; an unavailable holder returns E, so the turn goes nowhere new while its introduction waits |
 | the H5 sweep counts only DATED replies, so an undated reply arriving after a passed introduction is drafted does not withdraw it | **UNREACHABLE for the pass.** `plausibleReplyDate` returns our last delivery whenever one exists, so a reply is undated only when nothing was ever delivered to that company — and a pass needs a delivery. `ig:reply` always dates. Not changed: counting undated replies in the sweep would churn an ordinary introduction (discard, redraft, discard) every 15 minutes | — |
 
+**A SECOND REVIEW, of `fa0c635` (one agent, which ran every scenario through the real `runOutreach`
+and gate in a copy of the repo), found more; what was fixed has tests and six more mutations seen red:**
+
+| finding | now |
+|---|---|
+| a passed introduction parked `not-in-thread` was invisible to the pin — neither waiting nor delivered, its route blocked — so the next pass handed delta the byte-identical introduction minutes later, to a company that may already hold charlie's | a `not-in-thread` park counts as an introduction still OUT (`TurnPass.holdsDraft`, loader and tally); the turn stays put until a person settles it |
+| the pin was checked only when the elected page had written before, so when the ordinary walk lands on a page that never wrote, it drafts a second introduction beside one already waiting | **NOT shipped, deliberately.** Checking the pin first was built and it changed `planner-golden` (`pending_draft`, `midsend`): it alters ORDINARY rotation, not just the pass — the per-pair `hasPendingAttempt` shape recorded on 17 Oct as "a recipient-level pending check is its own decision". The allowance still spaces the two deliveries. Tabish's call, with the golden as the tripwire |
+| a reply recorded on a SUPERSEDED draft rather than a delivery: no test held the loader's reply clauses | tested for dated and undated replies, planner and tally |
+| the tally skipped a delivered row with no `sentAt`, the loader counted it — the screens could name a different page | both count it as a page that wrote (its read must then postdate the 16 Nov floor) |
+| an undated reply arriving after a passed introduction is drafted does not withdraw it | **still unreachable in production**: every writer dates a reply whenever anything was delivered (`plausibleReplyDate` falls back to our last send), and a pass needs a delivery. The reviewer seeded one directly. NOT the same as the real gap beside it: **the Mac's 10 Sept gate has no H5 stop and halts replies per PAIR**, so a DATED reply to alpha recorded while charlie's introduction waits is caught only by the server planner's sweep — a window of up to 15 minutes in which the Mac could deliver it. Pre-existing for every introduction; closes only with a Mac update |
+| "never the recipient itself" compares a SenderAccount id with a TargetAccount id, which never coincide | pre-existing and inherited; a self-route cannot exist (`routes.ts`), so the worst case is a group-ring stall, not a message |
+| rule 5 trusts read stamps from the Mac's 10 Sept build, whose inbox fallback (audit C1) can open the wrong conversation for a recipient with no Message button — and under one standard template a stranger's thread holds the identical message, so the completeness check would pass | stated, not fixable from the server: affects only door-less recipients, until the Mac runs a build with the C1 fix |
+
 **What rule 5 costs, stated:** the pass now arrives as fast as the reply sweep reads conversations
 (4 deep reads a 30-minute run, newest-unread first), not as ~73 at once, and a company that
 @bollywoodchronicle or @bachelorssociety ever wrote to is not passed until that page's inbox can be
@@ -70,9 +89,9 @@ read again. **Measure it before judging it:** `scripts/check-sending.sh` section
 page, how many unanswered companies it wrote to and how many of those conversations have been read
 since; its `=` row is the number of companies the pass may now reach. Run against a scratch
 Postgres 16 with the real schema before shipping. `passTurnOnlyAfterRead` = false restores
-the record-only pass in one Setting row, accepting the risk above. Tests: 32 pure + 18 planner
-scenarios; nine more mutations, each seen red. Suite **3,710 / 3,712** (the two offline
-`route-rule` timeouts).
+the record-only pass in one Setting row, accepting the risk above. Tests: 33 pure + 21 planner
+scenarios; fifteen more mutations across both reviews, each seen red. Suite **3,714 / 3,716** after
+the second review (the two offline `route-rule` timeouts).
 
 63. **A rotation that advances only on a delivery stalls on a page that has nothing to deliver.**
     When the elected page can only send what does not exist, the turn must move to a page that can

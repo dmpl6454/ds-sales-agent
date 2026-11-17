@@ -91,7 +91,8 @@ export async function ringFor(categoryId: string): Promise<RingMember[]> {
 
 /**
  * Each recipient's history — the whole of rotation's state — in ONE query for any number of
- * recipients: who wrote last and who ever delivered to them, who holds a waiting draft, and
+ * recipients: who wrote last and who ever delivered to them, who has a message still out to them
+ * (a waiting draft, or a `not-in-thread` park they may have received), and
  * whether they ever replied to any page. The last three feed the turn PASS (17 Nov 2026, see
  * `TurnPass` in rotation.ts); `lastSenderId` is what `lastSenderTo` answered, which this replaced.
  *
@@ -141,6 +142,8 @@ export async function readTurnHistory(targetIds: readonly string[]): Promise<Map
         { repliedAt: { not: null } },
         { replyPostedAt: { not: null } },
         { replyCheckedAt: { not: null } },
+        /* A park the recipient may have received — an introduction still out (TurnPass rule 3). */
+        { status: 'FAILED', failureCode: 'not-in-thread' },
       ],
     },
     select: {
@@ -148,6 +151,7 @@ export async function readTurnHistory(targetIds: readonly string[]): Promise<Map
       targetId: true,
       senderId: true,
       status: true,
+      failureCode: true,
       sentAt: true,
       repliedAt: true,
       replyPostedAt: true,
@@ -170,7 +174,7 @@ export async function readTurnHistory(targetIds: readonly string[]): Promise<Map
       const cur = lastRead.get(k)
       if (!cur || r.replyCheckedAt > cur) lastRead.set(k, r.replyCheckedAt)
     }
-    if (drafting.has(r.status)) h.holdsDraft.add(r.senderId)
+    if (drafting.has(r.status) || (r.status === 'FAILED' && r.failureCode === 'not-in-thread')) h.holdsDraft.add(r.senderId)
     if (!delivered.has(r.status)) continue
     h.wroteBefore.add(r.senderId)
     const w = h.writers.get(r.senderId) ?? { handle: r.sender.handle, lastWroteAt: null, lastReadAt: null }

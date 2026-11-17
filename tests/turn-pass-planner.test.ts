@@ -8,6 +8,7 @@ import {
   seedDelivery,
   seedReply,
   seedDraft,
+  seedPark,
   seedPost,
   seedCategory,
   setSetting,
@@ -223,6 +224,23 @@ describe('the pass does NOT fire', () => {
     expect(r.byPair.get(key('charlie'))).toMatchObject({ skipReason: 'not-this-senders-turn', skipDetail: '@bravo is next in the fleet rotation' })
   })
 
+  it('when a reply sits on a SUPERSEDED draft rather than a delivered row — dated or not', async () => {
+    // recordReplyOnPair can put a reply on a waiting draft it supersedes to SKIPPED; the loader
+    // and the tally must read replies on every row, not only on deliveries.
+    for (const replyPostedAt of [null, d(9)]) {
+      await wipe()
+      await seedFleet()
+      await deliver('bravo', 20)
+      await deliver('alpha', 10)
+      const skipped = await seedDraft(prisma, { pairId: pairId(S.alpha, CO), status: 'SKIPPED', touchNumber: 2, body: 'x'.repeat(60), queuedAt: d(9) })
+      await prisma.outreachAttempt.update({ where: { id: skipped.id }, data: { repliedAt: d(9), replyPostedAt, replyText: 'Hi' } })
+      const r = await plan()
+      expect(r.drafts).toHaveLength(0)
+      const tally = await buildRestTally(ANCHOR)
+      expect(tally.turnPassNothingNew.has(CO)).toBe(false)
+    }
+  })
+
   it('when they replied — even an UNDATED reply, which isFollowUp alone would not count', async () => {
     await seedFleet()
     await deliver('bravo', 20)
@@ -314,6 +332,21 @@ describe('the pass waits until every page that wrote has had its conversation re
     expect(r.drafts.map((x) => x.senderId)).toEqual([S.charlie])
   })
 
+  it('a delivery with no recorded time still counts as a page that wrote — planner and screens agree', async () => {
+    await seedFleet()
+    await deliver('bravo', 20)
+    await deliver('alpha', 10)
+    const untimed = await seedDelivery(prisma, { pairId: pairId(S.delta, CO), sentAt: d(15), touchNumber: 1, body: SINGLE_TEMPLATE_MIDDLE })
+    await prisma.outreachAttempt.update({ where: { id: untimed.id }, data: { sentAt: null } })
+    const r = await plan()
+    expect(r.drafts).toHaveLength(0)
+    expect(r.byPair.get(key('charlie'))?.skipDetail).toMatch(/takes over once @delta has had the conversation/)
+    const row = (await buildProspectsPage()).prospects.find((p) => p.handle === 'co')!
+    expect(row.nextSenderSentence).toMatch(/takes over once @delta has had the conversation/)
+    const tally = await buildRestTally(ANCHOR)
+    expect(tally.clear).toBe(0)
+  })
+
   it('/targets says what the recipient is waiting for, and the rest tally does not claim a pass', async () => {
     await seedFleet()
     await deliver('bravo', 20)
@@ -329,7 +362,23 @@ describe('the pass waits until every page that wrote has had its conversation re
   })
 })
 
-describe('a passed turn stays passed while its introduction waits', () => {
+describe('a passed turn stays passed while its introduction is OUT (review of fa0c635)', () => {
+  it('a not-in-thread park counts as out: the next pass does not hand delta the same introduction', async () => {
+    // charlie's passed introduction cleared the composer and never showed in the thread — parked,
+    // and the company may have it. It is neither waiting nor delivered, and its route is blocked;
+    // the first version therefore passed the turn to delta, which drafted the byte-identical
+    // introduction minutes later.
+    await seedFleet()
+    await deliver('bravo', 20)
+    await deliver('alpha', 10)
+    await seedPark(prisma, { pairId: pairId(S.charlie, CO), failureCode: 'not-in-thread', queuedAt: h(1), body: SINGLE_TEMPLATE_MIDDLE })
+    const r = await plan()
+    expect(r.drafts).toHaveLength(0)
+    expect(r.byPair.get(key('delta'))?.skipDetail).toBe('@bravo is next in the fleet rotation')
+    const tally = await buildRestTally(ANCHOR)
+    expect(tally.clear).toBe(0)
+  })
+
   it('an UNAVAILABLE holder still holds it: no second introduction from another page (review of 3e03c67)', async () => {
     await seedFleet({ unsignedIn: ['charlie'] })
     await deliver('bravo', 20)

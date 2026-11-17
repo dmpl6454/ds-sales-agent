@@ -104,18 +104,28 @@ export interface RotationInput {
  *      someone already talking to us is the H5 mistake. DATED OR NOT: `everReplied` counts
  *      `repliedAt` as well as `replyPostedAt`, stricter than `isFollowUp`, on purpose.
  *   2. E never delivered to them                     → E. E's message is already a first touch.
+ *      This is the ORDINARY walk, untouched: if another never-wrote page already holds an
+ *      introduction to them, E still drafts its own (`hasPendingAttempt` is per pair). That
+ *      shape predates the pass, `tests/planner-golden.test.ts` pins it (`pending_draft`,
+ *      `midsend`), and a recipient-level pending check is its own decision (17 Oct entry in
+ *      CLAUDE.md). A review proposed checking the pin first; doing so changed the golden, so it
+ *      was not shipped here.
  *   3. E holds a waiting draft for them              → E. Its message is in the queue.
- *   4. A page that never wrote to them already holds a waiting draft → THAT page, if it is
- *      available; E if it is not. The turn was passed on an earlier pass and stays passed until
- *      the draft is delivered or discarded — otherwise each planning pass would hand it to yet
- *      another page while the first introduction waits (two first touches to one company, the
- *      fan-out this file exists to stop). Pinned even if new material has appeared since: the
- *      allowance lets only one of them through in the window anyway. And the holder is looked
- *      for BEFORE availability is asked: the first version filtered unavailable pages out first,
- *      so a holder that went unavailable (signed out, flagged, its Mac gone) lost the pin and
- *      the next pass wrote a SECOND introduction from another page while the first still waited
- *      (review of 3e03c67). A waiting draft is still delivered when its page comes back,
- *      whatever rotation says, so the turn must not move on while it exists.
+ *   4. A page that never delivered to them holds an introduction that is still OUT — a waiting
+ *      draft, or one parked `not-in-thread` (the composer cleared and the message never showed:
+ *      the recipient MAY have it) → THAT page, if it is available; otherwise E, never a further
+ *      page. The turn was passed on an earlier pass and stays passed until the draft is
+ *      delivered or discarded, or the park is settled — otherwise each planning pass would hand
+ *      it to yet another page while the first introduction is out (two first touches to one
+ *      company, the fan-out this file exists to stop). Pinned even if new material has appeared
+ *      since: the allowance lets only one of them through in the window anyway. Two things the
+ *      first versions got wrong, both found by review, both pinned by tests: the holder is
+ *      looked for BEFORE availability is asked (filtering first let a holder that went
+ *      unavailable — signed out, flagged, its Mac gone — lose the pin, and the next pass wrote a
+ *      second introduction); and a `not-in-thread` park counts as out (it is neither waiting nor
+ *      delivered, so it was invisible, its route was blocked, and the next pass handed a
+ *      byte-identical introduction to another page minutes later — to a company that may
+ *      already hold the first).
  *   5. A page that wrote to them has not had its conversation with them READ since it last
  *      wrote → E. Rule 1 trusts our record of replies, and a record is only as good as the
  *      reading behind it: from at least 27 Oct to 16 Nov 2026 every sending profile's Chrome
@@ -144,7 +154,11 @@ export interface RotationInput {
 export interface TurnPass {
   /** Ring members that have EVER delivered a message to this recipient. */
   wroteBefore: ReadonlySet<string>
-  /** Ring members holding a waiting draft (QUEUED, READY or SENDING) to this recipient. */
+  /**
+   * Ring members with a message to this recipient that is still OUT: a waiting draft (QUEUED,
+   * READY or SENDING), or a park the recipient may have received (FAILED `not-in-thread`,
+   * unsettled until a person confirms it either way). Rules 3 and 4.
+   */
   holdsDraft: ReadonlySet<string>
   /** The recipient replied to any page, ever — `repliedAt` OR `replyPostedAt`, dated or not. */
   everReplied: boolean
@@ -375,11 +389,13 @@ function passTurn(
   targetId: string | null,
 ): RotationChoice {
   if (pass.everReplied) return elected
+  /* Rule 2: E never wrote — its message is already an introduction (the ordinary walk). */
   if (!pass.wroteBefore.has(elected.senderId)) return elected
+  /* Rule 3: E's own message is in the queue. */
   if (pass.holdsDraft.has(elected.senderId)) return elected
 
   /* Pages that may introduce themselves, in ring order starting after the elected page —
-     availability NOT yet asked, because rule 4 must see a holder that has become unavailable. */
+     availability NOT yet asked, because rule 3 must see a holder that has become unavailable. */
   const neverWrote: RingMember[] = []
   for (let step = 1; step < order.length; step++) {
     const m = order[(electedIndex + step) % order.length]!
@@ -389,8 +405,8 @@ function passTurn(
   }
 
   const from = { senderId: elected.senderId, handle: elected.handle }
-  /* Rule 4: a turn already passed stays passed while its draft waits — on an available holder;
-     an unavailable holder's draft still waits, so the turn goes nowhere new. */
+  /* Rule 4: an introduction already out keeps the turn — on an available holder; an unavailable
+     holder's draft still waits (and a park may already have arrived), so no further page writes. */
   const holders = neverWrote.filter((m) => pass.holdsDraft.has(m.senderId))
   const holder = holders.find((m) => !unavailable.has(m.senderId))
   if (holder) return { ok: true, senderId: holder.senderId, handle: holder.handle, position: holder.position, passedFrom: from }

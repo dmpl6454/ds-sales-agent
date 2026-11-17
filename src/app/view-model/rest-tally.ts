@@ -469,7 +469,10 @@ async function computeRestTally(now: Date): Promise<RestTally> {
       prisma.outreachAttempt.findMany({
         where: {
           OR: [
-            { status: { in: [...DELIVERED_STATUSES] }, sentAt: { not: null } },
+            /* Every delivery, timed or not: a delivered row with no `sentAt` is still a page that
+               wrote to them (`TurnPass.wroteBefore`, as `readTurnHistory` counts it). The timed
+               ones alone feed everything else below — see `deliveries`. */
+            { status: { in: [...DELIVERED_STATUSES] } },
             { replyPostedAt: { not: null } },
             /* An UNDATED reply too — the turn pass must never introduce a second page to anyone
                who answered us, dated or not (see `TurnPass`). Same table, same query. */
@@ -692,17 +695,23 @@ async function computeRestTally(now: Date): Promise<RestTally> {
     lastBySenderPerTarget.set(d.pair.targetId, m)
     lastSenderPerTarget.set(d.pair.targetId, d.pair.senderId)
     deliveredPairKeys.add(`${d.pair.targetId}:${d.pair.senderId}`)
+    /* A delivery from THIS page to THIS recipient today (IST) — the same boundary the pair cap
+       is counted against, so the two cannot name different days across midnight. */
+    if (d.sentAt >= istDayStart(now)) sentTodayPairKeys.add(`${d.pair.targetId}:${d.pair.senderId}`)
+  }
+
+  /* Who wrote, and when — over EVERY delivered row, timed or not, exactly as `readTurnHistory`
+     counts it, so the planner and this panel cannot disagree about a row with no `sentAt`. */
+  for (const d of attempts) {
+    if (!(DELIVERED_STATUSES as readonly string[]).includes(d.status)) continue
     const wrote = wroteBeforeByTarget.get(d.pair.targetId)
     if (wrote) wrote.add(d.pair.senderId)
     else wroteBeforeByTarget.set(d.pair.targetId, new Set([d.pair.senderId]))
     const writers = writersByTarget.get(d.pair.targetId) ?? new Map()
     const w = writers.get(d.pair.senderId) ?? { handle: d.pair.sender.handle, lastWroteAt: null, lastReadAt: null }
-    if (w.lastWroteAt === null || d.sentAt > w.lastWroteAt) w.lastWroteAt = d.sentAt
+    if (d.sentAt !== null && (w.lastWroteAt === null || d.sentAt > w.lastWroteAt)) w.lastWroteAt = d.sentAt
     writers.set(d.pair.senderId, w)
     writersByTarget.set(d.pair.targetId, writers)
-    /* A delivery from THIS page to THIS recipient today (IST) — the same boundary the pair cap
-       is counted against, so the two cannot name different days across midnight. */
-    if (d.sentAt >= istDayStart(now)) sentTodayPairKeys.add(`${d.pair.targetId}:${d.pair.senderId}`)
   }
 
   /** Keyed by `replyHaltKey`, so this tally groups replies the way the gate scopes them. */
@@ -716,9 +725,10 @@ async function computeRestTally(now: Date): Promise<RestTally> {
   }
 
   const pendingTargets = new Set(pending.map((p) => p.pair.targetId))
-  /** target → the pages holding a waiting draft to them — `TurnPass.holdsDraft`. */
+  /** target → the pages with a message still out to them — a waiting draft, or a `not-in-thread`
+      park they may have received — `TurnPass.holdsDraft`, as `readTurnHistory` builds it. */
   const holdsDraftByTarget = new Map<string, Set<string>>()
-  for (const d of pending) {
+  for (const d of [...pending, ...inFlightAndParked.filter((a) => a.status === 'FAILED' && a.failureCode === 'not-in-thread')]) {
     const set = holdsDraftByTarget.get(d.pair.targetId)
     if (set) set.add(d.pair.senderId)
     else holdsDraftByTarget.set(d.pair.targetId, new Set([d.pair.senderId]))

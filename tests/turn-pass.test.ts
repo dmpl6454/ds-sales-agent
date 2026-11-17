@@ -147,6 +147,15 @@ describe('a turn already passed stays passed while its draft waits (no fan-out)'
     expect(choice.ok && choice.passedFrom).toBeFalsy()
   })
 
+  it('…but an elected page that never wrote keeps the ordinary walk, even beside a waiting one', () => {
+    // Pre-existing and pinned by planner-golden (pending_draft, midsend): hasPendingAttempt is per
+    // pair, and a recipient-level pending check is its own decision. The pass does not change it.
+    const p = pass({ wroteBefore: new Set(['id_alpha']), holdsDraft: new Set(['id_delta']) })
+    const choice = nextSender({ ring: RING, lastSenderId: 'id_alpha', pass: p })
+    expect(choice).toMatchObject({ ok: true, handle: 'bravo' })
+    expect(choice.ok && choice.passedFrom).toBeFalsy()
+  })
+
   it('…while an AVAILABLE holder keeps the turn even when an earlier one is unavailable', () => {
     const p = pass({ holdsDraft: new Set(['id_charlie', 'id_delta']) })
     const unavailable = new Map([['id_charlie', 'flagged']])
