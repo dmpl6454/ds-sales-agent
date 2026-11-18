@@ -5,6 +5,72 @@ changing anything that touches sending.
 
 ---
 
+## 18 NOVEMBER, AFTERNOON — "ONLY 12 SENT": THE PAGES HAVE RUN OUT OF COMPANIES; AND WHAT A NEW MAC BUILD CARRIES
+
+**Asked: *"only 12 messages sent today"*, then *"give me updated signed dmg"*.** Measured on the box with
+`scripts/why-so-few.sh` (read-only; `bash why-so-few.sh N` prints one section, because the box's console scrolls
+back one screen):
+
+| | measured, 9-18 Nov |
+|---|---|
+| paid posts found | 53-95 a day — detection is healthy |
+| companies added | **0 on every day**; brand look-ups written of any kind: **0** |
+| delivered | 0 from 9 to 17 Nov (the window and lookup outages), 12 on 18 Nov |
+| the planner, every pass that afternoon | `queued=0` over 6,855 routes: no-new-material 5,238 · not-this-senders-turn 494 · **uncertain-delivery-unsettled 486** · retired 264 · target-unreachable 138 (the shelved companies) · no-post-we-can-describe 101; no `turn passes` line |
+| unconfirmed sends (`FAILED not-in-thread`) | **507**, holding **434** live companies (400 never replied): Aug 85, **Sep 193, Oct 223** — clustered in the weeks of **14 Sep (109) and 12 Oct (145)**, NOT in the 27 Oct-16 Nov small-window stretch |
+| what settling them would free | **at most 5 introductions**: 395 of the 400 have already heard from every page signed in on the Mac |
+
+**The structural answer.** Since 15 Oct posts arrive through the official read, which carries no tags and no `@`,
+so no new company names arrive; and the only thing that turns a name into a MESSAGEABLE company is the verified
+badge, which only the anonymous feed showed, walled the same day. So nothing can add a company (VERIFIED ONLY), and
+a follow-up needs a new paid post naming a company we already have, which the official read rarely links. The four
+pages signed in on the Mac Studio have written to nearly every company they may write to. Levers, all a person's:
+sign @bollywoodchronicle in on the Mac (`why-so-few.sh 7` counts what each page has never written to; slow the pace
+first, and only once no passed introductions are out), widen how a paid post credits an existing company (brand
+strings and frame text — a wrong match is a wrong claim in a real DM), or find another source for the badge
+(unverified whether Meta's official API reports it; developers.facebook.com is unreachable from the sandbox).
+**Settling the unconfirmed sends is not worth it** (5 introductions); they are left parked.
+
+**Do not run `pnpm ig:brands --run` on the fb1e843 Mac.** It resets the gate and files every 404 — which Instagram
+now answers for real pages — as MISSING, never asked again. Fixed for new builds (below).
+
+**From about 25 Nov,** a shelved 18 Nov draft that was never returned stops making its company unreachable, and
+the company passes to the next page while the parked route stays blocked for good. Return them all first.
+
+**The new Mac build — `scripts/mac-build-dmg.sh <commit>`, run on a Mac** (this sandbox cannot build or sign; the
+Developer ID key went with Tabish's Mac). It clones exactly one commit of the public repo into `~/ds-dmg-build`,
+checks the tools, the signing identity (and why an untrusted one is untrusted) and the `ds-notary` profile before
+spending time, and writes `~/Downloads/DS-Sales-Agent-<commit>.dmg`. `DS_UNSIGNED_FOR_THIS_MAC=1` builds without a
+certificate for updating that Mac only. Driven in a fake-Mac harness; never run on macOS here. Three fixes went in
+first, each tested both ways with mutations seen red:
+
+| | |
+|---|---|
+| `resolveBrand` (c2bb9a7) | its own `404 → MISSING` (and empty 200 → MISSING) now asks the same witness as `probeHandle`: MISSING only while the endpoint recently served a real page, else one control about @instagram, else UNKNOWN with its reason |
+| send path (d122cf6) | an interruption after Enter is `not-in-thread`, never the retryable `unknown` (which re-sent the same message); `launchProfile` leaves SIGTERM/SIGINT/SIGHUP to a process with its own handler, because Patchright closed Chrome under the agent's drain; a throwing `context.close()` can no longer replace the drive's answer |
+| probe cap (4f0f1dd) | `env.PROBE_PARKS_PER_DAY`, default **0** — what the Mac's hotfix does; 8859e21 had re-allowed 2 a day, each refusing a company for 7 days and indistinguishable to `requeue-shelved.sh` from the old lookup's parks |
+
+**The update procedure, from a review of fb1e843..c2bb9a7 (three lenses, a skeptic each).** The installer stops the
+OLD agent, which exits at once mid-send, and restarts the tunnel under it; a row left SENDING is parked
+`not-in-thread` by the new agent. So: Autopilot OFF; wait until 0 SENDING rows, no `sendLock` row and no agent
+Chrome (`pgrep -fl -- '--user-data-dir=.*chrome-profiles'`), twice a minute apart; copy `~/ds-sales-agent/src`
+aside (the only rollback that keeps the hotfix); open the new image at the Mac's own display and watch
+`~/Library/Logs/ds-sales-agent-install.log` to `setup finished` (a stop part-way leaves a tree the agent cannot
+restart from); check `.version` and watch.log; Autopilot ON. **Never use the hosted dashboard's Download button
+after this** — it serves the 10 Sept image, and the launcher re-installs any image whose VERSION differs, i.e. it
+DOWNGRADES. The launcher also only opens the dashboard if `~/Desktop/AI Sales Agent` exists. On the new build,
+recipients with no Message button fail closed (the C1 reader is still unobserved), and the old hosted web build
+re-renders open tabs about once a minute (it does not ignore `dispatchLastOkAt`).
+
+69. **When a build replaces a hand-applied fix, the fix's behaviour is the default.** Otherwise the update quietly
+    reverses a decision someone made under pressure.
+70. **After the irreversible step, a failure never means "retry".** Mark the moment before Enter; everything past it
+    is "may have it".
+71. **Two handlers on one signal race.** The process that drains owns the signal; a library must not close the
+    browser under it.
+
+---
+
 ## 18 NOVEMBER — THE READ REQUIREMENT WENT OFF, FORTY INTRODUCTIONS WERE WRITTEN, AND THE MAC PARKED ALL FORTY ON A LOOKUP THAT WAS WRONG
 
 **Decided (Sudhanshu, on the box, 18 Nov 07:19 IST, after the section-9 reading in the entry below):**
