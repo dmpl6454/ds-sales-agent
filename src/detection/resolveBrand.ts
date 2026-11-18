@@ -7,6 +7,7 @@ import type { BrandLookupKind } from '@/lib/constants'
 import { decideBrand, interpretDecision, type BrandDecision } from './decideBrand'
 import { REQUEST_TIMEOUT_MS } from './feed'
 import { enrichHandle, describeEnrichment, type HandleEnrichment } from './enrichHandle'
+import { noteRealProfilePage, notFoundIsBelievable, showsRealPage } from './exists'
 
 /**
  * Turning a paid post into MESSAGEABLE brand accounts.
@@ -560,6 +561,13 @@ export function interpretLookupFailure(input: {
 }
 
 /**
+ * Why a not-found was not believed (18 Nov 2026). Carried on the UNKNOWN verdict so the log and the
+ * cached row say what happened instead of looking like a network blip.
+ */
+export const NOT_FOUND_UNWITNESSED =
+  'Instagram answered not-found while it is not seen answering for real pages — could not check'
+
+/**
  * ── AFTER A REAL THROTTLE, STOP ASKING FOR A WHILE. NOT FOREVER ────────────
  *
  * This was a BOOLEAN and it disabled the feature for over two hours in production.
@@ -861,7 +869,26 @@ export async function resolveBrand(
     const res = await igGet(ENDPOINT + encodeURIComponent(h), { headers: HEADERS, timeoutMs: REQUEST_TIMEOUT_MS })
 
     if (res.status === 404) {
-      verdict = { kind: 'MISSING', handle: h }
+      /**
+       * ── A NOT-FOUND IS A VERDICT ONLY WHILE THIS ENDPOINT IS SEEN ANSWERING "FOUND" ──
+       *
+       * Since some day between 2 and 18 Nov 2026 Instagram answers this anonymous lookup 404 for
+       * REAL pages from the sending Mac (the 18 Nov incident: `probeHandle` read the same 404 as
+       * "the page is gone" and shelved 41 drafts). `probeHandle` was fixed with a witness in
+       * exists.ts; this path kept its own `404 → MISSING`, and MISSING is never asked again —
+       * autoResolve files it as settled and official discovery skips any handle with a row. So
+       * every brand the Mac looked up was written off for good while the endpoint was lying.
+       * MEASURED on the box 18 Nov: no look-up of any kind was written in the ten days to 18 Nov
+       * (the walled feed keeps the shared gate closed most of the time), so no damage was found —
+       * this closes the door before a build that runs for weeks can open it.
+       *
+       * The same rule as `probeHandle`, through the same witness: with no recent real page from
+       * this endpoint, one control request about @instagram decides; if that is not a real page
+       * either, the 404 is UNKNOWN — "we never got to look", retried later, never a verdict.
+       */
+      verdict = (await notFoundIsBelievable(h))
+        ? { kind: 'MISSING', handle: h }
+        : { kind: 'UNKNOWN', handle: h, reason: NOT_FOUND_UNWITNESSED }
     } else if (!res.ok) {
       /**
        * A failure is not automatically a throttle, and treating it as one cost this
@@ -886,6 +913,8 @@ export async function resolveBrand(
        * unbounded blast radius from one bad row, and it looks like the safe option.
        */
       const body = await res.text().catch(() => '')
+      // Meta's schema-bug 400 means Instagram FOUND the account — a real page, so a witness.
+      if (showsRealPage(res.status, body)) noteRealProfilePage()
       const outcome = interpretLookupFailure({ handle: h, status: res.status, body })
       verdict = outcome.verdict
       if (outcome.haltRun) {
@@ -914,8 +943,12 @@ export async function resolveBrand(
       anonGateRecordSuccess('profile')
       const user = ((await res.json()) as { data?: { user?: Record<string, unknown> } })?.data?.user
       if (!user) {
-        verdict = { kind: 'MISSING', handle: h }
+        // An empty 200 is what a GATED account returns (27 Aug) — the same doubt as a 404.
+        verdict = (await notFoundIsBelievable(h))
+          ? { kind: 'MISSING', handle: h }
+          : { kind: 'UNKNOWN', handle: h, reason: NOT_FOUND_UNWITNESSED }
       } else {
+        noteRealProfilePage()
         verdict = classifyProfile({
           handle: h,
           category: (user.business_category_name ?? user.category_name ?? null) as string | null,

@@ -165,8 +165,20 @@ function controlFailed(what: string): false {
   return false
 }
 
-/** Is a not-found for `askedHandle` believable? Asks the control at most once per retry window. */
-async function notFoundIsBelievable(askedHandle: string): Promise<boolean> {
+/**
+ * Another reader of this same endpoint saw it serve a real page — `resolveBrand` asks
+ * `web_profile_info` too, and its sightings are as good a witness as `probeHandle`'s. One witness
+ * per process, whoever made the request.
+ */
+export function noteRealProfilePage(): void {
+  witness = { lastPositiveAt: clock(), controlFailedAt: null }
+}
+
+/**
+ * Is a not-found for `askedHandle` believable? Asks the control at most once per retry window.
+ * Exported for `resolveBrand` (18 Nov 2026), whose own 404 → MISSING was the same defect: see there.
+ */
+export async function notFoundIsBelievable(askedHandle: string): Promise<boolean> {
   const belief = notFoundBelief(witness, clock())
   if (belief === 'believe') return true
   if (belief === 'doubt') return false

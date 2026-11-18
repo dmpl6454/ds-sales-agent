@@ -897,3 +897,118 @@ describe('mentionsIn', () => {
     expect(mentionsIn('#Collaboration lovely shoot today')).toEqual([])
   })
 })
+
+describe('a not-found is a verdict only while the endpoint is seen answering "found" (18 Nov 2026)', () => {
+  /**
+   * The sending Mac's build filed a `web_profile_info` 404 as MISSING, and MISSING is never asked
+   * again: since Instagram started answering 404 for REAL pages, every brand looked up would have
+   * been written off for good. `probeHandle` got a witness on 18 Nov; this path had its own copy of
+   * the defect. Both directions are pinned: the doubt, and that a witnessed endpoint is believed.
+   */
+  const fetchMock = vi.fn()
+  const realFetch = globalThis.fetch
+  let t = Date.parse('2026-11-18T09:00:00Z')
+  const notFound = () => ({ status: 404, ok: false, text: async () => '', json: async () => ({}) })
+  const emptyOk = () => ({ status: 200, ok: true, text: async () => '{"data":{}}', json: async () => ({ data: {} }) })
+  const realPage = () => ({
+    status: 200,
+    ok: true,
+    text: async () => '{"data":{"user":{"username":"instagram"}}}',
+    json: async () => ({ data: { user: { username: 'instagram', full_name: 'Instagram', is_business_account: true, business_category_name: 'Internet Company' } } }),
+  })
+  const schemaBug = () => ({
+    status: 400,
+    ok: false,
+    text: async () =>
+      '{"message":"Asset asset://laser.provider/ig_business_category_subvertical has been deleted. You cannot use this schema","status":"fail"}',
+    json: async () => ({}),
+  })
+  const asked = () => fetchMock.mock.calls.map((c) => String(c[0]))
+  const askedControl = () => asked().filter((u) => /username=instagram$/.test(u)).length
+
+  beforeEach(async () => {
+    t = Date.parse('2026-11-18T09:00:00Z')
+    const { resetExistenceWitness, setExistenceClock } = await import('@/detection/exists')
+    const { resetAnonGate } = await import('@/detection/anonGate')
+    resetExistenceWitness()
+    setExistenceClock(() => t)
+    resetAnonGate()
+    setBrandResolverClock(() => t)
+    resetBrandResolverLimit()
+    fetchMock.mockReset()
+    globalThis.fetch = fetchMock as unknown as typeof fetch
+    vi.mocked(decideBrand).mockResolvedValue(null)
+    // An earlier block leaves a cached row mocked; every lookup here must reach the endpoint.
+    vi.mocked(prisma.brandLookup.findUnique).mockReset()
+    vi.mocked(prisma.brandLookup.findUnique).mockResolvedValue(null)
+  })
+
+  afterEach(async () => {
+    const { resetExistenceWitness, setExistenceClock } = await import('@/detection/exists')
+    globalThis.fetch = realFetch
+    resetExistenceWitness()
+    setExistenceClock()
+    setBrandResolverClock()
+    resetBrandResolverLimit()
+  })
+
+  it('a 404 with no recent real page, and a control that is not a real page either, is UNKNOWN — never MISSING', async () => {
+    fetchMock.mockImplementation(async () => notFound())
+    const v = await resolveBrand('realbrand_india')
+    expect(v.kind).toBe('UNKNOWN')
+    expect(v.kind === 'UNKNOWN' && v.reason).toMatch(/not seen answering for real pages/)
+    expect(askedControl()).toBe(1)
+  })
+
+  it('the doubt is remembered: a second 404 inside the window does not ask the control again', async () => {
+    fetchMock.mockImplementation(async () => notFound())
+    await resolveBrand('first_brand')
+    t += 60_000
+    const v = await resolveBrand('second_brand')
+    expect(v.kind).toBe('UNKNOWN')
+    expect(askedControl()).toBe(1)
+  })
+
+  it('an empty 200 (what a gated account returns) is held to the same doubt', async () => {
+    fetchMock.mockImplementation(async (url: string) => (/username=instagram$/.test(url) ? notFound() : emptyOk()))
+    const v = await resolveBrand('gatedbrand')
+    expect(v.kind).toBe('UNKNOWN')
+  })
+
+  it('a 404 is BELIEVED when the control comes back as a real page', async () => {
+    fetchMock.mockImplementation(async (url: string) => (/username=instagram$/.test(url) ? realPage() : notFound()))
+    const v = await resolveBrand('reallygone_handle')
+    expect(v.kind).toBe('MISSING')
+  })
+
+  it('a real page seen by this lookup is a witness: the next 404 is believed with no control request', async () => {
+    fetchMock.mockImplementationOnce(async () => realPage())
+    await resolveBrand('somebrand')
+    fetchMock.mockImplementation(async () => notFound())
+    t += 5 * 60_000
+    const v = await resolveBrand('deletedbrand')
+    expect(v.kind).toBe('MISSING')
+    expect(askedControl()).toBe(0)
+  })
+
+  it('the schema-bug 400 counts as a real page — Instagram found the account', async () => {
+    fetchMock.mockImplementationOnce(async () => schemaBug())
+    const first = await resolveBrand('adidas')
+    expect(first.kind).toBe('UNRESOLVED')
+    fetchMock.mockImplementation(async () => notFound())
+    const v = await resolveBrand('deletedbrand')
+    expect(v.kind).toBe('MISSING')
+    expect(askedControl()).toBe(0)
+  })
+
+  it('a witness older than the window vouches for nothing: the control is asked again', async () => {
+    const { ENDPOINT_WITNESS_MS } = await import('@/detection/exists')
+    fetchMock.mockImplementationOnce(async () => realPage())
+    await resolveBrand('somebrand')
+    fetchMock.mockImplementation(async () => notFound())
+    t += ENDPOINT_WITNESS_MS + 1
+    const v = await resolveBrand('realbrand_two')
+    expect(v.kind).toBe('UNKNOWN')
+    expect(askedControl()).toBe(1)
+  })
+})
