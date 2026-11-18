@@ -55,16 +55,42 @@ over it died on the usage limit with no findings, so it was re-read line by line
 the BSD tools by its author alone. Its failure modes are refusals that say so. **Handed to
 Sudhanshu 18 Nov; not yet run when this was written.**
 
-**The parks are returned to the queue from the box, after the Mac is fixed** — one audited statement
-mirroring `requeueParkedAttempt` (`READY`, attempts 0, error and `failureCode` NULL, an
-`attempt.requeued` row each), limited to `FAILED` + `profile-gone` + error containing "anonymous
-probe: not found" + written in the last 24 hours + a recipient not retired since. One first, as a
-test (an unfixed Mac re-parks it within a minute, a fixed one delivers it within three), then ten at
-a time: 38 of the 40 are @bollywoodpaparazzii's, and all at once is ~50 identical introductions an
-hour from one account that has been silent for sixteen days, four times its busiest hour on record.
-Tested on a scratch Postgres 16 with the real schema against rows it must not touch (a park the
-BROWSER saw, an older one, a `not-in-thread`, a retired recipient) and a paste cut mid-statement,
-which writes nothing. The commands are in the session notes, not in the repo.
+**The parks are returned to the queue from the box, after the Mac is fixed — `scripts/requeue-shelved.sh`.**
+It replaced a pasted statement the same day: 4 KB does not paste safely into the box's console, the
+first version's "written in the last 24 hours" would have silently returned nothing by the next
+morning, and "ten at a time" was prose. Returning mirrors `requeueParkedAttempt` (`READY`, attempts 0,
+error and `failureCode` NULL, an `attempt.requeued` row each). It returns only `FAILED` +
+`profile-gone` + error containing "anonymous probe: not found" + written since 16 Nov + a recipient
+not retired since + a company holding exactly ONE such draft and no other message waiting, delivered
+or possibly delivered since; anything else is counted and left for a person.
+
+- **`--test` is the only way anyone learns whether the Mac is fixed**, because the server cannot see
+  the Mac's files: it returns ONE draft, watches it for seven minutes and says *delivered*, *shelved
+  again* (the Mac still runs the old lookup — nothing else is returned) or *still waiting*, with the
+  Mac's last tick.
+- **`--run` returns up to 10 more and is REFUSED** until a returned draft has been delivered, and
+  again when the draft returned last was shelved again (compared on the time each was RETURNED — a
+  park carries no time of its own — and a tie, which is one batch, refuses).
+- **The pace is in the script: 10 drafts in any 60 minutes** (`DS_REQUEUE_PER_HOUR` raises it, and the
+  figure is written into each audit row). 38 of the 41 are @bollywoodpaparazzii's, and all at once is
+  ~50 identical introductions an hour from one account silent for sixteen days, four times its
+  busiest hour on record.
+- **The recount and the release are one statement behind an advisory lock.** The first version read
+  the counts, then released: two runs started together each returned a batch (seen: 20 waiting where
+  10 is the bound). This file's own rule — *a check and a write in two statements is not a guard*.
+
+`scripts/explain-shelved.sh` is the read-only companion (what became of returned drafts, when the
+shelved ones were written, what the Mac last reported). A harness of 27 checks on a scratch Postgres
+16 with the real schema — rows it must never touch (a park the BROWSER saw, an older one, a
+`not-in-thread`, a retired recipient, a company with two shelved drafts, with another draft waiting,
+with a delivery or a possible delivery since) and two runs forced to arrive together — and 11 guards
+each broken and seen red. The update's own status re-check is not among them: behind `FOR UPDATE` it
+is redundant by construction. **Neither script has run on the box when this was written.**
+
+**MEASURED ON THE BOX LATER ON 18 NOV: 41 drafts shelved, every one with the lookup's sentence** (38
+@bollywoodpaparazzii, 2 @totalfilmii, 1 @bollywoodsocietyy), 0 delivered, 1 @totalfilmii draft
+waiting. The cause is confirmed by production data; whether the Mac script had been run was not
+visible from the server, which is the gap `--test` closes.
 
 **And in the code (`8859e21`), so no later build repeats it:**
 
