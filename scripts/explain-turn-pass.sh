@@ -7,6 +7,7 @@
 # Section 9 estimates the risk of switching the read requirement off:             bash etp.sh 9
 # Each query stops with an error after 3 minutes rather than hanging; to allow longer: DS_STEP_LIMIT=10min bash etp.sh 9
 # A run that fails ends with a line starting "-- STOPPED", so filtering the output for '^-- ' still shows it.
+# The first line printed names this script and its step limit; no such line means an older copy was run.
 #
 # The planner logs `turn passes passed=… keptWhileIntroWaits=… waitingForARead=…` only when one of
 # those is above zero, so a pass that ends on any other rule leaves NO trace — exactly the silence
@@ -28,6 +29,9 @@
 # What it does NOT know: whether there is something new to say (the planner's describable posts),
 # and whether the planner ever asked rotation about a company (it asks only when some page's pair
 # passes the governor). A company bucketed "would pass" with no pass in the log is one of those.
+# A company in MORE THAN ONE group is replayed under its oldest membership (ties on the row id, so repeated runs
+# agree); the planner takes whichever its unordered read returns first, so for such a company the ring here is a guess.
+# To count them:  SELECT count(*) FROM (SELECT 1 FROM "CategoryTarget" WHERE enabled GROUP BY "targetId" HAVING count(*) > 1) x;
 #
 # Prints no secret: it reads through the local `postgres` superuser, never the app's DATABASE_URL.
 set -euo pipefail
@@ -35,15 +39,23 @@ set -euo pipefail
 APP="${DS_APP_DIR:-/opt/ds-sales-agent}"
 # An override must keep -q, or psql prints "SET" twice before every table.
 PSQL="${DS_PSQL:-sudo -u postgres psql -X -q -d ds_sales_agent}"
+
+# A failed step must not look like a finished run: the output is usually filtered for its '-- ' headings, which would
+# hide psql's own error line. This line survives that filter. Installed BEFORE anything can exit, so a mistyped
+# DS_STEP_LIMIT is reported the same way instead of leaving a blank screen.
+trap 'rc=$?; if [[ $rc -ne 0 ]]; then echo "-- STOPPED (exit $rc): the step above did not finish. Its error is on the lines just above this one, and nothing after it ran. If the error says statement timeout, run again with DS_STEP_LIMIT=10min in front (spelled exactly like that)."; fi' EXIT
+
+# Zero is refused: to Postgres a zero timeout means NO limit, which is the hang this limit exists to prevent. So is a
+# leading zero: Postgres reads 010min as octal (8 minutes) and rejects 0180s outright.
 STEP_LIMIT="${DS_STEP_LIMIT:-180s}"
-if [[ ! "$STEP_LIMIT" =~ ^[0-9]+(ms|s|min|h)$ ]]; then
-  echo "DS_STEP_LIMIT must look like 180s, 10min or 1h — got: $STEP_LIMIT" >&2
+if [[ ! "$STEP_LIMIT" =~ ^[1-9][0-9]*(ms|s|min|h)$ ]]; then
+  echo "DS_STEP_LIMIT must be a whole number above zero, with no leading zero, followed by ms, s, min or h — for example 180s, 10min or 1h. Got: $STEP_LIMIT" >&2
   exit 2
 fi
 
-# A failed step must not look like a finished run: the output is usually filtered for its '-- ' headings, which would
-# hide psql's own error line. This line survives that filter.
-trap 'rc=$?; if [[ $rc -ne 0 ]]; then echo "-- STOPPED (exit $rc): the step above did not finish. Its error is on the line above this one, and nothing after it ran. If the error says statement timeout, run again with DS_STEP_LIMIT=10min in front."; fi' EXIT
+# Says which script is running. The version before 17 Nov's speed fix printed no such line and needed ~25 minutes for
+# section 9, so its absence means an old copy of this file was run.
+echo "-- explain-turn-pass.sh: read-only; each step stops after $STEP_LIMIT"
 
 # No arguments: every section. Otherwise only the numbered ones, e.g. `4 8`.
 WANT=" $* "
@@ -142,7 +154,7 @@ blocked AS (
 cat_t AS (
   SELECT DISTINCT ON (ct."targetId") ct."targetId" AS tid, ct."categoryId" AS cid
   FROM "CategoryTarget" ct WHERE ct.enabled AND ct."targetId" IN (SELECT id FROM pros)
-  ORDER BY ct."targetId", ct."createdAt"
+  ORDER BY ct."targetId", ct."createdAt", ct.id
 ),
 ring_raw AS (
   SELECT c.tid, s.id AS sid, cs.position AS k1, s.handle AS k2
@@ -316,7 +328,7 @@ echo "   every conversation the sweep still has to read since a page last wrote 
 run -c "BEGIN READ ONLY; $BASE SELECT '@' || s.handle AS page, count(*) AS conversations_unread_since_it_wrote
   FROM pa JOIN \"SenderAccount\" s ON s.id = pa.sid
   WHERE pa.wrote AND (pa.last_read IS NULL OR pa.last_read < greatest(pa.last_wrote, timestamp '2026-11-16 12:35:00'))
-  GROUP BY s.handle ORDER BY 2 DESC; COMMIT;"
+  GROUP BY s.handle ORDER BY 2 DESC, 1; COMMIT;"
 fi
 
 
