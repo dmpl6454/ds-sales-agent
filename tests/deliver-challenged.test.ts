@@ -66,9 +66,10 @@ vi.mock('@/lib/logger', () => ({
   log: { info: vi.fn(), step: vi.fn(), warn: vi.fn(), error: vi.fn(), alarm: vi.fn() },
 }))
 vi.mock('@/lib/settings', () => ({ getSettings: async () => ({ autopilotEnabled: true }) }))
-vi.mock('@/lib/env', () => ({
-  env: { DRY_RUN: false, SEND_JITTER_MIN_SECONDS: 0, SEND_JITTER_MAX_SECONDS: 0 },
-}))
+/* PROBE_PARKS_PER_DAY is 2 here so the bound's mechanism stays tested; production defaults to 0
+   (the lookup parks nothing) and that default has its own case below. */
+const mockedEnv = vi.hoisted(() => ({ DRY_RUN: false, SEND_JITTER_MIN_SECONDS: 0, SEND_JITTER_MAX_SECONDS: 0, PROBE_PARKS_PER_DAY: 2 }))
+vi.mock('@/lib/env', () => ({ env: mockedEnv }))
 vi.mock('@/lib/time', () => ({ randomInt: () => 0, istDateKey: () => '2026-08-04' }))
 vi.mock('@/outreach/senders/browser', () => ({ browserSender: { send: (...a: unknown[]) => send(...a) } }))
 vi.mock('@/outreach/browser/profile', () => ({ profileStatus: () => ({ dir: '/tmp/p', hasSession: true }) }))
@@ -93,7 +94,8 @@ vi.mock('@/outreach/replyCheck', () => ({
 }))
 
 const { deliverWaiting } = await import('@/outreach/deliver')
-const { PROBE_PARK_AUDIT, PROBE_PARK_WINDOW_MS, PROBE_PARKS_BELIEVED_PER_DAY } = await import('@/outreach/deliverOne')
+const { PROBE_PARK_AUDIT, PROBE_PARK_WINDOW_MS } = await import('@/outreach/deliverOne')
+const PROBE_PARKS_BELIEVED_PER_DAY = mockedEnv.PROBE_PARKS_PER_DAY
 
 /**
  * Two waiting drafts from the SAME sender — the shape rotation produces constantly.
@@ -673,6 +675,33 @@ describe('a recipient whose page is gone is parked before any browser drive', ()
     expect(parked).toHaveLength(PROBE_PARKS_BELIEVED_PER_DAY)
     expect(send).toHaveBeenCalledTimes(1)
     expect((send.mock.calls[0]![0] as { attemptId: string }).attemptId).toBe('att_c')
+  })
+
+  /**
+   * THE PRODUCTION DEFAULT (18 Nov 2026): PROBE_PARKS_PER_DAY=0, what the sending Mac's hotfix did.
+   * A not-found from the lookup parks nothing and is not even counted — the browser looks, and the
+   * drive's own dead-page check parks a page that is really gone.
+   */
+  it('the shipped default is 0, and .env.example says so', async () => {
+    const { readFileSync } = await import('node:fs')
+    expect(readFileSync('src/lib/env.ts', 'utf8')).toMatch(/PROBE_PARKS_PER_DAY: intish\(0, 0, 10\)/)
+    expect(readFileSync('.env.example', 'utf8')).toMatch(/^PROBE_PARKS_PER_DAY=0$/m)
+  })
+
+  it('at the default of 0 the lookup parks nothing: no count, no audit row, the browser looks', async () => {
+    probeHandle.mockResolvedValue({ check: 'missing', facts: null })
+    mockedEnv.PROBE_PARKS_PER_DAY = 0
+    try {
+      await deliverWaiting({ maxSends: 1 })
+    } finally {
+      mockedEnv.PROBE_PARKS_PER_DAY = 2
+    }
+    expect(send).toHaveBeenCalledTimes(1)
+    expect(auditCount).not.toHaveBeenCalled()
+    expect(auditCreate.mock.calls.filter((c) => (c[0] as { data: { action: string } }).data.action === PROBE_PARK_AUDIT)).toEqual([])
+    expect(attemptUpdate).not.toHaveBeenCalledWith(
+      expect.objectContaining({ data: expect.objectContaining({ failureCode: 'profile-gone' }) }),
+    )
   })
 })
 

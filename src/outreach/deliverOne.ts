@@ -38,10 +38,18 @@ import { MAX_DELIVERY_ATTEMPTS } from '@/lib/constants'
 /**
  * How many drafts the anonymous "does this page exist" lookup may park on its own word in any
  * 24 hours, fleet-wide, and the audit action each such park writes (the count is read back from
- * those rows). Two, because deleted pages are that rare — two in the three thousand sends before
- * 18 Nov 2026, the day the lookup called forty real pages gone in minutes. See the probe below.
+ * those rows). The number is `env.PROBE_PARKS_PER_DAY`, default 0 — see the probe below.
+ *
+ * It shipped as a constant 2 (8859e21: deleted pages are that rare — two in the three thousand
+ * sends before 18 Nov 2026, the day the lookup called forty real pages gone in minutes). The
+ * sending Mac meanwhile ran a hotfix under which the lookup parked NONE, and the review before
+ * putting this build on that Mac (18 Nov) found the update would quietly re-allow two a day — each
+ * refusing that company to every page for 7 days, and indistinguishable to requeue-shelved.sh from
+ * the old lookup's parks. So the default is what the Mac already does; 2 is one `.env` line away.
  */
-export const PROBE_PARKS_BELIEVED_PER_DAY = 2
+export function probeParksBelievedPerDay(): number {
+  return env.PROBE_PARKS_PER_DAY
+}
 export const PROBE_PARK_WINDOW_MS = 24 * 60 * 60_000
 export const PROBE_PARK_AUDIT = 'attempt.parked.page-gone-unseen'
 
@@ -633,17 +641,22 @@ export async function deliverOne(a: {
      * this lookup 404 for real pages. Two deleted pages were met in the three thousand sends before
      * it, so a lookup calling page after page gone is reporting on itself. `probeHandle` now asks a
      * control before it says `missing`; this is the second net, for an endpoint that serves the
-     * control and is still wrong about a class of pages. At most `PROBE_PARKS_BELIEVED_PER_DAY`
+     * control and is still wrong about a class of pages. At most `env.PROBE_PARKS_PER_DAY` (default 0)
      * drafts may be parked on its word in any 24 hours, fleet-wide (the audit rows are shared by
      * every Mac and survive a restart); past that the BROWSER decides — one look, and the drive's
      * own `profile-gone` parks a page that is really gone.
      */
     const probe = await probeHandle(target.handle)
-    if (probe.check === 'missing') {
+    const probeCap = probeParksBelievedPerDay()
+    if (probe.check === 'missing' && probeCap === 0) {
+      log.step('the lookup says the page is gone — not believed on its own (PROBE_PARKS_PER_DAY=0); the browser will look', {
+        pair: pairKey,
+      })
+    } else if (probe.check === 'missing') {
       const parkedOnItsWord = await prisma.auditLog.count({
         where: { action: PROBE_PARK_AUDIT, at: { gte: new Date(Date.now() - PROBE_PARK_WINDOW_MS) } },
       })
-      if (parkedOnItsWord >= PROBE_PARKS_BELIEVED_PER_DAY) {
+      if (parkedOnItsWord >= probeCap) {
         log.alarm('the anonymous lookup keeps calling pages gone — no longer believed today; the browser will look', {
           pair: pairKey,
           parkedOnItsWordIn24h: parkedOnItsWord,

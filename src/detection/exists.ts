@@ -101,7 +101,7 @@ export function interpretExistence(status: number, body: string): HandleCheck {
  *
  * WHAT IT DOES NOT COVER, stated: an endpoint that serves the control and still answers
  * not-found for a CLASS of real pages. A control on one handle cannot see that, which is why the
- * send path keeps its own base-rate bound (`PROBE_PARKS_BELIEVED_PER_DAY`, deliverOne.ts) and
+ * send path keeps its own base-rate bound (`env.PROBE_PARKS_PER_DAY`, default 0, deliverOne.ts) and
  * why the browser drive, not this lookup, is the authority on a page being gone.
  */
 export const ENDPOINT_WITNESS_MS = 30 * 60_000

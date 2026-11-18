@@ -68,6 +68,14 @@ const schema = z.object({
 
   SEND_JITTER_MIN_SECONDS: intish(45, 0, 3600),
   SEND_JITTER_MAX_SECONDS: intish(180, 0, 3600),
+  /**
+   * How many drafts the anonymous "does this page exist" lookup may park on its own word in any 24
+   * hours, fleet-wide (deliverOne.ts). 0 — the default since 18 Nov 2026 — means it never parks one:
+   * a not-found only means "look", and the browser drive itself parks a page that is really gone.
+   * That is what the sending Mac's 18 Nov hotfix did, and the update to a newer build keeps it.
+   * 2 restores the bound shipped in 8859e21.
+   */
+  PROBE_PARKS_PER_DAY: intish(0, 0, 10),
   AUTOPILOT_ENABLED: boolish(false),
 
   /**
