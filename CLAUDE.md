@@ -5,6 +5,99 @@ changing anything that touches sending.
 
 ---
 
+## 18 NOVEMBER — THE READ REQUIREMENT WENT OFF, FORTY INTRODUCTIONS WERE WRITTEN, AND THE MAC PARKED ALL FORTY ON A LOOKUP THAT WAS WRONG
+
+**Decided (Sudhanshu, on the box, 18 Nov 07:19 IST, after the section-9 reading in the entry below):**
+`passTurnOnlyAfterRead` = `false`, with its `setting.changed` audit row. The record-only pass is in
+force; the undo is one Setting row.
+
+**What the planner logged, and why one pass showed both numbers.** `turn passes passed=24
+keptWhileIntroWaits=0 waitingForARead=16` at 07:22, then the other 16 at 07:37. `whoseTurn` reads
+the settings once per COMPANY (`categories.ts`), so a row flipped while a pass is running splits that
+pass. Reproduced through the real `runOutreach` in a copy of the repo (row written before the 6th of
+12 decisions: 7 passed, 5 held, one introduction per company, never two). The same run corrected a
+prediction: `keptWhileIntroWaits` counts a waiting passed introduction only when ANOTHER never-wrote
+page has a pair that reaches rotation, so it undercounts and is not a tally of introductions out.
+
+**Then all 40 were FAILED within minutes and nothing had been sent — measured on the box: 38 from
+@bollywoodpaparazzii, 2 from @totalfilmii, 0 delivered, 0 waiting.** No browser opened. The sending
+Mac's 10 Sept build asks Instagram's anonymous profile endpoint whether the recipient exists before
+every drive (`deliver.ts` → `probeHandle`, added 9 Sept so a deleted page costs no drive) and reads
+a 404 as "the page is gone": `FAILED`, `profile-gone`, attempts at the cap, error *"…(anonymous
+probe: not found) — nothing was driven"*. **Instagram now answers that lookup 404 for real pages**
+(the feed endpoint has refused the same identity since 15 Oct). The last delivery was 2 Nov, so
+these were the first probes in sixteen days; the endpoint changed somewhere in between.
+
+- **I had told Sudhanshu the Mac would deliver them at about one a minute.** I had read the Mac
+  build's GATE and not the step after it. The workflow's skeptic, reading the same build
+  independently, found the same stop.
+- **What a `profile-gone` park does:** every page is refused that recipient for 7 days
+  (`PROFILE_GONE_RECHECK_DAYS`, governor and gate, both builds), and after that the parked route
+  stays blocked while the pass hands the company to the next never-wrote page — so an unfixed Mac
+  would have burnt one route per company per week. And it could deliver NOTHING: every future draft
+  meets the same lookup.
+- **The sandbox could not probe Instagram** (its proxy refuses the host), so the 404 itself is
+  inferred from the parks and the code, not observed from here.
+
+**The fix on the Mac — `scripts/mac-hotfix-probe-404.sh`, run ON the Mac Studio** (server deploys do
+not reach it, and the DMG route is gone; a script fetched by `curl` and run by bash is the only Mac
+update path today). One line of the installed `src/detection/exists.ts`: a 404 becomes `unknown`,
+which the send path already treats as "go on and look"; the drive itself recognises a page that is
+really gone (`sendDm.ts`: "Sorry, this page isn't available" → `profile-gone` after one look, before
+the … menu and the inbox route). The original is kept for `--undo`; the agent is restarted with
+`launchctl kickstart -k` only while no process carries `--user-data-dir=` under the agent's profile
+directory, on two readings; `.env` is never opened. Driven through 20 scenarios in a fake home
+against the build's exact file (sha256 `54ba7085…`), the restart gate seen to refuse; the patched
+file compiled and its rule executed per status. **The exposure it changes, stated:** a recipient
+whose page is really gone now costs one profile visit from one page per week instead of none.
+**What it has NOT had:** a run on macOS, or an independent review — the three-reviewer workflow
+over it died on the usage limit with no findings, so it was re-read line by line for bash 3.2 and
+the BSD tools by its author alone. Its failure modes are refusals that say so. **Handed to
+Sudhanshu 18 Nov; not yet run when this was written.**
+
+**The parks are returned to the queue from the box, after the Mac is fixed** — one audited statement
+mirroring `requeueParkedAttempt` (`READY`, attempts 0, error and `failureCode` NULL, an
+`attempt.requeued` row each), limited to `FAILED` + `profile-gone` + error containing "anonymous
+probe: not found" + written in the last 24 hours + a recipient not retired since. One first, as a
+test (an unfixed Mac re-parks it within a minute, a fixed one delivers it within three), then ten at
+a time: 38 of the 40 are @bollywoodpaparazzii's, and all at once is ~50 identical introductions an
+hour from one account that has been silent for sixteen days, four times its busiest hour on record.
+Tested on a scratch Postgres 16 with the real schema against rows it must not touch (a park the
+BROWSER saw, an older one, a `not-in-thread`, a retired recipient) and a paste cut mid-statement,
+which writes nothing. The commands are in the session notes, not in the repo.
+
+**And in the code (`8859e21`), so no later build repeats it:**
+
+| | |
+|---|---|
+| `exists.ts` | `probeHandle` lets `missing` out only while the endpoint has recently returned a REAL page for some handle (a 200 carrying a user, or the schema-bug 400). With no such witness it asks once about a handle that cannot be deleted (`@instagram`); if that is not a real page either, every not-found is `unknown` until a control passes — asked at most once per 30 minutes, through the same gate. `interpretExistence` is unchanged: it reads one response |
+| `deliverOne.ts` | the second net, for an endpoint that serves the control and is still wrong about a class of pages: each park on the lookup's word writes an audit row (`attempt.parked.page-gone-unseen`), at most **2** are believed in any 24 hours fleet-wide, and past that the browser looks |
+
+Tests in both directions (`tests/exists.test.ts`, `tests/deliver-challenged.test.ts`); 12 mutations
+each seen red. Suite 3,750 / 3,754 — the two offline `route-rule` timeouts, and two `official-reach`
+cases that timed out while three review agents shared the machine and pass alone.
+
+**Also found by that workflow, not changed — for whoever touches the pass next:**
+- a passed introduction parked with any code OTHER than `not-in-thread` (`no-message-button`,
+  `no-composer`, `unknown`, …) is not "a message out", so the next pass hands the company to the next
+  never-wrote page; an `unknown` park can hide a delivered message;
+- rule 2 of `TurnPass` runs before the pin, so a never-wrote page RETURNING to availability
+  (@bollywoodchronicle signed in, a flag cleared) is elected by the ordinary walk and drafts beside a
+  waiting introduction. **Do not sign a page in or clear a flag while passed introductions are out;**
+- the breaker's 24-hour window is empty after sixteen silent days: two `not-in-thread` results among
+  the first handful of sends halt the fleet until someone acknowledges it.
+
+66. **A "not found" is a verdict only while the same endpoint is seen answering "found".** An
+    endpoint that has been walled, moved or changed says no to everything; ask it about something
+    that cannot be gone before believing it about something that might be.
+67. **A detector for a rare event that fires on everything is reporting on itself.** Bound what it
+    may do, unattended, at the rate the event really happens — and let the costlier, better witness
+    decide past that.
+68. **Before saying what another build will do, read it from the claim to the drive.** The gate is
+    one stop on that path, not the path.
+
+---
+
 ## 17 NOVEMBER — THE FIXES ARE LIVE AND NOTHING WAS LEFT TO SAY, SO A RECIPIENT'S TURN NOW PASSES TO A PAGE THAT NEVER WROTE
 
 **Measured from the Mac Studio, 07:12 IST, with `scripts/check-sending.sh`, after `760d504` was
