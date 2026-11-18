@@ -2,7 +2,7 @@
 # why-so-few.sh — READ-ONLY. Run on the box (the server), as root:
 #
 #   bash why-so-few.sh        every section
-#   bash why-so-few.sh 2      one section (1 to 6) — the box's console scrolls back about one screen
+#   bash why-so-few.sh 2      one section (1 to 7) — the box's console scrolls back about one screen
 #
 # Asked 18 Nov 2026: "only 12 messages sent today". A message needs either a company nobody has written to yet, or
 # something new to say to one we have (a paid post of theirs found in the last 72 hours). This prints, day by day for
@@ -19,12 +19,14 @@
 #      to that company, until someone settles it — and no screen has offered a way to settle one since 24 Aug
 #   6. what settling them would free: those sends by week, and how many of the companies they hold have a page
 #      signed in on the Mac that has never written to them (an upper bound: allowance and turn rules still apply)
+#   7. every page in the rotation, signed in or not, with how many live verified companies that never replied it has
+#      never written to — what signing a page in on the Mac would make reachable
 #
 # It writes nothing (every statement runs inside BEGIN READ ONLY) and prints no secret.
 set -euo pipefail
 
 SEL="${1:-all}"
-case "$SEL" in all|1|2|3|4|5|6) ;; *) echo "-- STOPPED: unknown section '$SEL' — use 1 to 6, or nothing for all"; exit 2 ;; esac
+case "$SEL" in all|1|2|3|4|5|6|7) ;; *) echo "-- STOPPED: unknown section '$SEL' — use 1 to 7, or nothing for all"; exit 2 ;; esac
 want() { [[ "$SEL" == all || "$SEL" == "$1" ]]; }
 
 PSQL="${DS_PSQL:-sudo -u postgres psql -X -q -d ds_sales_agent}"
@@ -37,6 +39,42 @@ run() { $PSQL -v ON_ERROR_STOP=1 -P footer=off -P pager=off -c "SET statement_ti
 IST="interval '330 min'"
 DAY="(date_trunc('day', (now() AT TIME ZONE 'UTC') + $IST) - $IST)"
 d() { echo "to_char($1 + $IST, 'YYYY-MM-DD')"; }
+
+# Section 7's query, quoted literally.
+S7="$(cat <<'SQL'
+WITH holders AS (
+  SELECT e.h AS handle
+  FROM "Setting" s, jsonb_each_text(s.value::jsonb) AS e(h, seen)
+  WHERE s.key = 'sessionHolderSeen' AND e.seen ~ '^[0-9]{4}-'
+    AND (e.seen::timestamptz AT TIME ZONE 'UTC') > (now() AT TIME ZONE 'UTC') - interval '72 hours'
+),
+pages AS (
+  SELECT sa.id, sa.handle, sa.handle IN (SELECT handle FROM holders) AS on_a_mac,
+    sa."sessionInvalidAt" IS NULL AND sa."sessionPath" IS NOT NULL AS session_recorded,
+    coalesce((SELECT array_agg(c.slug ORDER BY c.slug) FROM "CategorySender" cs JOIN "Category" c ON c.id = cs."categoryId"
+              WHERE cs."senderId" = sa.id AND cs.enabled), ARRAY['bollywood']) AS fleets
+  FROM "SenderAccount" sa WHERE sa."fleetMember" AND sa.status = 'ACTIVE'
+),
+live AS (
+  SELECT t.id,
+    coalesce((SELECT array_agg(c.slug) FROM "CategoryTarget" ct JOIN "Category" c ON c.id = ct."categoryId"
+              WHERE ct."targetId" = t.id AND ct.enabled), ARRAY['bollywood']) AS fleets
+  FROM "TargetAccount" t
+  WHERE t.role = 'PROSPECT' AND NOT t."optedOut" AND t."isVerified" IS TRUE
+    AND NOT EXISTS (SELECT 1 FROM "OutreachAttempt" r WHERE r."targetId" = t.id
+                    AND (r."repliedAt" IS NOT NULL OR r."replyPostedAt" IS NOT NULL))
+)
+SELECT '@' || p.handle AS page, CASE WHEN p.on_a_mac THEN 'yes' ELSE 'NO' END AS signed_in_on_a_mac,
+  array_to_string(p.fleets, ',') AS fleets,
+  count(l.id) AS live_companies_in_its_fleets,
+  count(l.id) FILTER (WHERE NOT EXISTS (SELECT 1 FROM "OutreachAttempt" x WHERE x."targetId" = l.id AND x."senderId" = p.id
+    AND (x.status IN ('SENT','REPLIED','READY','QUEUED','SENDING')
+         OR (x.status = 'FAILED' AND x."failureCode" IN ('not-in-thread','profile-gone'))))) AS never_written_by_it
+FROM pages p LEFT JOIN live l ON l.fleets && p.fleets
+GROUP BY p.handle, p.on_a_mac, p.fleets
+ORDER BY p.on_a_mac, p.handle;
+SQL
+)"
 
 # Section 6's main query, quoted literally (no shell expansion inside).
 S6="$(cat <<'SQL'
@@ -171,6 +209,14 @@ echo "   held = live, verified companies that never replied, with at least one u
 echo "   to introduce itself when it is signed in on a Mac seen in the last 72 hours, sends for the company's fleet, and"
 echo "   has never delivered to, queued for or been parked on that company. An upper bound: the 7-day allowance, the"
 echo "   turn order and the pacing still decide what actually goes out."
+echo
+fi
+if want 7; then
+echo "== 7. Every page in the rotation: how many live verified companies that never replied it has never written to =="
+run "$S7"
+echo "   A page that is NOT signed in on a Mac writes to nobody; signing it in on the Mac makes its never_written_by_it"
+echo "   companies reachable by an introduction, under the same allowance, turn and pacing rules as every other page."
+echo "   Pages taken out of the rotation (fleetMember false) are not listed."
 echo
 fi
 echo "-- end"
