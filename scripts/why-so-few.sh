@@ -2,7 +2,7 @@
 # why-so-few.sh — READ-ONLY. Run on the box (the server), as root:
 #
 #   bash why-so-few.sh        every section
-#   bash why-so-few.sh 2      one section (1 to 5) — the box's console scrolls back about one screen
+#   bash why-so-few.sh 2      one section (1 to 6) — the box's console scrolls back about one screen
 #
 # Asked 18 Nov 2026: "only 12 messages sent today". A message needs either a company nobody has written to yet, or
 # something new to say to one we have (a paid post of theirs found in the last 72 hours). This prints, day by day for
@@ -17,12 +17,14 @@
 #   4. the planner's own account of its last passes, from the worker's log: what it wrote and why it skipped the rest
 #   5. sends never confirmed (FAILED not-in-thread). Each holds its route, and blocks any other page's introduction
 #      to that company, until someone settles it — and no screen has offered a way to settle one since 24 Aug
+#   6. what settling them would free: those sends by week, and how many of the companies they hold have a page
+#      signed in on the Mac that has never written to them (an upper bound: allowance and turn rules still apply)
 #
 # It writes nothing (every statement runs inside BEGIN READ ONLY) and prints no secret.
 set -euo pipefail
 
 SEL="${1:-all}"
-case "$SEL" in all|1|2|3|4|5) ;; *) echo "-- STOPPED: unknown section '$SEL' — use 1 to 5, or nothing for all"; exit 2 ;; esac
+case "$SEL" in all|1|2|3|4|5|6) ;; *) echo "-- STOPPED: unknown section '$SEL' — use 1 to 6, or nothing for all"; exit 2 ;; esac
 want() { [[ "$SEL" == all || "$SEL" == "$1" ]]; }
 
 PSQL="${DS_PSQL:-sudo -u postgres psql -X -q -d ds_sales_agent}"
@@ -35,6 +37,51 @@ run() { $PSQL -v ON_ERROR_STOP=1 -P footer=off -P pager=off -c "SET statement_ti
 IST="interval '330 min'"
 DAY="(date_trunc('day', (now() AT TIME ZONE 'UTC') + $IST) - $IST)"
 d() { echo "to_char($1 + $IST, 'YYYY-MM-DD')"; }
+
+# Section 6's main query, quoted literally (no shell expansion inside).
+S6="$(cat <<'SQL'
+WITH held AS (
+  SELECT DISTINCT a."targetId" AS tid
+  FROM "OutreachAttempt" a JOIN "TargetAccount" t ON t.id = a."targetId"
+  WHERE a.status = 'FAILED' AND a."failureCode" = 'not-in-thread'
+    AND t.role = 'PROSPECT' AND NOT t."optedOut" AND t."isVerified" IS TRUE
+    AND NOT EXISTS (SELECT 1 FROM "OutreachAttempt" r WHERE r."targetId" = a."targetId"
+                    AND (r."repliedAt" IS NOT NULL OR r."replyPostedAt" IS NOT NULL))
+),
+holders AS (
+  SELECT e.h AS handle
+  FROM "Setting" s, jsonb_each_text(s.value::jsonb) AS e(h, seen)
+  WHERE s.key = 'sessionHolderSeen' AND e.seen ~ '^[0-9]{4}-'
+    AND (e.seen::timestamptz AT TIME ZONE 'UTC') > (now() AT TIME ZONE 'UTC') - interval '72 hours'
+),
+pages AS (
+  SELECT sa.id, sa.handle,
+    coalesce((SELECT array_agg(c.slug) FROM "CategorySender" cs JOIN "Category" c ON c.id = cs."categoryId"
+              WHERE cs."senderId" = sa.id AND cs.enabled), ARRAY['bollywood']) AS fleets
+  FROM "SenderAccount" sa
+  WHERE sa."fleetMember" AND sa.status = 'ACTIVE' AND sa."sessionPath" IS NOT NULL AND sa."sessionInvalidAt" IS NULL
+    AND sa.handle IN (SELECT handle FROM holders)
+),
+tfleet AS (
+  SELECT held.tid,
+    coalesce((SELECT array_agg(c.slug) FROM "CategoryTarget" ct JOIN "Category" c ON c.id = ct."categoryId"
+              WHERE ct."targetId" = held.tid AND ct.enabled), ARRAY['bollywood']) AS fleets
+  FROM held
+),
+fresh AS (
+  SELECT tf.tid, p.handle FROM tfleet tf JOIN pages p ON p.fleets && tf.fleets
+  WHERE NOT EXISTS (SELECT 1 FROM "OutreachAttempt" x WHERE x."targetId" = tf.tid AND x."senderId" = p.id
+    AND (x.status IN ('SENT','REPLIED','READY','QUEUED','SENDING')
+         OR (x.status = 'FAILED' AND x."failureCode" IN ('not-in-thread','profile-gone'))))
+)
+SELECT (SELECT count(*) FROM held) AS held,
+  (SELECT count(DISTINCT tid) FROM fresh) AS have_a_page_that_never_wrote,
+  (SELECT count(*) FROM held) - (SELECT count(DISTINCT tid) FROM fresh) AS every_signed_in_page_wrote,
+  (SELECT string_agg(handle, ' ' ORDER BY handle) FROM pages) AS signed_in_pages,
+  coalesce((SELECT string_agg('@' || handle || '=' || n, ' ' ORDER BY handle)
+            FROM (SELECT handle, count(*) AS n FROM fresh GROUP BY handle) z), '-') AS could_introduce_by_page;
+SQL
+)"
 
 echo "-- why-so-few.sh — read-only; days are IST"
 echo
@@ -110,6 +157,20 @@ run "SELECT count(DISTINCT a.\"targetId\") AS live_companies_held,
 FROM \"OutreachAttempt\" a JOIN \"TargetAccount\" t ON t.id = a.\"targetId\"
 WHERE a.status = 'FAILED' AND a.\"failureCode\" = 'not-in-thread' AND NOT t.\"optedOut\";"
 echo "   Each one is a message that left the composer and never showed in the conversation: the company may have it."
+echo
+fi
+if want 6; then
+echo "== 6. What settling the unconfirmed sends would free =="
+run "SELECT to_char(date_trunc('week', coalesce(\"sentAt\", \"queuedAt\") + $IST), 'DD Mon') AS week_from,
+  count(*) AS parked_sends, count(DISTINCT \"targetId\") AS companies
+FROM \"OutreachAttempt\" WHERE status = 'FAILED' AND \"failureCode\" = 'not-in-thread'
+  AND coalesce(\"sentAt\", \"queuedAt\") >= $DAY - interval '105 days'
+GROUP BY date_trunc('week', coalesce(\"sentAt\", \"queuedAt\") + $IST) ORDER BY date_trunc('week', coalesce(\"sentAt\", \"queuedAt\") + $IST);"
+run "$S6"
+echo "   held = live, verified companies that never replied, with at least one unconfirmed send. A page counts as able"
+echo "   to introduce itself when it is signed in on a Mac seen in the last 72 hours, sends for the company's fleet, and"
+echo "   has never delivered to, queued for or been parked on that company. An upper bound: the 7-day allowance, the"
+echo "   turn order and the pacing still decide what actually goes out."
 echo
 fi
 echo "-- end"
