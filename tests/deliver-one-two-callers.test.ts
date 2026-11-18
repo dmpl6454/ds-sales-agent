@@ -131,7 +131,8 @@ vi.mock('@/lib/db', () => ({
       update: (...a: unknown[]) => attemptUpdate(...a),
       findUnique: (...a: unknown[]) => attemptFindUnique(...a),
     },
-    auditLog: { create: (...a: unknown[]) => auditCreate(...a) },
+    // `count` is the probe's base-rate bound (18 Nov 2026): none parked on its word yet today.
+    auditLog: { create: (...a: unknown[]) => auditCreate(...a), count: async () => 0 },
   },
 }))
 vi.mock('@/lib/logger', () => ({

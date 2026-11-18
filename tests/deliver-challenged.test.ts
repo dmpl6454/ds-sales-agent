@@ -28,6 +28,7 @@ const attemptUpdateMany = vi.fn()
 const attemptUpdate = vi.fn()
 const senderUpdate = vi.fn()
 const auditCreate = vi.fn()
+const auditCount = vi.fn()
 const transaction = vi.fn()
 const send = vi.fn()
 const recheck = vi.fn()
@@ -57,7 +58,7 @@ vi.mock('@/lib/db', () => ({
       updateMany: (...a: unknown[]) => attemptUpdateMany(...a),
       update: (...a: unknown[]) => attemptUpdate(...a),
     },
-    auditLog: { create: (...a: unknown[]) => auditCreate(...a) },
+    auditLog: { create: (...a: unknown[]) => auditCreate(...a), count: (...a: unknown[]) => auditCount(...a) },
     $transaction: (...a: unknown[]) => transaction(...a),
   },
 }))
@@ -92,6 +93,7 @@ vi.mock('@/outreach/replyCheck', () => ({
 }))
 
 const { deliverWaiting } = await import('@/outreach/deliver')
+const { PROBE_PARK_AUDIT, PROBE_PARK_WINDOW_MS, PROBE_PARKS_BELIEVED_PER_DAY } = await import('@/outreach/deliverOne')
 
 /**
  * Two waiting drafts from the SAME sender — the shape rotation produces constantly.
@@ -135,6 +137,7 @@ beforeEach(() => {
   probeHandle.mockReset().mockResolvedValue({ check: 'unknown', facts: null })
   senderUpdate.mockReset().mockResolvedValue({})
   auditCreate.mockReset().mockResolvedValue({})
+  auditCount.mockReset().mockResolvedValue(0)
   transaction.mockReset().mockResolvedValue([])
   recheck.mockReset().mockResolvedValue({ ok: true })
   claimForAttempt.mockReset().mockResolvedValue({ ok: true, held: [{ id: 'res_1', seq: 1 }] })
@@ -606,6 +609,70 @@ describe('a recipient whose page is gone is parked before any browser drive', ()
   it("an 'unknown' probe (a throttle, a blip) changes nothing — absence of an answer is not a verdict", async () => {
     await deliverWaiting({ maxSends: 1 })
     expect(send).toHaveBeenCalledTimes(1)
+  })
+
+  /**
+   * 18 Nov 2026: the lookup answered 404 for forty real pages and the sending Mac parked all forty
+   * in minutes. Deleted pages are rare (two in three thousand sends), so the lookup is believed at
+   * that rate and no further: each park on its word writes an audit row, the rows of the last 24
+   * hours are counted, and from the third the BROWSER looks.
+   *
+   * MUTATIONS, each applied by hand to src/outreach/deliverOne.ts, seen red, restored:
+   *   - the `parkedOnItsWord >= PROBE_PARKS_BELIEVED_PER_DAY` test replaced by `false` → the two
+   *     "browser decides" cases go red (the sender is never called);
+   *   - the `audit(actor, PROBE_PARK_AUDIT, …)` line deleted → "writes the row the bound counts"
+   *     and "three in one tick" go red (nothing to count, so the third parks too);
+   *   - the count's `action: PROBE_PARK_AUDIT` filter dropped → "counts only its own rows" goes red.
+   */
+  it('each park on the lookup\'s word writes the row the bound counts', async () => {
+    probeHandle.mockResolvedValue({ check: 'missing', facts: null })
+    await deliverWaiting({ maxSends: 1 })
+    const rows = auditCreate.mock.calls.map((c) => (c[0] as { data: { action: string; entity: string } }).data)
+    expect(rows.filter((r) => r.action === PROBE_PARK_AUDIT).map((r) => r.entity)).toEqual([
+      'OutreachAttempt:att_1',
+      'OutreachAttempt:att_2',
+    ])
+  })
+  it('counts only its own rows, over the last 24 hours', async () => {
+    probeHandle.mockResolvedValue({ check: 'missing', facts: null })
+    const before = Date.now()
+    await deliverWaiting({ maxSends: 1 })
+    const where = (auditCount.mock.calls[0]![0] as { where: { action: string; at: { gte: Date } } }).where
+    expect(where.action).toBe(PROBE_PARK_AUDIT)
+    expect(before - where.at.gte.getTime()).toBeGreaterThanOrEqual(PROBE_PARK_WINDOW_MS - 5_000)
+    expect(before - where.at.gte.getTime()).toBeLessThanOrEqual(PROBE_PARK_WINDOW_MS + 5_000)
+  })
+  it('past the bound the lookup is not believed: the browser decides, and nothing is parked on its word', async () => {
+    probeHandle.mockResolvedValue({ check: 'missing', facts: null })
+    auditCount.mockResolvedValue(PROBE_PARKS_BELIEVED_PER_DAY)
+    await deliverWaiting({ maxSends: 1 })
+    expect(send).toHaveBeenCalledTimes(1)
+    expect(auditCreate.mock.calls.filter((c) => (c[0] as { data: { action: string } }).data.action === PROBE_PARK_AUDIT)).toEqual([])
+    expect(attemptUpdate).not.toHaveBeenCalledWith(
+      expect.objectContaining({ data: expect.objectContaining({ failureCode: 'profile-gone' }) }),
+    )
+  })
+  it('one short of the bound it is still believed', async () => {
+    probeHandle.mockResolvedValue({ check: 'missing', facts: null })
+    auditCount.mockResolvedValue(PROBE_PARKS_BELIEVED_PER_DAY - 1)
+    attemptFindMany.mockResolvedValue(twoDraftsFromOneSender().slice(0, 1))
+    await deliverWaiting({ maxSends: 1 })
+    expect(send).not.toHaveBeenCalled()
+  })
+  it('three "gone" answers in one tick: two are parked, the third is driven — never a whole queue', async () => {
+    probeHandle.mockResolvedValue({ check: 'missing', facts: null })
+    // The count reads back what this tick itself has written, as the real table would.
+    auditCount.mockImplementation(
+      async () => auditCreate.mock.calls.filter((c) => (c[0] as { data: { action: string } }).data.action === PROBE_PARK_AUDIT).length,
+    )
+    const [one, two] = twoDraftsFromOneSender()
+    const many = [one!, two!, ...['c', 'd', 'e'].map((x) => ({ ...two!, id: `att_${x}`, targetId: `targ_${x}`, pair: { ...two!.pair, target: { handle: `target_${x}` } } }))]
+    attemptFindMany.mockResolvedValue(many)
+    await deliverWaiting({ maxSends: 1 })
+    const parked = attemptUpdate.mock.calls.filter((c) => (c[0] as { data: { failureCode?: string } }).data.failureCode === 'profile-gone')
+    expect(parked).toHaveLength(PROBE_PARKS_BELIEVED_PER_DAY)
+    expect(send).toHaveBeenCalledTimes(1)
+    expect((send.mock.calls[0]![0] as { attemptId: string }).attemptId).toBe('att_c')
   })
 })
 

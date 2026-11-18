@@ -35,6 +35,16 @@ export type { DeliverMode, DeliverOneResult, FailedLadder, StopWhy }
 export { MAX_DELIVERY_ATTEMPTS } from '@/lib/constants'
 import { MAX_DELIVERY_ATTEMPTS } from '@/lib/constants'
 
+/**
+ * How many drafts the anonymous "does this page exist" lookup may park on its own word in any
+ * 24 hours, fleet-wide, and the audit action each such park writes (the count is read back from
+ * those rows). Two, because deleted pages are that rare — two in the three thousand sends before
+ * 18 Nov 2026, the day the lookup called forty real pages gone in minutes. See the probe below.
+ */
+export const PROBE_PARKS_BELIEVED_PER_DAY = 2
+export const PROBE_PARK_WINDOW_MS = 24 * 60 * 60_000
+export const PROBE_PARK_AUDIT = 'attempt.parked.page-gone-unseen'
+
 /** The row `deliverWaiting` loads and `sendNow` loads: an attempt with its pair, sender and target. */
 export type WaitingAttempt = Prisma.OutreachAttemptGetPayload<{
   include: { pair: { include: { sender: true; target: true } } }
@@ -617,23 +627,44 @@ export async function deliverOne(a: {
      *
      * Asked for the Send button too (Stage 1.3): a press at a deleted page is the same minute of
      * browser activity from a revenue account for nothing.
+     *
+     * AND THE LOOKUP IS BELIEVED ONLY AT THE RATE PAGES REALLY DISAPPEAR (18 Nov 2026). That day
+     * the sending Mac parked 40 of 40 introductions here in minutes: Instagram had begun answering
+     * this lookup 404 for real pages. Two deleted pages were met in the three thousand sends before
+     * it, so a lookup calling page after page gone is reporting on itself. `probeHandle` now asks a
+     * control before it says `missing`; this is the second net, for an endpoint that serves the
+     * control and is still wrong about a class of pages. At most `PROBE_PARKS_BELIEVED_PER_DAY`
+     * drafts may be parked on its word in any 24 hours, fleet-wide (the audit rows are shared by
+     * every Mac and survive a restart); past that the BROWSER decides — one look, and the drive's
+     * own `profile-gone` parks a page that is really gone.
      */
     const probe = await probeHandle(target.handle)
     if (probe.check === 'missing') {
-      const error = `@${target.handle}'s Instagram page no longer exists (anonymous probe: not found) — nothing was driven`
-      await prisma.outreachAttempt.update({
-        where: { id: attempt.id },
-        data: { status: 'FAILED', failureCode: 'profile-gone', error, attempts: MAX_DELIVERY_ATTEMPTS },
+      const parkedOnItsWord = await prisma.auditLog.count({
+        where: { action: PROBE_PARK_AUDIT, at: { gte: new Date(Date.now() - PROBE_PARK_WINDOW_MS) } },
       })
-      await settleClaims(claim.held, { delivered: false, failureCode: 'profile-gone' })
-      log.warn("the recipient's page is gone — parked without a browser drive", { pair: pairKey })
-      return failed({
-        ladder: 'probe-gone',
-        failureCode: 'profile-gone',
-        parked: true,
-        detail: error,
-        attempts: MAX_DELIVERY_ATTEMPTS,
-      })
+      if (parkedOnItsWord >= PROBE_PARKS_BELIEVED_PER_DAY) {
+        log.alarm('the anonymous lookup keeps calling pages gone — no longer believed today; the browser will look', {
+          pair: pairKey,
+          parkedOnItsWordIn24h: parkedOnItsWord,
+        })
+      } else {
+        const error = `@${target.handle}'s Instagram page no longer exists (anonymous probe: not found) — nothing was driven`
+        await prisma.outreachAttempt.update({
+          where: { id: attempt.id },
+          data: { status: 'FAILED', failureCode: 'profile-gone', error, attempts: MAX_DELIVERY_ATTEMPTS },
+        })
+        await settleClaims(claim.held, { delivered: false, failureCode: 'profile-gone' })
+        await audit(actor, PROBE_PARK_AUDIT, `OutreachAttempt:${attempt.id}`, error)
+        log.warn("the recipient's page is gone — parked without a browser drive", { pair: pairKey })
+        return failed({
+          ladder: 'probe-gone',
+          failureCode: 'profile-gone',
+          parked: true,
+          detail: error,
+          attempts: MAX_DELIVERY_ATTEMPTS,
+        })
+      }
     }
 
     /**
