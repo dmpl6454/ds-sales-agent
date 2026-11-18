@@ -7,6 +7,8 @@ import { buildAnalyticsCharts } from '../view-model/charts'
 import { CoverageNote } from '../coverage'
 import { SentList } from '../messages/sent'
 import { buildSentHistory } from '../view-model/sent-history'
+import { buildTodayBySender } from '../view-model/today-by-sender'
+import { istDayStart, istTimeKey } from '@/lib/time'
 import { ExportPanel } from './export-panel'
 import { prisma } from '@/lib/db'
 import { fleetUsage } from '@/outreach/reservations'
@@ -84,6 +86,12 @@ export default async function AnalyticsPage({
   const sentPage = Number.parseInt(sent ?? '1', 10)
   const senderFilter = from && senderHandleLooksReal(from) ? from : null
 
+  /* ONE clock for the day (review, 18 Nov): `fleetUsage` and the Today section must agree on which midnight. Read
+     separately, a few seconds apart, the last render before midnight IST said "312 have gone out" over rows from the
+     new, empty day. */
+  const now = new Date()
+  const dayStart = istDayStart(now)
+
   const [v, c, charts, usage, history, senderRows, sentBySender, repliedBySender] = await Promise.all([
     buildTodayView(),
     buildConversationsPage(),
@@ -101,7 +109,7 @@ export default async function AnalyticsPage({
      * different rule than the dispatcher, and the IST boundary is the part that is easy to
      * get wrong (the Linode is not on IST). Two cheap counts, inside the existing Promise.all.
      */
-    fleetUsage(),
+    fleetUsage(now),
     /* The whole delivered history, a page at a time — see view-model/sent-history.ts. */
     /* `?to=` is the recipient filter (2026-09-04) — normalised and bounded inside the builder,
        like `?from=` above; a term too short to mean anything becomes no filter, never an error. */
@@ -125,6 +133,16 @@ export default async function AnalyticsPage({
     }),
   ])
   const senderHandles = senderRows.map((s) => s.handle)
+
+  /*
+    TODAY, BY SENDING PAGE (18 Nov 2026) — after the Promise.all because it takes two of its results: the uncapped
+    day total from `fleetUsage` (so the section cannot report the day by a different rule than the pacing guard),
+    and the sender handles already read for the filter. Three queries of its own, in parallel.
+  */
+  const today = await buildTodayBySender({ dayStart, deliveredToday: usage.today, senders: senderRows })
+  const topToday = Math.max(0, ...today.pages.map((p) => p.sent))
+  /* Open every page's list on an ordinary day; on a big one, the counts on the closed rows are the summary. */
+  const openToday = today.shown <= 40
 
   /**
    * ── WHO EACH PAGE HAS ACTUALLY WRITTEN TO (2026-08-25, Tabish) ───────────
@@ -178,9 +196,116 @@ export default async function AnalyticsPage({
       {/* Sends land every minute; keep the counts fresh without a manual reload. */}
       <AutoRefresh seconds={45} />
       <div className="page">
-        <PageHead title="Analytics" sub="Last 7 days, and the whole history underneath." />
+        <PageHead title="Analytics" sub="Today, the last 7 days, and the whole history underneath." />
+
+        {/*
+          TODAY, BY SENDING PAGE (18 Nov 2026, Sudhanshu: "add todays insight in the insight also which profile
+          message was sent from").
+
+          The tiles below are a rolling SEVEN DAYS and "By sender" is LIFETIME, so what went out today — and from
+          which of our pages — was one sentence with no breakdown. It is the first section now: one row per page,
+          the messages it delivered today underneath with the recipient, the time and the thread.
+
+          The day's total still comes from `fleetUsage` (`usage.today`), the uncapped count the pacing guard reads —
+          never from the rows listed, which are bounded (`TODAY_ROWS_CAP`), and the section says so when the bound
+          binds. `{' '}` after every expression whose text continues on the next line: a dropped space has reached a
+          live dashboard five times here ("768requests", "16 companys", "watch2 channels").
+        */}
+        <section id="today">
+          <h2>Today, by sending page</h2>
+          <p className="blurb">
+            Since midnight IST, <strong>{usage.today}</strong>{' '}
+            {usage.today === 1 ? 'message has' : 'messages have'} gone out
+            {/* Only when it is a SUBSET: "1 message has gone out, 1 of them in this hour" is clumsy at 1 and
+                redundant whenever the hour and the day are the same number. */}
+            {usage.thisHour > 0 && usage.thisHour < usage.today ? (
+              <>, {usage.thisHour} of them in this hour</>
+            ) : null}
+            .
+            {/* FOUND, not "arrived": a reply is dated here by when the reply check recorded it, and the check can
+                reach a conversation weeks after the answer was written (review, 18 Nov). */}
+            {today.repliesFound > 0 ? (
+              <>
+                {' '}
+                The reply check found <span className="note-good">{today.repliesFound}</span>{' '}
+                {today.repliesFound === 1 ? 'reply' : 'replies'} today.
+              </>
+            ) : null}
+            {/* The day's drafts that did NOT go out. On 18 Nov that was all forty, and a section that said only
+                "0 messages have gone out" read as a quiet day. */}
+            {today.stopped > 0 ? (
+              <>
+                {' '}
+                <strong>{today.stopped}</strong> {today.stopped === 1 ? 'draft' : 'drafts'} queued today did not go
+                out — stopped by a rule or a failure; the Autopilot page says why.
+              </>
+            ) : null}
+          </p>
+          {today.pages.length === 0 ? (
+            <p className="empty">Nothing has gone out since midnight IST, and no message is waiting.</p>
+          ) : (
+            <div className="rows">
+              {today.pages.map((p) => {
+                const pct = topToday > 0 ? Math.round((p.sent / topToday) * 100) : 0
+                return (
+                  <details className="sender-row" key={p.handle} open={openToday && p.messages.length > 0}>
+                    <summary>
+                      <div className="sender-row-head">
+                        <span>@{p.handle}</span>
+                        <span className="muted">
+                          <strong>{p.sent}</strong> sent today &middot;{' '}
+                          <span className="note-good">{p.repliesFound}</span>{' '}
+                          {p.repliesFound === 1 ? 'reply' : 'replies'} found &middot; {p.waiting} waiting
+                          {p.stopped > 0 ? <> &middot; {p.stopped} did not go out</> : null}
+                          {p.lastSentAt ? <> &middot; last {istTimeKey(p.lastSentAt)}</> : null}
+                        </span>
+                      </div>
+                      <div className="meter">
+                        <span className="meter-fill" style={{ width: `${pct}%` }} />
+                      </div>
+                    </summary>
+                    {p.messages.length === 0 ? (
+                      <p className="blurb">Nothing delivered from this page yet today.</p>
+                    ) : (
+                      <div className="rows today-msgs">
+                        {p.messages.map((m) => (
+                          <div className="rowitem" key={m.id}>
+                            <span className="mono dim" style={{ width: 52, flex: '0 0 auto' }}>
+                              {istTimeKey(m.sentAt)}
+                            </span>
+                            <span>
+                              to @{m.targetHandle}{' '}
+                              {m.followUp && <span className="chip chip-soft">follow-up</span>}{' '}
+                              {m.replied && <span className="chip chip-soft">replied</span>}
+                            </span>
+                            <span style={{ marginLeft: 'auto' }}>
+                              {m.threadUrl ? (
+                                <a href={m.threadUrl} target="_blank" rel="noreferrer">
+                                  open
+                                </a>
+                              ) : (
+                                <span className="muted">no thread link</span>
+                              )}
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </details>
+                )
+              })}
+            </div>
+          )}
+          {today.capped ? (
+            <p className="muted">
+              The counts above cover all {today.total} messages delivered today; the lists under them show the newest{' '}
+              {today.shown}. Every message is in the history and the export further down.
+            </p>
+          ) : null}
+        </section>
 
         <section>
+          <h2>Last 7 days</h2>
           {/*
             FOUR CARDS, not four bare figures. The design gives each its own surface, and
             two of them their own colour: messages sent is the gradient this product uses
@@ -207,36 +332,6 @@ export default async function AnalyticsPage({
               </span>
             </div>
           </div>
-          {/*
-            EVERY STAT ABOVE IS SEVEN DAYS, AND TODAY IS STATED SEPARATELY.
-
-            One sentence rather than a fifth tile: `.grid-4` is a hard `repeat(4, 1fr)` that
-            cannot collapse, so a fifth column would scroll the page sideways at 800px — the
-            defect `pnpm ig:layout` caught on `.grid-2` and the history table. It is also the
-            cheaper answer to numeral bloat: this page was halved once by removing figures.
-
-            `{' '}` between every expression and the following text, because a text node that
-            CONTINUES onto the next line loses the space — five instances of that have reached
-            a live dashboard here ("768requests", "16 companys", "watch2 channels").
-          */}
-          {/*
-            NO "Last 7 days." PREFIX: the page subtitle two lines above already reads
-            "Last 7 days, and the whole history underneath", and the four tiles it
-            qualifies sit between them. This sentence is about TODAY, which is the one
-            window the tiles do not cover.
-          */}
-          <p className="blurb">
-            Since midnight IST, <strong>{usage.today}</strong>{' '}
-            {usage.today === 1 ? 'message has' : 'messages have'} gone out
-            {/* Only when it is a SUBSET: "1 message has gone out, 1 of them in this hour" is
-                what reading the rendered line looks like otherwise — clumsy at 1, and simply
-                redundant whenever the hour and the day are the same number. */}
-            {usage.thisHour > 0 && usage.thisHour < usage.today ? (
-              <>, {usage.thisHour} of them in this hour</>
-            ) : null}
-            .
-          </p>
-
         </section>
 
         <section>

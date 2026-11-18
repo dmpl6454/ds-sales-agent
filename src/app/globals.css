@@ -2679,6 +2679,10 @@ input[type='text'], input[type='search'], input[type='email'], input[type='passw
 .sender-row > summary::-webkit-details-marker { display: none; }
 .sender-row > summary:hover { background: color-mix(in oklch, var(--accent) 6%, transparent); }
 .sender-row > .blurb { margin: 0; padding: 0 18px 12px; font-size: 11.5px; color: var(--text-dim); }
+/* Today's messages under a page (/analytics, 18 Nov 2026): the same rows as everywhere, a step tighter, so a
+   page with forty sends today stays a list rather than a wall. */
+.sender-row > .today-msgs { padding: 0 0 8px; }
+.sender-row > .today-msgs > .rowitem { padding-top: 4px; padding-bottom: 4px; font-size: 12px; }
 .sender-row-head {
   display: flex;
   align-items: baseline;

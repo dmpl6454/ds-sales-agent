@@ -92,6 +92,56 @@ is redundant by construction. **Neither script has run on the box when this was 
 waiting. The cause is confirmed by production data; whether the Mac script had been run was not
 visible from the server, which is the gap `--test` closes.
 
+**THE MAC IS FIXED — MEASURED ON THE BOX, 18 NOV 12:49 IST.** `requeue-shelved.sh --test` returned
+@bollywoodsocietyy → @sonytvofficial and it was DELIVERED in about 130 s (the one returned earlier by
+hand had been delivered too). The patched lookup has no way left to shelve on a 404, so a fixed Mac
+cannot produce a new probe park; the count read 43 rather than 41 only because the script counts
+since 16 Nov where the earlier check counted 24 hours. `--run` then returned 8 at 12:54; the rest go
+in batches, at most 10 an hour.
+
+**A REVIEW OF BOTH SCRIPTS (two reviewers, each finding re-run by a skeptic) found two real defects in
+the box script while it was in use, both fixed in `27def20` before the next batch:**
+
+| finding | now |
+|---|---|
+| **HIGH:** a draft was returned whatever its company had done since it was written — and these are introductions. A company that replied to ANOTHER page meanwhile would get one: the server withdraws such a draft (H5) only every 15 minutes and only while it waits, and the Mac's 10 Sept gate has no H5 stop | a company with a reply recorded on ANY row, any date, is never returned; look mode names any draft already returned to such a company, so a person reads that conversation |
+| a dashboard re-queue (same audit action, an email as actor) of a held draft became the draft `--test` watched forever, and `--run` stayed locked | only this script's own returns count (`actor = 'console:root'`) |
+| low: the hourly pace counted RETURNS — a batch that waited 50 minutes then drained let the next out at minute 61, ~20 from one account in 20 minutes | the pace counts a returned draft until an hour after the later of its return and its DELIVERY |
+
+And in the Mac script: **its restart now needs Autopilot OFF** (`DS_AUTOPILOT_OFF=1`) — the Chrome
+check cannot see a send's first seconds (the 10 Sept build claims the draft, takes its reservations and
+asks the 12 s lookup BEFORE Chrome opens), and a restart in that gap leaves a row the old build parks as
+`not-in-thread`; a second `--undo` after a refused restart now finishes it instead of saying "nothing to
+undo"; `--undo` refuses a backup that is not this file with the one line put back; it refuses `sudo`.
+The fix had already been applied without the Autopilot step, so whether that restart left a false
+`not-in-thread` park is a fact for the box (`today.sh`, the "failed" column). 36 checks on the box
+script and 26 in a fake Mac home; every new guard broken on purpose and seen red. **The Mac script has
+still never run on macOS by anyone but the operator.**
+
+**"Today, by sending page" (Sudhanshu: *"add todays insight in the insight also which profile message
+was sent from"*).** `/analytics` stated today's TOTAL in one sentence and every per-page figure on it
+was LIFETIME. It now OPENS with a section of its own: one row per page — sent today, replies found
+today, waiting now, drafts queued today that did not go out, last send — with that page's messages
+underneath (recipient, time, follow-up/replied chips, thread link). `buildTodayBySender`, five queries
+whatever the fleet size, through `memoView`. A review (two lenses, a skeptic per finding) changed four
+things before it shipped, each now tested and broken on purpose:
+
+| first version | now |
+|---|---|
+| per-page counts summed the 400-row LIST, so on a big day a page that sent only in the morning vanished | counts from an uncapped group-by; only the lists are capped, and the section says so |
+| "N replies have come in" — a reply is dated by when the reply check RECORDED it, which can be weeks late | "the reply check found N replies today" |
+| the day total (`fleetUsage`) and the rows read two clocks; the last render before midnight IST said "312 have gone out" over the new day's empty rows | ONE `now` and one midnight IST handed to both |
+| the 18 Nov morning itself (40 written, 40 stopped, 0 sent) read "nothing has gone out" | "N drafts queued today did not go out", per page too (by `queuedAt` — nothing records when a draft failed) |
+
+Kept, after weighing it: the follow-up chip is THIS PAGE's second or later message (`touchNumber > 1`),
+the rule the history table on the same page uses — a page's first message to a company that answered
+another page carries the follow-up copy and is not chipped. Rendered from a production build against a
+scratch Postgres at 1440 and 390 px, and `pnpm ig:layout` passed every page (`/analytics` 40/125
+queries). **IT DOES NOT REACH THE HOSTED DASHBOARD YET**: the web tier is an old build and a web deploy
+still needs a Mac holding the management key. Until then `scripts/today.sh` (read-only, on the box)
+prints the same, with its columns named for exactly what they count (`nth_from_page`,
+`failed_queued_today`, `replies_found`).
+
 **And in the code (`8859e21`), so no later build repeats it:**
 
 | | |

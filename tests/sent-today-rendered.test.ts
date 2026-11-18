@@ -90,7 +90,8 @@ describe('and it reaches a screen', () => {
   it('analytics states the day separately, from fleetUsage', () => {
     const src = read(ANALYTICS)
     expect(src).toMatch(/from '@\/outreach\/reservations'/)
-    expect(src).toMatch(/fleetUsage\(\)/)
+    /* `fleetUsage(now)` since 18 Nov: the page passes ONE clock to it and to the Today section. */
+    expect(src).toMatch(/fleetUsage\((now)?\)/)
     expect(src).toMatch(/\{usage\.today\}/)
   })
 

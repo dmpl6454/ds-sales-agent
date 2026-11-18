@@ -10,7 +10,16 @@
 # it from the database directly. It writes nothing (every statement runs inside BEGIN READ ONLY) and prints no secret.
 #
 # "Today" is since midnight IST, the boundary the pacing rules use. Delivered = SENT or REPLIED (a message that was
-# answered stays delivered). A reply is counted on the day we SAW it; the time it was written is shown beside it.
+# answered stays delivered). A reply is counted on the day the reply check FOUND it, which can be weeks after it was
+# written; the written time is shown beside it.
+#
+# Two labels to read exactly (review, 18 Nov):
+#   nth_from_page   the message's place in THIS PAGE's history with that company — 1 is this page's first. A page's
+#                   first message to a company that already answered ANOTHER page carries the follow-up text, so 1 is
+#                   not "an introduction"; it is "this page had not written to them before".
+#   failed_*        drafts FAILED whose queuedAt is today. queuedAt is when a draft was written or last re-queued after
+#                   a retryable failure — nothing records when it failed — so a draft written yesterday and shelved
+#                   today is not counted, and one written days ago that failed again today may be.
 set -uo pipefail
 
 MODE="${1:-}"
@@ -33,20 +42,20 @@ echo
 echo "== Today, all pages =="
 run "SELECT to_char((now() AT TIME ZONE 'UTC') + $IST, 'DD Mon HH24:MI') || ' IST' AS now,
   (SELECT count(*) FROM \"OutreachAttempt\" WHERE status IN ('SENT','REPLIED') AND \"sentAt\" >= $DAY) AS delivered,
-  (SELECT count(*) FROM \"OutreachAttempt\" WHERE status IN ('SENT','REPLIED') AND \"sentAt\" >= $DAY AND \"touchNumber\" = 1) AS first_messages,
-  (SELECT count(*) FROM \"OutreachAttempt\" WHERE status IN ('SENT','REPLIED') AND \"sentAt\" >= $DAY AND \"touchNumber\" > 1) AS follow_ups,
-  (SELECT count(*) FROM \"OutreachAttempt\" WHERE \"repliedAt\" >= $DAY) AS replies_seen,
+  (SELECT count(*) FROM \"OutreachAttempt\" WHERE status IN ('SENT','REPLIED') AND \"sentAt\" >= $DAY AND \"touchNumber\" = 1) AS first_from_page,
+  (SELECT count(*) FROM \"OutreachAttempt\" WHERE status IN ('SENT','REPLIED') AND \"sentAt\" >= $DAY AND \"touchNumber\" > 1) AS again_from_page,
+  (SELECT count(*) FROM \"OutreachAttempt\" WHERE \"repliedAt\" >= $DAY) AS replies_found,
   (SELECT count(*) FROM \"OutreachAttempt\" WHERE status IN ('READY','QUEUED','SENDING')) AS waiting_now,
-  (SELECT count(*) FROM \"OutreachAttempt\" WHERE status = 'FAILED' AND \"queuedAt\" >= $DAY) AS failed_written_today;"
+  (SELECT count(*) FROM \"OutreachAttempt\" WHERE status = 'FAILED' AND \"queuedAt\" >= $DAY) AS failed_queued_today;"
 echo
 
 echo "== By sending page (pages with anything today, or a message waiting) =="
 run "SELECT '@' || s.handle AS page,
   count(*) FILTER (WHERE a.status IN ('SENT','REPLIED') AND a.\"sentAt\" >= $DAY) AS delivered,
-  count(*) FILTER (WHERE a.status IN ('SENT','REPLIED') AND a.\"sentAt\" >= $DAY AND a.\"touchNumber\" > 1) AS of_them_follow_ups,
-  count(*) FILTER (WHERE a.\"repliedAt\" >= $DAY) AS replies_seen,
+  count(*) FILTER (WHERE a.status IN ('SENT','REPLIED') AND a.\"sentAt\" >= $DAY AND a.\"touchNumber\" > 1) AS of_them_again,
+  count(*) FILTER (WHERE a.\"repliedAt\" >= $DAY) AS replies_found,
   count(*) FILTER (WHERE a.status IN ('READY','QUEUED','SENDING')) AS waiting_now,
-  count(*) FILTER (WHERE a.status = 'FAILED' AND a.\"queuedAt\" >= $DAY) AS failed,
+  count(*) FILTER (WHERE a.status = 'FAILED' AND a.\"queuedAt\" >= $DAY) AS failed_queued_today,
   coalesce(to_char(max(a.\"sentAt\") FILTER (WHERE a.status IN ('SENT','REPLIED') AND a.\"sentAt\" >= $DAY) + $IST, 'HH24:MI'), '-') AS last_sent
 FROM \"OutreachAttempt\" a JOIN \"SenderAccount\" s ON s.id = a.\"senderId\"
 GROUP BY s.handle
@@ -62,14 +71,14 @@ else
   echo "== Delivered today, newest first =="
 fi
 run "SELECT to_char(a.\"sentAt\" + $IST, 'HH24:MI') AS at, '@' || s.handle AS from_page, '@' || t.handle AS to_company,
-  CASE WHEN a.\"touchNumber\" > 1 THEN 'follow-up' ELSE 'first' END AS message,
+  a.\"touchNumber\" AS nth_from_page,
   CASE WHEN a.status = 'REPLIED' OR a.\"repliedAt\" IS NOT NULL THEN 'replied' ELSE '' END AS reply
 FROM \"OutreachAttempt\" a JOIN \"SenderAccount\" s ON s.id = a.\"senderId\" JOIN \"TargetAccount\" t ON t.id = a.\"targetId\"
 WHERE a.status IN ('SENT','REPLIED') AND a.\"sentAt\" >= $DAY
 ORDER BY a.\"sentAt\" DESC, a.id LIMIT $LIMIT;"
 echo
 
-echo "== Replies seen today =="
+echo "== Replies the reply check found today (with when each was written) =="
 run "SELECT to_char(a.\"repliedAt\" + $IST, 'HH24:MI') AS seen, '@' || t.handle AS company, 'to @' || s.handle AS page,
   coalesce('written ' || to_char(a.\"replyPostedAt\" + $IST, 'DD Mon HH24:MI'), 'written: not dated') AS written,
   coalesce(left(regexp_replace(a.\"replyText\", '[[:space:]]+', ' ', 'g'), 70), '(no text)') AS says
