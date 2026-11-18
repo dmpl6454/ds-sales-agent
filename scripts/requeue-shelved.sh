@@ -15,8 +15,15 @@
 #
 # WHAT IT RETURNS, and only this: a draft that is FAILED + profile-gone + whose error says "anonymous probe: not found"
 # (so a page the BROWSER saw gone is never returned) + written since 16 Nov + to a recipient not retired since +
-# whose company has exactly ONE such draft and no other message waiting, being sent, delivered or possibly delivered
-# since 16 Nov. Anything else is counted and left for a person.
+# whose company has exactly ONE such draft, has NEVER replied to any of our pages (on any row, at any date), and has no
+# other message waiting, being sent, delivered or possibly delivered since 16 Nov. Anything else is counted and left for
+# a person.
+#
+# THE REPLY CLAUSE IS LOAD-BEARING (review, 18 Nov). These drafts are INTRODUCTIONS, written while the company had never
+# replied. The server withdraws an introduction to a company that has since replied (H5) — but only every 15 minutes,
+# and only while the draft is waiting; the sending Mac's 10 Sept build has no such stop and halts a reply per PAIR only.
+# Returning one to a company that answered another page meanwhile would put a cold introduction into a live
+# conversation within a minute.
 #
 # WHAT RETURNING DOES: exactly what the dashboard's own re-queue does (requeueParkedAttempt) — status READY, tries 0,
 # error and failure code cleared — plus one `attempt.requeued` audit row per draft. Its place in the queue is unchanged.
@@ -68,18 +75,19 @@ WITH parks AS (
       SELECT 1 FROM "OutreachAttempt" o
       WHERE o."targetId" = p."targetId" AND o.id <> p.id AND (
         o.status IN ('READY','QUEUED','SENDING')
+        OR o."repliedAt" IS NOT NULL OR o."replyPostedAt" IS NOT NULL
         OR (o.status IN ('SENT','REPLIED') AND coalesce(o."sentAt", o."queuedAt") > timestamp '$FLOOR')
         OR (o.status = 'FAILED' AND o."failureCode" = 'not-in-thread' AND o."queuedAt" > timestamp '$FLOOR')))
 ), ret AS (
   SELECT l.at, o.id, o.status, o."failureCode" AS code, o.error, o."sentAt"
   FROM "AuditLog" l JOIN "OutreachAttempt" o ON o.id = substr(l.entity, 17)
-  WHERE l.action = 'attempt.requeued' AND l.at > timestamp '$FLOOR'
+  WHERE l.action = 'attempt.requeued' AND l.actor = 'console:root' AND l.at > timestamp '$FLOOR'
 )
 SQLEND
 
 # shelved | may be returned | returned so far | of those delivered | of those waiting | of those shelved again
-# | DRAFTS returned in the last 60 min and not shelved again (a draft returned twice counts once: the pace is about
-# messages that go out) | 1 = the Mac is not sending properly: of the returned drafts that have settled, the one returned
+# | DRAFTS counted against the pace: returned in the last 60 min and not shelved again, or DELIVERED in the last 60 min
+# whenever returned (a draft returned twice counts once: the pace is about messages that go out) | 1 = the Mac is not sending properly: of the returned drafts that have settled, the one returned
 # LAST was shelved again (compared on the time each was RETURNED — a park carries no time of its own — and a tie,
 # which is one batch, counts as shelved: the refusing direction)
 STATE_SQL="$CTE SELECT (SELECT count(*) FROM parks), (SELECT count(*) FROM cand),
@@ -87,7 +95,7 @@ STATE_SQL="$CTE SELECT (SELECT count(*) FROM parks), (SELECT count(*) FROM cand)
   (SELECT count(DISTINCT id) FROM ret WHERE status IN ('SENT','REPLIED')),
   (SELECT count(DISTINCT id) FROM ret WHERE status IN ('READY','QUEUED','SENDING')),
   (SELECT count(DISTINCT id) FROM ret WHERE status = 'FAILED' AND code = 'profile-gone' AND error LIKE '$PROBE'),
-  (SELECT count(DISTINCT id) FROM ret WHERE at > (now() AT TIME ZONE 'UTC') - interval '60 minutes' AND status <> 'FAILED'),
+  (SELECT count(DISTINCT id) FROM ret WHERE (at > (now() AT TIME ZONE 'UTC') - interval '60 minutes' AND NOT (status = 'FAILED' AND code = 'profile-gone' AND error LIKE '$PROBE')) OR \"sentAt\" > (now() AT TIME ZONE 'UTC') - interval '60 minutes'),
   (SELECT CASE WHEN max(at) FILTER (WHERE status = 'FAILED' AND code = 'profile-gone' AND error LIKE '$PROBE') >=
                coalesce(max(at) FILTER (WHERE status IN ('SENT','REPLIED')), timestamp '2000-01-01') THEN 1 ELSE 0 END FROM ret),
   to_char((now() AT TIME ZONE 'UTC') + interval '330 min', 'DD Mon HH24:MI');"
@@ -126,7 +134,7 @@ return_drafts() {
   out="$(q "BEGIN; SELECT pg_advisory_xact_lock(1811202601); $CTE, lim AS (
       SELECT greatest(0, least($n,
         $BATCH - (SELECT count(DISTINCT id) FROM ret WHERE status IN ('READY','QUEUED','SENDING')),
-        $PER_HOUR - (SELECT count(DISTINCT id) FROM ret WHERE at > (now() AT TIME ZONE 'UTC') - interval '60 minutes' AND status <> 'FAILED'))) AS n
+        $PER_HOUR - (SELECT count(DISTINCT id) FROM ret WHERE (at > (now() AT TIME ZONE 'UTC') - interval '60 minutes' AND NOT (status = 'FAILED' AND code = 'profile-gone' AND error LIKE '$PROBE')) OR \"sentAt\" > (now() AT TIME ZONE 'UTC') - interval '60 minutes'))) AS n
     ), pick AS (
       SELECT a.id FROM \"OutreachAttempt\" a JOIN cand c ON c.id = a.id ORDER BY a.\"queuedAt\", a.id LIMIT (SELECT n FROM lim) FOR UPDATE OF a
     ), upd AS (
@@ -153,6 +161,18 @@ if [[ "$MODE" == "look" ]]; then
     show "$CTE SELECT '      @' || s.handle || ' to @' || t.handle FROM parks p JOIN \"OutreachAttempt\" a ON a.id = p.id JOIN \"SenderAccount\" s ON s.id = a.\"senderId\" JOIN \"TargetAccount\" t ON t.id = a.\"targetId\" WHERE p.id NOT IN (SELECT id FROM cand) ORDER BY 1 LIMIT 12;"
     say ""
   fi
+  # Returned before the reply rule existed (18 Nov, review): a company that answered one of our OTHER pages should
+  # never have been sent an introduction. Listed so a person reads those conversations; nothing here can unsend one.
+  KNOWN="$(q "$CTE SELECT '      @' || s.handle || ' to @' || t.handle || ' (' || r.status || ') — they replied to @' || s2.handle ||
+      coalesce(', written ' || to_char(o2.\"replyPostedAt\" + interval '330 min', 'DD Mon HH24:MI'), '') || ' IST'
+    FROM (SELECT DISTINCT id, status FROM ret) r JOIN \"OutreachAttempt\" a ON a.id = r.id
+    JOIN \"SenderAccount\" s ON s.id = a.\"senderId\" JOIN \"TargetAccount\" t ON t.id = a.\"targetId\"
+    JOIN \"OutreachAttempt\" o2 ON o2.\"targetId\" = a.\"targetId\" AND o2.id <> a.id AND (o2.\"repliedAt\" IS NOT NULL OR o2.\"replyPostedAt\" IS NOT NULL)
+    JOIN \"SenderAccount\" s2 ON s2.id = o2.\"senderId\" ORDER BY 1 LIMIT 12;")" || db_fail
+  if [[ -n "$KNOWN" ]]; then
+    say "   returned drafts whose company has a reply recorded to ANOTHER of our pages — read these conversations:"
+    say "$KNOWN"
+  fi
   say "-- looked only; nothing was changed. Next: bash $0 --test"
   exit 0
 fi
@@ -164,7 +184,7 @@ if [[ "$MODE" == "--test" ]]; then
     say "   a returned draft is already waiting ($(describe "$ID")) — watching that one; nothing new was returned"
   else
     (( ELIGIBLE > 0 )) || stop "there is no shelved draft this script may return. Nothing was changed."
-    (( LAST_HOUR < PER_HOUR )) || stop "$LAST_HOUR were returned in the last 60 minutes and the pace is $PER_HOUR an hour. Nothing was changed."
+    (( LAST_HOUR < PER_HOUR )) || stop "$LAST_HOUR returned drafts count against the pace (returned or delivered in the last 60 minutes) and the pace is $PER_HOUR an hour. Nothing was changed."
     ID="$(return_drafts 1 "$DETAIL")" || db_fail
     [[ -n "$ID" && "$ID" != *$'\n'* ]] || stop "no draft was returned (another run may have just returned one, or the pace is spent). Run this again with no option to see the state."
     say "   returned ONE draft to the queue: $(describe "$ID")"
@@ -216,8 +236,10 @@ ROOM=$((BATCH - WAITING)); ALLOWED=$((PER_HOUR - LAST_HOUR)); N=$ROOM
 (( ELIGIBLE < N )) && N=$ELIGIBLE
 if (( ROOM <= 0 )); then stop "$WAITING returned drafts are still waiting to go out — run this again when they have gone. Nothing was changed."; fi
 if (( ALLOWED <= 0 )); then
-  NEXT="$(q "$CTE SELECT to_char(min(at) + interval '60 minutes' + interval '330 min', 'HH24:MI') FROM ret WHERE at > (now() AT TIME ZONE 'UTC') - interval '60 minutes' AND status <> 'FAILED';")" || db_fail
-  stop "$LAST_HOUR were returned in the last 60 minutes and the pace is $PER_HOUR an hour. The next may be returned at about $NEXT IST. Nothing was changed."
+  # A counted draft stops counting an hour after the later of its return and its delivery; the next slot opens when
+  # the first of them does.
+  NEXT="$(q "$CTE SELECT to_char(min(greatest(at, coalesce(\"sentAt\", at))) + interval '60 minutes' + interval '330 min', 'HH24:MI') FROM ret WHERE (at > (now() AT TIME ZONE 'UTC') - interval '60 minutes' AND NOT (status = 'FAILED' AND code = 'profile-gone' AND error LIKE '$PROBE')) OR \"sentAt\" > (now() AT TIME ZONE 'UTC') - interval '60 minutes';")" || db_fail
+  stop "$LAST_HOUR returned drafts count against the pace (returned or delivered in the last 60 minutes) and the pace is $PER_HOUR an hour. The next may be returned at about $NEXT IST. Nothing was changed."
 fi
 IDS="$(return_drafts "$N" "$DETAIL")" || db_fail
 COUNT="$(printf '%s' "$IDS" | grep -c . || true)"

@@ -7,6 +7,15 @@
 #   bash /tmp/ds-hotfix.sh --check     only report: is the fix in, is the agent running, is Chrome busy
 #   bash /tmp/ds-hotfix.sh --undo      put the original file back and restart the agent
 #
+# THE RESTART NEEDS AUTOPILOT OFF (since 18 Nov, after review): switch Autopilot OFF on the dashboard, wait a minute,
+# run with DS_AUTOPILOT_OFF=1 in front (for example  DS_AUTOPILOT_OFF=1 bash /tmp/ds-hotfix.sh --undo), and switch it
+# back ON after DONE. Without it the script changes the file and stops before the restart, saying so (exit 5). Never
+# with sudo: the agent's job belongs to the logged-in user.
+#
+# Exit: 0 done · 1 refused, nothing changed · 2 bad option, or run with sudo · 3 Chrome stayed busy (file changed, not
+# restarted — run again) · 4 no agent job, or the restart failed · 5 Autopilot not confirmed OFF (file changed, not
+# restarted — run again as above).
+#
 # WHAT WENT WRONG (measured 18 Nov 2026). Before every send the agent's 10 Sept build asks Instagram,
 # with no login, whether the recipient's page still exists (src/detection/exists.ts, added 9 Sept so
 # a deleted page costs no browser drive). A 404 is read as "the page is gone": the draft is parked
@@ -27,7 +36,9 @@
 # ONLY while no agent Chrome window is open (it asks the OS for a Chrome process using a profile
 # under ~/.ds-sales-agent/chrome-profiles — the same test the cache pruner uses), waiting up to ten
 # minutes, so a send or a conversation read is never cut off half-way. If Chrome stays busy the file
-# is still fixed and the script says so: run it again and it only does the restart.
+# is still fixed and the script says so: run it again and it only does the restart. The Chrome check
+# alone cannot see a send's first seconds (the draft is claimed and the lookup asked BEFORE Chrome
+# opens), which is why the restart also needs Autopilot off.
 #
 # It is a FILE run by bash, never a block pasted into zsh (see scripts/check-sending.sh for why).
 # It reads no secret and prints none: .env is never opened. The original file is kept at
@@ -53,6 +64,7 @@ OLD_LINE="  if (status === 404) return 'missing'"
 NEW_PREFIX="  if (status === 404) return 'unknown'"
 NEW_LINE="$NEW_PREFIX // HOTFIX 18 Nov 2026: Instagram's anonymous lookup answers 404 for real pages; the browser drive recognises a page that is really gone"
 MODE="${1:-apply}"
+MODE_ARG="${1:-}"
 
 say() { printf '%s\n' "$*"; }
 stop() { say ""; say "STOPPED: $*"; exit "${2:-1}"; }
@@ -92,6 +104,19 @@ file_state() {
 
 # Wait for no agent Chrome, then restart at once. Returns 0 restarted, 3 Chrome stayed busy, 4 no job.
 restart_agent() {
+  # AUTOPILOT OFF FIRST (review, 18 Nov). The Chrome check below cannot see a send in its first seconds: the 10 Sept
+  # build claims the draft (READY->SENDING), takes its reservations and asks the page lookup (up to 12 s) BEFORE it
+  # opens Chrome. A restart in that gap leaves the row SENDING, and the restarted agent parks it as "may have been
+  # delivered" (not-in-thread) — a message never sent, blocking that route until a person settles it, and counted by
+  # the fleet's circuit breaker. With Autopilot off that build claims nothing new (it re-reads the switch just before
+  # the claim) and its reply sweep stops too, so after a minute nothing is in flight.
+  if [ "${DS_AUTOPILOT_OFF:-}" != "1" ]; then
+    say "   NOT restarted yet: Autopilot must be switched OFF first, so that no message is half-way through being sent."
+    say "     1. On the dashboard, switch Autopilot OFF and wait one minute."
+    say "     2. Then run:   DS_AUTOPILOT_OFF=1 bash $0${MODE_ARG:+ $MODE_ARG}"
+    say "     3. When it says DONE, switch Autopilot back ON."
+    return 5
+  fi
   if ! job_exists; then
     say "   The agent's background job ($LABEL) is not registered for this user, so there is nothing to restart."
     say "   Start it from the app folder:  cd \"$APP\" && bash scripts/install-watch.sh install"
@@ -121,6 +146,9 @@ restart_agent() {
 }
 
 say "-- mac-hotfix-probe-404.sh ($MODE) — the anonymous 'does this page exist' lookup, 18 Nov 2026"
+if [ -n "${SUDO_USER:-}" ] && [ "$(id -u)" = "0" ]; then
+  stop "run this WITHOUT sudo, as the Mac user the agent runs as — its background job and its files belong to that user. Nothing was changed." 2
+fi
 [ -d "$APP" ] || stop "$APP not found. This runs on the Mac that sends (the one with the agent installed), not on the server."
 [ -f "$FILE" ] || stop "$FILE not found — this install has no anonymous lookup to fix."
 say "   install: $APP   build: $(cat "$APP/.version" 2>/dev/null || echo 'no .version file')"
@@ -149,12 +177,20 @@ else say "   the agent's log here shows no message parked as 'page is gone' (the
 if [ "$MODE" = "--check" ]; then say "-- check only; nothing was changed"; exit 0; fi
 
 if [ "$MODE" = "--undo" ]; then
-  [ "$STATE" = "fixed" ] || stop "the fix is not in the file, so there is nothing to undo."
-  [ -f "$BACKUP" ] || stop "no backup at $BACKUP — not guessing what the original was. Nothing was changed."
-  [ "$(grep -cxF -- "$OLD_LINE" "$BACKUP" 2>/dev/null || true)" = "1" ] || stop "the backup does not look like the original file. Nothing was changed."
-  cp "$BACKUP" "$FILE.hotfix.tmp" && mv -f "$FILE.hotfix.tmp" "$FILE" || stop "could not write $FILE. Nothing else was changed."
-  rm -f "$MARK"
-  say "   original file restored (sha256 $(sha_of "$FILE"))"
+  if [ "$STATE" = "original" ] && [ -f "$BACKUP" ] && cmp -s "$BACKUP" "$FILE"; then
+    # A previous --undo restored the file and its restart was refused (review, 18 Nov): only the restart is left.
+    say "   the original file is already back; only the restart is left"
+  else
+    [ "$STATE" = "fixed" ] || stop "the fix is not in the file, so there is nothing to undo."
+    [ -f "$BACKUP" ] || stop "no backup at $BACKUP — not guessing what the original was. Nothing was changed."
+    [ "$(grep -cxF -- "$OLD_LINE" "$BACKUP" 2>/dev/null || true)" = "1" ] || stop "the backup does not look like the original file. Nothing was changed."
+    # The backup must be THIS file with the one line put back. If the install was updated since the fix (a newer
+    # build carries the same line), restoring an older backup would silently replace the newer file (review, 18 Nov).
+    [ "$(diff "$BACKUP" "$FILE" | grep -c '^[<>]' || true)" = "2" ] || stop "the backup at $BACKUP is from an older install, not this file with one line changed. Not restoring it. Nothing was changed."
+    cp "$BACKUP" "$FILE.hotfix.tmp" && mv -f "$FILE.hotfix.tmp" "$FILE" || stop "could not write $FILE. Nothing else was changed."
+    rm -f "$MARK"
+    say "   original file restored (sha256 $(sha_of "$FILE"))"
+  fi
   restart_agent; rc=$?
   [ "$rc" = "0" ] && { say "-- DONE: the original lookup is back and the agent is running on it."; exit 0; }
   say "-- The file is restored but the agent still runs the FIXED copy until it restarts. Run:  bash $0 --undo   again."
