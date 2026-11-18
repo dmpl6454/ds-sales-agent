@@ -5,7 +5,7 @@ import { copyToClipboard } from '@/lib/clipboard'
 import { pasteShortcut } from '@/lib/platform'
 import { bodyAppearedSince, messageMatchesOurs } from '@/outreach/matching'
 import type { FailureCode } from '@/lib/constants'
-import { assertLoggedInAs, assertNoCheckpoint, assertNoEnforcement, launchProfile } from './session'
+import { assertLoggedInAs, assertNoCheckpoint, assertNoEnforcement, CheckpointError, launchProfile } from './session'
 import {
   clickMessageEntry,
   openThreadViaInbox,
@@ -92,6 +92,15 @@ async function browseBriefly(page: Page): Promise<void> {
 export async function sendDm(params: SendDmParams): Promise<SendDmResult> {
   const { senderHandle, targetHandle, body, dryRun } = params
   const context = await launchProfile(senderHandle)
+  /**
+   * Set the moment BEFORE Enter is pressed. From then on the recipient may have the message, so
+   * anything that interrupts the drive — Chrome closed under it, a page crash, a timeout reading
+   * the thread — is `not-in-thread` ("may have it", parked for a person), never the retryable
+   * `unknown` that would send the same message again. A checkpoint still propagates: what it says
+   * about the ACCOUNT outranks this, and the caller halts the account on it. (18 Nov 2026, the
+   * pre-update review of the Mac build.)
+   */
+  let enterPressed = false
 
   try {
     const page = context.pages()[0] ?? (await context.newPage())
@@ -286,6 +295,7 @@ export async function sendDm(params: SendDmParams): Promise<SendDmResult> {
     }
 
     // 7. Send.
+    enterPressed = true
     await page.keyboard.press('Enter')
     await jitter(1500, 2600)
     // Full check, not URL-only: "Action Blocked" is a modal on the same URL, and this is
@@ -374,7 +384,22 @@ export async function sendDm(params: SendDmParams): Promise<SendDmResult> {
     // person does, and the context needs to flush its profile writes anyway.
     await jitter(1200, 2400)
     return { ok: true, threadUrl }
+  } catch (err) {
+    if (enterPressed && !(err instanceof CheckpointError)) {
+      const why = err instanceof Error ? err.message : String(err)
+      log.warn('the drive was interrupted after the message was sent — parked as "may have it"', {
+        senderHandle,
+        targetHandle,
+        error: why,
+      })
+      return {
+        ok: false,
+        reason: `interrupted after pressing send (${why}) — the recipient may have it; check the conversation by hand`,
+        failureCode: 'not-in-thread',
+      }
+    }
+    throw err
   } finally {
-    await context.close()
+    await context.close().catch(() => {})
   }
 }

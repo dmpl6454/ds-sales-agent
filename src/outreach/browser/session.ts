@@ -153,6 +153,24 @@ export async function launchProfile(handle: string): Promise<BrowserContext> {
     viewport: null,
     // Only flags a real person's Chrome would also have. Nothing "stealthy".
     args: ['--no-first-run', '--no-default-browser-check'],
+    /**
+     * ── A PROCESS THAT DRAINS ON A SIGNAL OWNS THAT SIGNAL (18 Nov 2026) ──────────────────────
+     *
+     * Patchright's default is to close every browser the moment SIGTERM, SIGINT or SIGHUP arrives.
+     * The device agent (src/agent/main.ts) handles SIGINT and SIGTERM itself: nothing new starts,
+     * and it waits for the drive holding the send lock to finish. With the library's handler also
+     * installed, Chrome was closed UNDER that drive — between Enter and the thread check the drive
+     * then threw, and a throw used to be filed as a retryable failure, i.e. the same message sent
+     * again by the next process. (sendDm now files any interruption after Enter as `not-in-thread`;
+     * this removes the interruption.) Found by the pre-update review of the Mac build.
+     *
+     * So the library keeps its handler only where the process has none of its own — a script
+     * killed by a signal still closes its browser. Patchright's `exit` handler is installed either
+     * way, so a process that exits after draining still takes its Chrome with it.
+     */
+    handleSIGTERM: process.listenerCount('SIGTERM') === 0,
+    handleSIGINT: process.listenerCount('SIGINT') === 0,
+    handleSIGHUP: process.listenerCount('SIGHUP') === 0,
   })
 }
 
