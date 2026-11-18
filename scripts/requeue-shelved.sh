@@ -201,6 +201,9 @@ if [[ "$MODE" == "--test" ]]; then
       exit 4
     fi
     sleep "$POLL_SECONDS"; waited=$((waited + POLL_SECONDS))
+    # Seven silent minutes read as a hang. Stopping this watch (Ctrl-C) undoes nothing and harms nothing: the draft
+    # stays returned, and running --test again watches the same one.
+    if (( waited % 60 < POLL_SECONDS )); then say "   … $waited s: still $ST (tries $TRIES)"; fi
   done
 fi
 
