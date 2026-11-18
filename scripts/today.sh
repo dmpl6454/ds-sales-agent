@@ -20,7 +20,7 @@
 #   failed_*        drafts FAILED whose queuedAt is today. queuedAt is when a draft was written or last re-queued after
 #                   a retryable failure — nothing records when it failed — so a draft written yesterday and shelved
 #                   today is not counted, and one written days ago that failed again today may be.
-set -uo pipefail
+set -euo pipefail
 
 MODE="${1:-}"
 case "$MODE" in ''|--all) ;; *) echo "-- STOPPED: unknown option '$MODE' — use no option or --all"; exit 2 ;; esac
