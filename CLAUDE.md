@@ -5,6 +5,35 @@ changing anything that touches sending.
 
 ---
 
+## 21–25 NOVEMBER — THE MAC IS ON 1a47e2b, @bollywoodchronicle IS BACK UNDER A 20-A-DAY CAP, AND META'S OFFICIAL READ DOES NOT REPORT THE BADGE
+
+**Measured, not inferred — each line is from output the operator pasted:**
+
+| | |
+|---|---|
+| the Mac Studio | updated to **1a47e2b** from an UNSIGNED image built on itself (`DS_UNSIGNED_FOR_THIS_MAC=1 bash scripts/mac-build-dmg.sh 1a47e2b`). `check-sending.sh` read build 1a47e2b, agent and tunnel running, Autopilot on, this Mac selected, 0 SENDING, 0 parks in 3 days |
+| signing | still impossible here: the Mac holds only "Apple Development" and "Apple Distribution" identities. A shareable image needs a **Developer ID Application** certificate, which only the developer team's Account Holder can create, plus a `ds-notary` profile with a fresh app-specific password (three tries failed: a typo in the Apple ID, then a password Apple refused) |
+| the parked introductions | `requeue-shelved.sh --test` on the new build: **delivered in ~100 s**. 30 of 44 returned and delivered by 21 Nov; the last 14 were due by 25 Nov |
+| @rakeshmadha1 | its profile reads "Sorry, this page isn't available"; the reply sweep opened it from two revenue profiles every 30 min (~96 failed reads a day, half of each run's 4-read budget). **Retired 21 Nov.** The general fix — a dead page should rest the pair like `doorRefusals` does — is a queued task, not built |
+| the pace | **`fleetMaxPerDay` = 20, `fleetMaxPerHour` = 3** (Setting rows, `setting.changed` audit row, Sudhanshu, 23 Nov), set before signing in a page dormant since 22 Sept. Undo: delete the two rows. They bind EVERY page, the returned introductions included |
+| @bollywoodchronicle | **signed in on the Mac Studio, 25 Nov 18:10 IST** (`pnpm ig:login`, identity verified). ~490 companies it never wrote to; at 20/day about 25 days. Its conversations had not been read since September, so the sweep may now find replies nobody saw |
+
+**META'S OFFICIAL READ DOES NOT REPORT THE BLUE TICK — measured 25 Nov with `scripts/graph-badge-probe.sh` on the
+box.** For @netflix_in, @primevideoin, @sonytvofficial, @madaboutmarketingg and @bollywoodsocietyy the CONTROL read
+(`business_discovery … {username,name,followers_count}`) answered, and the same read with `is_verified` was refused
+`(#100) Tried accessing nonexisting field (is_verified)`. So the open question in the entry below is closed: Business
+Discovery cannot replace the anonymous feed as the source of the badge, and VERIFIED ONLY still cannot admit a new
+company unattended. What it DOES serve, for business and creator accounts only: the account's existence, its display
+name and its follower count — enough to confirm that a candidate handle is a real professional account with the
+expected name, never enough to admit it. Any admission without the badge reverses Tabish's 20 Aug rule (the
+@lego.mybrickhouse send is why it exists) and is his call; a person confirming the badge by eye keeps the rule.
+
+72. **Ask the API, not its documentation, and make the control read first.** "Not listed in the docs" was the state
+    for five weeks; one control read plus one field read settled it, and the control is what makes "refused" mean
+    "no such field" rather than "dead token".
+
+---
+
 ## 18 NOVEMBER, AFTERNOON — "ONLY 12 SENT": THE PAGES HAVE RUN OUT OF COMPANIES; AND WHAT A NEW MAC BUILD CARRIES
 
 **Asked: *"only 12 messages sent today"*, then *"give me updated signed dmg"*.** Measured on the box with
