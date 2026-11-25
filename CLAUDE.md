@@ -28,6 +28,12 @@ name and its follower count — enough to confirm that a candidate handle is a r
 expected name, never enough to admit it. Any admission without the badge reverses Tabish's 20 Aug rule (the
 @lego.mybrickhouse send is why it exists) and is his call; a person confirming the badge by eye keeps the rule.
 
+**Decided 25 Nov (Sudhanshu, of three options put to him): WAIT.** No human badge-check queue was built and VERIFIED
+ONLY was not relaxed. The anonymous doors retry themselves (one request per cooldown, at most an hour apart, per
+scope), and discovery and the badge door resume with no change the day Instagram answers again; `check-sending.sh`
+section H (`new_prospects_7d` above 0) is where that shows. Until then @bollywoodchronicle's ~490 is the volume. Do not
+re-propose the other two unprompted; they are recorded here if the answer changes.
+
 72. **Ask the API, not its documentation, and make the control read first.** "Not listed in the docs" was the state
     for five weeks; one control read plus one field read settled it, and the control is what makes "refused" mean
     "no such field" rather than "dead token".
