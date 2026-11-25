@@ -5,6 +5,44 @@ changing anything that touches sending.
 
 ---
 
+## 25 NOVEMBER, NIGHT — "TOO FEW MESSAGES, FIX IT URGENTLY": THE CAP IS TODAY'S LIMIT, AND TWO READ-ONLY PROBES ASK WHERE SUPPLY COULD COME FROM
+
+**Asked (Sudhanshu): *"fix this urgently and asap"* → *"Too few messages sent"*.** The WAIT decision in the entry
+below stands as recorded, but the operator wants volume, so the question was re-opened without relaxing anything.
+
+**What limits the count today is the cap, and it was said late.** `fleetMaxPerDay` = 20 and `fleetMaxPerHour` = 3 (set
+23 Nov on this session's advice) bind every page, and @bollywoodchronicle's ~490 introductions sit behind them — about
+25 days of work at 20 a day. So for two to three weeks MATERIAL is not the limit; the cap is. Raising it is the
+operator's decision (all of that volume comes from one account silent since 22 Sept): the advice given was a staged
+raise — 35 a day and 5 an hour after one clean day, never removal — and **nothing was changed when this was written.**
+Whether the ~490 are actually reachable is NOT measured: a `not-in-thread` park by any page refuses a turn pass for
+that company (rule 4), and 507 such parks held 434 companies on 18 Nov. `why-so-few.sh 4` (the planner's own skip
+reasons) and `explain-turn-pass.sh` are the measurement; `today.sh` shows what each page sent.
+
+**Built, both read-only, neither run against production when written:**
+
+| | |
+|---|---|
+| `scripts/embed-badge-probe.sh` | Mac AND box. Do Instagram's public embed pages (`/<handle>/embed/`, `/p/<shortcode>/embed/captioned/`) and Threads profile pages answer with no login — and do they carry the verified badge and a caption's @mentions? Controls first: two handles we hold as verified, two as not, one that does not exist; a door is a YES only when a verified page shows evidence an unverified page WITH real profile data does not. At most 12 plain GETs 2 s apart, no cookie kept or sent, redirects followed by hand only to instagram/threads hosts and never to a login page; a 429, 401, login page or `require_login` closes that door for the run. It prints what it SAW (tallies, words, one snippet a page), because the key names it looks for are from memory of older pages, not from observed bytes. 590 checks against a fake server under mawk, one-true-awk 20210215 (the macOS lineage) and gawk `--posix`; 25 guards each broken on purpose and seen red |
+| `scripts/official-caption-probe.sh` | box. Measures what `graphFeed.ts` only quotes from Meta's documentation: (1) posts stored per IST day by each read; (2) whether official-read captions still carry "@", against the same channels' anonymous captions of 15 Sep–14 Oct; (3) official-read CAMPAIGN posts whose caption holds a live verified company's handle as a standalone word that nothing credits today, split distinctive / short plain word and person / not; (4) 25 to read; (5) a 72-hour estimate of what crediting them could release. **`bash ocp.sh \| grep '^-- '` is the short answer** — one line each for sections 2, 3 and 5 — for a console that shows one screen. 62 checks on a scratch Postgres 16 with the real schema: a hand calculation, an independent recount that uses the app's own `mentionsHandleExactly` / `brandStringsNameProspect`, 20,000-post timing (5 s; 71 s at 15 times the busiest fortnight), and 82 one-rule breaks all caught. The three summary lines were added after those 82 and checked against the tables on three seeds |
+
+**Found by reading `materialAllowance.ts` while writing the second probe — NOT fixed, and not measured:**
+`mentionsHandleExactly` refuses `@handle.` (a full stop straight after the handle), and on Postgres
+`campaignsNamingHandleRows`' prefilter is case-sensitive, so `@Handle` in another letter case on a post with no brand
+string and no tag never reaches the exact test. Section 3 of the caption probe counts both.
+
+**Not built, and why.** A switched-off crediting arm (`creditBareHandles`: an official-read caption holding a
+distinctive handle of a company we already hold credits that company) was started and set aside. It is worth building
+only if the caption probe finds such handles — and under the cap it adds no sends, it only lets the other four pages
+share them, which is the safer shape and the real argument for a higher cap later. **Seven of the eight agents on this
+work died on the account's usage limit** (the arm, three audits and every independent review); the two probes were
+re-run and re-read by their integrator alone, which is weaker than the reviews that were planned.
+
+73. **When a cap you asked for is what binds, say that first.** The first answers to "why so few" went to supply
+    while a number set two days earlier was the reason the count could not pass 20.
+
+---
+
 ## 21–25 NOVEMBER — THE MAC IS ON 1a47e2b, @bollywoodchronicle IS BACK UNDER A 20-A-DAY CAP, AND META'S OFFICIAL READ DOES NOT REPORT THE BADGE
 
 **Measured, not inferred — each line is from output the operator pasted:**
