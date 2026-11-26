@@ -62,4 +62,6 @@ done
 
 printf '%s\n' "-- embed-check-on-mac.sh — commit $COMMIT — the installed agent at $TREE is only used for its tsx; nothing in it is changed"
 cd "$TREE" || stop2 "could not enter $TREE."
-"$TSX" "$WORK/src/scripts/embed-check.ts" "$@"
+# ${1+"$@"}, not "$@": with `set -u`, an empty "$@" is an "unbound variable" on some older bash builds, and the
+# default run passes nothing after the commit.
+"$TSX" "$WORK/src/scripts/embed-check.ts" ${1+"$@"}
