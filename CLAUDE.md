@@ -5,6 +5,58 @@ changing anything that touches sending.
 
 ---
 
+## 26 NOVEMBER — INSTAGRAM'S EMBED PAGES STILL ANSWER THE MAC: A BADGE READER AND A MENTION READER ARE BUILT, SWITCHED OFF
+
+**Measured, from the two probes of the entry below, output pasted by Sudhanshu:**
+
+| | |
+|---|---|
+| official-read captions, box, 14 days | credited by an `@handle` or a tag: **0 pairs** — the "@" really is gone (Meta's documentation, now observed) |
+| bare handles of companies we hold, same captions | **317 posts, 102 companies (53 marked a person)** in 14 days; 72 h: **28 companies, 27 with no message in 7 days**, all written to before (so a follow-up). 60 short-handle pairs set aside as ordinary words |
+| embed and Threads pages, **from the box** | all three REFUSED: profile embed 302 → login, Threads 429, post embed 302 → login |
+| embed and Threads pages, **from the Mac Studio** | **profile embed: YES** — `is_verified` in the account's own object reads true for @netflix_in and @sonytvofficial, false for @marketingmentalist and @chumbak_official; a handle that does not exist answers 200 with no profile data. **Post embed: YES** — `DcyE65LPYMj`'s caption links @itsbevygood @plumbodylovin @supersox_india @farmleyin @hkvitals. Threads: could not tell (the verified pages carried `is_verified: true`, then the door sent @marketingmentalist to its login page) |
+
+**So the badge was never gone — one door to it was.** The anonymous feed has refused this address since 15 Oct and
+every module read that as "the badge cannot be read"; the same address was being served the same fact on a page
+nobody had asked. The bare-handle crediting arm (entry below) is therefore NOT built: an embed page gives the
+mentions as Instagram LINKED them, which is the evidence the existing rules were written for, where a bare word in
+Meta's caption is a guess.
+
+**Built, all of it OFF (`embedReads` Setting, default false), all of it Mac-side:**
+
+| | |
+|---|---|
+| `embedParse.ts` (pure, no imports) | the badge only from an object whose own `username` is the asked handle, at that object's own level; two methods (an exact string-aware brace walk parsed by `JSON.parse`, and the probe's flattened one) and the flat one can only VETO; mixed or disagreeing readings are null. **Typed text sits on the page too**: an account writes its own biography, so an object counts only when its key lies inside a `<script>` element (HTML-escaped text never makes one) at the shallowest depth found for the account (typed text in page data is a string, a level deeper); entity-quoted text is never decoded into data. A caption mention is an `<a>` whose text is `@handle` and whose href is that same account. Collaborators are NOT parsed — nobody has seen that markup |
+| `embedFetch.ts` (Node only) | the probe's iframe headers, no cookie sent or kept, redirects at most three, only to instagram.com, never to a login page; 3 MB cap; two clients (`curl` — the one measured — and `node:https`), `embedTransport` Setting |
+| `embedDoor.ts` | the one gated way in: the switch AND `SEND_ENABLED` (the server never asks); anonGate's new `embed` scope (login redirect, 429/401, a served login page → 15/30/60 min; an embed answer never reopens the refused profile door); `embedMaxPerHour` (40, chosen) shared by every caller; 2 s spacing; and a **proof** — before its word about any account is used it must have read "verified" on an account we hold verified and "not verified" on one we hold not, within 12 h, so a page that says true (or false) about everybody is never believed |
+| `enrichHandle` | asks the door ONLY when the feed refused (gate closed or a throttle answer). With the door not asking the result is byte for byte the old one; both doors refusing is still a 429 so every pass halts; `source` says which door answered |
+| `embedEvidence.ts` + `pnpm ig:embed-evidence` (dry run default) | official-read CAMPAIGN posts of the last 7 days: read the post's embed page, and if its caption contains the beginning of the caption we stored, write the linked mentions into `taggedAccounts` (every consumer — discovery, the allowance in BOTH builds, the column, search — already reads it), into `brands` as `@handle` (so `followUpSubject` sees the other advertisers), and provenance in `rawPayload`; the official-read marker kept; the write conditional on the row being unchanged |
+| `badgeDoor` | with the switch on, a handle with NO lookup row is a candidate (the lookup that would make one has been refused since 15 Oct); what it learns is a row of kind UNKNOWN |
+| the agent | the post step first in the brand pass, own try, 8 a pass; badge door now before official-page discovery (asserted handles before guessed ones, one ceiling); discovery halts BEFORE benching a candidate |
+| `pnpm ig:embed-check` + `scripts/embed-check-on-mac.sh` | the real reader on real pages from an installed tree, no build, nothing changed: every control must read as held |
+
+Tests: **3,922 / 3,924** at 55caa48 (the two offline `route-rule` timeouts) and the new files since; 51 guards broken on
+purpose, all caught but one EQUIVALENT mutant (the flat method's veto of a mixed reading lands on "disagree" anyway).
+The independent review of 23608ec..830fb9e died on the account's usage limit with no findings and was re-run.
+
+**What switching it on changes, stated for whoever decides (it is the operator's call, to be recorded as theirs):**
+this Mac's home address asks Instagram up to 40 public pages an hour; the VERIFIED ONLY rule gets a second source for
+the badge (proven on four accounts we hold, never read off any object but the account's own); companies tagged on
+paid posts start arriving again through the badge door. **Under `fleetMaxPerDay` = 20 none of this raises the count by
+itself** — it gives the pages something new to say and new companies to say it to; the cap is still what binds.
+
+**NOT VERIFIED:** the code has never seen a real embed page's bytes (the probe printed tallies and snippets) —
+`pnpm ig:embed-check` on the Mac is that step, before any build; the `node` client is unmeasured; the Mac runs
+1a47e2b and has none of this until a new image is built and installed; a server deploy is optional (it never asks,
+and the old server already credits through `taggedAccounts`).
+
+74. **A refused door is not a refused fact.** Before concluding a fact cannot be read, ask for it through every
+    door that might carry it — from the address that will use it.
+75. **The account writes part of its own page.** A reader of a public page must know which bytes the page's owner
+    typed, and never take its verdict from them.
+
+---
+
 ## 25 NOVEMBER, NIGHT — "TOO FEW MESSAGES, FIX IT URGENTLY": THE CAP IS TODAY'S LIMIT, AND TWO READ-ONLY PROBES ASK WHERE SUPPLY COULD COME FROM
 
 **Asked (Sudhanshu): *"fix this urgently and asap"* → *"Too few messages sent"*.** The WAIT decision in the entry
