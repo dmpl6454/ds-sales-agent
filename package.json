@@ -50,6 +50,7 @@
     "ig:generate": "tsx src/scripts/generate.ts",
     "ig:detect": "tsx src/scripts/detect.ts",
     "ig:probe": "tsx src/scripts/probe.ts",
+    "ig:embed-check": "tsx src/scripts/embed-check.ts",
     "ig:backfill": "tsx src/scripts/backfill.ts",
     "ig:rejudge": "tsx src/scripts/rejudge.ts",
     "ig:rejudge-channel": "tsx src/scripts/rejudgeChannel.ts",
