@@ -62,6 +62,12 @@ export const SETTING_KEYS = {
   passTurnOnlyAfterRead: 'passTurnOnlyAfterRead',
   officialMinFollowers: 'officialMinFollowers',
   celebrityMinFollowers: 'celebrityMinFollowers',
+  /** May a sending Mac read Instagram's EMBED pages for the badge and a post's @mentions. OFF by default. */
+  embedReads: 'embedReads',
+  /** Which client asks those pages: 'node' or 'curl'. */
+  embedTransport: 'embedTransport',
+  /** The most embed pages one Mac asks in any sixty minutes. */
+  embedMaxPerHour: 'embedMaxPerHour',
 } as const
 
 export interface RuntimeSettings {
@@ -385,6 +391,38 @@ export interface RuntimeSettings {
    * introduction from another page.
    */
   passTurnOnlyAfterRead: boolean
+  /**
+   * ── MAY A SENDING MAC READ INSTAGRAM'S EMBED PAGES (26 Nov 2026) ─────────────────────────────
+   *
+   * OFF. With it off nothing asks an embed page and every path behaves exactly as before.
+   *
+   * ON, a Mac that may send (`SEND_ENABLED`; never the server, which is refused there and must not ask) reads
+   * `/<handle>/embed/` for the verified badge when the anonymous feed refuses it, and `/p/<code>/embed/captioned/`
+   * for the @mentions of a paid post that arrived through Meta's official read. Both are anonymous — no login, no
+   * cookie — and both were measured answering the Mac Studio on 26 Nov (`scripts/embed-badge-probe.sh`).
+   *
+   * Switching it on is the operator's decision, to be recorded as theirs, because it changes two things: this
+   * Mac's home address starts asking Instagram a few hundred public pages a day (bounded per pass, and a refusal
+   * closes the door for 15-60 minutes), and the VERIFIED ONLY rule gets a second source for the badge. That
+   * source is proven on two accounts whose answer we hold before it is believed about anyone else
+   * (`embedDoor.ts`), and it never reads a badge off any object but the asked account's own (`embedParse.ts`).
+   */
+  embedReads: boolean
+  /**
+   * The client that asks: 'curl' is the one `embed-badge-probe.sh` used and Instagram answered on 26 Nov; 'node'
+   * is `node:https`, a different client on the wire. A Setting rather than a constant so that if one stops being
+   * answered the other is one row away, with no new Mac build.
+   */
+  embedTransport: 'node' | 'curl'
+  /**
+   * The most embed pages this Mac asks in any sixty minutes, whoever is asking (the post reader, the badge door,
+   * official-page discovery, the twice-daily proof). 40 is CHOSEN, not measured: about 960 a day at the very
+   * most, against the ~2,900 anonymous lookups a day that once got this home address throttled on a different
+   * endpoint. When it is spent the door reports itself closed until the oldest request is an hour old, so every
+   * caller's "this host was told to stop" branch ends its pass — a ceiling, not a queue. A whole number of 1 or
+   * more; switching embed reads OFF is `embedReads`, not a zero here.
+   */
+  embedMaxPerHour: number
 }
 
 function defaults(): RuntimeSettings {
@@ -438,6 +476,11 @@ function defaults(): RuntimeSettings {
     passTurnOnlyAfterRead: true,
     officialMinFollowers: 100_000,
     celebrityMinFollowers: 500_000,
+    // OFF — see the interface comment. Switching it on is the operator's call.
+    embedReads: false,
+    // The client that was MEASURED answering. `pnpm ig:embed-check` says whether 'node' is answered too.
+    embedTransport: 'curl',
+    embedMaxPerHour: 40,
   }
 }
 
@@ -632,6 +675,10 @@ async function readSettings(): Promise<RuntimeSettings> {
     crossPageGapHours: num(SETTING_KEYS.crossPageGapHours, d.crossPageGapHours),
     officialMinFollowers: num(SETTING_KEYS.officialMinFollowers, d.officialMinFollowers),
     celebrityMinFollowers: num(SETTING_KEYS.celebrityMinFollowers, d.celebrityMinFollowers),
+    embedReads: bool(SETTING_KEYS.embedReads, d.embedReads),
+    // Anything but the two names is the default: a typo must not pick a client nobody chose.
+    embedTransport: ((raw) => (raw === 'node' || raw === 'curl' ? raw : d.embedTransport))(map.get(SETTING_KEYS.embedTransport)?.trim()),
+    embedMaxPerHour: num(SETTING_KEYS.embedMaxPerHour, d.embedMaxPerHour),
   }
 }
 

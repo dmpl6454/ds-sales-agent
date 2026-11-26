@@ -609,6 +609,8 @@ export type PostEmbedReading =
       atSigns: number
       captionChars: number
       captionClass: string
+      /** The caption as a reader sees it (tags out, entities decoded), cut at 6,000 characters. */
+      captionText: string
     }
   | { kind: 'no-caption'; reason: string }
   | { kind: 'wall'; reason: string }
@@ -658,6 +660,7 @@ export function parsePostEmbed(raw: string): PostEmbedReading {
     atSigns: (text.match(/@/g) ?? []).length,
     captionChars: text.length,
     captionClass: cap.cls,
+    captionText: text.slice(0, 6_000),
   }
 }
 

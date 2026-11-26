@@ -7,6 +7,13 @@
  * four copies of a User-Agent are four places for it to be half-applied, which is how the
  * anonymous gate itself arrived. So: no module under src/detection may declare its own
  * Instagram identity, and the retired web constants must not come back anywhere.
+ *
+ * ONE DELIBERATE SECOND IDENTITY SINCE 26 Nov 2026, and it is not an exception to the above so much as a
+ * different request: `src/detection/embedFetch.ts` loads Instagram's EMBED pages (`/<handle>/embed/`,
+ * `/p/<code>/embed/captioned/`) as a desktop Chrome in an iframe. It never touches the API these rules are about —
+ * no app id, no `/api/v1/` — and `tests/embed-house-rules.test.ts` is what keeps it to that one file and those two
+ * kinds of URL. Its User-Agent is built by a function, so the pattern below does not see it; that is known, and
+ * the other file's "only embedFetch.ts spells a browser User-Agent" is the check that does.
  */
 import { describe, expect, it } from 'vitest'
 import { readdirSync, readFileSync, statSync } from 'node:fs'

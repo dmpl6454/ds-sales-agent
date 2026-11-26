@@ -147,18 +147,19 @@ const { prisma } = await import('@/lib/db')
 function reachable(handle: string, isVerified: boolean) {
   return {
     handle, reachable: true, accountType: 2, isVerified,
-    followers: 1000, fullName: handle.toUpperCase(), reason: null, status: null,
+    followers: 1000, fullName: handle.toUpperCase(), reason: null, status: null, source: 'feed' as const,
   }
 }
 function dead(handle: string) {
   return {
     handle, reachable: false, accountType: null, isVerified: null,
-    followers: null, fullName: null, reason: 'HTTP 404', status: 404,
+    followers: null, fullName: null, reason: 'HTTP 404', status: 404, source: null,
   }
 }
 
 /** Two campaigns: the NEWER asserts @deadco (the stuck class), the OLDER asserts @freshco. */
 async function seed() {
+  await prisma.setting.deleteMany()
   await prisma.detectedCampaign.deleteMany()
   await prisma.targetAccount.deleteMany()
   await prisma.brandLookup.deleteMany()
@@ -254,5 +255,84 @@ describe('the badge door queue is fair to fresh candidates', () => {
     // isVerified stays NULL on both — a refusal to answer is never a badge fact.
     expect(rows.map((r) => r.isVerified)).toEqual([null, null])
     expect(createTargetMock).not.toHaveBeenCalled()
+  })
+})
+
+/**
+ * A HANDLE NOBODY HAS LOOKED AT — 26 Nov 2026.
+ *
+ * The handles the post-embed reader restores have no BrandLookup row: the lookup that would have made one (the
+ * profile endpoint) has refused every address since 15 Oct. With `embedReads` on, the badge door takes them — the
+ * badge is what admits here, never the classification — and records what it learned as a row of kind UNKNOWN.
+ * With it off, the filter is exactly what it was.
+ */
+describe('a handle with no lookup row', () => {
+  async function assertNeverLooked() {
+    const channel = await prisma.targetAccount.findFirstOrThrow({ where: { handle: 'somechannel' } })
+    await prisma.detectedCampaign.create({
+      data: {
+        targetId: channel.id, shortcode: 'EMBEDPOST', permalink: 'https://x/EMBEDPOST',
+        postedAt: new Date('2026-08-23T06:00:00Z'), caption: 'a caption with no at sign', verdict: 'CAMPAIGN',
+        taggedAccounts: '["neverlooked"]',
+        rawPayload: '{"collabHandles":[],"sponsorHandles":[],"isPaidPartnership":null,"evidenceIncomplete":true,"embedReadAt":"2026-08-23T07:00:00.000Z","embedMentions":["neverlooked"]}',
+      },
+    })
+  }
+
+  it('is not a candidate while embed reads are off — exactly as before', async () => {
+    await assertNeverLooked()
+    enrichMock.mockImplementation(async (h: string) => reachable(h, true))
+    const pass = await badgeDoorPass({ maxEnrichments: 5, enrichSpacingMs: 0 })
+    expect(pass.candidates).toBe(2)
+    expect(enrichMock.mock.calls.map((c) => c[0])).not.toContain('neverlooked')
+    expect(await prisma.brandLookup.findUnique({ where: { handle: 'neverlooked' } })).toBeNull()
+  })
+
+  it('is a candidate with embed reads on; a verified one is admitted and leaves a row of kind UNKNOWN', async () => {
+    await prisma.setting.create({ data: { key: 'embedReads', value: 'true' } })
+    await assertNeverLooked()
+    enrichMock.mockImplementation(async (h: string) => ({ ...reachable(h, h === 'neverlooked'), source: 'embed' as const }))
+    const pass = await badgeDoorPass({ maxEnrichments: 5, enrichSpacingMs: 0 })
+    expect(pass.candidates).toBe(3)
+    // newest post first: the handle the embed restored is asked before the two older ones
+    expect(enrichMock.mock.calls[0]?.[0]).toBe('neverlooked')
+    const row = await prisma.brandLookup.findUnique({ where: { handle: 'neverlooked' } })
+    expect(row).toMatchObject({ kind: 'UNKNOWN', isVerified: true, displayName: 'NEVERLOOKED', followers: 1000 })
+    const admitted = createTargetMock.mock.calls.map((c) => (c as unknown as [{ handle: string }])[0].handle)
+    expect(admitted).toEqual(['neverlooked'])
+    const args = createTargetMock.mock.calls[0] as unknown as [{ category: string | null }, { shortcode: string }, string, string, { campaignTalent: boolean; isVerified: boolean }]
+    expect(args[0].category).toBeNull()
+    expect(args[1].shortcode).toBe('EMBEDPOST')
+    expect(args[4]).toMatchObject({ campaignTalent: true, isVerified: true })
+  })
+
+  it('a measured "not verified" is written as a refusal and nobody is admitted', async () => {
+    await prisma.setting.create({ data: { key: 'embedReads', value: 'true' } })
+    await assertNeverLooked()
+    enrichMock.mockImplementation(async (h: string) => reachable(h, false))
+    const pass = await badgeDoorPass({ maxEnrichments: 5, enrichSpacingMs: 0 })
+    expect(pass.admitted).toBe(0)
+    expect(await prisma.brandLookup.findUnique({ where: { handle: 'neverlooked' } })).toMatchObject({ kind: 'UNKNOWN', isVerified: false })
+    expect(createTargetMock).not.toHaveBeenCalled()
+  })
+
+  it('an unreachable one writes no row at all — a refusal to answer is never a badge fact', async () => {
+    await prisma.setting.create({ data: { key: 'embedReads', value: 'true' } })
+    await assertNeverLooked()
+    enrichMock.mockImplementation(async (h: string) => dead(h))
+    await badgeDoorPass({ maxEnrichments: 5, enrichSpacingMs: 0 })
+    expect(await prisma.brandLookup.findUnique({ where: { handle: 'neverlooked' } })).toBeNull()
+    expect(createTargetMock).not.toHaveBeenCalled()
+  })
+
+  it('an existing row keeps its kind when the badge is learned', async () => {
+    await prisma.setting.create({ data: { key: 'embedReads', value: 'true' } })
+    enrichMock.mockImplementation(async (h: string) => reachable(h, true))
+    await badgeDoorPass({ maxEnrichments: 5, enrichSpacingMs: 0 })
+    const rows = await prisma.brandLookup.findMany({ orderBy: { handle: 'asc' } })
+    expect(rows.map((r) => [r.handle, r.kind, r.isVerified])).toEqual([
+      ['deadco', 'MISSING', true],
+      ['freshco', 'UNRESOLVED', true],
+    ])
   })
 })

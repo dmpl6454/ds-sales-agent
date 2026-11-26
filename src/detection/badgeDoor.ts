@@ -145,10 +145,26 @@ export async function badgeDoorPass(opts: {
   const minted = new Set(targets.map((t) => t.handle))
   const lookupBy = new Map(lookups.map((l) => [l.handle, l]))
 
+  /**
+   * ── A HANDLE NOBODY HAS LOOKED AT IS ELIGIBLE TOO, WHILE EMBED READS ARE ON (26 Nov 2026) ──────
+   *
+   * "Never-looked belongs to autoResolveBrands" was right while its lookup worked: it classified the account
+   * and left a row for this door to revisit. That lookup (the profile endpoint) has refused every address we
+   * have since 15 Oct, so a handle with no row would wait for a classifier that cannot run — and the handles
+   * the post-embed reader restores (`embedEvidence.ts`) are all exactly that: asserted by Instagram on a paid
+   * post, and never looked at.
+   *
+   * What admits here was never the classification. It is the badge (`admitsAsTalent`, VERIFIED ONLY), read
+   * through `enrichHandle`, on a handle Instagram itself asserted on a paid post — and that is the same for a
+   * handle with a row and one without. So with `embedReads` on they are eligible, and what is learned is
+   * written as a row of kind UNKNOWN: "nobody has looked at what this account IS", which is true, with the
+   * badge beside it. With `embedReads` off this filter is exactly what it was.
+   */
+  const takeNeverLooked = settings.embedReads === true
   const eligible = handles.filter((h) => {
     if (minted.has(h)) return false
     const l = lookupBy.get(h)
-    if (!l) return false // never-looked belongs to autoResolveBrands, which owns fresh handles
+    if (!l) return takeNeverLooked // otherwise never-looked belongs to autoResolveBrands, which owns fresh handles
     if (!REVISIT_KINDS.has(l.kind)) return false
     /* A badge already learned is settled either way: TRUE admits below without a new
        call; FALSE is a refusal the screen reports and this pass must not re-spend. */
@@ -172,10 +188,11 @@ export async function badgeDoorPass(opts: {
   }
 
   for (const handle of queue) {
-    const lookup = lookupBy.get(handle)!
-    let isVerified = lookup.isVerified
-    let displayName = lookup.displayName
-    let followers = lookup.followers
+    const lookup = lookupBy.get(handle) ?? null
+    let isVerified = lookup?.isVerified ?? null
+    let displayName = lookup?.displayName ?? null
+    let followers = lookup?.followers ?? null
+    let badgeSource: 'feed' | 'embed' | null = null
 
     if (isVerified == null) {
       if (summary.enriched >= opts.maxEnrichments) {
@@ -211,10 +228,14 @@ export async function badgeDoorPass(opts: {
       isVerified = e.isVerified
       displayName = displayName ?? e.fullName
       followers = followers ?? e.followers
+      badgeSource = e.source
       if (!dryRun && isVerified != null) {
-        await prisma.brandLookup.update({
+        // An upsert, because a never-looked handle has no row yet. Its kind is UNKNOWN: we learned
+        // the badge, not what the account is. An existing row keeps its kind.
+        await prisma.brandLookup.upsert({
           where: { handle },
-          data: { isVerified, displayName: displayName ?? undefined, followers: followers ?? undefined },
+          update: { isVerified, displayName: displayName ?? undefined, followers: followers ?? undefined },
+          create: { handle, kind: 'UNKNOWN', isVerified, displayName, followers },
         })
       }
     }
@@ -235,7 +256,7 @@ export async function badgeDoorPass(opts: {
         kind: 'BRAND',
         handle,
         displayName: displayName ?? handle,
-        category: lookup.category,
+        category: lookup?.category ?? null,
         followers: followers ?? null,
         isVerified: true,
       },
@@ -249,6 +270,8 @@ export async function badgeDoorPass(opts: {
       log.info('badge door admitted a verified account a paid post asserted', {
         handle,
         via: newestCampaignFor.get(handle)?.shortcode,
+        // Where the badge was read this pass; absent when it had been learned on an earlier one.
+        ...(badgeSource ? { badgeReadFrom: badgeSource } : {}),
       })
     }
   }

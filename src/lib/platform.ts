@@ -336,3 +336,14 @@ export function run(cmd: Cmd, stdin?: string): Promise<void> {
     p.stdin.end()
   })
 }
+
+/**
+ * What the embed reader needs to know about this machine: which desktop its Chrome identity names, and where the
+ * system curl is. On a Mac `/usr/bin/curl` is named in full — a launchd job's PATH is not a shell's, and the curl
+ * that was MEASURED answering on 26 Nov 2026 is that one.
+ */
+export function embedClient(platform: Platform = process.platform): { os: 'mac' | 'windows' | 'linux'; curlPath: string } {
+  if (platform === 'darwin') return { os: 'mac', curlPath: '/usr/bin/curl' }
+  if (platform === 'win32') return { os: 'windows', curlPath: 'curl.exe' }
+  return { os: 'linux', curlPath: 'curl' }
+}

@@ -97,12 +97,26 @@ export function noteSuccess(state: AnonGateState, now: number): AnonGateState {
  * no, and closed the door the feed had just walked through. A throttle on one scope binds only
  * that scope. Both are still per HOST, because Instagram counts the address within a scope.
  */
-export type AnonScope = 'feed' | 'profile'
+/*
+ * AND A THIRD (26 Nov 2026): `embed`. Instagram's embed pages (`/<handle>/embed/`, `/p/<code>/embed/captioned/`)
+ * are a different door again — MEASURED that day, the Mac Studio was answered on them while the feed and profile
+ * endpoints refused it, and the server was sent to the login page on them while its feed reads were served. Its
+ * refusals are its own too (a redirect to the login page, which `isThrottleResponse` does not know), so
+ * `embedDoor.ts` decides what a refusal is and records it under the source 'embed'. A refused embed door closes
+ * nothing else, and — the direction that matters — an embed page that answers must never reopen a profile door
+ * Instagram is still refusing.
+ */
+export type AnonScope = 'feed' | 'profile' | 'embed'
+const ALL_SCOPES: readonly AnonScope[] = ['feed', 'profile', 'embed']
 export function scopeOf(source: string): AnonScope {
-  return source === 'feed' ? 'feed' : 'profile'
+  return source === 'feed' ? 'feed' : source === 'embed' ? 'embed' : 'profile'
 }
 
-let states: Record<AnonScope, AnonGateState> = { feed: { ...EMPTY_ANON_STATE }, profile: { ...EMPTY_ANON_STATE } }
+function emptyStates(): Record<AnonScope, AnonGateState> {
+  return { feed: { ...EMPTY_ANON_STATE }, profile: { ...EMPTY_ANON_STATE }, embed: { ...EMPTY_ANON_STATE } }
+}
+
+let states: Record<AnonScope, AnonGateState> = emptyStates()
 let clock: () => number = () => Date.now()
 
 /** Tests inject a clock; production never calls this. */
@@ -115,7 +129,7 @@ export function setAnonGateClock(fn?: () => number): void {
  * `ig:brands --run` has decided to try — the same decision that clears the module latch.
  */
 export function resetAnonGate(): void {
-  states = { feed: { ...EMPTY_ANON_STATE }, profile: { ...EMPTY_ANON_STATE } }
+  states = emptyStates()
 }
 
 export function anonGateSnapshot(scope: AnonScope = 'feed'): AnonGateState {
@@ -202,12 +216,12 @@ export async function hydrateAnonGate(): Promise<void> {
     // probe from the same host returned 12 items. Absence of a source means profile, the
     // scope that has actually been refused on the server for weeks; the feed is never blamed
     // on evidence that does not name it.
-    const legacy = !('feed' in parsed) && !('profile' in parsed)
+    const legacy = !('feed' in parsed) && !('profile' in parsed) && !('embed' in parsed)
     const legacyState = parsed as unknown as Partial<AnonGateState>
     const perScope: Partial<Record<AnonScope, Partial<AnonGateState>>> = legacy
       ? { [legacyState.lastThrottleSource === 'feed' ? 'feed' : 'profile']: legacyState }
       : (parsed as Partial<Record<AnonScope, Partial<AnonGateState>>>)
-    for (const scope of ['feed', 'profile'] as AnonScope[]) {
+    for (const scope of ALL_SCOPES) {
       const saved = perScope[scope]
       if (!saved) continue
       const state = states[scope]

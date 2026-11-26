@@ -357,19 +357,24 @@ export async function discoverOfficialPages(
       await new Promise((r) => setTimeout(r, LOOKUP_SPACING_MS))
 
       if (!e.reachable) {
-        // A refusal to answer is never a verdict — but it IS a reason to stop spending the
-        // front of every pass on this candidate. Sent to the back for a day.
-        unreachable.note(candidate)
         /**
          * A REAL THROTTLE STOPS THE PASS. Continuing after being told to stop is what turns
          * throttling into an IP block — the same split `interpretLookupFailure` owns for the
          * sibling pass, where reading a per-handle failure as a run-wide one cost three
          * consecutive zero-progress runs.
+         *
+         * Checked BEFORE the candidate is sent to the back (26 Nov 2026): a closed door is a fact about
+         * this HOST, and benching the candidate that happened to meet it cost that candidate a day for
+         * nothing — the badge door has always halted first. `known` is undone too, so it is asked again.
          */
-        if (/\b(429|401)\b/.test(e.reason ?? '')) {
+        if (e.status === 429 || e.status === 401 || /\b(429|401)\b/.test(e.reason ?? '')) {
+          known.delete(candidate)
           out.haltedEarly = true
           break outer
         }
+        // A refusal to answer is never a verdict — but it IS a reason to stop spending the
+        // front of every pass on this candidate. Sent to the back for a day.
+        unreachable.note(candidate)
         continue
       }
 

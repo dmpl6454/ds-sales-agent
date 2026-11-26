@@ -1,5 +1,6 @@
 import { anonGateCheck, anonGateRecordSuccess, anonGateRecordThrottle, isThrottleResponse } from './anonGate'
 import { log } from '@/lib/logger'
+import { readProfileEmbed } from './embedDoor'
 import { FEED_HEADERS, IG_HOST, REQUEST_TIMEOUT_MS } from './feed'
 import { igGet } from './igHttp'
 
@@ -67,6 +68,58 @@ export interface HandleEnrichment {
    * the same `reachable: false`.
    */
   status: number | null
+  /**
+   * Which door answered: the anonymous `feed` endpoint, or Instagram's `embed` page for the account (26 Nov 2026,
+   * see below). Null when neither said anything about the account. Recorded so an admission can say where its
+   * badge was read — the two are different pages, and a reader of the audit trail months later must not have to
+   * guess which.
+   */
+  source: 'feed' | 'embed' | null
+}
+
+/**
+ * ── WHEN THE FEED REFUSES, THE ACCOUNT'S EMBED PAGE IS ASKED INSTEAD (26 Nov 2026) ───────────────
+ *
+ * Since 15 Oct the feed endpoint has answered every address we have with a login wall, so this function returned
+ * "not reachable" for every handle, and with it the badge door, official-page discovery and the badge check at a
+ * prospect's birth all stopped: nothing could add a company, for six weeks. MEASURED 26 Nov from the Mac Studio:
+ * `/<handle>/embed/` still answers a visitor with no login and ties "is_verified" to the asked username.
+ *
+ * So the two exits where the feed REFUSED — its gate is closed, or it answered with a throttle — now ask
+ * `readProfileEmbed`. Only those two: a dead handle (404), an identity mismatch and a timeout are the feed's own
+ * answers and stay exactly as they were. Three outcomes come back:
+ *
+ *   not asked    the switch is off, or this is the server. Returns null and the caller reports the feed's refusal
+ *                byte for byte as before — with `embedReads` off this function is unchanged.
+ *   read         a badge the embed door has proven it can read (embedDoor.ts) and the parser committed to
+ *                (embedParse.ts). Reachable, with the name and follower count when the page carried them.
+ *   anything else  NOT reachable. A closed embed door is reported as a 429, like a closed feed gate, so every
+ *                caller's "this host was told to stop" branch still fires when BOTH doors refuse; a page that
+ *                says nothing about the account carries no status and is never a verdict.
+ *
+ * It never returns `reachable: true` with an unknown badge: two callers mishandle that (the audit would write a
+ * null over a stored badge), and "the page named the account and would not say" is not reachability anyway.
+ */
+async function viaEmbed(h: string, empty: HandleEnrichment): Promise<HandleEnrichment | null> {
+  const e = await readProfileEmbed(h)
+  if (e.kind === 'not-asked') return null
+  if (e.kind === 'read') {
+    return {
+      handle: h,
+      reachable: true,
+      accountType: null,
+      isVerified: e.isVerified,
+      followers: e.followers,
+      fullName: e.fullName,
+      reason: null,
+      status: null,
+      source: 'embed',
+    }
+  }
+  if (e.kind === 'refused') {
+    return { ...empty, reason: `HTTP 429 (the feed refuses, and the embed page is refused too: ${e.reason})`, status: 429 }
+  }
+  return { ...empty, reason: `embed page: ${e.reason}`, status: e.status }
 }
 
 /**
@@ -87,6 +140,7 @@ export async function enrichHandle(handle: string): Promise<HandleEnrichment> {
     fullName: null,
     reason: null,
     status: null,
+    source: null,
   }
 
   try {
@@ -101,6 +155,8 @@ export async function enrichHandle(handle: string): Promise<HandleEnrichment> {
      */
     const gate = anonGateCheck('profile')
     if (!gate.ok) {
+      const embed = await viaEmbed(h, empty)
+      if (embed) return embed
       // No request. Reported as a 429 so every caller's "back off" branch fires (see anonGate.ts).
       return { ...empty, reason: `HTTP 429 (anonymous reads throttled until ${gate.until.toISOString()})`, status: 429 }
     }
@@ -114,7 +170,11 @@ export async function enrichHandle(handle: string): Promise<HandleEnrichment> {
       // The status travels so the CALLER can tell a dead handle (404) from a throttle —
       // this function still never converts either into a verdict.
       const text = await res.text().catch(() => '')
-      if (isThrottleResponse(res.status, text)) anonGateRecordThrottle('profile', res.status)
+      if (isThrottleResponse(res.status, text)) {
+        anonGateRecordThrottle('profile', res.status)
+        const embed = await viaEmbed(h, empty)
+        if (embed) return embed
+      }
       return { ...empty, reason: `HTTP ${res.status}`, status: res.status }
     }
     anonGateRecordSuccess('profile')
@@ -173,6 +233,7 @@ export async function enrichHandle(handle: string): Promise<HandleEnrichment> {
       fullName: typeof user.full_name === 'string' && user.full_name.trim() !== '' ? user.full_name.trim() : null,
       reason: null,
       status: null,
+      source: 'feed',
     }
   } catch (err) {
     log.step('handle enrichment failed', { handle: h, error: err instanceof Error ? err.message : String(err) })

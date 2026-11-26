@@ -39,7 +39,13 @@ TSX="$TREE/node_modules/.bin/tsx"
 [ -d "$TREE" ] || stop2 "the installed agent is not at $TREE."
 [ -x "$TSX" ] || stop2 "no tsx at $TSX — the installed agent's node_modules are missing or incomplete."
 command -v curl >/dev/null 2>&1 || stop2 "curl is not on this machine."
-command -v node >/dev/null 2>&1 || stop2 "node is not on this shell's PATH. Open the Terminal you run pnpm from and try again."
+# The installer may have given this Mac its own Node (install.sh: ~/.ds-sales-agent-runtime); a plain Terminal
+# does not have that on its PATH, and tsx needs to find node. Offered after whatever the shell already has.
+if ! command -v node >/dev/null 2>&1 && [ -x "$HOME/.ds-sales-agent-runtime/bin/node" ]; then
+  PATH="$HOME/.ds-sales-agent-runtime/bin:$PATH"
+  export PATH
+fi
+command -v node >/dev/null 2>&1 || stop2 "node is not on this shell's PATH and not at ~/.ds-sales-agent-runtime/bin. Open the Terminal you run pnpm from and try again."
 
 BASE="${DS_EMBED_CHECK_BASE:-https://raw.githubusercontent.com/dmpl6454/ds-sales-agent}"
 WORK=$(mktemp -d "${TMPDIR:-/tmp}/ds-embed-check-src.XXXXXX") || stop2 "could not make a temporary folder."

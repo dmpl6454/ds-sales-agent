@@ -25,6 +25,7 @@ import { reconcileSessionRecords } from './reconcile'
 import { autoResolveBrands } from '@/detection/autoResolve'
 import { discoverOfficialPages } from '@/detection/officialDiscovery'
 import { badgeDoorPass } from '@/detection/badgeDoor'
+import { postEmbedPass } from '@/detection/embedEvidence'
 import { checkForReplies, sweepUnderLock } from '@/outreach/replyCheck'
 import { getSettings } from '@/lib/settings'
 import { DISK_CARE_INTERVAL_MS, diskCareTick } from './diskCare'
@@ -201,8 +202,16 @@ const BRAND_LOOKUPS_PER_PASS = 25
  * A real 429 still HALTS the pass, so this cannot escalate into an IP block.
  */
 const OFFICIAL_LOOKUPS_PER_PASS = 20 // was 60: ~2,900 anonymous lookups a day from the home IP is what got it throttled (7 Sept 2026)
-/** Badge checks per brand pass — the FEED endpoint, 6s spacing inside the pass. */
+/** Badge checks per brand pass — the FEED endpoint (or, when it refuses and embed reads are on, the account's
+ *  embed page), 6s spacing inside the pass. */
 const BADGE_ENRICHMENTS_PER_PASS = 10
+/**
+ * Post embed pages asked per brand pass (26 Nov 2026). 8 every 30 minutes is 384 a day at most, against a
+ * measured 53-95 paid posts a day: the first sweep of the seven-day window takes about a day and a half, and after
+ * that it idles. CHOSEN, not measured — and the real ceiling is `embedMaxPerHour` (40), which this, the badge door
+ * and official-page discovery all draw on, in that order of priority.
+ */
+const POST_EMBED_READS_PER_PASS = 8
 
 /**
  * ── THE REPLY SWEEP RUNS HERE NOW, BECAUSE HERE IS WHERE THE SESSIONS ARE ──
@@ -420,6 +429,35 @@ async function brandPass(): Promise<void> {
   brandPassStartedAt = Date.now()
   try {
     await hydrateAnonGate() // a cooldown recorded before this process started still binds
+
+    /**
+     * FIRST, PUT THE @MENTIONS BACK ON THE PAID POSTS THAT LOST THEM (26 Nov 2026).
+     *
+     * Posts stored through Meta's official read carry no tags and no "@", so the three steps below have had no
+     * handle to work from since 15 Oct. Instagram's embed page for a post still shows the caption's @mentions to
+     * a visitor with no login — measured from this Mac's address, refused from the server's — so this step asks
+     * it and writes them onto the row (`embedEvidence.ts`). It runs FIRST so the handles it restores are
+     * candidates in this same pass, and in its OWN try: a failure here must not skip the three steps that
+     * predate it. With `embedReads` off it asks nothing and says so in one line.
+     */
+    try {
+      const embed = await postEmbedPass({ maxReads: POST_EMBED_READS_PER_PASS })
+      log.info('post embed pass', {
+        waiting: embed.waiting,
+        asked: embed.asked,
+        restored: embed.restored,
+        mentions: embed.mentionsRestored,
+        nothingToRestore: embed.nothingToRestore,
+        notThisPost: embed.notThisPost,
+        unreadable: embed.unreadable,
+        changedUnderUs: embed.changedUnderUs,
+        coolingOff: embed.coolingOff,
+        ...(embed.stopped ? { stopped: embed.stopped } : {}),
+      })
+    } catch (err) {
+      log.error('post embed pass failed', { error: describeError(err) })
+    }
+
     const summary = await autoResolveBrands({ maxLookups: BRAND_LOOKUPS_PER_PASS })
     /**
      * Logged EVERY pass, including the empty one. "Nothing was discovered" and "the pass
@@ -436,27 +474,12 @@ async function brandPass(): Promise<void> {
     })
 
     /**
-     * AND THE LEADS NOBODY TAGGED, on the same timer (Tabish, 2026-08-20: "we cannot lose
-     * leads in posts with no tags").
-     *
-     * MEASURED that morning: 172 in-window CAMPAIGN posts assert no handle at all and by
-     * design produced no prospect. It runs HERE rather than behind `pnpm ig:find-official`
-     * alone for the reason this repo has paid for twice — a feature that works only when
-     * someone runs a command is not running — and on THIS host because the profile endpoint
-     * answers a home IP and 429s the Linode.
-     *
-     * Bounded small (5 lookups) because it shares one scarce endpoint with the pass above
-     * and runs every 30 minutes; the badge bar means a pass that finds nothing is the normal
-     * case, not a fault. It can never fail the agent: the catch below covers both passes.
+     * THE ORDER BELOW IS A PRIORITY (26 Nov 2026): the badge door first, official-page discovery after it. Both
+     * read the badge through `enrichHandle`, and when that is the embed page they draw on one hourly ceiling
+     * (`embedMaxPerHour`). The badge door's candidates are handles Instagram ASSERTED on a paid post; discovery's
+     * are handles GUESSED from a brand's name, most of which do not exist. Until that day discovery ran first,
+     * which was harmless while each had its own budget and nothing was shared.
      */
-    const official = await discoverOfficialPages({ maxLookups: OFFICIAL_LOOKUPS_PER_PASS })
-    if (official.needsHuman.length > 0) {
-      log.step('untagged paid posts resolved to accounts that FAILED the verified bar — a person decides', {
-        count: official.needsHuman.length,
-        examples: official.needsHuman.slice(0, 3).join(' | '),
-      })
-    }
-
     /**
      * AND THE BADGE DOOR, same timer, same reasoning (2026-08-21). Handles a paid post
      * ASSERTED whose lookup settled as PERSON/UNRESOLVED/MISSING never had their badge
@@ -479,6 +502,28 @@ async function brandPass(): Promise<void> {
         coolingOff: badge.coolingOff,
       })
     }
+    /**
+     * AND THE LEADS NOBODY TAGGED, on the same timer (Tabish, 2026-08-20: "we cannot lose
+     * leads in posts with no tags").
+     *
+     * MEASURED that morning: 172 in-window CAMPAIGN posts assert no handle at all and by
+     * design produced no prospect. It runs HERE rather than behind `pnpm ig:find-official`
+     * alone for the reason this repo has paid for twice — a feature that works only when
+     * someone runs a command is not running — and on THIS host because the profile endpoint
+     * answers a home IP and 429s the Linode.
+     *
+     * Bounded small (5 lookups) because it shares one scarce endpoint with the pass above
+     * and runs every 30 minutes; the badge bar means a pass that finds nothing is the normal
+     * case, not a fault. It can never fail the agent: the catch below covers both passes.
+     */
+    const official = await discoverOfficialPages({ maxLookups: OFFICIAL_LOOKUPS_PER_PASS })
+    if (official.needsHuman.length > 0) {
+      log.step('untagged paid posts resolved to accounts that FAILED the verified bar — a person decides', {
+        count: official.needsHuman.length,
+        examples: official.needsHuman.slice(0, 3).join(' | '),
+      })
+    }
+
   } catch (err) {
     /**
      * Never allowed to take the agent down, exactly like the detect-pass rule: discovering
