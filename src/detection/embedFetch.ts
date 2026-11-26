@@ -206,13 +206,22 @@ function nodeHop(url: string, headers: Array<[string, string]>, timeoutMs: numbe
 /** PURE. curl's `-D -` output (one header block, then the body) as a hop. Null when it is not that. */
 export function parseCurlOutput(input: Buffer): Hop | null {
   let out = input
-  // Through a proxy curl prints the tunnel's own "200 Connection established" block first: that is not the answer.
-  for (let guard = 0; guard < 3; guard++) {
+  /* Blocks that are not the answer come first and are skipped: a proxy's own "200 Connection established", and
+     any 1xx informational answer (100 Continue, 103 Early Hints) — curl -D prints each as its own block, and
+     reading the first as the answer made every page "HTTP 103" (review, 26 Nov 2026). */
+  for (let guard = 0; guard < 6; guard++) {
     const firstLine = out.subarray(0, Math.min(out.length, 120)).toString('latin1').split(/\r?\n/)[0] ?? ''
-    if (!/^HTTP\/[0-9.]+ +200 +connection established/i.test(firstLine)) break
-    const end = out.indexOf('\r\n\r\n')
+    const tunnel = /^HTTP\/[0-9.]+ +200 +connection established/i.test(firstLine)
+    const informational = /^HTTP\/[0-9.]+ +1[0-9]{2}\b/.test(firstLine)
+    if (!tunnel && !informational) break
+    let end = out.indexOf('\r\n\r\n')
+    let gap = 4
+    if (end < 0) {
+      end = out.indexOf('\n\n')
+      gap = 2
+    }
     if (end < 0) break
-    out = out.subarray(end + 4)
+    out = out.subarray(end + gap)
   }
   let split = out.indexOf('\r\n\r\n')
   let gap = 4
@@ -262,11 +271,24 @@ function curlHop(url: string, headers: Array<[string, string]>, timeoutMs: numbe
     // No shell: the URL and every header are separate arguments. No -L (redirects are ours to judge), no cookie jar.
     execFile(curlPath, args, { encoding: 'buffer', maxBuffer: EMBED_MAX_BYTES + 256 * 1024, timeout: timeoutMs + 5_000 }, (err, stdout) => {
       const hop = stdout && stdout.length > 0 ? parseCurlOutput(stdout as Buffer) : null
+      /* A NON-ZERO EXIT IS NOT AN ANSWER (review, 26 Nov 2026). curl exits 28 when --max-time cuts a body short, 18
+         or 56 when the connection drops mid-body — with the headers and half a page already printed. Returning that
+         as a complete 200 let a post's caption be read up to the cut and recorded as read for good. The one
+         exception is our own buffer limit: the page was simply longer than we keep, and says so (`capped`). */
+      if (err) {
+        const code = (err as NodeJS.ErrnoException).code
+        if (code === 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER' && hop) {
+          resolve({ ...hop, capped: true })
+          return
+        }
+        reject(err)
+        return
+      }
       if (hop) {
         resolve(hop)
         return
       }
-      reject(err ?? new Error('curl returned nothing readable'))
+      reject(new Error('curl returned nothing readable'))
     })
   })
 }

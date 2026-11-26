@@ -1,6 +1,7 @@
 import { anonGateCheck, anonGateRecordSuccess, anonGateRecordThrottle, isThrottleResponse } from './anonGate'
 import { log } from '@/lib/logger'
 import { readProfileEmbed } from './embedDoor'
+import { normaliseHandle } from './embedParse'
 import { FEED_HEADERS, IG_HOST, REQUEST_TIMEOUT_MS } from './feed'
 import { igGet } from './igHttp'
 
@@ -103,6 +104,12 @@ export interface HandleEnrichment {
 async function viaEmbed(h: string, empty: HandleEnrichment): Promise<HandleEnrichment | null> {
   const e = await readProfileEmbed(h)
   if (e.kind === 'not-asked') return null
+  /* The page read must be the account asked about, character for character: a handle with trailing dots is read by
+     the door as the account without them, and its badge must never be answered under the dotted name (review,
+     26 Nov 2026). The door refuses that already; this is the feed path's own identity rule, kept beside it. */
+  if (e.kind === 'read' && normaliseHandle(h) !== h) {
+    return { ...empty, reason: 'embed page: not an Instagram handle as written', status: null }
+  }
   if (e.kind === 'read') {
     return {
       handle: h,

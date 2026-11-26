@@ -8,7 +8,8 @@
  *
  *   pnpm ig:embed-evidence              preview 10 posts, write nothing (works with embed reads switched off:
  *                                       this is how a person reads what the switch would do before deciding)
- *   pnpm ig:embed-evidence --limit 20   preview more (at most 40 — the hourly ceiling)
+ *   pnpm ig:embed-evidence --limit 20   preview more (at most 40). Every request counts against this Mac's hourly
+ *                                       ceiling, which the agent shares (embedDoor.ts, point 5)
  *   pnpm ig:embed-evidence --run        write them. Needs `embedReads` ON: writing is what the switch decides.
  *
  * Every request goes through the gated door (embedDoor.ts): no login, no cookie, 4 s apart, a refusal stops the
@@ -58,9 +59,10 @@ async function main(): Promise<number> {
   console.log(`   waiting to be read: ${summary.waiting} official-read paid posts in the last 7 days (${summary.coolingOff} resting after a failed read)`)
   console.log(`   asked: ${summary.asked}${summary.stopped ? ` — stopped: ${summary.stopped}` : ''}`)
   console.log(`   ${run ? 'restored' : 'would restore'}: ${summary.mentionsRestored} mention(s) on ${summary.restored} post(s)`)
-  console.log(`   read and linking no account: ${summary.nothingToRestore} · not this post's caption: ${summary.notThisPost} · said nothing usable: ${summary.unreadable} · changed while we read: ${summary.changedUnderUs}`)
+  console.log(`   read and linking no account: ${summary.nothingToRestore} · read but not whole: ${summary.incomplete} · not this post's caption: ${summary.notThisPost} · said nothing usable: ${summary.unreadable} · changed while we read: ${summary.changedUnderUs}`)
   for (const p of summary.preview) {
-    console.log(`   p/${p.shortcode} by @${p.publisher}: ${p.mentions.map((m) => `@${m}`).join(' ')}`)
+    const who = [...p.mentions.map((m) => `@${m}`), ...(p.collaborator ? [`signed by @${p.collaborator} (a collaborator)`] : [])].join(' ')
+    console.log(`   p/${p.shortcode} by @${p.publisher}: ${who}${p.complete ? '' : '   [read not whole: asked again later]'}`)
   }
   if (!run && summary.preview.length > 0) console.log('   To write these: switch embedReads on, then run it again with --run (or leave it to the agent\'s next pass).')
   return 0

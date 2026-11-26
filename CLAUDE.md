@@ -35,7 +35,7 @@ Meta's caption is a guess.
 | the agent | the post step first in the brand pass, own try, 8 a pass; badge door now before official-page discovery (asserted handles before guessed ones, one ceiling); discovery halts BEFORE benching a candidate |
 | `pnpm ig:embed-check` + `scripts/embed-check-on-mac.sh` | the real reader on real pages from an installed tree, no build, nothing changed: every control must read as held |
 
-Tests: **3,922 / 3,924** at 55caa48 (the two offline `route-rule` timeouts) and the new files since; 51 guards broken on
+Tests: **3,974 / 3,976** after the review fixes (was 3,922 / 3,924 at 55caa48) (the two offline `route-rule` timeouts) and the new files since; 51 guards broken on
 purpose, all caught but one EQUIVALENT mutant (the flat method's veto of a mixed reading lands on "disagree" anyway).
 The independent review of 23608ec..830fb9e died on the account's usage limit with no findings and was re-run.
 
@@ -49,6 +49,29 @@ itself** — it gives the pages something new to say and new companies to say it
 `pnpm ig:embed-check` on the Mac is that step, before any build; the `node` client is unmeasured; the Mac runs
 1a47e2b and has none of this until a new image is built and installed; a server deploy is optional (it never asks,
 and the old server already credits through `taggedAccounts`).
+
+**THEN AN INDEPENDENT REVIEW (three lenses, a skeptic each) FOUND 17 THINGS, AND ALL ARE FIXED.** The ones that
+matter, and what each became:
+
+| finding | now |
+|---|---|
+| **HIGH: a handle with trailing dots borrowed another account's badge.** A caption reading "@netflix_in..." yields the candidate `netflix_in..`; `normaliseHandle` strips the dots, so the door read @netflix_in's page and answered its badge under the dotted name — a second prospect for a company we hold, or a PROSPECT row for a watched competitor | the door asks only about the handle AS WRITTEN (no request otherwise), and `enrichHandle` refuses a mismatch too |
+| a failed proof was "nothing", so the badge door and discovery BENCHED every candidate for a day | a failed proof and this Mac's own ceiling are refusals (`byUs: true`); callers halt their pass and bench nobody, and the gate is not touched (Instagram said nothing) |
+| ONE account's login page or timeout closed the door for every account (the door is per host) | a login page, no answer or a 5xx for one account is checked against a control first: control answers → that account's own `nothing`; control fails too → the door. A 429/401 is never confirmed — being told to stop is not asked about twice |
+| the proof tolerated a control reading the OPPOSITE of what we hold | a contradiction fails the proof: it is evidence of a broken reader before it is evidence of a stale label |
+| the reader stopped at 60 keys and decided from what it had seen; the flat method's veto read only the first value; a deeper or outside-script own object could not veto | cap 200, and a page with more is NOT read at all; every badge value counts; every own object can take a verdict away (never give one) |
+| two regexes were quadratic on a crafted page | both linear; 3 MB of backslashes, braces and other accounts' keys reads in well under a second |
+| curl's partial body (exit 28/18/56) was returned as a whole 200; a 103 Early Hints block was read as the answer | a non-zero exit is no-answer (except our own buffer cap → `capped`, which is `nothing`); 1xx blocks are skipped |
+| the hourly ceiling and spacing were per PROCESS, so the agent and a command beside it each had 40 an hour from one address | a Mac-wide ledger file (`~/.ds-sales-agent-data/embed-requests.json`, atomic rename, memory fallback); the gate's persisted cooldown is re-read every 5 min, so another process's refusal is seen |
+| an incomplete post read (caption cut, "@" words nothing links, the page stopping mid-caption) was recorded as read for good | what it found is written and marked `embedPartialAt`; it is asked again after a day until a whole read records `embedReadAt`. An incomplete read that found nothing writes nothing |
+| the caption's signer (a collaborator) was dropped | recorded in `rawPayload.collabHandles` (discovery reads it) and `brands` as `@handle` |
+| the check passed too easily (a login page for the nonexistent control was "as held"; unasked posts were left out; unlinked "@" and a cut caption passed) | each is now a problem and the check exits 1; `tests/embed-check-run.test.ts` runs the real script against a stand-in Instagram |
+| our own ceiling was reported as "Instagram refused" | the words say whose limit it was |
+
+Every fix was then broken on purpose: **71 guards, 68 caught**; the 3 that survive are overlapping guards (the same bad
+reading is also refused by another rule — the flat method's "mixed" and an untrusted object's veto both land on
+"disagree"), not gaps. Suite 3,974 / 3,976 (the two offline `route-rule` cases). **Still unseen by the code: a real
+embed page's bytes** — the Mac check is that step, now re-pinned to the new commit.
 
 74. **A refused door is not a refused fact.** Before concluding a fact cannot be read, ask for it through every
     door that might carry it — from the address that will use it.

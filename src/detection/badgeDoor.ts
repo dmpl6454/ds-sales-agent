@@ -206,7 +206,8 @@ export async function badgeDoorPass(opts: {
         // Instagram told this HOST to stop — not a fact about this handle. Halt the pass
         // rather than sending an innocent candidate to the back of the queue for 24h.
         summary.haltedEarly = true
-        log.warn('badge door halted — Instagram is refusing anonymous reads from this host', {
+        // The reason says whose stop it is: Instagram's, or this Mac's own embed limit (review, 26 Nov 2026).
+        log.warn('badge door halted — this host may not ask again yet', {
           handle,
           reason: e.reason ?? 'unknown',
         })

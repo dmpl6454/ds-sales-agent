@@ -159,7 +159,8 @@ function postLine(r: PostEmbedReading): string {
   return (
     `   reads: caption of ${r.captionChars} chars (class "${clip(r.captionClass, 40)}") | signed by ${r.owner === null ? 'nobody we could read' : `@${r.owner}`} | "@" in the text x${r.atSigns}\n` +
     `   mentions, linked as "@handle" to that account: x${r.mentions.length} (${list(r.mentions)})\n` +
-    `   the looser count the probe used: x${r.looseMentions.length} (${list(r.looseMentions)}) | every account the caption links: x${r.linked.length} (${list(r.linked)})`
+    `   the looser count the probe used: x${r.looseMentions.length} (${list(r.looseMentions)}) | every account the caption links: x${r.linked.length} (${list(r.linked)})\n` +
+    `   "@" words no link goes to: x${r.unlinkedAt.length} (${list(r.unlinkedAt)}) | the caption element ended on the page: ${r.closed ? 'yes' : 'NO'}`
   )
 }
 
@@ -314,8 +315,14 @@ async function main(): Promise<void> {
         ok = false
         saw = 'no page'
       } else if (reading.kind !== 'profile') {
-        ok = control.held === 'x' || control.held === '-'
-        saw = reading.kind === 'wall' ? 'a login page' : 'no profile data'
+        /* A login page is never "as held", not even for the account that does not exist (review, 26 Nov 2026): in
+           production a login page closes the door, and most of what official-page discovery asks about are guessed
+           handles that do not exist — so a login page here would close the door on nearly every pass. */
+        ok = reading.kind === 'no-profile-data' && (control.held === 'x' || control.held === '-')
+        saw =
+          reading.kind === 'wall'
+            ? `a login page${control.held === 'x' ? ' (production would close the door on every handle that does not exist)' : ''}`
+            : 'no profile data'
       } else {
         saw = reading.isVerified === true ? `verified (${reading.basis})` : reading.isVerified === false ? `not verified (${reading.basis})` : 'could not tell'
         ok = control.held === '-' || (control.held === 'v' && reading.isVerified === true) || (control.held === 'u' && reading.isVerified === false)
@@ -339,14 +346,25 @@ async function main(): Promise<void> {
     // The strict reading must not be missing a mention the looser one saw, and must not exceed the "@" in the text.
     const missed = reading.looseMentions.filter((h) => h !== reading.owner && !reading.mentions.includes(h))
     const tooMany = reading.mentions.length > reading.atSigns
-    if (missed.length > 0 || tooMany) postProblems++
+    // Either of these means production would never count the read as whole, and would ask about the post again.
+    const unlinked = reading.unlinkedAt.filter((h) => h !== reading.owner)
+    if (missed.length > 0 || tooMany || unlinked.length > 0 || !reading.closed) postProblems++
     postLines.push(
       `p/${r.shortcode} via ${r.transport}: ${reading.mentions.length} mention(s) of ${reading.atSigns} "@"` +
         (missed.length > 0 ? `  <-- the looser count also had ${missed.map((h) => `@${h}`).join(' ')}` : '') +
-        (tooMany ? '  <-- more mentions than "@" signs' : ''),
+        (tooMany ? '  <-- more mentions than "@" signs' : '') +
+        (unlinked.length > 0 ? `  <-- "@" words no link goes to: ${unlinked.map((h) => `@${h}`).join(' ')}` : '') +
+        (!reading.closed ? '  <-- the page stopped before the caption ended' : ''),
     )
   }
-  if (postResults.length > 0) {
+  // A post asked for and never read (its client was refused, or none was answered) is a problem too: a check that
+  // read no post cannot say the post reader works (review, 26 Nov 2026).
+  for (const shortcode of args.posts) {
+    if (postResults.some((r) => r.shortcode === shortcode)) continue
+    postProblems++
+    postLines.push(`p/${shortcode}: not asked  <-- NOT READ`)
+  }
+  if (args.posts.length > 0) {
     out(`   THE MENTION READER: ${postProblems === 0 ? 'every post read, and the two counts agree' : `${postProblems} post reading(s) to look at`}`)
     for (const l of postLines) out(`      ${l}`)
   }

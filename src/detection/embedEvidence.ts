@@ -40,6 +40,16 @@
  * memory only: a failure is never written down as a fact about the post.
  * A STALE WRITE. The row is updated only if it still holds exactly what was read (the three strings are in the
  * `where`), because a complete read can replace the row between our read and our write.
+ * "READ" FROM A READ THAT WAS NOT WHOLE (review, 26 Nov 2026). A post is marked read — and never asked again — only
+ * when the page showed the WHOLE stored caption, the caption element ended on the page, and every "@handle" in it
+ * was a link. Otherwise what it did find is still written (each mention is a real link), the post is marked
+ * `embedPartialAt` instead, and it is asked again after a day while it is inside the window: a later read, or a
+ * fixed parser, can still add what this one missed.
+ *
+ * AND THE ACCOUNT THAT SIGNED THE CAPTION. When the page's caption is signed by an account other than the channel
+ * we stored the post under, the post is a collaboration and that account is a co-author: it is written where a
+ * complete read writes a collaborator — `rawPayload.collabHandles` (discovery reads it) and `brands` as `@handle`
+ * (crediting reads it) — and never into `taggedAccounts`, which is for accounts the caption names.
  */
 import { prisma } from '@/lib/db'
 import { log } from '@/lib/logger'
@@ -82,6 +92,15 @@ export function captionsAgree(stored: string, embedText: string): boolean {
   return b.includes(a.slice(0, 60))
 }
 
+/**
+ * PURE. Did the page show the WHOLE caption we stored, not just its beginning? Letters and digits only, as
+ * `captionsAgree` compares. A page that cut the caption short ("… more") fails this and is not a complete read.
+ */
+export function wholeCaptionShown(stored: string, embedText: string): boolean {
+  const a = squash(stored)
+  return a.length > 0 && squash(embedText).includes(a)
+}
+
 export interface RowEvidence {
   taggedAccounts: string
   brands: string
@@ -103,7 +122,14 @@ function stringArray(json: string): string[] | null {
  */
 export function mergeEmbedMentions(
   stored: RowEvidence,
-  read: { mentions: readonly string[]; owner: string | null },
+  read: {
+    mentions: readonly string[]
+    owner: string | null
+    /** The account that signed the caption when it is not the channel the post is stored under. */
+    collaborator: string | null
+    /** False = write what was found, mark it partial, and ask again later. */
+    complete: boolean
+  },
   now: Date,
 ): RowEvidence | null {
   const tags = stringArray(stored.taggedAccounts)
@@ -116,16 +142,23 @@ export function mergeEmbedMentions(
     return null
   }
   if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return null
+  const before = payload as Record<string, unknown>
 
   const mentions = [...new Set(read.mentions.map((m) => m.toLowerCase()))]
+  const collaborator = read.collaborator === null ? null : read.collaborator.toLowerCase()
   const haveTag = new Set(tags.map((t) => t.toLowerCase()))
   const newTags = [...tags, ...mentions.filter((m) => !haveTag.has(m))]
   // "@handle" unless the list already names that account, with or without the "@".
   const haveBrand = new Set(brands.map((b) => b.toLowerCase().replace(/^@/, '')))
-  const newBrands = [...brands, ...mentions.filter((m) => !haveBrand.has(m)).map((m) => `@${m}`)]
+  const toBrand = [...mentions, ...(collaborator ? [collaborator] : [])].filter((m, i, all) => !haveBrand.has(m) && all.indexOf(m) === i)
+  const newBrands = [...brands, ...toBrand.map((m) => `@${m}`)]
+  const priorCollabs = Array.isArray(before.collabHandles) ? before.collabHandles.filter((c): c is string => typeof c === 'string') : []
+  const collabHandles =
+    collaborator && !priorCollabs.some((c) => c.toLowerCase() === collaborator) ? [...priorCollabs, collaborator] : priorCollabs
   const newPayload = JSON.stringify({
-    ...(payload as Record<string, unknown>),
-    [EMBED_READ_KEY]: now.toISOString(),
+    ...before,
+    collabHandles,
+    ...(read.complete ? { [EMBED_READ_KEY]: now.toISOString() } : { embedPartialAt: now.toISOString() }),
     embedMentions: mentions,
     embedOwner: read.owner,
   })
@@ -144,6 +177,8 @@ export interface EmbedEvidenceSummary {
   mentionsRestored: number
   /** Read, the caption agreed, and it links no account: recorded, and not asked again. */
   nothingToRestore: number
+  /** Read, the caption agreed, but the read was not whole: what it found is written, and it is asked again later. */
+  incomplete: number
   /** The page was not this post's caption: nothing recorded. */
   notThisPost: number
   /** No caption on the page, an odd status, or no answer: retried after a day. */
@@ -155,7 +190,7 @@ export interface EmbedEvidenceSummary {
   /** Why the pass stopped before its budget, when it did. */
   stopped: string | null
   /** What a dry run would have written. */
-  preview: Array<{ shortcode: string; publisher: string; mentions: string[] }>
+  preview: Array<{ shortcode: string; publisher: string; mentions: string[]; collaborator: string | null; complete: boolean }>
 }
 
 export async function postEmbedPass(opts: {
@@ -177,6 +212,7 @@ export async function postEmbedPass(opts: {
     restored: 0,
     mentionsRestored: 0,
     nothingToRestore: 0,
+    incomplete: 0,
     notThisPost: 0,
     unreadable: 0,
     changedUnderUs: 0,
@@ -216,13 +252,15 @@ export async function postEmbedPass(opts: {
       summary.stopped = outcome.why === 'switched-off' ? 'embed reads are switched off' : 'this machine does not ask embed pages'
       break
     }
-    summary.asked += 1
     if (outcome.kind === 'refused') {
       // A fact about this HOST, not this post: stop, and do not send the post to the back for a day.
       summary.haltedEarly = true
-      summary.stopped = `Instagram refused (${outcome.reason})`
+      // Whose refusal it was, in words: a log reading "Instagram refused" about our own ceiling sends a person
+      // looking for a throttle that does not exist (review, 26 Nov 2026).
+      summary.stopped = outcome.byUs ? `stopped by this Mac\u2019s own limit (${outcome.reason})` : `Instagram refused (${outcome.reason})`
       break
     }
+    summary.asked += 1
     if (spacingMs > 0) await new Promise((r) => setTimeout(r, spacingMs))
     if (outcome.kind === 'nothing') {
       summary.unreadable += 1
@@ -238,23 +276,43 @@ export async function postEmbedPass(opts: {
       continue
     }
     const publisher = row.target.handle.toLowerCase()
-    const mentions = outcome.mentions.filter((m) => m !== publisher && m !== outcome.owner)
+    const owner = outcome.owner === null ? null : outcome.owner.toLowerCase()
+    const mentions = outcome.mentions.map((m) => m.toLowerCase()).filter((m) => m !== publisher && m !== owner)
+    const collaborator = owner !== null && owner !== publisher ? owner : null
+    const unlinked = outcome.unlinkedAt.map((h) => h.toLowerCase()).filter((h) => h !== publisher && h !== owner)
+    const whole = wholeCaptionShown(row.caption, outcome.captionText)
+    const complete = outcome.closed && whole && unlinked.length === 0
+    if (!complete) {
+      log.step('post embed read was not whole — what it found is kept, and it is asked again after a day', {
+        shortcode: row.shortcode,
+        ...(outcome.closed ? {} : { cut: 'the page stopped before the caption ended' }),
+        ...(whole ? {} : { caption: 'the page did not show the whole stored caption' }),
+        ...(unlinked.length > 0 ? { unlinked: unlinked.map((h) => `@${h}`).join(' ') } : {}),
+      })
+    }
     const stored: RowEvidence = { taggedAccounts: row.taggedAccounts, brands: row.brands, rawPayload: row.rawPayload ?? '' }
-    const merged = mergeEmbedMentions(stored, { mentions, owner: outcome.owner }, now())
+    const merged = mergeEmbedMentions(stored, { mentions, owner, collaborator, complete }, now())
     if (merged === null) {
       summary.unreadable += 1
       unread.note(row.shortcode)
       log.step('a stored row was not in the shape the embed merge expects — left alone', { shortcode: row.shortcode })
       continue
     }
+    const found = mentions.length > 0 || collaborator !== null
+    if (!complete) {
+      summary.incomplete += 1
+      unread.note(row.shortcode)
+    }
     if (dryRun) {
-      if (mentions.length > 0) {
+      if (found) {
         summary.restored += 1
         summary.mentionsRestored += mentions.length
-        summary.preview.push({ shortcode: row.shortcode, publisher, mentions })
-      } else summary.nothingToRestore += 1
+        summary.preview.push({ shortcode: row.shortcode, publisher, mentions, collaborator, complete })
+      } else if (complete) summary.nothingToRestore += 1
       continue
     }
+    // An incomplete read that found nothing writes nothing: there is nothing to keep, and no "read" to record.
+    if (!complete && !found) continue
     // The condition is IN the statement: a complete read may have replaced this row since we read it.
     const written = await prisma.detectedCampaign.updateMany({
       where: { id: row.id, taggedAccounts: stored.taggedAccounts, brands: stored.brands, rawPayload: stored.rawPayload },
@@ -264,7 +322,7 @@ export async function postEmbedPass(opts: {
       summary.changedUnderUs += 1
       continue
     }
-    if (mentions.length === 0) {
+    if (!found) {
       summary.nothingToRestore += 1
       continue
     }
@@ -276,7 +334,10 @@ export async function postEmbedPass(opts: {
           actor: 'embed-evidence',
           action: 'post.embed-mentions',
           entity: `DetectedCampaign:${row.shortcode}`,
-          detail: `Instagram's embed page links ${mentions.map((m) => `@${m}`).join(' ')} in this post's caption; added to its tags (publisher @${publisher})`,
+          detail:
+            (mentions.length > 0 ? `Instagram's embed page links ${mentions.map((m) => `@${m}`).join(' ')} in this post's caption; added to its tags` : 'no caption mention') +
+            (collaborator ? `; the caption is signed by @${collaborator}, recorded as a collaborator` : '') +
+            ` (publisher @${publisher}${complete ? '' : ', read not whole — asked again later'})`,
         },
       })
       .catch(() => undefined) // the row is written; a missing audit line must not undo or repeat it

@@ -1,18 +1,22 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
+import { mkdtempSync, rmSync, readFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 
 /**
- * THE EMBED DOOR: THE SWITCH, THE GATE, THE PROOF AND THE CEILING — 26 Nov 2026.
+ * THE EMBED DOOR: THE SWITCH, THE GATE, THE PROOF, THE CEILING — AND WHOSE FAILURE A FAILURE IS. 26 Nov 2026.
  *
- * `embedDoor.ts` is what stands between a caller and Instagram's embed pages, and it is the new source of the
- * verified badge. What is pinned here, each in the direction that would hurt:
+ * `embedDoor.ts` stands between a caller and Instagram's embed pages, and it is the new source of the verified
+ * badge. What is pinned here, each in the direction that would hurt:
  *
  *   - with the switch off, or on the server, NOTHING is requested;
  *   - a badge is believed only after the door has read "verified" on an account we hold as verified AND "not
- *     verified" on one we hold as not — so a page that says true about everybody admits nobody, and a page that
- *     says false about everybody refuses nobody for good;
- *   - a refusal closes the door and nothing is asked while it is closed;
+ *     verified" on one we hold as not — and a control reading the OPPOSITE fails the proof (review, 26 Nov);
+ *   - a failed proof and our own ceiling are REFUSALS (`byUs`), so callers stop their pass and bench nobody;
+ *   - a 429/401 closes the door at once; a login page, no answer or a 5xx for ONE key is checked against a control
+ *     first, and closes the door only if the control fails too (review: one gated key wedged every pass);
  *   - an embed page that answers never reopens the profile door Instagram is still refusing;
- *   - the hourly ceiling holds whoever is asking.
+ *   - the hourly ceiling and the spacing are this MAC's — two processes share them through a file.
  *
  * The database, the environment and the settings are stand-ins; the gate is the real `anonGate` on a test clock.
  */
@@ -31,8 +35,8 @@ vi.mock('@/lib/settings', () => ({
   },
 }))
 
-const { readProfileEmbed, readPostEmbed, setEmbedDoorForTests, embedRequestsMade, EMBED_PROOF_MAX_AGE_MS, EMBED_PROOF_RETRY_MS, EMBED_SPACING_MS } =
-  await import('@/detection/embedDoor')
+const door = await import('@/detection/embedDoor')
+const { readProfileEmbed, readPostEmbed, setEmbedDoorForTests, embedRequestsMade, EMBED_PROOF_MAX_AGE_MS, EMBED_PROOF_RETRY_MS, EMBED_SPACING_MS } = door
 const { anonGateCheck, anonGateRecordThrottle, resetAnonGate, setAnonGateClock } = await import('@/detection/anonGate')
 type EmbedAnswer = import('@/detection/embedFetch').EmbedAnswer
 
@@ -47,7 +51,9 @@ const profilePage = (handle: string, verified: boolean): string =>
     user: { username: handle, full_name: `Name of ${handle}`, is_verified: verified, follower_count: 1234 },
   })}</script></body></html>`
 const shell = '<html><head><title>Instagram</title></head><body><div id="app"></div></body></html>'
+const loginPage = '<html><head><title>Login • Instagram</title></head><body><input type="password"></body></html>'
 const page = (body: string): EmbedAnswer => ({ kind: 'page', status: 200, body, contentType: 'text/html', hops: 0, capped: false })
+const LOGIN: EmbedAnswer = { kind: 'login-redirect', status: 302, location: 'https://www.instagram.com/accounts/login/' }
 
 async function fetchStub(url: string): Promise<EmbedAnswer> {
   const profile = /instagram\.com\/([a-z0-9._]+)\/embed\/$/.exec(url)
@@ -63,8 +69,8 @@ async function fetchStub(url: string): Promise<EmbedAnswer> {
 
 const honestControls = { netflix_in: 'verified', sonytvofficial: 'verified', marketingmentalist: 'unverified', chumbak_official: 'unverified' } as const
 
-function useRealSwitch(): void {
-  setEmbedDoorForTests({ fetch: fetchStub, now: () => clock, sleep: async (ms) => void (slept.push(ms), (clock += ms)), userAgent: 'test-agent' })
+function useDoor(extra: Parameters<typeof setEmbedDoorForTests>[0] = {}): void {
+  setEmbedDoorForTests({ fetch: fetchStub, now: () => clock, sleep: async (ms) => void (slept.push(ms), (clock += ms)), userAgent: 'test-agent', ...extra })
 }
 
 beforeEach(() => {
@@ -76,8 +82,15 @@ beforeEach(() => {
   settingsBox.value = { embedReads: true, embedTransport: 'curl', embedMaxPerHour: 40 }
   resetAnonGate()
   setAnonGateClock(() => clock)
-  useRealSwitch()
+  useDoor()
 })
+
+/** Make the proof once, so a case can be about one account. */
+async function prove(): Promise<void> {
+  world['warmup'] = 'verified'
+  await readProfileEmbed('warmup')
+  asked.length = 0
+}
 
 describe('the switch and the machine', () => {
   it('asks nothing while embed reads are switched off', async () => {
@@ -114,6 +127,27 @@ describe('the switch and the machine', () => {
   })
 })
 
+describe('the handle as written', () => {
+  /** THE REVIEW'S ONE CONFIRMED HIGH: "@netflix_in..." gave the candidate "netflix_in..", read as @netflix_in. */
+  it('a handle with trailing dots is not read as the handle without them — and nothing is asked', async () => {
+    world['netflix_in'] = 'verified'
+    for (const h of ['netflix_in..', 'netflix_in.', 'viralbhayani..', ' netflix_in. ']) {
+      expect(await readProfileEmbed(h), h).toEqual({ kind: 'nothing', reason: 'not an Instagram handle as written', status: null })
+    }
+    expect(asked).toEqual([])
+  })
+
+  it('"@Name" in another letter case is the same handle as written', async () => {
+    world['a_brand'] = 'verified'
+    expect(await readProfileEmbed('@A_Brand')).toMatchObject({ kind: 'read', isVerified: true })
+  })
+
+  it('not a handle at all is nothing, with no request', async () => {
+    expect(await readProfileEmbed('not a handle')).toMatchObject({ kind: 'nothing', reason: 'not an Instagram handle as written' })
+    expect(asked).toEqual([])
+  })
+})
+
 describe('the proof, before any badge is believed', () => {
   it('reads a verified control and an unverified control first, then the account asked', async () => {
     world['somebrand'] = 'verified'
@@ -136,62 +170,87 @@ describe('the proof, before any badge is believed', () => {
   })
 
   /** THE DANGEROUS ONE: a page that says "verified" about every account would admit every candidate. */
-  it('a door that reads verified for everybody is not believed, and the candidate is never even asked', async () => {
+  it('a door that reads verified for everybody fails the proof on the first unverified control, and asks nobody else', async () => {
     world = { netflix_in: 'verified', sonytvofficial: 'verified', marketingmentalist: 'verified', chumbak_official: 'verified', unverified_shop: 'verified' }
     const r = await readProfileEmbed('unverified_shop')
-    expect(r.kind).toBe('nothing')
+    expect(r).toMatchObject({ kind: 'refused', byUs: true, status: 429 })
     expect(r).not.toMatchObject({ kind: 'read' })
-    expect(asked).toEqual(['netflix_in', 'marketingmentalist', 'chumbak_official'])
-    expect(asked).not.toContain('unverified_shop')
+    if (r.kind === 'refused') expect(r.reason).toMatch(/marketingmentalist is held as NOT verified and read verified/)
+    expect(asked).toEqual(['netflix_in', 'marketingmentalist'])
   })
 
   /** And its mirror: "not verified" about everybody would write a permanent refusal against every real lead. */
-  it('a door that reads not-verified for everybody is not believed either', async () => {
+  it('a door that reads not-verified for everybody fails on the first verified control', async () => {
     world = { netflix_in: 'unverified', sonytvofficial: 'unverified', marketingmentalist: 'unverified', chumbak_official: 'unverified', real_brand: 'unverified' }
     const r = await readProfileEmbed('real_brand')
-    expect(r.kind).toBe('nothing')
-    expect(asked).toEqual(['netflix_in', 'sonytvofficial'])
+    expect(r).toMatchObject({ kind: 'refused', byUs: true })
+    expect(asked).toEqual(['netflix_in'])
   })
 
-  it('a door that serves empty shells proves nothing', async () => {
+  /** Review, 26 Nov: a contradiction is evidence of a broken reader before it is evidence of a stale label. */
+  it('ONE control reading the opposite of what we hold fails the proof, even when the other of its kind reads right', async () => {
+    world = { netflix_in: 'verified', sonytvofficial: 'verified', marketingmentalist: 'verified', chumbak_official: 'unverified', a_brand: 'verified' }
+    expect(await readProfileEmbed('a_brand')).toMatchObject({ kind: 'refused', byUs: true })
+    expect(asked).not.toContain('a_brand')
+  })
+
+  it('verified controls alone are not a proof: with no unverified control readable, nothing is believed', async () => {
+    world = { netflix_in: 'verified', sonytvofficial: 'verified', a_brand: 'verified' }
+    const r = await readProfileEmbed('a_brand')
+    expect(r).toMatchObject({ kind: 'refused', byUs: true })
+    expect(asked).not.toContain('a_brand')
+  })
+
+  it('a control that cannot be read is tolerated: the second of its kind is asked', async () => {
+    world = { netflix_in: 'shell', sonytvofficial: 'verified', marketingmentalist: 'shell', chumbak_official: 'unverified', a_brand: 'verified' }
+    expect(await readProfileEmbed('a_brand')).toMatchObject({ kind: 'read', isVerified: true })
+    expect(asked).toEqual(['netflix_in', 'sonytvofficial', 'marketingmentalist', 'chumbak_official', 'a_brand'])
+  })
+
+  it('a door that serves empty shells proves nothing, and the account is never asked', async () => {
     world = {}
-    expect((await readProfileEmbed('real_brand')).kind).toBe('nothing')
+    expect(await readProfileEmbed('real_brand')).toMatchObject({ kind: 'refused', byUs: true })
     expect(asked).not.toContain('real_brand')
   })
 
-  it('a failed proof is not retried for half an hour, and costs no request meanwhile', async () => {
+  it('a failed proof is not retried for half an hour, costs no request meanwhile, and is still a refusal', async () => {
     world = {}
     await readProfileEmbed('real_brand')
     asked.length = 0
     clock += EMBED_PROOF_RETRY_MS - 60_000
-    expect((await readProfileEmbed('real_brand')).kind).toBe('nothing')
+    const meanwhile = await readProfileEmbed('real_brand')
+    expect(meanwhile).toMatchObject({ kind: 'refused', byUs: true })
     expect(asked).toEqual([])
     clock += 2 * 60_000
     world = { ...honestControls, real_brand: 'verified' }
     expect(await readProfileEmbed('real_brand')).toMatchObject({ kind: 'read', isVerified: true })
   })
 
-  it('one stale label does not sink it: the second control of that kind is asked', async () => {
-    world = { netflix_in: 'unverified', sonytvofficial: 'verified', marketingmentalist: 'verified', chumbak_official: 'unverified', a_brand: 'verified' }
-    expect(await readProfileEmbed('a_brand')).toMatchObject({ kind: 'read', isVerified: true })
-    expect(asked).toEqual(['netflix_in', 'sonytvofficial', 'marketingmentalist', 'chumbak_official', 'a_brand'])
+  it('a failed proof records nothing on Instagram’s gate — Instagram said nothing', async () => {
+    world = {}
+    await readProfileEmbed('real_brand')
+    expect(anonGateCheck('embed').ok).toBe(true)
   })
 
-  it('a refusal during the proof is a refusal, and closes the door', async () => {
-    world['netflix_in'] = { kind: 'login-redirect', status: 302, location: 'https://www.instagram.com/accounts/login/' }
+  it('Instagram refusing during the proof is a refusal by Instagram, and closes the door', async () => {
+    world['netflix_in'] = { kind: 'page', status: 429, body: '{"message":"Please wait"}', contentType: 'application/json', hops: 0, capped: false }
     const r = await readProfileEmbed('a_brand')
-    expect(r).toMatchObject({ kind: 'refused', status: 302 })
+    expect(r).toMatchObject({ kind: 'refused', status: 429, byUs: false })
+    expect(anonGateCheck('embed').ok).toBe(false)
+    expect(asked).toEqual(['netflix_in'])
+  })
+
+  it('a control sent to the login page closes the door — a control is never confirmed against itself', async () => {
+    world['netflix_in'] = LOGIN
+    const r = await readProfileEmbed('a_brand')
+    expect(r).toMatchObject({ kind: 'refused', status: 302, byUs: false })
     expect(anonGateCheck('embed').ok).toBe(false)
     expect(asked).toEqual(['netflix_in'])
   })
 })
 
 describe('what is never a verdict', () => {
-  beforeEach(async () => {
-    world['warmup'] = 'verified'
-    await readProfileEmbed('warmup') // the proof is made; the cases below are about one account
-    asked.length = 0
-  })
+  beforeEach(prove)
 
   it('a page with no data for the handle is nothing — a missing, gated or shell page look alike', async () => {
     const r = await readProfileEmbed('qqqq_nope_nope_12345')
@@ -204,57 +263,100 @@ describe('what is never a verdict', () => {
     expect((await readProfileEmbed('mixed')).kind).toBe('nothing')
   })
 
-  it('an odd status, a timeout and an off-site redirect are nothing, and do not close the door', async () => {
+  it('an odd status and an off-site redirect are nothing, and do not close the door', async () => {
     world['a'] = { kind: 'page', status: 404, body: 'nope', contentType: 'text/html', hops: 0, capped: false }
-    world['b'] = { kind: 'no-answer', error: 'timed out after 25000 ms' }
     world['c'] = { kind: 'redirect-refused', status: 302, location: 'https://evil.example/' }
     expect(await readProfileEmbed('a')).toMatchObject({ kind: 'nothing', status: 404 })
-    expect(await readProfileEmbed('b')).toMatchObject({ kind: 'nothing', status: null })
     expect(await readProfileEmbed('c')).toMatchObject({ kind: 'nothing' })
     expect(anonGateCheck('embed').ok).toBe(true)
   })
 
-  it('not a handle is nothing, with no request', async () => {
-    expect(await readProfileEmbed('not a handle')).toMatchObject({ kind: 'nothing', reason: 'not a handle' })
-    expect(asked).toEqual([])
+  it('a page longer than the cap is nothing — a cut page can lose the object the verdict needs', async () => {
+    world['big'] = { kind: 'page', status: 200, body: profilePage('big', true), contentType: 'text/html', hops: 0, capped: true }
+    expect(await readProfileEmbed('big')).toMatchObject({ kind: 'nothing' })
   })
 })
 
-describe('a refusal closes the door, and only this door', () => {
-  beforeEach(async () => {
-    world['warmup'] = 'verified'
-    await readProfileEmbed('warmup')
-    asked.length = 0
+describe('one key is not the host (point 4)', () => {
+  beforeEach(prove)
+
+  const keyFailures: Array<[string, EmbedAnswer]> = [
+    ['sent to the login page', LOGIN],
+    ['a login page served as a 200', page(loginPage)],
+    ['no answer', { kind: 'no-answer', error: 'timed out after 25000 ms' }],
+    ['a 503', { kind: 'page', status: 503, body: 'busy', contentType: 'text/html', hops: 0, capped: false }],
+  ]
+
+  it.each(keyFailures)('%s for ONE account while a control answers is that account’s, and the door stays open', async (_n, answer) => {
+    world['gatedco'] = answer
+    world['nextco'] = 'verified'
+    const r = await readProfileEmbed('gatedco')
+    expect(r.kind).toBe('nothing')
+    if (r.kind === 'nothing') expect(r.reason).toMatch(/for this one only/)
+    // the control was asked to tell the two apart
+    expect(asked).toEqual(['gatedco', 'netflix_in'])
+    expect(anonGateCheck('embed').ok).toBe(true)
+    // and the next account is read at once: nothing is wedged
+    expect(await readProfileEmbed('nextco')).toMatchObject({ kind: 'read', isVerified: true })
   })
 
-  const refusals: Array<[string, EmbedAnswer]> = [
-    ['sent to the login page', { kind: 'login-redirect', status: 302, location: '/accounts/login/?next=x' }],
-    ['a 429', { kind: 'page', status: 429, body: '{"message":"Please wait a few minutes"}', contentType: 'application/json', hops: 0, capped: false }],
-    ['a 401', { kind: 'page', status: 401, body: '', contentType: null, hops: 0, capped: false }],
-    ['a 403 saying require_login', { kind: 'page', status: 403, body: '{"require_login":true}', contentType: 'application/json', hops: 0, capped: false }],
-    ['a login page served as a 200', { kind: 'page', status: 200, body: '<html><head><title>Login • Instagram</title></head><body><input type="password"></body></html>', contentType: 'text/html', hops: 0, capped: false }],
-  ]
-  it.each(refusals)('%s is a refusal, and nothing more is asked until the cooldown ends', async (_name, answer) => {
-    world['victim'] = answer
+  it('a login page for an account, with the control refused too, is the door: it closes', async () => {
+    world['gatedco'] = LOGIN
+    world['netflix_in'] = LOGIN
+    const r = await readProfileEmbed('gatedco')
+    expect(r).toMatchObject({ kind: 'refused', byUs: false })
+    expect(anonGateCheck('embed').ok).toBe(false)
+  })
+
+  it('no answer for an account, with no answer from the control either, halts without blaming either', async () => {
+    world['slowco'] = { kind: 'no-answer', error: 'timed out' }
+    world['netflix_in'] = { kind: 'no-answer', error: 'timed out' }
+    const r = await readProfileEmbed('slowco')
+    expect(r).toMatchObject({ kind: 'refused', byUs: true, status: 429 })
+    // Instagram said nothing: the gate is not closed, and the next pass simply asks again
+    expect(anonGateCheck('embed').ok).toBe(true)
+  })
+
+  it('a key failure with a control that cannot be read halts — nobody is blamed', async () => {
+    world['gatedco'] = LOGIN
+    world['netflix_in'] = 'shell'
+    expect(await readProfileEmbed('gatedco')).toMatchObject({ kind: 'refused', byUs: true })
+    expect(anonGateCheck('embed').ok).toBe(true)
+  })
+
+  it('a 429 or 401 is never confirmed: being told to stop is not asked about twice', async () => {
+    for (const status of [429, 401]) {
+      resetAnonGate()
+      asked.length = 0
+      world['k'] = { kind: 'page', status, body: '', contentType: null, hops: 0, capped: false }
+      expect(await readProfileEmbed('k')).toMatchObject({ kind: 'refused', status, byUs: false })
+      expect(asked).toEqual(['k'])
+      expect(anonGateCheck('embed').ok).toBe(false)
+    }
+  })
+
+  it('a 403 saying require_login is the door; one that does not is that account’s answer', async () => {
+    world['gated'] = { kind: 'page', status: 403, body: 'forbidden', contentType: 'text/html', hops: 0, capped: false }
+    expect(await readProfileEmbed('gated')).toMatchObject({ kind: 'nothing', status: 403 })
+    expect(anonGateCheck('embed').ok).toBe(true)
+    world['walled'] = { kind: 'page', status: 403, body: '{"require_login":true}', contentType: 'application/json', hops: 0, capped: false }
+    expect(await readProfileEmbed('walled')).toMatchObject({ kind: 'refused', byUs: false })
+    expect(anonGateCheck('embed').ok).toBe(false)
+  })
+
+  it('while the door is closed nothing is asked, and it reopens after the cooldown', async () => {
+    world['k'] = { kind: 'page', status: 429, body: '', contentType: null, hops: 0, capped: false }
     world['next_one'] = 'verified'
-    const r = await readProfileEmbed('victim')
-    expect(r.kind).toBe('refused')
-    // Reported as a "this host was told to stop" status when no request can be made, so callers halt their pass.
-    const again = await readProfileEmbed('next_one')
-    expect(again).toMatchObject({ kind: 'refused', status: 429 })
-    expect(asked).toEqual(['victim'])
+    await readProfileEmbed('k')
+    asked.length = 0
+    expect(await readProfileEmbed('next_one')).toMatchObject({ kind: 'refused', status: 429, byUs: false })
+    expect(asked).toEqual([])
     clock += 16 * 60_000
     expect(await readProfileEmbed('next_one')).toMatchObject({ kind: 'read', isVerified: true })
   })
 
-  it('a 403 that does not say require_login is one account’s answer, not a refusal of the host', async () => {
-    world['gated'] = { kind: 'page', status: 403, body: 'forbidden', contentType: 'text/html', hops: 0, capped: false }
-    expect(await readProfileEmbed('gated')).toMatchObject({ kind: 'nothing', status: 403 })
-    expect(anonGateCheck('embed').ok).toBe(true)
-  })
-
   it('a refused embed door leaves the feed and profile doors alone', async () => {
-    world['victim'] = { kind: 'login-redirect', status: 302, location: '/accounts/login/' }
+    world['victim'] = { kind: 'page', status: 429, body: '', contentType: null, hops: 0, capped: false }
     await readProfileEmbed('victim')
     expect(anonGateCheck('embed').ok).toBe(false)
     expect(anonGateCheck('feed').ok).toBe(true)
@@ -272,18 +374,21 @@ describe('a refusal closes the door, and only this door', () => {
   })
 })
 
-describe('the hourly ceiling and the spacing', () => {
-  it('stops at the ceiling without asking, and says when it lifts', async () => {
-    setEmbedDoorForTests({ fetch: fetchStub, now: () => clock, sleep: async (ms) => void (clock += ms), userAgent: 'test-agent', maxPerHour: 5 })
+describe('the hourly ceiling and the spacing are this Mac’s (point 5)', () => {
+  it('stops at the ceiling without asking, says it is OURS, and says when it lifts', async () => {
+    useDoor({ maxPerHour: 5 })
     for (const h of ['a', 'b', 'c']) world[h] = 'verified'
     const first = clock
     expect((await readProfileEmbed('a')).kind).toBe('read') // 2 proof + 1
     expect((await readProfileEmbed('b')).kind).toBe('read') // 4
     expect((await readProfileEmbed('c')).kind).toBe('read') // 5
     const full = await readProfileEmbed('a')
-    expect(full).toMatchObject({ kind: 'refused', status: 429 })
+    expect(full).toMatchObject({ kind: 'refused', status: 429, byUs: true })
+    if (full.kind === 'refused') {
+      expect(full.reason).toMatch(/our own ceiling/)
+      expect(full.until.getTime()).toBeGreaterThanOrEqual(first + 60 * 60_000)
+    }
     expect(embedRequestsMade()).toBe(5)
-    if (full.kind === 'refused') expect(full.until.getTime()).toBeGreaterThanOrEqual(first + 60 * 60_000)
     // Our own ceiling is not Instagram refusing: the gate stays open.
     expect(anonGateCheck('embed').ok).toBe(true)
     clock += 61 * 60_000
@@ -294,7 +399,7 @@ describe('the hourly ceiling and the spacing', () => {
     settingsBox.value = { embedReads: true, embedTransport: 'curl', embedMaxPerHour: 3 }
     world['a'] = 'verified'
     expect((await readProfileEmbed('a')).kind).toBe('read') // 3 requests
-    expect(await readProfileEmbed('a')).toMatchObject({ kind: 'refused' })
+    expect(await readProfileEmbed('a')).toMatchObject({ kind: 'refused', byUs: true })
     expect(embedRequestsMade()).toBe(3)
   })
 
@@ -304,25 +409,97 @@ describe('the hourly ceiling and the spacing', () => {
     expect(slept.length).toBe(2)
     for (const ms of slept) expect(ms).toBe(EMBED_SPACING_MS)
   })
+
+  /**
+   * Review, 26 Nov: the ceiling was per PROCESS, so the agent and a person's command beside it each had 40 an hour
+   * from one home address. Two separate module instances — the agent and a CLI — now share one file.
+   */
+  it('two processes on one Mac share one ceiling and one spacing through the ledger file', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'ds-embed-ledger-'))
+    const file = join(dir, 'embed-requests.json')
+    try {
+      vi.resetModules()
+      const agentDoor = await import('@/detection/embedDoor')
+      vi.resetModules()
+      const cliDoor = await import('@/detection/embedDoor')
+      expect(agentDoor).not.toBe(cliDoor)
+      const stubSleeps: number[] = []
+      const common = { fetch: fetchStub, now: () => clock, sleep: async (ms: number) => void (stubSleeps.push(ms), (clock += ms)), userAgent: 'test-agent', maxPerHour: 6 }
+      agentDoor.setEmbedDoorForTests({ ...common, ledger: agentDoor.embedFileLedgerForTests(file) })
+      cliDoor.setEmbedDoorForTests({ ...common, ledger: cliDoor.embedFileLedgerForTests(file) })
+      world['DcPOSTone01'] = page('<div class="Caption"><a class="CaptionUsername" href="/pub/">pub</a> launch day for the new range</div>')
+      for (let i = 0; i < 4; i++) expect((await agentDoor.readPostEmbed('DcPOSTone01')).kind).toBe('read')
+      // the CLI sees the agent's four: it may make two more, and its first waits out the agent's last
+      stubSleeps.length = 0
+      expect((await cliDoor.readPostEmbed('DcPOSTone01')).kind).toBe('read')
+      expect(stubSleeps).toEqual([EMBED_SPACING_MS])
+      expect((await cliDoor.readPostEmbed('DcPOSTone01')).kind).toBe('read')
+      expect(await cliDoor.readPostEmbed('DcPOSTone01')).toMatchObject({ kind: 'refused', byUs: true })
+      expect(await agentDoor.readPostEmbed('DcPOSTone01')).toMatchObject({ kind: 'refused', byUs: true })
+      const saved = JSON.parse(readFileSync(file, 'utf8')) as { at: number[] }
+      expect(saved.at).toHaveLength(6)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('a ledger file that cannot be read never stops a read: this process’s own memory stands in', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'ds-embed-ledger-'))
+    try {
+      // a DIRECTORY where the file should be: unreadable as a file, unwritable as one
+      useDoor({ maxPerHour: 4, ledger: door.embedFileLedgerForTests(dir) })
+      world['a'] = 'verified'
+      expect((await readProfileEmbed('a')).kind).toBe('read') // 3
+      expect((await readProfileEmbed('a')).kind).toBe('read') // 4
+      expect(await readProfileEmbed('a')).toMatchObject({ kind: 'refused', byUs: true })
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('a time in the ledger far in the future is a clock that moved, not a request', async () => {
+    const ledger = { at: [clock + 10 * 60 * 60_000, clock + 10 * 60 * 60_000], read() { return this.at }, write(v: number[]) { this.at = v } }
+    useDoor({ maxPerHour: 2, ledger })
+    world['DcPOSTone01'] = page('<div class="Caption"><a class="CaptionUsername" href="/pub/">pub</a> launch day for the new range</div>')
+    expect((await readPostEmbed('DcPOSTone01')).kind).toBe('read')
+  })
+
+  it('re-reads the gate’s recorded cooldown at most every five minutes, so another process’s refusal is seen', async () => {
+    const hydrate = vi.fn(async () => undefined)
+    useDoor({ hydrate })
+    world['DcPOSTone01'] = page('<div class="Caption"><a class="CaptionUsername" href="/pub/">pub</a> launch day for the new range</div>')
+    await readPostEmbed('DcPOSTone01')
+    await readPostEmbed('DcPOSTone01')
+    expect(hydrate).toHaveBeenCalledTimes(1)
+    clock += 5 * 60_000 + 1
+    await readPostEmbed('DcPOSTone01')
+    expect(hydrate).toHaveBeenCalledTimes(2)
+  })
 })
 
 describe('the post door', () => {
   const caption = '<div class="Caption"><a class="CaptionUsername" href="https://www.instagram.com/publisher_one/">publisher_one</a> Launch with <a href="https://www.instagram.com/brand.one/">@brand.one</a> today</div>'
 
-  it('returns the linked mentions, the owner and the caption text — with no proof needed', async () => {
+  it('returns the linked mentions, the owner, the caption text and whether the read was whole — with no proof needed', async () => {
     world['DcyE65LPYMj'] = page(caption)
     const r = await readPostEmbed('DcyE65LPYMj')
-    expect(r).toMatchObject({ kind: 'read', owner: 'publisher_one', mentions: ['brand.one'] })
+    expect(r).toMatchObject({ kind: 'read', owner: 'publisher_one', mentions: ['brand.one'], unlinkedAt: [], closed: true })
     if (r.kind === 'read') expect(r.captionText).toContain('Launch with @brand.one today')
     expect(asked).toEqual(['DcyE65LPYMj'])
   })
 
-  it('a page with no caption is nothing; a login page is a refusal that closes the door', async () => {
+  it('a page with no caption is nothing and leaves the door open', async () => {
     world['PNOCAP01'] = page('<div class="Embed">This post is unavailable</div>')
     expect(await readPostEmbed('PNOCAP01')).toMatchObject({ kind: 'nothing' })
     expect(anonGateCheck('embed').ok).toBe(true)
-    world['PWALL001'] = page('<html><head><title>Login • Instagram</title></head><body><input type="password"></body></html>')
-    expect(await readPostEmbed('PWALL001')).toMatchObject({ kind: 'refused' })
+  })
+
+  it('a login page for one post, with a control answering, is that post’s; with the control refused too, the door’s', async () => {
+    world['PWALL001'] = page(loginPage)
+    expect(await readPostEmbed('PWALL001')).toMatchObject({ kind: 'nothing' })
+    expect(anonGateCheck('embed').ok).toBe(true)
+    world['netflix_in'] = page(loginPage)
+    expect(await readPostEmbed('PWALL001')).toMatchObject({ kind: 'refused', byUs: false })
     expect(anonGateCheck('embed').ok).toBe(false)
   })
 

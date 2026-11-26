@@ -48,9 +48,11 @@
  *   - inside the page's data it is a STRING VALUE, so it sits at least one escaping level deeper than the object
  *     that holds it: only the objects at the SHALLOWEST depth found for the account count.
  *
- * So a forged object is ignored when the real one is there, and when it is not there the flat method — which sees
- * everything, typed text included — reads both values or the other one, and the answer is `null`. HTML-entity
- * text (`&quot;username&quot;`) is never decoded into data at all: that is precisely what typed text looks like.
+ * Those two rules pick which objects may SUPPLY the verdict. Every other reading only VETOES: an own object at any
+ * depth or outside any script, and every value the flat method finds, that says otherwise makes the answer `null`
+ * — so typed text can make an account unreadable, never verified and never "not verified" (the review of 26 Nov
+ * built pages where the two rules alone picked the forgery). A scan that stops at its cap is never a verdict
+ * either. HTML-entity text (`&quot;username&quot;`) is never decoded into data: that is what typed text looks like.
  *
  * What a page does NOT say is never a verdict either: no username key for the handle is `no-profile-data` (a
  * missing account, a gated one and an empty shell all look like that), and a login page is `wall`.
@@ -105,21 +107,31 @@ function codePoint(n: number, original: string): string {
  * flat method below must see exactly what the probe saw on 26 Nov. Never use its output as a value: it turns every
  * non-ASCII escape into "~" and cannot tell a quote inside a string from a quote that ends one.
  */
+const FLAT_UNICODE: Record<string, string> = {
+  '0022': '"',
+  '0026': '&',
+  '0027': "'",
+  '002f': '/',
+  '003c': '<',
+  '003d': '=',
+  '003e': '>',
+  '0040': '@',
+  '2019': "'",
+}
+
 export function flattenEmbed(s: string): string {
   if (s.includes('\\')) {
-    s = s
-      .replace(/\\+u0022/g, '"')
-      .replace(/\\+u0026/g, '&')
-      .replace(/\\+u0027/g, "'")
-      .replace(/\\+u002[Ff]/g, '/')
-      .replace(/\\+u003[Cc]/g, '<')
-      .replace(/\\+u003[Dd]/g, '=')
-      .replace(/\\+u003[Ee]/g, '>')
-      .replace(/\\+u0040/g, '@')
-      .replace(/\\+u2019/g, "'")
-      .replace(/\\+u[0-9A-Fa-f]{4}/g, '~')
-      .replace(/\\+[nrt]/g, ' ')
-      .replace(/\\/g, '')
+    /* ONE pass, and that is load-bearing (review, 26 Nov 2026): ten `\\+u0022`-style regexes each backtrack over
+       every run of backslashes, which is quadratic in the run — and an account can type thousands of backslashes
+       into its own captions, each one doubled per level of escaping. Measured 16 s for one crafted page. Here
+       `\\+` takes a whole run once and never gives it back, so the work is linear. Same result as the chain: a
+       known escape becomes its character, an unknown \\uXXXX becomes "~", \\n \\r \\t become spaces, and every
+       other backslash goes. */
+    s = s.replace(/\\+(u[0-9A-Fa-f]{4}|[nrt])?/g, (_m: string, esc: string | undefined) => {
+      if (esc === undefined) return ''
+      if (esc.length === 1) return ' '
+      return FLAT_UNICODE[esc.slice(1).toLowerCase()] ?? '~'
+    })
   }
   if (s.includes('&')) {
     s = s
@@ -189,7 +201,13 @@ function isWall(marks: WallMarks, bytes: number): boolean {
 // ─────────────────────────────────────────────────────────────────────────────────────────────────
 
 /** Most occurrences of the username key one page is walked for. The probe's bound. */
-const MAX_KEYS = 60
+const MAX_KEYS = 200
+/**
+ * The most characters the exact method may walk across all of one page's username keys. A real page measured on
+ * 26 Nov had 11 keys; this bounds a crafted one. Past it the scan is TRUNCATED, and a truncated scan is never a
+ * verdict (see `parseProfileEmbed`).
+ */
+const MAX_WALK_CHARS = 40_000_000
 /** How far from the key an object's braces are looked for. A profile object carries its posts, so this is large. */
 const MAX_OBJECT_SPAN = 2_000_000
 
@@ -224,7 +242,7 @@ function runBefore(s: string, i: number): number {
  * The text of the object that directly holds the key at `keyAt` (the position of the key's opening quote), at
  * `depth`. Null when its braces cannot be found inside the span — never a guess.
  */
-function enclosingObject(s: string, keyAt: number, depth: number): string | null {
+function enclosingObject(s: string, keyAt: number, depth: number): { start: number; text: string | null; walked: number } {
   // LEFT: we start outside a string (a key's opening quote is structural), so each structural quote toggles.
   let inString = false
   let nesting = 0
@@ -248,7 +266,8 @@ function enclosingObject(s: string, keyAt: number, depth: number): string | null
       nesting--
     }
   }
-  if (start < 0) return null
+  const walkedLeft = keyAt - Math.max(start, leftLimit)
+  if (start < 0) return { start: -1, text: null, walked: walkedLeft }
   // RIGHT: from the opening brace, string-aware, to the brace that closes it.
   inString = false
   nesting = 0
@@ -266,12 +285,12 @@ function enclosingObject(s: string, keyAt: number, depth: number): string | null
       if (c === 123) nesting++
       else if (c === 125) {
         nesting--
-        if (nesting === 0) return s.slice(start, i + 1)
+        if (nesting === 0) return { start, text: s.slice(start, i + 1), walked: walkedLeft + (i - start) }
       }
     }
     run = 0
   }
-  return null
+  return { start, text: null, walked: walkedLeft + (rightLimit - start) }
 }
 
 /** Take `depth` layers of string-escaping off, with the JSON parser's own rules. Null when the text is not that. */
@@ -330,55 +349,81 @@ function readOwnFields(obj: Record<string, unknown>): Pick<OwnObjectReading, 'is
  * Every object on the page whose OWN "username" is `handle`, parsed. Exported for the check script, which prints
  * how many there were and at what depth.
  */
-export function ownObjectsFor(raw: string, handle: string): { objects: OwnObjectReading[]; keysSeen: number; undecodable: number } {
+export function ownObjectsFor(
+  raw: string,
+  handle: string,
+): { objects: OwnObjectReading[]; keysSeen: number; undecodable: number; truncated: boolean } {
   const objects: OwnObjectReading[] = []
   let keysSeen = 0
   let undecodable = 0
-  const escaped = handle.replace(/[.]/g, '[.]')
-  {
-    // The bytes as served. Entities are NOT decoded here: `&quot;username&quot;` is what typed text looks like.
-    const s = raw
-    const lower = s.toLowerCase()
-    // The same run of backslashes before all four quotes, or it is not one key at one depth.
-    const re = new RegExp(`(\\\\*)"username\\1"\\s*:\\s*\\1"${escaped}\\1"`, 'gi')
-    let m: RegExpExecArray | null
-    while ((m = re.exec(s)) !== null && keysSeen < MAX_KEYS) {
-      keysSeen++
-      const run = (m[1] ?? '').length
-      const depth = depthOfRun(run)
-      if (depth === null) {
-        undecodable++
-        continue
-      }
-      const keyAt = m.index + run
-      const cut = enclosingObject(s, keyAt, depth)
-      const plain = cut === null ? null : unescapeLayers(cut, depth)
-      if (plain === null) {
-        undecodable++
-        continue
-      }
-      let parsed: unknown
-      try {
-        parsed = JSON.parse(plain)
-      } catch {
-        undecodable++
-        continue
-      }
-      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
-        undecodable++
-        continue
-      }
-      const obj = parsed as Record<string, unknown>
-      // Compared AFTER parsing: this is the identity check `enrichHandle` did not have.
-      if (typeof obj['username'] !== 'string' || obj['username'].toLowerCase() !== handle) {
-        undecodable++
-        continue
-      }
-      const inScript = lower.lastIndexOf('<script', keyAt) > lower.lastIndexOf('</script', keyAt)
-      objects.push({ depth, inScript, ...readOwnFields(obj), keys: Object.keys(obj).slice(0, 40) })
+  let truncated = false
+  let walked = 0
+  /** One object can hold the key twice (`{"username":"a",…,"username":"b"}`): it is read once. */
+  const seenStarts = new Set<number>()
+  // The bytes as served. Entities are NOT decoded here: `&quot;username&quot;` is what typed text looks like.
+  const s = raw
+  const lower = s.toLowerCase()
+  /* FOUND BY ITS LITERAL NAME, then checked by hand — not one regex with a backreference: `(\\*)"username\1…`
+     restarts inside every run of backslashes and is quadratic in it (review, 26 Nov 2026). Here a match can only
+     begin at `"username`, so the work is linear. The same run of backslashes must sit before all four quotes,
+     or it is not one key at one depth. */
+  const re = /"username(\\*)"\s*:\s*/g
+  let m: RegExpExecArray | null
+  while ((m = re.exec(s)) !== null) {
+    const run = (m[1] ?? '').length
+    if (runBefore(s, m.index) !== run) continue
+    const bs = '\\'.repeat(run)
+    const valueAt = m.index + m[0].length
+    if (!s.startsWith(`${bs}"`, valueAt)) continue
+    const nameAt = valueAt + run + 1
+    if (s.slice(nameAt, nameAt + handle.length).toLowerCase() !== handle) continue
+    if (!s.startsWith(`${bs}"`, nameAt + handle.length)) continue
+    /* NEVER A VERDICT FROM A SCAN THAT STOPPED EARLY (review, 26 Nov 2026): text an account typed can carry enough
+       copies of its own username key to push the real object past any cap, and a forged object read in its place
+       would then be the only one seen. So when the cap or the work bound is reached the reading says so, and
+       `parseProfileEmbed` gives no verdict. */
+    if (keysSeen >= MAX_KEYS || walked >= MAX_WALK_CHARS) {
+      truncated = true
+      break
     }
+    keysSeen++
+    const depth = depthOfRun(run)
+    if (depth === null) {
+      undecodable++
+      continue
+    }
+    const keyAt = m.index
+    const cut = enclosingObject(s, keyAt, depth)
+    walked += cut.walked
+    if (cut.start >= 0 && seenStarts.has(cut.start)) continue
+    if (cut.start >= 0) seenStarts.add(cut.start)
+    const plain = cut.text === null ? null : unescapeLayers(cut.text, depth)
+    if (plain === null) {
+      undecodable++
+      continue
+    }
+    let parsed: unknown
+    try {
+      parsed = JSON.parse(plain)
+    } catch {
+      undecodable++
+      continue
+    }
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      undecodable++
+      continue
+    }
+    const obj = parsed as Record<string, unknown>
+    // Compared AFTER parsing: this is the identity check `enrichHandle` did not have. JSON.parse keeps the LAST of
+    // two keys, so an object whose last "username" is somebody else is somebody else's.
+    if (typeof obj['username'] !== 'string' || obj['username'].toLowerCase() !== handle) {
+      undecodable++
+      continue
+    }
+    const inScript = lower.lastIndexOf('<script', keyAt) > lower.lastIndexOf('</script', keyAt)
+    objects.push({ depth, inScript, ...readOwnFields(obj), keys: Object.keys(obj).slice(0, 40) })
   }
-  return { objects, keysSeen, undecodable }
+  return { objects, keysSeen, undecodable, truncated }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────────────────────────
@@ -391,17 +436,24 @@ const FLAT_WINDOW = 900
 /** What the flat method counted in the username's own objects. */
 export interface FlatReading {
   usernameKeys: number
+  /** Own-level windows holding a true / a false. A window holding both counts once in each. */
   ownTrue: number
   ownFalse: number
+  /** The scan stopped at the key cap with more keys left: see `ownObjectsFor`. */
+  truncated: boolean
 }
 
 export function flatReadingFor(raw: string, handle: string): FlatReading {
   const F = flattenEmbed(oneLine(raw))
   const escaped = handle.replace(/[.]/g, '[.]')
   const re = new RegExp(`"username" *: *"${escaped}"`, 'g')
-  const out: FlatReading = { usernameKeys: 0, ownTrue: 0, ownFalse: 0 }
+  const out: FlatReading = { usernameKeys: 0, ownTrue: 0, ownFalse: 0, truncated: false }
   let m: RegExpExecArray | null
-  while ((m = re.exec(F)) !== null && out.usernameKeys < MAX_KEYS) {
+  while ((m = re.exec(F)) !== null) {
+    if (out.usernameKeys >= MAX_KEYS) {
+      out.truncated = true
+      break
+    }
     out.usernameKeys++
     const at = m.index
     const s0 = Math.max(0, at - FLAT_WINDOW)
@@ -437,12 +489,12 @@ export function flatReadingFor(raw: string, handle: string): FlatReading {
       }
       if (depth === 0) right += c
     }
-    // One object says one thing: its first is_verified, as the probe counted each key once per object.
-    const own = /"is_verified" *: *(true|false)/.exec(left + right)
-    if (own) {
-      if (own[1] === 'true') out.ownTrue++
-      else out.ownFalse++
-    }
+    /* EVERY value in the window, not the first (review, 26 Nov 2026). This walk does not know strings, so a
+       biography reading `"is_verified":true` sits in the same window as the real key — and taking only the first
+       let eighteen typed characters turn this veto into agreement. Now a window that holds both says both. */
+    const vals = new Set((left + right).match(/"is_verified" *: *(true|false)/g)?.map((v) => v.endsWith('true')) ?? [])
+    if (vals.has(true)) out.ownTrue++
+    if (vals.has(false)) out.ownFalse++
   }
   return out
 }
@@ -470,7 +522,20 @@ export type ProfileEmbedReading =
        * `objects` is every object found for the account; `trusted` is how many of those are inside a script
        * element at the shallowest depth — the only ones the verdict is read from.
        */
-      exact: { objects: number; trusted: number; withBadge: number; trueCount: number; falseCount: number; keysSeen: number; undecodable: number; depths: number[] }
+      exact: {
+        objects: number
+        trusted: number
+        withBadge: number
+        trueCount: number
+        falseCount: number
+        /** What EVERY own object said, trusted or not — any disagreement among them takes the verdict away. */
+        anyTrue: number
+        anyFalse: number
+        keysSeen: number
+        undecodable: number
+        truncated: boolean
+        depths: number[]
+      }
       flat: FlatReading
     }
   | { kind: 'no-profile-data'; handle: string; reason: string }
@@ -506,11 +571,19 @@ export function parseProfileEmbed(raw: string, handleInput: string): ProfileEmbe
   const falseCount = withBadge.length - trueCount
   const exactSays = verdictOf(trueCount, falseCount)
   const flatSays = verdictOf(flat.ownTrue, flat.ownFalse)
+  /* EVERY OWN OBJECT IS A VETO (review, 26 Nov 2026). The trusted ones supply the verdict; all the others — deeper,
+     or outside a script, i.e. where typed text can sit — can only take it away. A page shape nobody has measured
+     (captions in a shallower script than the profile) would otherwise let a forged object BE the trusted one. With
+     this rule typed text can make an account unreadable, never verified and never "not verified". */
+  const anyTrue = own.objects.filter((o) => o.isVerified === true).length
+  const anyFalse = own.objects.filter((o) => o.isVerified === false).length
 
   let isVerified: boolean | null = null
   let basis: BadgeBasis = 'none'
   let undecided: string | null = null
-  if (exactSays === 'M' || flatSays === 'M') {
+  if (own.truncated || flat.truncated) {
+    undecided = 'the page names this account more times than are read, so it is not read at all'
+  } else if (exactSays === 'M' || flatSays === 'M' || (anyTrue > 0 && anyFalse > 0)) {
     undecided = 'the account’s own data says both true and false'
   } else if (exactSays === '-') {
     // The flat method alone is never a verdict: it cannot tell page data from text somebody typed.
@@ -543,8 +616,11 @@ export function parseProfileEmbed(raw: string, handleInput: string): ProfileEmbe
       withBadge: withBadge.length,
       trueCount,
       falseCount,
+      anyTrue,
+      anyFalse,
       keysSeen: own.keysSeen,
       undecodable: own.undecodable,
+      truncated: own.truncated || flat.truncated,
       depths: [...new Set(own.objects.map((o) => o.depth))].sort((a, b) => a - b),
     },
     flat,
@@ -594,7 +670,7 @@ function stripTags(html: string): string {
 }
 
 /** The probe's caption region: after the tag that carries the class, up to the first `</div` or `<div`. */
-function captionRegion(page: string): { region: string; cls: string } | null {
+function captionRegion(page: string): { region: string; cls: string; closed: boolean } | null {
   const re = /class="([^"]*[Cc]aption[^"]*)"/g
   let m: RegExpExecArray | null
   let tries = 0
@@ -608,7 +684,7 @@ function captionRegion(page: string): { region: string; cls: string } | null {
     let cut = e1
     if (e2 >= 0 && (cut < 0 || e2 < cut)) cut = e2
     const region = cut >= 0 ? body.slice(0, cut) : body
-    if (stripTags(region) !== '') return { region, cls: m[1] ?? '' }
+    if (stripTags(region) !== '') return { region, cls: m[1] ?? '', closed: cut >= 0 }
   }
   return null
 }
@@ -633,6 +709,13 @@ export type PostEmbedReading =
       captionClass: string
       /** The caption as a reader sees it (tags out, entities decoded), cut at 6,000 characters. */
       captionText: string
+      /**
+       * "@handle" words in the caption's text that no link in it goes to — Instagram links every real mention, so
+       * one here is a mention this parser did not see (or an account that does not exist). Emails are not counted.
+       */
+      unlinkedAt: string[]
+      /** True when the caption element ended inside the page; false when the page stopped first (a cut body). */
+      closed: boolean
     }
   | { kind: 'no-caption'; reason: string }
   | { kind: 'wall'; reason: string }
@@ -672,6 +755,11 @@ export function parsePostEmbed(raw: string): PostEmbedReading {
   for (const h of linked) {
     if (lowerText.includes(`@${h}`) && !looseMentions.includes(h)) looseMentions.push(h)
   }
+  const unlinkedAt: string[] = []
+  for (const t of text.matchAll(/(?:^|[^A-Za-z0-9._@])@([A-Za-z0-9._]{1,30})/g)) {
+    const h = (t[1] ?? '').toLowerCase().replace(/\.+$/, '')
+    if (h !== '' && !linked.includes(h) && !unlinkedAt.includes(h)) unlinkedAt.push(h)
+  }
   const own = owner
   return {
     kind: 'post',
@@ -683,6 +771,8 @@ export function parsePostEmbed(raw: string): PostEmbedReading {
     captionChars: text.length,
     captionClass: cap.cls,
     captionText: text.slice(0, 6_000),
+    unlinkedAt,
+    closed: cap.closed,
   }
 }
 

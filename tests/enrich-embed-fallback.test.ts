@@ -140,7 +140,7 @@ describe('with the embed door asking', () => {
 
   it('BOTH doors refusing still looks like "this host was told to stop"', async () => {
     feedAnswers(401, WALL)
-    embedMock.mockResolvedValue({ kind: 'refused', reason: 'sent to the login page', until: new Date('2026-11-26T10:00:00Z'), status: 302 })
+    embedMock.mockResolvedValue({ kind: 'refused', reason: 'sent to the login page', until: new Date('2026-11-26T10:00:00Z'), status: 302, byUs: false })
     const e = await enrichHandle('somebrand')
     expect(e.reachable).toBe(false)
     expect(e.isVerified).toBeNull()
@@ -164,11 +164,32 @@ describe('with the embed door asking', () => {
     for (const o of [
       { kind: 'nothing', reason: 'the embed page does not say (both)', status: null },
       { kind: 'nothing', reason: 'HTTP 404', status: 404 },
-      { kind: 'refused', reason: 'HTTP 429', until: new Date(), status: 429 },
+      { kind: 'refused', reason: 'HTTP 429', until: new Date(), status: 429, byUs: false },
     ] as Outcome[]) {
       embedMock.mockResolvedValue(o)
       const e = await enrichHandle('somebrand')
       expect(e.reachable && e.isVerified === null).toBe(false)
     }
+  })
+
+  /* Review, 26 Nov 2026. A proof that failed, or this Mac's own hourly ceiling, are refusals BY US — and they must
+     still halt a pass the way a throttle does, or the badge door benches every candidate it reaches for a day. */
+  it('a refusal by this Mac (a failed proof, our own ceiling) still halts the pass: a 429, no verdict', async () => {
+    feedAnswers(401, WALL)
+    embedMock.mockResolvedValue({ kind: 'refused', reason: 'the embed badge reading is not trusted right now (x)', until: new Date('2026-11-26T10:00:00Z'), status: 429, byUs: true })
+    const e = await enrichHandle('somebrand')
+    expect(e).toMatchObject({ reachable: false, isVerified: null, status: 429 })
+    expect(e.reason).toMatch(/not trusted right now/)
+  })
+
+  /* Review, 26 Nov 2026 — the one confirmed HIGH: "@netflix_in..." in a caption is candidate "netflix_in..", and the
+     embed door must never answer it with @netflix_in's badge. The door refuses it; enrichHandle refuses it too. */
+  it('a handle with trailing dots is never answered with the badge of the handle without them', async () => {
+    feedAnswers(401, WALL)
+    embedMock.mockResolvedValue({ kind: 'read', isVerified: true, fullName: 'Netflix India', followers: 1, basis: 'both' })
+    const e = await enrichHandle('netflix_in..')
+    expect(e.reachable).toBe(false)
+    expect(e.isVerified).toBeNull()
+    expect(e.source).toBeNull()
   })
 })

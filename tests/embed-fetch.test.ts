@@ -67,6 +67,18 @@ beforeAll(async () => {
     } else if (url.startsWith('/big/')) {
       res.writeHead(200, { 'content-type': 'text/html' })
       res.end(Buffer.alloc(EMBED_MAX_BYTES + 50_000, 0x61))
+    } else if (url.startsWith('/stall/')) {
+      // the headers and half a caption, then nothing: curl's --max-time fires with half a page printed
+      res.writeHead(200, { 'content-type': 'text/html' })
+      res.write('<div class="Caption"><a class="CaptionUsername" href="/pub/">pub</a> half a cap')
+    } else if (url.startsWith('/reset/')) {
+      res.writeHead(200, { 'content-type': 'text/html', 'content-length': '5000' })
+      res.write('<div class="Caption">half a caption')
+      setTimeout(() => res.socket?.destroy(), 50)
+    } else if (url.startsWith('/early/')) {
+      res.writeEarlyHints({ link: '</style.css>; rel=preload; as=style' })
+      res.writeHead(200, { 'content-type': 'text/html' })
+      res.end(PAGE)
     } else if (url.startsWith('/slow/')) {
       setTimeout(() => {
         res.writeHead(200, { 'content-type': 'text/html' })
@@ -168,6 +180,15 @@ describe.each(transports)('fetchEmbed through %s', (transport) => {
     expect(a.kind).toBe('no-answer')
   })
 
+  it('a page cut off after its headers is no-answer, never half a page read as whole (review, 26 Nov)', async () => {
+    expect(await ask('/stall/x/', transport, 1_500)).toMatchObject({ kind: 'no-answer' })
+    expect(await ask('/reset/x/', transport, 5_000)).toMatchObject({ kind: 'no-answer' })
+  })
+
+  it('a 103 Early Hints before the answer is skipped, never taken as the answer (review, 26 Nov)', async () => {
+    expect(await ask('/early/x/', transport)).toMatchObject({ kind: 'page', status: 200 })
+  })
+
   it('nothing listening is no-answer', async () => {
     const a = await fetchEmbed('http://127.0.0.1:9/ok/x/', { userAgent: UA, transport, testOrigin: 'http://127.0.0.1:9', timeoutMs: 3_000 })
     expect(a.kind).toBe('no-answer')
@@ -237,5 +258,9 @@ describe('the rules, without a network', () => {
     const proxied = Buffer.from('HTTP/1.1 200 Connection established\r\n\r\nHTTP/1.1 200 OK\r\nContent-Type: text/html\r\n\r\n<html>x</html>')
     expect(parseCurlOutput(proxied)).toMatchObject({ status: 200, body: '<html>x</html>' })
     expect(parseCurlOutput(Buffer.from('garbage'))).toBeNull()
+    const hinted = Buffer.from('HTTP/1.1 103 Early Hints\r\nLink: </a.css>\r\n\r\nHTTP/1.1 100 Continue\r\n\r\nHTTP/1.1 302 Found\r\nLocation: /accounts/login/\r\n\r\n')
+    expect(parseCurlOutput(hinted)).toMatchObject({ status: 302, location: '/accounts/login/' })
+    const tunnelThenHint = Buffer.from('HTTP/1.1 200 Connection established\r\n\r\nHTTP/2 103\r\nlink: x\r\n\r\nHTTP/2 200\r\ncontent-type: text/html\r\n\r\npage')
+    expect(parseCurlOutput(tunnelThenHint)).toMatchObject({ status: 200, body: 'page' })
   })
 })

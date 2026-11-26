@@ -318,6 +318,66 @@ describe('parsePostEmbed — the caption’s @mentions as Instagram linked them'
   })
 })
 
+describe('review, 26 Nov — what the first version of the reader got wrong', () => {
+  it('a page naming the account more times than are read is not read at all (it used to stop at sixty and decide)', () => {
+    // every one says the same thing — and it is still not read, because what lies past the cap is unseen
+    const many = Array.from({ length: 260 }, () => ({ username: 'brand_x', is_verified: true }))
+    const r = parseProfileEmbed(page(`<script type="application/json">${JSON.stringify(many)}</script>`), 'brand_x')
+    expect(r.kind).toBe('profile')
+    if (r.kind !== 'profile') return
+    expect(r.isVerified).toBeNull()
+    expect(r.exact.truncated).toBe(true)
+    expect(ownObjectsFor(page(`<script>${JSON.stringify(many)}</script>`), 'brand_x').truncated).toBe(true)
+  })
+
+  it('every own object can veto: a deeper object disagreeing with the trusted one takes the verdict away', () => {
+    const real = JSON.stringify({ user: { username: 'brand_x', is_verified: true } })
+    const deeper = atDepth({ username: 'brand_x', is_verified: false }, 1)
+    const r = parseProfileEmbed(page(`<script>${real}</script><script>"${deeper}"</script>`), 'brand_x')
+    expect(r).toMatchObject({ kind: 'profile', isVerified: null })
+    if (r.kind === 'profile') {
+      expect(r.exact.anyTrue).toBe(1)
+      expect(r.exact.anyFalse).toBe(1)
+    }
+  })
+
+  it('and the other way: a forged "true" a level deeper never turns a real "false" into anything but unknown', () => {
+    const real = JSON.stringify({ user: { username: 'brand_x', is_verified: false } })
+    const forged = atDepth({ username: 'brand_x', is_verified: true }, 1)
+    const r = parseProfileEmbed(page(`<script>${real}</script><script>"${forged}"</script>`), 'brand_x')
+    expect(r).toMatchObject({ kind: 'profile', isVerified: null })
+  })
+
+  it('the looser method counts EVERY badge value beside the account, not just the first', () => {
+    const f = flatReadingFor(page(`<script>{"username":"brand_x","is_verified":true,"x":{"y":1},"is_verified":false}</script>`), 'brand_x')
+    expect(f.ownTrue).toBeGreaterThan(0)
+    expect(f.ownFalse).toBeGreaterThan(0)
+  })
+
+  it('reads a three-megabyte page of backslashes, quotes and other accounts\' keys in linear time', () => {
+    const junk = [
+      '\\'.repeat(600_000),
+      '"username":"someone_else",'.repeat(40_000),
+      '"username\\\\":'.repeat(40_000),
+      '{'.repeat(200_000),
+    ].join('')
+    const t0 = performance.now()
+    parseProfileEmbed(page(`<script>${junk}{"username":"brand_x","is_verified":true}</script>`), 'brand_x')
+    parsePostEmbed(page(`<div class="Caption">${'@a'.repeat(300_000)}</div>`))
+    expect(performance.now() - t0).toBeLessThan(4_000)
+  })
+
+  it('an "@" word in the caption that no link goes to is reported, so the read is not taken as whole', () => {
+    const r = parsePostEmbed(page('<div class="Caption"><a class="CaptionUsername" href="/pub/">pub</a> with <a href="/brand_one/">@brand_one</a> and @farmleyin. Mail hello@example.com</div>'))
+    expect(r).toMatchObject({ kind: 'post', mentions: ['brand_one'], unlinkedAt: ['farmleyin'], closed: true })
+  })
+
+  it('a caption the page cut off before its element ended says so', () => {
+    const r = parsePostEmbed(page('<div class="Caption"><a class="CaptionUsername" href="/pub/">pub</a> with <a href="/brand_one/">@brand_one</a> and more'))
+    expect(r).toMatchObject({ kind: 'post', closed: false })
+  })
+})
+
 describe('small parts', () => {
   it('handleFromHref takes only an instagram.com account path', () => {
     expect(handleFromHref('https://www.instagram.com/Netflix_IN/?utm_source=ig_embed&amp;x=1')).toBe('netflix_in')

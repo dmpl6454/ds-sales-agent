@@ -89,8 +89,13 @@ const read = async (shortcode: string): Promise<Outcome> => {
   asked.push(shortcode)
   return pages[shortcode] ?? { kind: 'nothing', reason: 'the embed page shows no caption (x)', status: null }
 }
-const readOf = (mentions: string[], captionText = 'officialsocialsamosa Festive camp with @itsbevygood and @plumbodylovin, see you there', owner: string | null = 'officialsocialsamosa'): Outcome => ({
-  kind: 'read', owner, mentions, captionText, atSigns: mentions.length,
+const readOf = (
+  mentions: string[],
+  captionText = 'officialsocialsamosa Festive camp with @itsbevygood and @plumbodylovin, see you there',
+  owner: string | null = 'officialsocialsamosa',
+  more: { unlinkedAt?: string[]; closed?: boolean } = {},
+): Outcome => ({
+  kind: 'read', owner, mentions, captionText, atSigns: mentions.length, unlinkedAt: more.unlinkedAt ?? [], closed: more.closed ?? true,
 })
 const run = (maxReads = 10, dryRun = false) => postEmbedPass({ maxReads, dryRun, spacingMs: 0, read, now: () => NOW })
 
@@ -150,7 +155,7 @@ describe('what is written when the page is this post’s', () => {
   })
 
   it('a caption that links nobody is recorded as read, so it is never asked again — and nothing else changes', async () => {
-    const row = post({ shortcode: 'Dcc4pQ8sX0N', caption: 'A plain caption about a film, no accounts named in it at all' })
+    const row = post({ shortcode: 'Dcc4pQ8sX0N', caption: 'A plain caption about a film, no accounts named in it at all', target: { handle: 'taranadarsh' } })
     pages['Dcc4pQ8sX0N'] = readOf([], 'taranadarsh A plain caption about a film, no accounts named in it at all', 'taranadarsh')
     const first = await run()
     expect(first).toMatchObject({ asked: 1, restored: 0, nothingToRestore: 1 })
@@ -231,7 +236,7 @@ describe('the pass is bounded, and a refusal is about the host', () => {
 
   it('a refusal stops the pass at once and benches no post', async () => {
     for (const code of ['NEWEST', 'SECOND', 'THIRD']) post({ shortcode: code })
-    pages['NEWEST'] = { kind: 'refused', reason: 'sent to the login page', until: new Date(NOW.getTime() + 900_000), status: 302 }
+    pages['NEWEST'] = { kind: 'refused', reason: 'sent to the login page', until: new Date(NOW.getTime() + 900_000), status: 302, byUs: false }
     const s = await run()
     expect(asked).toEqual(['NEWEST'])
     expect(s).toMatchObject({ haltedEarly: true, unreadable: 0 })
@@ -271,7 +276,7 @@ describe('the pass is bounded, and a refusal is about the host', () => {
     const s = await run(10, true)
     expect(row).toEqual(before)
     expect(audits).toHaveLength(0)
-    expect(s.preview).toEqual([{ shortcode: 'A1', publisher: 'officialsocialsamosa', mentions: ['itsbevygood', 'plumbodylovin'] }])
+    expect(s.preview).toEqual([{ shortcode: 'A1', publisher: 'officialsocialsamosa', mentions: ['itsbevygood', 'plumbodylovin'], collaborator: null, complete: true }])
     expect(s).toMatchObject({ restored: 1, mentionsRestored: 2 })
   })
 })
@@ -305,23 +310,112 @@ describe('captionsAgree — is this page about this post', () => {
   })
 })
 
+describe('a read that is not whole is kept, and never recorded as read (review, 26 Nov)', () => {
+  const LONG = 'Festive camp with itsbevygood and plumbodylovin, see you there on the lawns at noon with music and food'
+  const partialCases: Array<[string, Outcome, string | undefined]> = [
+    ['the page stopped before the caption ended', readOf(['itsbevygood'], undefined, 'officialsocialsamosa', { closed: false }), undefined],
+    ['an "@" word nothing links to', readOf(['itsbevygood'], undefined, 'officialsocialsamosa', { unlinkedAt: ['farmleyin'] }), undefined],
+    ['the page cut the caption short', readOf(['itsbevygood'], 'officialsocialsamosa Festive camp with @itsbevygood and @plumbodylovin, see you there on the lawns at noon … more'), LONG],
+  ]
+
+  it.each(partialCases)('%s: what it found is written, marked partial, and the post is asked again after a day', async (_n, outcome, caption) => {
+    const row = post({ shortcode: 'A1', ...(caption ? { caption } : {}) })
+    pages['A1'] = outcome
+    const s = await run()
+    expect(s).toMatchObject({ asked: 1, restored: 1, incomplete: 1 })
+    expect(JSON.parse(row.taggedAccounts)).toEqual(['itsbevygood'])
+    const payload = JSON.parse(row.rawPayload ?? '{}') as Record<string, unknown>
+    expect(payload[EMBED_READ_KEY]).toBeUndefined()
+    expect(payload.embedPartialAt).toBe(NOW.toISOString())
+    expect(row.rawPayload).toContain(EVIDENCE_INCOMPLETE_MARKER)
+    expect(audits[0]?.detail).toMatch(/read not whole/)
+    // not read again within the day...
+    asked.length = 0
+    await run()
+    expect(asked).toEqual([])
+    // ...but still waiting: a later whole read can finish it
+    resetEmbedEvidenceMemory()
+    pages['A1'] = readOf(['itsbevygood', 'plumbodylovin'], `officialsocialsamosa ${row.caption}`)
+    await run()
+    expect(asked).toEqual(['A1'])
+    expect(JSON.parse(row.rawPayload ?? '{}')[EMBED_READ_KEY]).toBe(NOW.toISOString())
+    expect(JSON.parse(row.taggedAccounts)).toEqual(['itsbevygood', 'plumbodylovin'])
+  })
+
+  it('a read that is not whole and found nothing writes nothing at all', async () => {
+    const row = post({ shortcode: 'A1' })
+    const before = { ...row }
+    pages['A1'] = readOf([], undefined, 'officialsocialsamosa', { unlinkedAt: ['somebody'] })
+    const s = await run()
+    expect(s).toMatchObject({ incomplete: 1, restored: 0, nothingToRestore: 0 })
+    expect(row).toEqual(before)
+    expect(audits).toHaveLength(0)
+  })
+
+  it('an unlinked "@" that is the publisher or the caption\'s owner does not make a read partial', async () => {
+    const row = post({ shortcode: 'A1' })
+    pages['A1'] = readOf(['itsbevygood'], undefined, 'officialsocialsamosa', { unlinkedAt: ['officialsocialsamosa'] })
+    const s = await run()
+    expect(s).toMatchObject({ incomplete: 0 })
+    expect(JSON.parse(row.rawPayload ?? '{}')[EMBED_READ_KEY]).toBe(NOW.toISOString())
+  })
+})
+
+describe('a caption signed by another account is a collaborator (review, 26 Nov)', () => {
+  it('records the signer in the collaborators and as @handle in brands, with nothing else linked', async () => {
+    const row = post({ shortcode: 'A1' })
+    pages['A1'] = readOf([], 'socialsamosaevents Festive camp with itsbevygood and plumbodylovin, see you there', 'SocialSamosaEvents')
+    const s = await run()
+    expect(s).toMatchObject({ restored: 1, mentionsRestored: 0 })
+    const payload = JSON.parse(row.rawPayload ?? '{}') as Record<string, unknown>
+    expect(payload.collabHandles).toEqual(['socialsamosaevents'])
+    expect(JSON.parse(row.brands)).toContain('@socialsamosaevents')
+    expect(audits[0]?.detail).toMatch(/signed by @socialsamosaevents/)
+  })
+
+  it('the publisher signing its own caption is not a collaborator', async () => {
+    const row = post({ shortcode: 'A1' })
+    pages['A1'] = readOf([])
+    await run()
+    expect(JSON.parse(row.rawPayload ?? '{}').collabHandles ?? []).toEqual([])
+    expect(audits).toHaveLength(0)
+  })
+})
+
+describe('whose refusal stopped the pass is said in words (review, 26 Nov)', () => {
+  it('our own ceiling is not reported as Instagram refusing', async () => {
+    post({ shortcode: 'A1' })
+    pages['A1'] = { kind: 'refused', reason: 'our own ceiling: this Mac’s 40 embed requests an hour are spent', until: NOW, status: 429, byUs: true }
+    const s = await run()
+    expect(s.stopped).toMatch(/^stopped by this Mac’s own limit/)
+    expect(s.stopped).not.toMatch(/Instagram/)
+    expect(s).toMatchObject({ haltedEarly: true, asked: 0 })
+  })
+
+  it('Instagram refusing is reported as Instagram', async () => {
+    post({ shortcode: 'A1' })
+    pages['A1'] = { kind: 'refused', reason: 'HTTP 429', until: NOW, status: 429, byUs: false }
+    expect((await run()).stopped).toMatch(/^Instagram refused/)
+  })
+})
+
 describe('mergeEmbedMentions — the pure half', () => {
   const stored = { taggedAccounts: '[]', brands: '[]', rawPayload: OFFICIAL }
   it('refuses a row that is not an official-read row', () => {
-    expect(mergeEmbedMentions({ ...stored, rawPayload: COMPLETE }, { mentions: ['a_brand'], owner: null }, NOW)).toBeNull()
+    expect(mergeEmbedMentions({ ...stored, rawPayload: COMPLETE }, { mentions: ['a_brand'], owner: null, collaborator: null, complete: true }, NOW)).toBeNull()
   })
   it('refuses unreadable stored JSON rather than guessing', () => {
-    expect(mergeEmbedMentions({ ...stored, brands: '{"not":"an array"}' }, { mentions: ['a_brand'], owner: null }, NOW)).toBeNull()
-    expect(mergeEmbedMentions({ ...stored, taggedAccounts: '[1,2]' }, { mentions: ['a_brand'], owner: null }, NOW)).toBeNull()
-    expect(mergeEmbedMentions({ ...stored, rawPayload: `garbage ${EVIDENCE_INCOMPLETE_MARKER}` }, { mentions: ['a_brand'], owner: null }, NOW)).toBeNull()
+    expect(mergeEmbedMentions({ ...stored, brands: '{"not":"an array"}' }, { mentions: ['a_brand'], owner: null, collaborator: null, complete: true }, NOW)).toBeNull()
+    expect(mergeEmbedMentions({ ...stored, taggedAccounts: '[1,2]' }, { mentions: ['a_brand'], owner: null, collaborator: null, complete: true }, NOW)).toBeNull()
+    expect(mergeEmbedMentions({ ...stored, rawPayload: `garbage ${EVIDENCE_INCOMPLETE_MARKER}` }, { mentions: ['a_brand'], owner: null, collaborator: null, complete: true }, NOW)).toBeNull()
   })
   it('lower-cases what it adds, because the tag prefilter on Postgres is case-sensitive', () => {
-    const m = mergeEmbedMentions(stored, { mentions: ['A_Brand', 'a_brand'], owner: null }, NOW)
+    const m = mergeEmbedMentions(stored, { mentions: ['A_Brand', 'a_brand'], owner: null, collaborator: null, complete: true }, NOW)
     expect(m && JSON.parse(m.taggedAccounts)).toEqual(['a_brand'])
     expect(m && JSON.parse(m.brands)).toEqual(['@a_brand'])
   })
   it('keeps every key the payload already had', () => {
-    const m = mergeEmbedMentions(stored, { mentions: [], owner: null }, NOW)
+    const m = mergeEmbedMentions(stored, { mentions: [], owner: null, collaborator: null, complete: true }, NOW)
     const before = JSON.parse(OFFICIAL) as Record<string, unknown>
     const after = JSON.parse(m?.rawPayload ?? '{}') as Record<string, unknown>
     for (const k of Object.keys(before)) expect(after[k]).toEqual(before[k])
