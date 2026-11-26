@@ -146,4 +146,46 @@ describe('official-page discovery does not re-resolve a rejected candidate', () 
     // be reachable again. Persisting it would make `known` refuse that handle forever.
     expect(enrich.mock.calls.map((c) => c[0])).toEqual(askedBefore)
   })
+
+  /**
+   * A CLOSED DOOR IS ABOUT THIS HOST, NOT THE CANDIDATE WHO MET IT (26 Nov 2026). The candidate used to be sent to
+   * the back for a day BEFORE the halt was checked, so every pass that met a refusal cost one innocent candidate
+   * a day. With the embed page as the badge source a closed door (a cooldown, or our own hourly ceiling) is
+   * routine, so the order matters now: halt first, bench nobody.
+   */
+  it('a host refusal halts the pass and does NOT bench the candidate that met it', async () => {
+    const REFUSED = { handle: 'x', reachable: false, accountType: null, isVerified: null, followers: null, fullName: null, reason: 'HTTP 429 (the feed refuses, and the embed page is not available until later: our own ceiling)', status: 429, source: null }
+    enrich.mockResolvedValue(REFUSED)
+    const p1 = discoverOfficialPages({ maxLookups: 5, dryRun: true })
+    await vi.runAllTimersAsync()
+    const a = await p1
+    expect(a.haltedEarly).toBe(true)
+    expect(a.looked).toBe(1)
+    const refusedCandidate = enrich.mock.calls[0]?.[0]
+
+    enrich.mockClear()
+    enrich.mockResolvedValue(ANSWERS_BUT_WRONG)
+    const p2 = discoverOfficialPages({ maxLookups: 1, dryRun: true })
+    await vi.runAllTimersAsync()
+    const b = await p2
+    // the same candidate is asked again straight away, and nothing is "cooling off" on its account
+    expect(enrich.mock.calls[0]?.[0]).toBe(refusedCandidate)
+    expect(b.coolingOff).toBe(0)
+  })
+
+  it('a candidate that simply did not answer IS sent to the back, and the pass goes on', async () => {
+    const SILENT = { handle: 'x', reachable: false, accountType: null, isVerified: null, followers: null, fullName: null, reason: 'embed page: the embed page has no profile data for this handle (x)', status: null, source: null }
+    enrich.mockResolvedValue(SILENT)
+    const p1 = discoverOfficialPages({ maxLookups: 3, dryRun: true })
+    await vi.runAllTimersAsync()
+    const a = await p1
+    expect(a.haltedEarly).toBe(false)
+    expect(a.looked).toBe(3)
+    const askedFirst = enrich.mock.calls.map((c) => c[0])
+    enrich.mockClear()
+    const p2 = discoverOfficialPages({ maxLookups: 3, dryRun: true })
+    await vi.runAllTimersAsync()
+    await p2
+    expect(enrich.mock.calls.map((c) => c[0]).filter((h) => askedFirst.includes(h))).toEqual([])
+  })
 })

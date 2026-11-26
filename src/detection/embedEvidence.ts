@@ -106,7 +106,6 @@ export function mergeEmbedMentions(
   read: { mentions: readonly string[]; owner: string | null },
   now: Date,
 ): RowEvidence | null {
-  if (!stored.rawPayload.includes(EVIDENCE_INCOMPLETE_MARKER)) return null
   const tags = stringArray(stored.taggedAccounts)
   const brands = stringArray(stored.brands)
   if (tags === null || brands === null) return null
@@ -130,7 +129,8 @@ export function mergeEmbedMentions(
     embedMentions: mentions,
     embedOwner: read.owner,
   })
-  // The marker is found by its exact bytes in three places; a rewrite that lost them would orphan the row.
+  // The marker is found by its exact bytes in three places. A row that never had it is not an official-read row
+  // and is not ours to touch; a rewrite that lost it would orphan the row. One check, on what would be WRITTEN.
   if (!newPayload.includes(EVIDENCE_INCOMPLETE_MARKER)) return null
   return { taggedAccounts: JSON.stringify(newTags), brands: JSON.stringify(newBrands), rawPayload: newPayload }
 }

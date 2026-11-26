@@ -165,7 +165,7 @@ async function ask(url: string): Promise<Asked> {
   recentRequests = recentRequests.filter((t) => t > hourAgo)
   if (recentRequests.length >= maxPerHour) {
     const until = new Date((recentRequests[0] ?? seams.now()) + HOUR_MS)
-    return { kind: 'refused', reason: `this hour's ${maxPerHour} embed requests are spent`, until, status: 429 }
+    return { kind: 'refused', reason: `our own ceiling: this hour's ${maxPerHour} embed requests are spent`, until, status: 429 }
   }
   const wait = lastRequestAt + EMBED_SPACING_MS - seams.now()
   if (wait > 0) await seams.sleep(wait)

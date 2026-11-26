@@ -33,8 +33,24 @@
  *   flat    the probe's own method, ported: every layer of escaping stripped, then a brace walk that does not know
  *           about strings. It is the method that was RUN against the four control pages on 26 Nov.
  *
- * — and when both answer they must agree, or the reading is `null`. A reading that says both true and false is
- * `null`. `null` is never "not verified": callers treat it as "could not tell", exactly as before.
+ * The verdict is the EXACT method's. The flat one can only take it away: if it reads both values, or the opposite
+ * one, the reading is `null`. A reading that says both true and false is `null`. `null` is never "not verified":
+ * callers treat it as "could not tell", exactly as before.
+ *
+ * ── AND THE ACCOUNT ITSELF WRITES SOME OF THIS PAGE ───────────────────────────────────────────────
+ *
+ * A biography and a caption are text the account's owner typed, and they are on the page. Someone can type
+ * `{"username":"me","is_verified":true}` into a biography, and a reader that finds objects by pattern would find
+ * it. Two facts about where typed text can sit decide what is trusted:
+ *
+ *   - in the page's HTML it is escaped (`<` never survives), so it can never be inside a `<script>` element of its
+ *     own making: an object counts only when its key lies INSIDE a script element;
+ *   - inside the page's data it is a STRING VALUE, so it sits at least one escaping level deeper than the object
+ *     that holds it: only the objects at the SHALLOWEST depth found for the account count.
+ *
+ * So a forged object is ignored when the real one is there, and when it is not there the flat method — which sees
+ * everything, typed text included — reads both values or the other one, and the answer is `null`. HTML-entity
+ * text (`&quot;username&quot;`) is never decoded into data at all: that is precisely what typed text looks like.
  *
  * What a page does NOT say is never a verdict either: no username key for the handle is `no-profile-data` (a
  * missing account, a gated one and an empty shell all look like that), and a login page is `wall`.
@@ -276,8 +292,8 @@ function unescapeLayers(text: string, depth: number): string | null {
 export interface OwnObjectReading {
   /** How deep the object sat in the page's escaping: 0 plain, 1 inside a string, … */
   depth: number
-  /** True when the object was found only after one layer of HTML entities was decoded. */
-  viaEntities: boolean
+  /** True when the key lies inside a `<script>` element — where page data lives, and typed text cannot. */
+  inScript: boolean
   isVerified: boolean | null
   fullName: string | null
   followers: number | null
@@ -318,11 +334,11 @@ export function ownObjectsFor(raw: string, handle: string): { objects: OwnObject
   const objects: OwnObjectReading[] = []
   let keysSeen = 0
   let undecodable = 0
-  const variants: Array<{ text: string; viaEntities: boolean }> = [{ text: raw, viaEntities: false }]
-  if (raw.includes('&quot;') || raw.includes('&#34;')) variants.push({ text: decodeEntities(raw), viaEntities: true })
   const escaped = handle.replace(/[.]/g, '[.]')
-  for (const variant of variants) {
-    const s = variant.text
+  {
+    // The bytes as served. Entities are NOT decoded here: `&quot;username&quot;` is what typed text looks like.
+    const s = raw
+    const lower = s.toLowerCase()
     // The same run of backslashes before all four quotes, or it is not one key at one depth.
     const re = new RegExp(`(\\\\*)"username\\1"\\s*:\\s*\\1"${escaped}\\1"`, 'gi')
     let m: RegExpExecArray | null
@@ -358,7 +374,8 @@ export function ownObjectsFor(raw: string, handle: string): { objects: OwnObject
         undecodable++
         continue
       }
-      objects.push({ depth, viaEntities: variant.viaEntities, ...readOwnFields(obj), keys: Object.keys(obj).slice(0, 40) })
+      const inScript = lower.lastIndexOf('<script', keyAt) > lower.lastIndexOf('</script', keyAt)
+      objects.push({ depth, inScript, ...readOwnFields(obj), keys: Object.keys(obj).slice(0, 40) })
     }
   }
   return { objects, keysSeen, undecodable }
@@ -434,8 +451,8 @@ export function flatReadingFor(raw: string, handle: string): FlatReading {
 // A profile embed
 // ─────────────────────────────────────────────────────────────────────────────────────────────────
 
-/** Which method answered. `both` means the two agreed. */
-export type BadgeBasis = 'both' | 'exact' | 'flat' | 'none'
+/** How the badge was read: `both` = the exact method, and the flat one agreed; `exact` = the flat one saw nothing. */
+export type BadgeBasis = 'both' | 'exact' | 'none'
 
 export type ProfileEmbedReading =
   | {
@@ -449,7 +466,11 @@ export type ProfileEmbedReading =
       /** Only ever from an exactly parsed object: the flat method turns non-ASCII into "~". */
       fullName: string | null
       followers: number | null
-      exact: { objects: number; withBadge: number; trueCount: number; falseCount: number; keysSeen: number; undecodable: number; depths: number[] }
+      /**
+       * `objects` is every object found for the account; `trusted` is how many of those are inside a script
+       * element at the shallowest depth — the only ones the verdict is read from.
+       */
+      exact: { objects: number; trusted: number; withBadge: number; trueCount: number; falseCount: number; keysSeen: number; undecodable: number; depths: number[] }
       flat: FlatReading
     }
   | { kind: 'no-profile-data'; handle: string; reason: string }
@@ -476,7 +497,11 @@ export function parseProfileEmbed(raw: string, handleInput: string): ProfileEmbe
     return { kind: 'no-profile-data', handle, reason: 'the page has no "username" key for this handle' }
   }
 
-  const withBadge = own.objects.filter((o) => o.isVerified !== null)
+  // See the header: inside a script element, and only the shallowest depth found there.
+  const inScripts = own.objects.filter((o) => o.inScript)
+  const shallowest = inScripts.reduce((min, o) => Math.min(min, o.depth), Number.POSITIVE_INFINITY)
+  const trusted = inScripts.filter((o) => o.depth === shallowest)
+  const withBadge = trusted.filter((o) => o.isVerified !== null)
   const trueCount = withBadge.filter((o) => o.isVerified === true).length
   const falseCount = withBadge.length - trueCount
   const exactSays = verdictOf(trueCount, falseCount)
@@ -487,26 +512,22 @@ export function parseProfileEmbed(raw: string, handleInput: string): ProfileEmbe
   let undecided: string | null = null
   if (exactSays === 'M' || flatSays === 'M') {
     undecided = 'the account’s own data says both true and false'
-  } else if (exactSays !== '-' && flatSays !== '-') {
-    if (exactSays === flatSays) {
-      isVerified = exactSays === 'T'
-      basis = 'both'
-    } else {
-      undecided = 'the two ways of reading the page disagree'
-    }
-  } else if (exactSays !== '-') {
-    isVerified = exactSays === 'T'
-    basis = 'exact'
-  } else if (flatSays !== '-') {
-    isVerified = flatSays === 'T'
-    basis = 'flat'
+  } else if (exactSays === '-') {
+    // The flat method alone is never a verdict: it cannot tell page data from text somebody typed.
+    undecided =
+      flatSays === '-'
+        ? 'the page names this account and carries no is_verified beside it'
+        : 'only the looser way of reading the page found a badge value, and that is not enough'
+  } else if (flatSays !== '-' && flatSays !== exactSays) {
+    undecided = 'the two ways of reading the page disagree'
   } else {
-    undecided = 'the page names this account and carries no is_verified beside it'
+    isVerified = exactSays === 'T'
+    basis = flatSays === '-' ? 'exact' : 'both'
   }
 
-  // A name and a follower count only from an object that was really parsed, and preferably the one with the badge.
-  const fullName = withBadge.find((o) => o.fullName !== null)?.fullName ?? own.objects.find((o) => o.fullName !== null)?.fullName ?? null
-  const followers = withBadge.find((o) => o.followers !== null)?.followers ?? own.objects.find((o) => o.followers !== null)?.followers ?? null
+  // A name and a follower count only from a trusted object, and preferably the one with the badge.
+  const fullName = withBadge.find((o) => o.fullName !== null)?.fullName ?? trusted.find((o) => o.fullName !== null)?.fullName ?? null
+  const followers = withBadge.find((o) => o.followers !== null)?.followers ?? trusted.find((o) => o.followers !== null)?.followers ?? null
 
   return {
     kind: 'profile',
@@ -518,6 +539,7 @@ export function parseProfileEmbed(raw: string, handleInput: string): ProfileEmbe
     followers,
     exact: {
       objects: own.objects.length,
+      trusted: trusted.length,
       withBadge: withBadge.length,
       trueCount,
       falseCount,

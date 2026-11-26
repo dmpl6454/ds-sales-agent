@@ -117,7 +117,12 @@ async function viaEmbed(h: string, empty: HandleEnrichment): Promise<HandleEnric
     }
   }
   if (e.kind === 'refused') {
-    return { ...empty, reason: `HTTP 429 (the feed refuses, and the embed page is refused too: ${e.reason})`, status: 429 }
+    // "429" whoever closed the door — Instagram, or our own hourly ceiling: what the caller must do is the same.
+    return {
+      ...empty,
+      reason: `HTTP 429 (the feed refuses, and the embed page is not available until ${e.until.toISOString()}: ${e.reason})`,
+      status: 429,
+    }
   }
   return { ...empty, reason: `embed page: ${e.reason}`, status: e.status }
 }

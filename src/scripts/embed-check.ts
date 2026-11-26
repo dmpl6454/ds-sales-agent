@@ -147,7 +147,7 @@ function profileLine(r: ProfileEmbedReading): string {
   const followers = r.followers === null ? 'no follower count read' : `followers ${r.followers}`
   return (
     `   reads: ${verdict} | read by: ${r.basis} | ${name} | ${followers}\n` +
-    `   exact: ${r.exact.objects} own object(s) of ${r.exact.keysSeen} username key(s), ${r.exact.withBadge} with a badge (true x${r.exact.trueCount}, false x${r.exact.falseCount}), ` +
+    `   exact: ${r.exact.objects} own object(s) of ${r.exact.keysSeen} username key(s), ${r.exact.trusted} trusted (in a script, shallowest), ${r.exact.withBadge} with a badge (true x${r.exact.trueCount}, false x${r.exact.falseCount}), ` +
     `${r.exact.undecodable} not readable, depth ${r.exact.depths.join(',') || '-'} | flat: ${r.flat.usernameKeys} key(s), true x${r.flat.ownTrue}, false x${r.flat.ownFalse}`
   )
 }
@@ -231,8 +231,12 @@ async function main(): Promise<void> {
         if (reading.kind === 'wall') refused[transport] = 'served a login page'
         if (reading.kind === 'profile') {
           const own = ownObjectsFor(a.body, control.handle)
-          const keys = own.objects.find((o) => o.isVerified !== null)?.keys ?? own.objects[0]?.keys ?? []
-          if (keys.length > 0) out(`   that object's own keys: ${clip(printable(keys.join(', ')), 300)}`)
+          const shown = own.objects.find((o) => o.inScript && o.isVerified !== null) ?? own.objects.find((o) => o.isVerified !== null) ?? own.objects[0]
+          if (shown && shown.keys.length > 0) {
+            out(`   one own object (depth ${shown.depth}, ${shown.inScript ? 'inside a script' : 'NOT inside a script'}) has the keys: ${clip(printable(shown.keys.join(', ')), 300)}`)
+          }
+          const outside = own.objects.filter((o) => !o.inScript).length
+          if (outside > 0) out(`   ${outside} own object(s) sit OUTSIDE any script element and are not trusted`)
         }
         if (args.evidence || i === 0 || control.held === 'u') {
           const ev = usernameKeyEvidence(a.body, control.handle)

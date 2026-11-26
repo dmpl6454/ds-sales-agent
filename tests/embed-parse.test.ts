@@ -67,13 +67,10 @@ describe('parseProfileEmbed — reading the right object', () => {
     }
   })
 
-  it('reads an object held in an HTML attribute', () => {
-    const html = page(`<div data-props="{&quot;username&quot;:&quot;sonytvofficial&quot;,&quot;is_verified&quot;:true,&quot;full_name&quot;:&quot;Sony &amp; Friends&quot;}"></div>`)
-    const r = parseProfileEmbed(html, 'sonytvofficial')
-    expect(r.kind).toBe('profile')
-    if (r.kind !== 'profile') return
-    expect(r.isVerified).toBe(true)
-    expect(r.fullName).toBe('Sony & Friends')
+  it('a name with a quote, an ampersand and non-Latin letters comes back exactly', () => {
+    const data = { user: { username: 'sonytvofficial', is_verified: true, full_name: 'Sony & "Friends" सोनी' } }
+    const r = parseProfileEmbed(page(`<script type="application/json">${atDepth(data, 0)}</script>`), 'sonytvofficial')
+    expect(r.kind === 'profile' && r.fullName).toBe('Sony & "Friends" सोनी')
   })
 
   /** THE @yamigautam DEFECT (23 Aug): the newest post's owner was a collaborator, and its badge was taken. */
@@ -175,6 +172,84 @@ describe('parseProfileEmbed — reading the right object', () => {
       const r = parseProfileEmbed(page(`<script type="application/json">${atDepth(data, 0)}</script>`), 'asked')
       expect(r.kind === 'profile' ? r.isVerified : 'x', String(bad)).toBeNull()
     }
+  })
+})
+
+/**
+ * THE ACCOUNT WRITES SOME OF ITS OWN PAGE. A biography is typed text and it is on the page, so somebody can type
+ * something shaped like the page's data. Every case below is an UNVERIFIED account whose page carries a typed
+ * `"is_verified":true` for its own username; none may read as verified.
+ */
+describe('parseProfileEmbed — text an account typed is not the page\u2019s data', () => {
+  const forged = '{"username":"asked","is_verified":true}'
+
+  it('typed into its biography: the real object is shallower, and the typed one does not count', () => {
+    const data = { user: { username: 'asked', biography: forged, is_verified: false, full_name: 'Asked' } }
+    for (const depth of [0, 1]) {
+      const body = depth === 0 ? atDepth(data, 0) : `{"contextJSON":"${atDepth(data, 1)}"}`
+      const r = parseProfileEmbed(page(`<script type="application/json">${body}</script>`), 'asked')
+      expect(r.kind, `depth ${depth}`).toBe('profile')
+      if (r.kind !== 'profile') continue
+      expect(r.isVerified, `depth ${depth}`).not.toBe(true)
+      // the exact method read the REAL object alone; the flat one saw both and took the verdict away
+      expect(r.exact.trusted).toBe(1)
+      expect(r.exact.falseCount).toBe(1)
+      expect(r.exact.trueCount).toBe(0)
+    }
+  })
+
+  it('typed into its biography when the real object carries no badge at all', () => {
+    const data = { user: { username: 'asked', biography: forged, full_name: 'Asked' } }
+    const r = parseProfileEmbed(page(`<script type="application/json">${atDepth(data, 0)}</script>`), 'asked')
+    expect(r.kind).toBe('profile')
+    if (r.kind !== 'profile') return
+    expect(r.isVerified).toBeNull()
+    expect(r.exact.objects).toBe(2)
+    expect(r.exact.trusted).toBe(1)
+  })
+
+  it('shown as visible text outside any script, with real quotes', () => {
+    const r = parseProfileEmbed(page(`<div class="Bio">${forged}</div>`), 'asked')
+    expect(r.kind).toBe('profile')
+    if (r.kind !== 'profile') return
+    expect(r.isVerified).toBeNull()
+    expect(r.exact.objects).toBe(1)
+    expect(r.exact.trusted).toBe(0)
+    expect(r.undecided).toMatch(/not enough/)
+  })
+
+  it('shown as visible text with its quotes as HTML entities — never decoded into data', () => {
+    const r = parseProfileEmbed(page(`<div class="Bio">{&quot;username&quot;:&quot;asked&quot;,&quot;is_verified&quot;:true}</div>`), 'asked')
+    expect(r.kind).toBe('profile')
+    if (r.kind !== 'profile') return
+    expect(r.isVerified).toBeNull()
+    expect(r.exact.objects).toBe(0)
+    expect(r.flat.ownTrue).toBe(1)
+  })
+
+  it('visible text beside a real, shallower-or-deeper object in a script: the script\u2019s object is the one read, and the two disagree', () => {
+    const data = { context: { username: 'asked', is_verified: false } }
+    const r = parseProfileEmbed(page(`<div>${forged}</div><script>x({"contextJSON":"${atDepth(data, 1)}"})</script>`), 'asked')
+    expect(r.kind).toBe('profile')
+    if (r.kind !== 'profile') return
+    expect(r.isVerified).not.toBe(true)
+    expect(r.exact.trusted).toBe(1)
+    expect(r.exact.falseCount).toBe(1)
+  })
+
+  it('an object whose LAST "username" is somebody else is somebody else\u2019s object', () => {
+    // JSON.parse keeps the last of two keys. The pattern that found this object matched the first.
+    const r = parseProfileEmbed(page('<script type="application/json">{"u":{"username":"asked","is_verified":true,"username":"other"}}</script>'), 'asked')
+    expect(r.kind).toBe('profile')
+    if (r.kind !== 'profile') return
+    expect(r.isVerified).toBeNull()
+    expect(r.exact.objects).toBe(0)
+  })
+
+  it('and none of this stops an honest page: a verified account with braces and quotes in its biography reads verified', () => {
+    const data = { context: { username: 'asked', biography: 'we make {things} "well"', is_verified: true, full_name: 'Asked Co' } }
+    const r = parseProfileEmbed(page(`<script>x({"contextJSON":"${atDepth(data, 1)}"})</script>`), 'asked')
+    expect(r.kind === 'profile' && r.isVerified).toBe(true)
   })
 })
 
