@@ -70,8 +70,18 @@ matter, and what each became:
 
 Every fix was then broken on purpose: **71 guards, 68 caught**; the 3 that survive are overlapping guards (the same bad
 reading is also refused by another rule — the flat method's "mixed" and an untrusted object's veto both land on
-"disagree"), not gaps. Suite 3,974 / 3,976 (the two offline `route-rule` cases). **Still unseen by the code: a real
-embed page's bytes** — the Mac check is that step, now re-pinned to the new commit.
+"disagree"), not gaps. Suite 3,974 / 3,976 (the two offline `route-rule` cases).
+
+**THEN THE REAL READER READ REAL PAGES — `embed-check-on-mac.sh 9980a50` on the Mac Studio, 26 Nov, output pasted by
+Sudhanshu. Every control read as held, through BOTH clients:** @netflix_in verified (node and curl), @sonytvofficial
+verified, @marketingmentalist and @chumbak_official not verified, @qqqq_nope_nope_12345 no profile data (not a login
+page). Posts: `DcyE65LPYMj` (signed by @officialsocialsamosa) — 5 linked mentions of 5 "@" (@itsbevygood
+@plumbodylovin @supersox_india @farmleyin @hkvitals), both methods agreeing, caption element closed; `Dcc4pQ8sX0N`
+(@taranadarsh) — 0 of 0, via node and curl. 9 requests, nothing changed. So the "NOT VERIFIED" line above is closed
+for the reader; the Mac still runs 1a47e2b until a new image is installed, and `embedReads` is still off.
+**Seen on that page and NOT parsed:** the collaborator sits in the header as `<a class="CollabAvatar"
+href="…/socialsamosaevents/…">` — a second account on the post the reader ignores today (collaborators were left out
+because nobody had seen the markup; now it has been seen, once).
 
 74. **A refused door is not a refused fact.** Before concluding a fact cannot be read, ask for it through every
     door that might carry it — from the address that will use it.
