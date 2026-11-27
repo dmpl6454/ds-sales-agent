@@ -379,7 +379,7 @@ export type ClaimResult =
        * one draft), and so `'pair-daily-cap'` stays exactly the gate's `PAIR_DAILY_CAP` stop
        * for a REACHED cap. `contended` is what separates the two.
        */
-      reason: 'pair-daily-cap' | 'fleet-hourly-pace' | 'fleet-daily-cap'
+      reason: 'pair-daily-cap' | 'sender-daily-cap' | 'fleet-hourly-pace' | 'fleet-daily-cap'
       detail: string
       /**
        * True when the claim gave up after losing every race, with the cap NOT reached.
@@ -443,6 +443,15 @@ export async function claimForAttempt(args: {
   pairId: string
   maxPerPairPerDay: number
   /**
+   * PER-PAGE DAILY CAP (27 Nov 2026, Sudhanshu: "make it 20 per profile"). At most this many
+   * messages from ONE sending account per IST day, whoever it writes to. Claimed after the
+   * pair and before the fleet buckets, and given back on any later refusal. Defaults to no
+   * ceiling so an omitted argument is never stricter than the setting. `senderId` is optional
+   * only so a caller that passes no cap need not pass it; with a finite cap it is required.
+   */
+  senderId?: string
+  senderMaxPerDay?: number
+  /**
    * Fleet-wide pacing, Phase 5. Both default to no ceiling so an omitted argument can
    * never be MORE permissive than an explicit one — the caller that forgets these gets
    * exactly today's behaviour rather than a silently unpaced send.
@@ -466,6 +475,8 @@ export async function claimForAttempt(args: {
     attemptId,
     pairId,
     maxPerPairPerDay,
+    senderId,
+    senderMaxPerDay = Number.POSITIVE_INFINITY,
     fleetMaxPerHour = Number.POSITIVE_INFINITY,
     fleetMaxPerDay = Number.POSITIVE_INFINITY,
     attended = false,
@@ -503,6 +514,25 @@ export async function claimForAttempt(args: {
     }
   }
   if (pair.reservation) held.push(pair.reservation)
+
+  if (senderMaxPerDay !== Number.POSITIVE_INFINITY) {
+    // A finite cap with no account to count it against must refuse, never wave through.
+    if (!senderId) throw new Error('claimForAttempt: senderMaxPerDay is set but senderId is missing')
+    const sender = await claim('sender', senderId, senderMaxPerDay)
+    if (!sender.ok) {
+      await abandon()
+      return {
+        ok: false,
+        reason: 'sender-daily-cap',
+        contended: sender.reason === 'contended',
+        detail:
+          sender.reason === 'cap-reached'
+            ? `this account has already sent ${sender.used} message(s) today (limit ${sender.limit} per page)`
+            : contendedDetail('for this account today', sender),
+      }
+    }
+    if (sender.reservation) held.push(sender.reservation)
+  }
 
   /**
    * ── THE FLEET BUCKETS ─────────────────────────────────────────────────

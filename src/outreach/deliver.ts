@@ -126,6 +126,12 @@ export async function deliverWaiting(opts: DeliverOptions = {}): Promise<Deliver
    * did (the dashboard, a concurrent CLI, a human pressing Pause).
    */
   const challengedThisRun = new Set<string>()
+  /**
+   * Accounts that met the per-page daily cap (`senderMaxPerDay`) during this run. Without this,
+   * every remaining draft of a full page would be claimed, refused and put back one by one —
+   * up to the whole queue, every tick — to reach the same answer. The others still send.
+   */
+  const fullSenders = new Map<string, string>()
 
   for (const attempt of waiting) {
     /**
@@ -154,6 +160,12 @@ export async function deliverWaiting(opts: DeliverOptions = {}): Promise<Deliver
       log.step('waiting message held back', { pair: pairKey, reason })
     }
 
+    const full = fullSenders.get(sender.id)
+    if (full !== undefined) {
+      hold(full)
+      continue
+    }
+
     const r = await deliverOne({
       attempt,
       settings,
@@ -170,6 +182,7 @@ export async function deliverWaiting(opts: DeliverOptions = {}): Promise<Deliver
 
     switch (r.kind) {
       case 'held':
+        if (r.reason === 'sender-daily-cap') fullSenders.set(sender.id, r.detail)
         hold(r.detail)
         break
 

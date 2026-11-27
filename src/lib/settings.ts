@@ -44,6 +44,7 @@ export const SETTING_KEYS = {
   maxWaitingNewBrandDrafts: 'maxWaitingNewBrandDrafts',
   fleetMaxPerHour: 'fleetMaxPerHour',
   fleetMaxPerDay: 'fleetMaxPerDay',
+  senderMaxPerDay: 'senderMaxPerDay',
   fleetMinGapMinutes: 'fleetMinGapMinutes',
   maxSendsPerTick: 'maxSendsPerTick',
   generateMessages: 'generateMessages',
@@ -150,6 +151,12 @@ export interface RuntimeSettings {
    */
   fleetMaxPerHour: number
   fleetMaxPerDay: number
+  /**
+   * Messages ONE sending account may deliver per IST day (27 Nov 2026, Sudhanshu: "make it
+   * 20 per profile"). Unlimited by default; a Setting row binds it. Protects each account,
+   * where `fleetMaxPerDay` bounds the whole operation.
+   */
+  senderMaxPerDay: number
   /** Minimum minutes between two fleet sends. Stops serialised sends becoming a cluster. */
   fleetMinGapMinutes: number
   /** Sends per dispatcher tick. 1 means spacing is a property of the schedule. */
@@ -441,6 +448,7 @@ function defaults(): RuntimeSettings {
     fleetMaxPerHour: FLEET_MAX_PER_HOUR,
     // Unlimited. Tabish's decision, not an oversight — see the interface comment.
     fleetMaxPerDay: FLEET_MAX_PER_DAY,
+    senderMaxPerDay: Number.POSITIVE_INFINITY,
     fleetMinGapMinutes: FLEET_MIN_GAP_MINUTES,
     maxSendsPerTick: MAX_SENDS_PER_TICK,
     // OFF. A model writing the words is Tabish's decision, and `pnpm ig:generate` is how to
@@ -669,6 +677,7 @@ async function readSettings(): Promise<RuntimeSettings> {
      */
     fleetMaxPerHour: num(SETTING_KEYS.fleetMaxPerHour, d.fleetMaxPerHour, { allowUnlimited: true }),
     fleetMaxPerDay: num(SETTING_KEYS.fleetMaxPerDay, d.fleetMaxPerDay, { allowUnlimited: true }),
+    senderMaxPerDay: num(SETTING_KEYS.senderMaxPerDay, d.senderMaxPerDay, { allowUnlimited: true }),
     fleetMinGapMinutes: num(SETTING_KEYS.fleetMinGapMinutes, d.fleetMinGapMinutes),
     maxSendsPerTick: num(SETTING_KEYS.maxSendsPerTick, d.maxSendsPerTick),
     replyResumeHours: num(SETTING_KEYS.replyResumeHours, d.replyResumeHours),

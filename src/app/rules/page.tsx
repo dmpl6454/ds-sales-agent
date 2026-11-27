@@ -176,6 +176,9 @@ export default async function RulesPage() {
         settings.fleetMaxPerDay === Number.POSITIVE_INFINITY
           ? 'No fleet-wide daily cap — chosen deliberately, one setting away from binding.'
           : `${settings.fleetMaxPerDay} per day across all accounts together.`,
+        settings.senderMaxPerDay === Number.POSITIVE_INFINITY
+          ? 'No per-account daily cap.'
+          : `${settings.senderMaxPerDay} per day from each account.`,
         env.MAX_TOTAL_SENDS === null
           ? 'No lifetime ceiling — chosen deliberately.'
           : `${env.MAX_TOTAL_SENDS} messages lifetime, counting ones still waiting.`,

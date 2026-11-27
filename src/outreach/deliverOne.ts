@@ -562,6 +562,8 @@ export async function deliverOne(a: {
       attemptId: attempt.id,
       pairId: attempt.pairId,
       maxPerPairPerDay: settings.maxPerPairPerDay,
+      senderId: attempt.senderId,
+      senderMaxPerDay: settings.senderMaxPerDay,
       fleetMaxPerHour: settings.fleetMaxPerHour,
       fleetMaxPerDay: settings.fleetMaxPerDay,
       attended: !unattended,

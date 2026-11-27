@@ -5,6 +5,21 @@ changing anything that touches sending.
 
 ---
 
+## 27 NOVEMBER — "MAKE IT 20 PER PROFILE": A PER-PAGE DAILY CAP, BUILT, NOT YET IN FORCE
+
+Asked (Sudhanshu) after being told `fleetMaxPerDay` = 20 is for all pages together. There was no
+per-page daily limit at all (`SenderAccount.dailyCap` is read by nothing since 18 Aug). Now
+`senderMaxPerDay` (Setting, unlimited by default) is claimed atomically in `claimForAttempt`
+as a `scope: 'sender'` reservation, after the pair and before the fleet buckets, given back on
+any later refusal; a finite cap with no `senderId` throws rather than waves through.
+`deliverWaiting` stops trying a full page's other drafts for the rest of the run. `/rules` states it.
+
+**ORDER MATTERS, because the cap is enforced where the message is claimed — ON THE MAC.** Until the
+Mac runs this build it ignores `senderMaxPerDay`, so removing `fleetMaxPerDay` first would let
+@bollywoodchronicle alone send up to 3 an hour, ~72 a day. Sequence: new Mac image → write
+`senderMaxPerDay` = 20 → only then remove or raise `fleetMaxPerDay`. The 3-an-hour fleet pace stays
+and is what caps the total (~72/day around the clock).
+
 ## 26 NOVEMBER — INSTAGRAM'S EMBED PAGES STILL ANSWER THE MAC: A BADGE READER AND A MENTION READER ARE BUILT, SWITCHED OFF
 
 **Measured, from the two probes of the entry below, output pasted by Sudhanshu:**

@@ -341,3 +341,37 @@ describe('fleetUsage counts what was actually DELIVERED', () => {
     expect(usage.today).toBe(0)
   })
 })
+
+describe('the per-page daily cap (27 Nov 2026, "20 per profile")', () => {
+  it('counts each account separately and refuses the one that is full', async () => {
+    const a1 = await claimForAttempt({ ...base, attemptId: 'a1', senderId: 'alpha', senderMaxPerDay: 2 })
+    const a2 = await claimForAttempt({ ...base, attemptId: 'a2', senderId: 'alpha', senderMaxPerDay: 2 })
+    const a3 = await claimForAttempt({ ...base, attemptId: 'a3', senderId: 'alpha', senderMaxPerDay: 2 })
+    const b1 = await claimForAttempt({ ...base, attemptId: 'b1', pairId: 'pair_beta', senderId: 'beta', senderMaxPerDay: 2 })
+    expect(a1.ok && a2.ok).toBe(true)
+    expect(a3.ok).toBe(false)
+    if (a3.ok) throw new Error('unreachable')
+    expect(a3.reason).toBe('sender-daily-cap')
+    expect(a3.contended).toBe(false)
+    expect(b1.ok).toBe(true)
+  })
+
+  it('gives the page its slot back when a fleet bucket refuses afterwards', async () => {
+    await claimForAttempt({ ...base, attemptId: 'x', pairId: 'pair_other', fleetMaxPerDay: 1 })
+    const refused = await claimForAttempt({ ...base, attemptId: 'a1', senderId: 'alpha', senderMaxPerDay: 5, fleetMaxPerDay: 1 })
+    expect(refused.ok).toBe(false)
+    expect(await rowsFor('sender', 'alpha')).toBe(0)
+  })
+
+  it('a finite cap with no account to count against refuses rather than waving through', async () => {
+    await expect(claimForAttempt({ ...base, attemptId: 'a1', senderMaxPerDay: 5 })).rejects.toThrow(/senderId/)
+  })
+
+  it('unset means no per-page cap', async () => {
+    for (let i = 0; i < 5; i++) {
+      const r = await claimForAttempt({ ...base, attemptId: `a${i}`, senderId: 'alpha' })
+      expect(r.ok).toBe(true)
+    }
+    expect(await rowsFor('sender', 'alpha')).toBe(0)
+  })
+})
