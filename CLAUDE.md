@@ -26,6 +26,17 @@ deleted, each with a `setting.changed` audit row as `cli:Sudhanshu`. **Decided: 
 Undo: delete the `senderMaxPerDay` row and write `fleetMaxPerDay` = 20 again. Expect 20-35 a day,
 not 100: only @bollywoodchronicle has a large unwritten list; the others send on new material.
 
+## 27 NOVEMBER — SIX MORE PAGES WATCHED, EACH CHECKED BY THE EMBED READER FIRST
+
+Asked (Sudhanshu): "add more channels to watch for paid posts" — because `why-so-few.sh 7` showed only
+@bollywoodchronicle has companies left to introduce itself to (292; totalfilmii 12, societyy 3, paparazzii 2,
+madaboutmarketingg 0), so the other pages reach 20 a day only on new material. Nine candidates were checked on the Mac
+with `pnpm ig:embed-check <handle>:v … --no-posts` (10 requests, nothing changed). **Added as WATCH from the dashboard
+by Sudhanshu:** @filmfare, @bollywoodbubble, @zoomtv, @missmalini, @yogenshah_s (bollywood), @etbrandequity
+(marketing) — all read VERIFIED. **Not added:** @bollywoodhungama and @spotboye (no account data under those names —
+likely wrong handles), @bollywoodpap (real, not verified). Whether each yields paid posts through the official read is
+not yet measured.
+
 ## 26 NOVEMBER — INSTAGRAM'S EMBED PAGES STILL ANSWER THE MAC: A BADGE READER AND A MENTION READER ARE BUILT, SWITCHED OFF
 
 **Measured, from the two probes of the entry below, output pasted by Sudhanshu:**
