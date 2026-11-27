@@ -5,7 +5,7 @@ changing anything that touches sending.
 
 ---
 
-## 27 NOVEMBER — "MAKE IT 20 PER PROFILE": A PER-PAGE DAILY CAP, BUILT, NOT YET IN FORCE
+## 27 NOVEMBER — "MAKE IT 20 PER PROFILE": A PER-PAGE DAILY CAP, IN FORCE
 
 Asked (Sudhanshu) after being told `fleetMaxPerDay` = 20 is for all pages together. There was no
 per-page daily limit at all (`SenderAccount.dailyCap` is read by nothing since 18 Aug). Now
@@ -19,6 +19,12 @@ Mac runs this build it ignores `senderMaxPerDay`, so removing `fleetMaxPerDay` f
 @bollywoodchronicle alone send up to 3 an hour, ~72 a day. Sequence: new Mac image → write
 `senderMaxPerDay` = 20 → only then remove or raise `fleetMaxPerDay`. The 3-an-hour fleet pace stays
 and is what caps the total (~72/day around the clock).
+
+**DONE IN THAT ORDER, 27 Nov (output pasted by Sudhanshu):** the Mac Studio installed `7c98ab5`
+(`.version` checked) with 0 SENDING; then `senderMaxPerDay` = 20 written and `fleetMaxPerDay`
+deleted, each with a `setting.changed` audit row as `cli:Sudhanshu`. **Decided: Sudhanshu.**
+Undo: delete the `senderMaxPerDay` row and write `fleetMaxPerDay` = 20 again. Expect 20-35 a day,
+not 100: only @bollywoodchronicle has a large unwritten list; the others send on new material.
 
 ## 26 NOVEMBER — INSTAGRAM'S EMBED PAGES STILL ANSWER THE MAC: A BADGE READER AND A MENTION READER ARE BUILT, SWITCHED OFF
 
