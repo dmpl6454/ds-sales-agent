@@ -83,6 +83,15 @@ for the reader; the Mac still runs 1a47e2b until a new image is installed, and `
 href="…/socialsamosaevents/…">` — a second account on the post the reader ignores today (collaborators were left out
 because nobody had seen the markup; now it has been seen, once).
 
+**THEN THE MAC WAS UPDATED AND THE SWITCH WENT ON — 27 Nov, each step from output Sudhanshu pasted.** The Mac Studio
+installed an unsigned image built on itself from `a9e4775` (`.version` a9e4775, tunnel up, agent running, heartbeat
+fresh). The dry run `pnpm ig:embed-evidence` asked 10 of 429 waiting official-read paid posts: 3 posts would gain 5
+linked mentions (@viralbhayani and @voompla, one campaign: @chairmanscollection_raymond @jaideepahlawat;
+@varindertchawla: @haritzaverijewellers), 7 linked no account, 0 incomplete, 0 caption mismatches. **Decided
+(Sudhanshu, 27 Nov): `embedReads` = true**, with its `setting.changed` audit row; Autopilot back on. Undo: delete the
+Setting row (with an audit row). VERIFIED ONLY and `fleetMaxPerDay` = 20 are unchanged, so the switch gives the pages
+new companies and new posts to name; it does not raise the count.
+
 74. **A refused door is not a refused fact.** Before concluding a fact cannot be read, ask for it through every
     door that might carry it — from the address that will use it.
 75. **The account writes part of its own page.** A reader of a public page must know which bytes the page's owner
